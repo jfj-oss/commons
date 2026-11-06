@@ -30,7 +30,8 @@ try {
     await sleep(800);
     return call(listener, `c.probeTone(${J(dev(speaker))}, ${P(speaker).tone}, ${ms}, ${J(source)})`);
   };
-  const hears = async (l, s, src) => { const r = await hear(l, s, 1500, src); return r.present && r.toneShare > TONE_MIN; };
+  const hears = async (l, s, src) => { for (let i = 0; i < 6; i++) { const r = await hear(l, s, 1500, src); if (r.present && r.toneShare > TONE_MIN) return true; await sleep(1000); } return false; };
+  const notHeard = async (l, s) => { const r = await hear(l, s, 1500); return { present: r.present, toneShare: r.toneShare, ok: !!r.present && r.toneShare < TONE_MAX }; };
   const room = await rpc(P('alice').port, 'call_token', { gid: world.gid });
   const roomName = room.room;
 
@@ -138,7 +139,7 @@ try {
   const spyRes = await spy.ev(`(async()=>{
     // capture every encoded frame the server forwards to us (what is on the wire after SRTP), per remote track
     const Orig = window.RTCPeerConnection; window.__frames = {}; window.__decoded = {};
-    window.RTCPeerConnection = function (cfg, ...r) { cfg = Object.assign({}, cfg, { encodedInsertableStreams: true }); const pc = new Orig(cfg, ...r); const sc = pc.setConfiguration.bind(pc); pc.setConfiguration = c => sc(Object.assign({}, c, { encodedInsertableStreams: true }));
+    window.RTCPeerConnection = function (cfg, ...r) { cfg = Object.assign({}, cfg, { encodedInsertableStreams: true }); const pc = new Orig(cfg, ...r); const sc = pc.setConfiguration.bind(pc); pc.setConfiguration = c => sc(Object.assign({}, c, { encodedInsertableStreams: true })); const sc = pc.setConfiguration.bind(pc); pc.setConfiguration = c => sc(Object.assign({}, c, { encodedInsertableStreams: true }));
       pc.addEventListener('track', ev => { if (ev.track.kind !== 'audio') return; const key = ev.track.id; window.__frames[key] = []; const { readable, writable } = ev.receiver.createEncodedStreams();
         readable.pipeThrough(new TransformStream({ transform(f, ctl) { if (window.__frames[key].length < 150) window.__frames[key].push(Array.from(new Uint8Array(f.data))); ctl.enqueue(f); } })).pipeTo(writable); });
       return pc; };
@@ -237,8 +238,9 @@ try {
   const bobFails = await call('bob', `(c.decryptFail.get(${J(dev('carol'))}) || { n: 0 }).n`);
   check('F3 positive control: remaining members still hear each other after the kick rotation', post.aliceBob && post.bobAlice && post.daveBob, J(post));
   check('F4 before the kick carol and bob heard each other', preKick.bobHearsCarol && preKick.carolHearsBob, J(preKick));
-  check('F5 after the kick carol (holding the old keys) cannot decode bob or alice', !post.carolHearsBob && !post.carolHearsAlice, J({ carolHearsBob: post.carolHearsBob, carolHearsAlice: post.carolHearsAlice, carolDecryptFailures: carolFails }));
-  check('F6 after the kick bob (trusting her identity) cannot decode carol\'s frames either', !post.bobHearsCarol, J({ bobHearsCarol: post.bobHearsCarol, bobDecryptFailuresForCarol: bobFails }));
+  const nh = { carolBob: await notHeard('carol', 'bob'), carolAlice: await notHeard('carol', 'alice'), bobCarol: await notHeard('bob', 'carol') };
+  check('F5 after the kick carol (holding the old keys, tracks present) cannot decode bob or alice', nh.carolBob.ok && nh.carolAlice.ok, J({ nh, carolDecryptFailures: carolFails }));
+  check('F6 after the kick bob (trusting her identity, track present) cannot decode carol\'s frames either', nh.bobCarol.ok, J({ nh: nh.bobCarol, bobDecryptFailuresForCarol: bobFails }));
   const blockedOnAlice = await call('alice', `c.snapshot().blocked.length`);
   check('F7 alice (normal client) refuses to play carol\'s tracks: not a member any more', blockedOnAlice > 0 && !post.aliceHearsCarol, `blocked ${blockedOnAlice}`);
   let carolTokenErr = null; try { await rpc(P('carol').port, 'call_token', { gid: world.gid }); } catch (e) { carolTokenErr = e.message; }
