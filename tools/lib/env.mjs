@@ -67,7 +67,7 @@ export const FAKE_DISPLAY = `(() => {
       g.fillStyle = '#fff'; g.font = '48px sans-serif'; g.fillText('commons test screen ' + (window.__shareName || '') + ' ' + n, 100, 500); g.fillRect(100 + (n * 7 % 1000), 600, 60, 60); n++; };
     draw(); const timer = setInterval(draw, 66);
     const ms = c.captureStream(15); ms.getVideoTracks()[0].addEventListener('ended', () => clearInterval(timer));
-    if (opts && opts.audio) { const ctx = new AudioContext(); const o = ctx.createOscillator(); o.frequency.value = 1000; const d = ctx.createMediaStreamDestination(); o.connect(d); o.start(); d.stream.getAudioTracks().forEach(t => ms.addTrack(t)); }
+    if (opts && opts.audio) { const ctx = (() => { try { return new AudioContext({ sinkId: { type: 'none' } }); } catch { return new AudioContext(); } })(); const o = ctx.createOscillator(); o.frequency.value = 1000; const d = ctx.createMediaStreamDestination(); o.connect(d); o.start(); d.stream.getAudioTracks().forEach(t => ms.addTrack(t)); }
     return ms;
   };
 })()`;

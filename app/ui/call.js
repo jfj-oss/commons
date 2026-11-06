@@ -476,7 +476,7 @@
     // test hook: measure what a remote participant's audio really sounds like (spectral share of a known tone)
     async probeTone(identity, hz, ms = 1500, source = 'microphone') {
       const t = [...this.tracks.values()].find(x => x.identity === identity && x.track.kind === 'audio' && x.source === source); if (!t) return { present: false };
-      const ctx = new AudioContext(); await ctx.resume();
+      const ctx = (() => { try { return new AudioContext({ sinkId: { type: 'none' } }); } catch { return new AudioContext(); } })(); await ctx.resume();   // 'none': measure without any audio device
       const src = ctx.createMediaStreamSource(new MediaStream([t.track.mediaStreamTrack])); const an = ctx.createAnalyser(); an.fftSize = 8192; src.connect(an);
       const buf = new Float32Array(an.frequencyBinCount); let best = 0, rmsMax = 0; const end = Date.now() + ms;
       while (Date.now() < end) {

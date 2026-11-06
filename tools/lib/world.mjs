@@ -36,4 +36,4 @@ export async function openApps(w, names, opts = {}) {
 }
 
 export const toneScript = hz => `(() => { const orig = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-  navigator.mediaDevices.getUserMedia = async (c) => { if (c && c.audio && !c.video) { const ctx = new AudioContext(); await ctx.resume().catch(() => {}); const o = ctx.createOscillator(); o.frequency.value = ${hz}; const g = ctx.createGain(); g.gain.value = 0.35; const d = ctx.createMediaStreamDestination(); o.connect(g); g.connect(d); o.start(); return d.stream; } return orig(c); }; })();`;
+  navigator.mediaDevices.getUserMedia = async (c) => { if (c && c.audio && !c.video) { const ctx = (() => { try { return new AudioContext({ sinkId: { type: 'none' } }); } catch { return new AudioContext(); } })(); await ctx.resume().catch(() => {}); const o = ctx.createOscillator(); o.frequency.value = ${hz}; const g = ctx.createGain(); g.gain.value = 0.35; const d = ctx.createMediaStreamDestination(); o.connect(g); g.connect(d); o.start(); return d.stream; } return orig(c); }; })();`;
