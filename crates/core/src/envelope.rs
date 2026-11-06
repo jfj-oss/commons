@@ -88,6 +88,21 @@ pub fn sign_grant(owner_key: &ed25519_dalek::SigningKey, community: &str, accoun
 impl GroupExt {
     /// Full authenticity check for a control-group table against the community id (which pins the owner).
     /// Returns the verified admin account list.
+    /// Same for a channel group: the owner-signed admin list embedded in the channel itself, so that the
+    /// authorization of a channel commit depends on nothing but that channel's own authenticated state.
+    pub fn verify_channel(&self) -> Result<(String, String, Vec<String>), ParseError> {
+        use ed25519_dalek::Verifier;
+        let GroupExt::Channel { community, owner, nonce, admins, .. } = self else { return bad("not a channel table") };
+        if community_id(owner, nonce) != *community { return bad("channel does not belong to the community its owner/nonce name"); }
+        let ok = commons_proto::unhex32(owner).ok().and_then(|o| ed25519_dalek::VerifyingKey::from_bytes(&o).ok()).ok_or(ParseError("bad owner key".into()))?;
+        let mut out = vec![];
+        for a in admins {
+            let sig = hex::decode(&a.sig).ok().and_then(|s| ed25519_dalek::Signature::from_slice(&s).ok()).ok_or(ParseError("bad admin grant".into()))?;
+            ok.verify(&grant_msg(community, &a.account), &sig).map_err(|_| ParseError("admin grant not signed by owner".into()))?;
+            out.push(a.account.clone());
+        }
+        Ok((community.clone(), owner.clone(), out))
+    }
     pub fn verify_control(&self, gid: &str) -> Result<(String, Vec<String>), ParseError> {
         use ed25519_dalek::Verifier;
         let GroupExt::Control { owner, nonce, admins, .. } = self else { return bad("not a control table") };
@@ -114,7 +129,7 @@ pub enum GroupExt {
     /// The community control group: roster = its members; this is the roles/channels/invites table.
     Control { name: String, owner: String, nonce: String, admins: Vec<AdminGrant>, channels: Vec<ChanMeta>, invites: Vec<InviteMeta>, #[serde(default)] banned: Vec<String> },
     /// A channel group. `community` is the control group id; `name` is only a hint, the control table is authoritative.
-    Channel { community: String, name: String },
+    Channel { community: String, name: String, owner: String, nonce: String, admins: Vec<AdminGrant> },
 }
 
 impl GroupExt {
@@ -129,7 +144,7 @@ impl GroupExt {
                 for c in channels { if c.id.len() < 8 || !short(&c.name, 64) || c.name.is_empty() { return bad("bad channel"); } }
                 for i in invites { if !is_id(&i.id) || i.pk.len() != 64 { return bad("bad invite"); } }
             }
-            GroupExt::Channel { community, name } => if community.len() < 8 || !short(name, 64) { return bad("bad channel ext"); },
+            GroupExt::Channel { community, name, owner, nonce, admins } => if community.len() < 8 || !short(name, 64) || owner.len() != 64 || nonce.len() != 32 || admins.len() > 512 { return bad("bad channel ext"); },
         }
         Ok(g)
     }

@@ -207,7 +207,8 @@ fn unauthorized_commit_is_rejected_by_everyone_else() {
     assert!(alice.c.group_accounts(&cid).contains(&alice.acct()));
     assert_eq!(alice.c.group_accounts(&cid).len(), 3);
     assert_eq!(alice.c.epoch_fingerprint(&cid), carol.c.epoch_fingerprint(&cid));
-    assert_ne!(alice.c.epoch_fingerprint(&cid), bob.c.epoch_fingerprint(&cid), "the attacker forked himself off");
+    assert_eq!(alice.c.epoch_fingerprint(&cid), bob.c.epoch_fingerprint(&cid), "an honest client applies the same rule to its own commit, so it does not fork either");
+    assert!(notices(&bob).iter().any(|n| n.contains("not allowed by the group's own rules")), "{:?}", notices(&bob));
     alice.c.send_text(&gen, "owner is still here", None).unwrap();
     settle(&mut [&mut alice, &mut bob, &mut carol]);
     assert!(has_text(&carol, &gen, "owner is still here"));

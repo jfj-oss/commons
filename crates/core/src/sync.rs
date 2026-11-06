@@ -146,11 +146,14 @@ impl Client {
                 (Kind::Control, gid.clone())
             }
             GroupExt::Channel { community, .. } => {
+                let (_, ch_owner, ch_admins) = ext.verify_channel().map_err(|e| anyhow!("channel table rejected: {e}"))?;
+                if let Some(c) = self.st.communities.get(community) { if c.owner != ch_owner { bail!("channel names a different owner than its community"); } }
                 // The key material of a welcome is consumed when it is opened, so it cannot be parked and retried.
                 // If the community table has not arrived yet we join anyway; the channel stays invisible until
                 // the (authenticated) community table lists it, and commits in it are judged by that table.
                 if let Some(c) = self.st.communities.get(community) {
-                    let ok = c.role_of(&sender_cert.account) >= Some(Role::Admin) || sender_cert.account == me;
+                    let _ = c;
+                    let ok = sender_cert.account == ch_owner || ch_admins.contains(&sender_cert.account) || sender_cert.account == me;
                     if !ok { bail!("channel welcome from someone who is not an admin"); }
                 }
                 (Kind::Channel, community.clone())
@@ -253,7 +256,14 @@ impl Client {
         match p.into_content() {
             ProcessedMessageContent::OwnPrivateMessage | ProcessedMessageContent::OwnPendingCommit => {
                 if pending_id.as_deref() == Some(id) {
-                    if group.pending_commit().is_some() {
+                    let verdict = match (group.pending_commit(), &cert) {
+                        (Some(pc), Some(c)) => self.authorize(gid, group, c, pc),
+                        _ => Verdict::Ok,
+                    };
+                    if let Verdict::Reject(why) = verdict {
+                        let _ = group.clear_pending_commit(self.prov.storage());
+                        self.drop_pending(gid, &format!("not allowed by the group's own rules: {why}"));
+                    } else if group.pending_commit().is_some() {
                         match group.merge_pending_commit(&self.prov) {
                             Ok(()) => self.finish_own_commit(gid, seq),
                             Err(e) => { self.notice("commit", format!("could not merge our own commit: {e}")); }
@@ -366,12 +376,16 @@ impl Client {
     }
 
     // ------------------------------------------------------------------ authorization of membership changes
+    /// Owner and admins as authenticated by this group's OWN group-context extension. Authorization must never
+    /// depend on other groups' state: otherwise two honest clients that processed logs in different interleavings
+    /// could disagree about one commit and fork.
     fn roles(&self, gid: &str, group: &MlsGroup) -> (String, Vec<String>) {
         let gs = &self.st.groups[gid];
-        if gs.kind == Kind::Control {
-            if let Some(ext) = mls::group_ext(group.extensions()) { if let Ok(r) = ext.verify_control(gid) { return r; } }
+        if let Some(ext) = mls::group_ext(group.extensions()) {
+            if gs.kind == Kind::Control { if let Ok(r) = ext.verify_control(gid) { return r; } }
+            else if let Ok((_, owner, admins)) = ext.verify_channel() { return (owner, admins); }
         }
-        match self.st.communities.get(&gs.community) { Some(c) => (c.owner.clone(), c.admins.clone()), None => (String::new(), vec![]) }
+        (String::new(), vec![])
     }
 
     fn authorize(&self, gid: &str, group: &MlsGroup, sender: &DeviceCert, sc: &StagedCommit) -> Verdict {
@@ -380,11 +394,7 @@ impl Client {
         let role = |a: &str| if a == owner { Role::Owner } else if admins.iter().any(|x| x == a) { Role::Admin } else { Role::Member };
         let srole = role(&sender.account);
         let members = mls::members_of(group);
-        let is_ctl = self.st.groups[gid].kind == Kind::Control;
-        let sender_leaf = members.iter().find(|(_, c)| c.device == sender.device).map(|(i, _)| *i);
-        let leaving = self.st.communities.get(&self.st.groups[gid].community).map(|c| c.leaving.clone()).unwrap_or_default();
-        let dev_revoked = |d: &str| self.st.revoked.contains_key(d);
-        let banned = self.st.communities.get(&self.st.groups[gid].community).map(|c| c.banned.clone()).unwrap_or_default();
+                let sender_leaf = members.iter().find(|(_, c)| c.device == sender.device).map(|(i, _)| *i);
         for qp in sc.queued_proposals() {
             if !matches!(qp.sender(), Sender::Member(i) if Some(*i) == sender_leaf) { return Reject("commit includes a proposal from someone else".into()); }
             match qp.proposal() {
@@ -392,23 +402,19 @@ impl Client {
                     let kp = a.key_package();
                     let Some(c) = mls::cert_of(kp.leaf_node().credential(), kp.leaf_node().signature_key().as_slice()) else { return Reject("added member has an invalid certificate".into()) };
                     if srole < Role::Admin && c.account != sender.account { return Reject(format!("{} may not add other people", srole.name())); }
-                    if dev_revoked(&c.device) { return Reject("tried to add a revoked device".into()); }
-                    if banned.contains(&c.account) { return Reject("tried to add a banned account".into()); }
                 }
                 Proposal::Remove(r) => {
                     let Some((_, t)) = members.iter().find(|(i, _)| *i == r.removed()) else { return Reject("removes unknown member".into()) };
                     let trole = role(&t.account);
                     let ok = t.account == sender.account
                         || (srole == Role::Owner && trole != Role::Owner)
-                        || (srole == Role::Admin && trole == Role::Member)
-                        || (srole >= Role::Admin && trole != Role::Owner && (leaving.contains(&t.account) || dev_revoked(&t.device)));
+                        || (srole == Role::Admin && trole == Role::Member);
                     if !ok { return Reject(format!("{} may not remove a {}", srole.name(), trole.name())); }
                 }
                 Proposal::GroupContextExtensions(e) => {
-                    if !is_ctl { return Reject("group context change in a channel".into()); }
                     let Some(new) = mls::group_ext(e.extensions()) else { return Reject("bad group extension".into()) };
                     let Some(old) = mls::group_ext(group.extensions()) else { return Reject("no old extension".into()) };
-                    if let Err(w) = ctl_change_allowed(gid, &old, &new, srole) { return Reject(w); }
+                    if let Err(w) = ext_change_allowed(gid, &old, &new, srole) { return Reject(w); }
                 }
                 _ => return Reject("unsupported proposal type".into()),
             }
@@ -508,13 +514,23 @@ impl Client {
     }
 }
 
-/// Rules for editing the control table; shared by the receiving side and by tests.
-pub fn ctl_change_allowed(gid: &str, old: &GroupExt, new: &GroupExt, sender: Role) -> std::result::Result<(), String> {
-    let (GroupExt::Control { owner: o1, nonce: n1, admins: a1, name: nm1, channels: c1, invites: i1, banned: b1 }, GroupExt::Control { owner: o2, nonce: n2, admins: a2, name: nm2, channels: c2, invites: i2, banned: b2 }) = (old, new)
-        else { return Err("not a control table".into()) };
-    if o1 != o2 || n1 != n2 { return Err("owner cannot change".into()); }
-    new.verify_control(gid).map_err(|e| e.to_string())?;
-    if a1 != a2 && sender != Role::Owner { return Err("only the owner can change admins".into()); }
-    if (nm1 != nm2 || c1 != c2 || i1 != i2 || b1 != b2) && sender < Role::Admin { return Err("only admins can change channels, invites or the name".into()); }
-    Ok(())
+/// Rules for editing a group's authenticated table (shared by receivers and tests).
+pub fn ext_change_allowed(gid: &str, old: &GroupExt, new: &GroupExt, sender: Role) -> std::result::Result<(), String> {
+    match (old, new) {
+        (GroupExt::Control { owner: o1, nonce: n1, admins: a1, name: nm1, channels: c1, invites: i1, banned: b1 }, GroupExt::Control { owner: o2, nonce: n2, admins: a2, name: nm2, channels: c2, invites: i2, banned: b2 }) => {
+            if o1 != o2 || n1 != n2 { return Err("owner cannot change".into()); }
+            new.verify_control(gid).map_err(|e| e.to_string())?;
+            if a1 != a2 && sender != Role::Owner { return Err("only the owner can change admins".into()); }
+            if (nm1 != nm2 || c1 != c2 || i1 != i2 || b1 != b2) && sender < Role::Admin { return Err("only admins can change channels, invites or the name".into()); }
+            Ok(())
+        }
+        (GroupExt::Channel { community: c1, owner: o1, nonce: n1, admins: a1, name: nm1 }, GroupExt::Channel { community: c2, owner: o2, nonce: n2, admins: a2, name: nm2 }) => {
+            if c1 != c2 || o1 != o2 || n1 != n2 { return Err("channel identity cannot change".into()); }
+            new.verify_channel().map_err(|e| e.to_string())?;
+            if a1 != a2 && sender != Role::Owner { return Err("only the owner can change admins".into()); }
+            if nm1 != nm2 && sender < Role::Admin { return Err("only admins can rename".into()); }
+            Ok(())
+        }
+        _ => Err("a group cannot change kind".into()),
+    }
 }

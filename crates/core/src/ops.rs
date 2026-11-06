@@ -70,7 +70,8 @@ impl Client {
         let name = name.trim().to_lowercase().replace(' ', "-");
         if name.is_empty() || name.len() > 64 { bail!("channel name must be 1-64 characters"); }
         let gid = rand_hex(16);
-        let ext = GroupExt::Channel { community: cid.into(), name: name.clone() };
+        let GroupExt::Control { owner: c_owner, nonce: c_nonce, admins: c_admins, .. } = self.ctl_ext(cid)? else { bail!("bad table") };
+        let ext = GroupExt::Channel { community: cid.into(), name: name.clone(), owner: c_owner, nonce: c_nonce, admins: c_admins };
         let signer = self.signer()?;
         let cfg = mls::create_cfg(&ext)?;
         let group = MlsGroup::new_with_group_id(&self.prov, &signer, &cfg, GroupId::from_slice(&hex::decode(&gid)?), mls::cred_with_key(&self.cert()?)?)?;
@@ -613,6 +614,12 @@ impl Client {
             if invites.len() != before { changed = true; }
             for a in &c.kick_queue { if !banned.contains(a) && members.iter().any(|(_, m)| &m.account == a) { banned.push(a.clone()); changed = true; } }
             if changed { plan.gce = Some(GroupExt::Control { name, owner, nonce, admins, channels, invites, banned }); descs.push("update table".into()); }
+        }
+        // keep each channel's own copy of the owner-signed admin list current (only the owner may change it)
+        if !is_ctl && role == Role::Owner {
+            if let (Some(GroupExt::Channel { community, name, owner, nonce, admins }), Ok(GroupExt::Control { admins: ctl_admins, .. })) = (mls::group_ext(group.extensions()), self.ctl_ext(&c.id)) {
+                if admins != ctl_admins { plan.gce = Some(GroupExt::Channel { community, name, owner, nonce, admins: ctl_admins }); descs.push("update channel admins".into()); }
+            }
         }
         if plan.removes.is_empty() && plan.adds.is_empty() && plan.gce.is_none() {
             for s in handled_reqs { self.drop_request(gid, s); }

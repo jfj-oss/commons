@@ -27,7 +27,7 @@ fn parsers_never_panic() {
         Envelope::File { id: id.clone(), name: "a".into(), mime: "b".into(), size: 3, blob: id.clone(), key: "00".repeat(32), nonce: "00".repeat(12), caption: "".into(), reply: None, ts: 1 }.to_bytes(),
         Envelope::React { target: id.clone(), emoji: "👍".into(), on: true }.to_bytes(),
         Envelope::Revoked { account: "a".repeat(64), device: "b".repeat(64), sig: "c".repeat(128) }.to_bytes(),
-        GroupExt::Channel { community: "abcdef0123".into(), name: "x".into() }.to_bytes(),
+        GroupExt::Channel { community: "abcdef0123".into(), name: "x".into(), owner: "a".repeat(64), nonce: id.clone(), admins: vec![AdminGrant { account: "b".repeat(64), sig: "c".repeat(128) }] }.to_bytes(),
         GroupExt::Control { name: "n".into(), owner: "a".repeat(64), nonce: id.clone(), admins: vec![], channels: vec![ChanMeta { id: "abcdef0123".into(), name: "c".into() }], invites: vec![], banned: vec![] }.to_bytes(),
         br#"{"t":"Text","id":"x","text":"\u0000","ts":-1}"#.to_vec(),
         InviteLink { owner: "a".repeat(64), relay: "http://127.0.0.1:1".into(), community: "abcdef0123".into(), invite: id.clone(), sk: "b".repeat(64), name: "n".into() }.encode().into_bytes(),
