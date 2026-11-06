@@ -125,6 +125,10 @@
         videoCaptureDefaults: { deviceId: p.camId || undefined, resolution: LK.VideoPresets.h360 },
         audioOutput: p.outId ? { deviceId: p.outId } : undefined,
         stopLocalTrackOnUnpublish: true,
+        // One quick resume (same session, ICE restart) is left to the SDK. If that fails the SDK would republish tracks into the old
+        // frame-encryption pipeline, which broke decryption for some pairs after a server restart in testing; so a lost session ends
+        // here and a fresh room, worker, keys and token are built (_autoRejoin).
+        reconnectPolicy: { nextRetryDelayInMs: ctx => (ctx.retryCount === 0 ? 300 : null) },
       });
       this.room = room;
       this._wire(room);
