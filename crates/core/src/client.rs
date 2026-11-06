@@ -181,7 +181,10 @@ impl Client {
         let t = mk(&st.relay);
         let recovered = vault.recovered;
         let mut c = Self::assemble(dir, vault, st, prov, t, lock);
-        if recovered { c.notice("state", "The newest copy of this device's saved state was damaged, so the previous one was loaded. The last few moments may be missing; if this device sent anything in that time, it will say so and refresh its keys."); }
+        if recovered {
+            c.notice("state", "The newest copy of this device's saved state was damaged, so the previous one was loaded. The last few moments may be missing; if this device sent anything in that time, it will say so and refresh its keys.");
+            c.save()?;
+        }
         Ok(c)
     }
     pub fn open(dir: &Path, pass: &str, t: Arc<dyn Transport>) -> Result<Client> { Self::open_with(dir, pass, |_| t) }
@@ -322,7 +325,7 @@ impl Client {
     }
     fn parse_pair_code(&self, code: &str) -> Result<(String, String)> {
         let raw = code.trim().strip_prefix("commons-pair:").ok_or_else(|| anyhow!("not a pairing code"))?;
-        let j: serde_json::Value = serde_json::from_slice(&unb64(raw)?)?;
+        let j: serde_json::Value = unb64(raw).ok().and_then(|b| serde_json::from_slice(&b).ok()).ok_or_else(|| anyhow!("bad pairing code"))?;
         let (rid, pk) = (j["rid"].as_str().unwrap_or(""), j["pk"].as_str().unwrap_or(""));
         if !is_id(rid) || hex32(pk).is_err() { bail!("bad pairing code"); }
         if j["relay"].as_str().map(|r| r.trim_end_matches('/')) != Some(self.st.relay.trim_end_matches('/')) { bail!("the new device uses a different relay"); }

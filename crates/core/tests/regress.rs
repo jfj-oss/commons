@@ -292,6 +292,11 @@ fn a_revoked_device_is_told_and_a_new_device_is_pointed_out() {
     assert!(notices(&a).iter().any(|n| n.contains("still holds your account key")));
     let _ = c2.tick(0);
     assert!(c2.st.self_revoked);
+    let cid = a.c.create_community("club").unwrap();
+    let gen = a.c.channels_of(&cid)[0].gid.clone();
+    assert!(a.c.send_text(&gen, "still here", None).is_ok());
+    c2.st.groups.insert(gen.clone(), GroupState::new(&gen, &cid, Kind::Channel));
+    assert!(c2.send_text(&gen, "x", None).unwrap_err().to_string().contains("revoked"));
     assert!(c2.st.notices.iter().any(|n| n.kind == "revoked"));
 }
 
@@ -574,4 +579,34 @@ fn the_relay_gate_and_quotas_hold() {
     let take = || t.request(Some(&k), "GET", &format!("/v1/keypackages/{dev}"), &[], d).unwrap().status;
     assert_eq!((take(), take(), take()), (200, 200, 429), "take limit");
     let _ = c.tick(0);
+}
+
+#[test]
+fn two_admins_racing_leave_no_scar_in_the_room() {
+    let net = Net::new();
+    let (mut a, mut b, mut c) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"), Peer::new(&net, "carol"));
+    for p in [&mut a, &mut b, &mut c] { p.tick(); }
+    let (cid, gen) = community_with(&net, &mut a, &mut [&mut b, &mut c]);
+    a.c.set_role(&cid, &b.acct(), Role::Admin).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    let t = c.acct();
+    a.c.kick(&cid, &t).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    for p in [&a, &b] { assert!(p.c.messages(&gen).iter().all(|m| !matches!(m.body, MsgBody::Notice(_))), "{}: {:?}", p.name, p.c.messages(&gen)); }
+}
+
+#[test]
+fn a_group_the_relay_lost_is_not_quietly_started_again() {
+    let mut net = Net::new();
+    let (mut a, mut b) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"));
+    let (cid, gen) = owner_and(&net, &mut a, &mut b);
+    a.c.send_text(&gen, "before the wipe", None).unwrap();
+    settle(&mut [&mut a, &mut b]);
+    net.stop_relay();
+    std::fs::remove_dir_all(net.data.path().join("relay")).unwrap();
+    net.start_relay();
+    for _ in 0..4 { a.tick(); b.tick(); }
+    assert!(a.c.st.groups[&cid].denied && a.c.st.groups[&gen].denied, "it stays visibly broken");
+    assert!(notices(&a).iter().any(|n| n.starts_with("relay:")));
+    assert_eq!(a.c.group_status(&gen), "the relay is not letting this account in");
 }

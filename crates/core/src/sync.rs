@@ -309,6 +309,9 @@ impl Client {
         let epoch = pm.epoch().as_u64();
         if gs.broken { self.st.groups.get_mut(gid).unwrap().broken_count += 1; return; }
         if epoch < gs.join_epoch { return; } // predates our membership: never addressed to us
+        // A commit for an epoch we have left lost the race to the one that got there first. Everyone skips it alike, and
+        // it held no message, so there is nothing to tell the room. (Our own pending one is dropped when the winner lands.)
+        if tag == TAG_COMMIT && epoch < group.epoch().as_u64() { log::info!("group {}: commit {seq} lost the race for epoch {epoch}", &gid[..8]); return; }
         let is_own = self.st.own_ids.iter().any(|x| x == id);
         match group.process_message(&self.prov, pm) {
             Ok(p) => self.handle_processed(gid, seq, id, tag, is_own, &mut group, p),

@@ -447,6 +447,9 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
         (Method::GET, ["v1", "groups", gid, "acl"]) => {
             let a = authenticate(&db, headers, ms, path, body, true)?.1.unwrap();
             if !valid_gid(gid) { return Err(status(StatusCode::BAD_REQUEST, "bad group")); }
+            // Unknown here means the relay lost it. Claiming it afresh would restart its log below everyone's cursor and
+            // new entries would go unseen, so clients must be told apart from "not a member".
+            if !group_exists(&db, gid) { return Err(status(StatusCode::NOT_FOUND, "no such group")); }
             let auth = group_auth(&db, gid)?;
             let owner = auth.as_ref().is_some_and(|g| g.owner == a.account);
             if !owner && !is_member(&db, gid, &a.account)? { return Err(status(StatusCode::FORBIDDEN, "not a member")); }

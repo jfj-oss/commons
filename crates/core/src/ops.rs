@@ -302,6 +302,7 @@ impl Client {
         self.activity += 1;
     }
     fn check_chan(&self, gid: &str) -> Result<()> {
+        if self.st.self_revoked { bail!("this device has been revoked, so it can no longer send"); }
         match self.st.groups.get(gid) { Some(g) if g.kind == Kind::Channel && !g.removed => Ok(()), _ => bail!("not a channel you are in") }
     }
     pub fn send_text(&mut self, gid: &str, text: &str, reply: Option<String>) -> Result<String> {
