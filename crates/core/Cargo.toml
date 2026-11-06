@@ -39,4 +39,5 @@ required-features = ["devbridge"]
 commons-relay = { path = "../relay" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 tempfile = "3"
+jsonwebtoken = "9"
 rusqlite = { version = "0.37", features = ["bundled"] }

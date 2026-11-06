@@ -61,7 +61,7 @@
 
     reset() {
       this.room = null; this.kp = null; this.gid = null; this.roomName = ''; this.phase = 'idle'; this.error = null;
-      this.keyState = null; this.appliedEpoch = null; this.members = new Map(); this.byAccount = new Map();
+      this.keyState = null; this.appliedEpoch = null; this._keyed = new Set(); this.members = new Map(); this.byAccount = new Map();
       this.muted = false; this.deafened = false; this.pttHeld = false; this.sharing = false; this.camera = false;
       this.blocked = new Map(); this.decryptFail = new Map(); this.tracks = new Map(); this.audioEls = new Map(); this.speaking = new Set();
       this.viewQuality = new Map(); this.attempt = 0; this.rotations = 0; this.lastRotation = 0; this.events = [];
@@ -173,9 +173,10 @@
       this.members = new Map(st.members.map(m => [m.device, m]));
       this.byAccount = new Map(); st.members.forEach(m => { if (!this.byAccount.has(m.account)) this.byAccount.set(m.account, []); this.byAccount.get(m.account).push(m.device); });
       const mats = new Map();
+      this._keyed = this._keyed || new Set();
       for (const [device, key] of Object.entries(st.keys)) {
         const material = await LK.createKeyMaterialFromBuffer(b64d(key));
-        mats.set(device, material);
+        mats.set(device, material); this._keyed.add(device);
         kp.onSetEncryptionKey(material, device, idx);
       }
       if (prevEpoch !== null && prevEpoch !== st.epoch) {
@@ -185,7 +186,7 @@
           // The previous epoch's key stays for a moment so frames in flight still play, then its slot is overwritten
           // with random bytes, so that a removed member who still holds that key cannot be decoded either.
           // Setting a key at an index also makes it the sender's current index, so the current keys are set again last.
-          const members = [...this.members.keys()];
+          const members = [...this._keyed];   // every device ever keyed, including ones that just left: their old slot must die too
           const gen = this.rotations;
           setTimeout(async () => {
             if (this.rotations !== gen || !this.kp) return;
@@ -297,7 +298,7 @@
         for (let i = 0; !this._leaving; i++) {
           await this._teardown();
           try {
-            this.keyState = null; this.appliedEpoch = null; this.blocked.clear(); this.tracks.clear();
+            this.keyState = null; this.appliedEpoch = null; this._keyed = new Set(); this.blocked.clear(); this.tracks.clear();
             await this._connect(); this.attempt = 0; this.error = null; this.log('rejoined automatically'); this._rejoining = false; this.changed(); return;
           } catch (e) {
             const ce = e instanceof CallError ? e : this._explain(e);

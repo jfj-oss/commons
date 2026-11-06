@@ -50,6 +50,30 @@ The relay is treated as hostile. This is everything it stores or observes. Verif
 | Make a client believe it was removed | Possible ("denied"); the client labels it as unconfirmed and keeps its local state. |
 | Lie in `group_members` ACL | Gives it nothing to gain beyond what it already has; it can only cause denial of service. |
 
+## Voice rooms and screen share (stage 2): what each server can see
+
+Two servers are involved. Assume both are run by the same person and both are hostile.
+
+**The relay (token service) additionally learns**, when someone calls `call-token`: the random group id (it knew it already), the calling device and account, and the time. So it learns *who joined which room's call and when*, not that a call has audio, video or a screen share, not names. It holds the LiveKit API secret, so it can mint tokens for anyone: that lets the operator join a room as a silent participant (see below), never decode it.
+
+**The LiveKit server sees, exactly:**
+
+* IP addresses of every participant (and, with TURN, of nothing more than the TURN allocation); join and leave times; the room name, which is a one-way hash of the group id (it cannot be linked to a room without knowing the group id, which the relay operator does, and it is the same person in the default setup); participant identities, which are device ids (stable across calls: it can tell that the same device returns, and, together with the relay, which account).
+* Whether each participant is publishing audio, camera or a screen share (track type), publish and mute state, the video resolution and frame rate it negotiates, and simulcast layer choices.
+* **Who is speaking and when.** The audio level travels in an RTP header extension the server needs for active-speaker detection, and silence suppression makes silent packets tiny, so talking time is visible even though content is not. Packet sizes and timing of voice leak speech rhythm (the well-known variable-bit-rate effect, with the first byte of each Opus frame and the packet size in clear); a determined server operator may learn something about *what* is said from sizes alone, which is why this is called "cannot hear", not "learns nothing".
+* Sizes, timing and volume of everything, hence who is sharing a screen and for how long, and the screen's rough activity (static document vs. moving video) from the bitrate.
+* LiveKit's own client info: SDK version, browser and OS strings.
+
+**It cannot see:** audio, video or screen content (frames are AES-GCM encrypted in the sender's browser with keys the server never gets), display names, group, room, community names, who is in the community but not in the call.
+
+**What a hostile media server or operator can do.** Hear nothing. Drop, delay or replay packets or end the call (denial of service; detected as silence or the "reconnecting" banner). Join the room with a minted token and record ciphertext: tested (the operator tab sees the forwarded Opus payloads; a plaintext control stream decodes to the tone, ours decodes to nothing). Add a fake participant: clients block any sender whose device id is not in the room's MLS group and any track not marked encrypted. Mark a track "unencrypted" to make clients play it as is: clients refuse to play tracks not marked encrypted, so this ends in silence, not in plaintext playback. Replay old ciphertext: harmless audio replay, same as a recording of encrypted data; frames are not individually sequence-protected beyond AES-GCM's IV (this is a limit of LiveKit's frame scheme).
+
+**Members.** A current member can derive every sender's key (keys are per sender for separation, not for authenticity), so a malicious member can inject audio that appears to come from another device's identity if they also control the server's routing. Group-level authentication, not sender-level: same trust level as the text channel's members. A removed member keeps the media they already received and, if still connected with a modified client, keeps receiving ciphertext they can no longer decode after the next epoch; clients also stop trusting their identity at once. For up to the 3 s grace period after a rotation, frames under the previous epoch's key are still accepted, so a removed member could inject audio in that window only if the server still routes them (their token is not renewed; the SFU does not itself evict them: an operator who wants that calls LiveKit's `RemoveParticipant`).
+
+**The call page holds the media keys.** A malicious script in the web view could read them; the same page can already read the decrypted messages shown in it, so this adds no new class of exposure, but the web view and its content security policy (`script-src 'self'`) are part of the trust base.
+
+**Platform limits.** Frame encryption needs a browser or web view that provides insertable streams. Where it does not exist the app says so and does not start the call. See `docs/CALLS-PLATFORMS.md`.
+
 ## Other adversaries
 
 * **A malicious or compromised member**: can read everything in the groups they are in, share it, and can spam. Cannot change membership or roles without the right role (all honest clients skip the commit). An admin can remove and add people; the owner is irremovable. A removed member keeps what they already received.
@@ -74,4 +98,4 @@ The relay is treated as hostile. This is everything it stores or observes. Verif
 
 ## Out of scope in stage 1
 
-Voice, video, screen share, push notifications, iOS, federation, bots, large communities (hundreds of members), moderation tooling beyond kick/ban, ownership transfer, history transfer between devices.
+Push notifications, iOS, federation, bots, large communities (hundreds of members), moderation tooling beyond kick/ban, ownership transfer, history transfer between devices.

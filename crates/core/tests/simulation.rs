@@ -72,6 +72,18 @@ fn run(seed: u64, steps: usize) {
             assert_eq!(peers[k].c.group_accounts(g), owner.c.group_accounts(g), "member list differs (seed {seed})");
         }
     }
+    // call keys (voice rooms): every current member derives identical media keys for every group; a kicked member cannot match them
+    for g in &chans {
+        let want = owner.c.call_state(g).map(|st| (st.epoch, st.keys)).ok();
+        assert!(want.is_some(), "owner has call keys for {} (seed {seed})", &g[..6]);
+        for &k in &joined { assert_eq!(peers[k].c.call_state(g).map(|st| (st.epoch, st.keys)).ok(), want, "p{k} call keys differ in {} (seed {seed})", &g[..6]); }
+        for &k in &kicked {
+            if let Ok(st) = peers[k].c.call_state(g) {
+                let w = want.as_ref().unwrap();
+                for (dev, key) in &st.keys { assert!(w.1.get(dev) != Some(key) || st.epoch != w.0, "kicked p{k} holds current call keys (seed {seed})"); }
+            }
+        }
+    }
     // marker messages: readable by all current members, never by removed ones
     for &k in &joined {
         let id = peers[k].c.send_text(&gen, &format!("final-{k}"), None);

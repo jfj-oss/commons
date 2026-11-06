@@ -578,6 +578,7 @@ dependencies = [
  "crypto_box",
  "ed25519-dalek",
  "hex",
+ "jsonwebtoken",
  "log",
  "openmls",
  "openmls_basic_credential",
