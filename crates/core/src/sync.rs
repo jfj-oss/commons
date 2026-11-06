@@ -632,7 +632,7 @@ impl Client {
 
 /// A sender's clock is the sender's claim: it may be a little ahead, but a message cannot come from the future.
 /// Old timestamps are fine, a message can wait in an outbox for days. Order always comes from the log.
-fn sane_ts(ts: u64) -> u64 { ts.min(now_secs() + 300) }
+pub fn sane_ts(ts: u64) -> u64 { ts.min(now_secs() + 300) }
 
 /// One member cannot pile up reactions without limit. Everyone applies the same rule to the same log order, so
 /// everyone ends up with the same reactions.

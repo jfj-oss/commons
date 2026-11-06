@@ -4,7 +4,7 @@
 use commons_core::api::{bridge_request_ok, App};
 use std::io::Read;
 
-const CSP: &str = "Content-Security-Policy: default-src 'self'; img-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'";
+const CSP: &str = "Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'";
 
 fn main() {
     let mut args = std::env::args().skip(1);

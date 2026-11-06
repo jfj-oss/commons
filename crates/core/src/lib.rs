@@ -7,5 +7,5 @@ pub mod transport;
 pub mod vault;
 pub mod ops;
 mod round;
-mod sync;
+pub mod sync;
 pub mod api;
