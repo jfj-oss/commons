@@ -142,7 +142,18 @@ pub struct PublishKpReq { pub packages: Vec<String>, pub last_resort: Option<Str
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct KpResp { pub package: Option<String> }
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct AclReq { pub add: Vec<String>, pub remove: Vec<String> }
+pub struct AclReq {
+    pub add: Vec<String>,
+    pub remove: Vec<String>,
+    /// Accounts to cut off from call tokens immediately (the read ACL itself keeps its grace period). Old clients omit it.
+    #[serde(default)]
+    pub call_remove: Vec<String>,
+}
+/// Reply of `POST /v1/groups/{gid}/call-token`: everything the client needs to join the media room.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CallTokenResp { pub url: String, pub token: String, pub room: String, pub identity: String, pub expires: u64 }
+/// The opaque media-room name for a group: the media server never sees the group id itself.
+pub fn call_room(gid: &str) -> String { hex::encode(sha256(&[b"commons/livekit-room/v1", gid.as_bytes()])) }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PostReq { pub id: String, pub data: String }
 #[derive(Serialize, Deserialize, Debug, Clone)]

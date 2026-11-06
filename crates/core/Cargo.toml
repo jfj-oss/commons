@@ -26,10 +26,9 @@ thiserror = "2"
 anyhow = "1"
 log = "0.4"
 
-tiny_http = { version = "0.12", optional = true }
 
 [features]
-devbridge = ["dep:tiny_http"]
+devbridge = []
 
 [[bin]]
 name = "dev_bridge"

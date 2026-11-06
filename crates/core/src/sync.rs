@@ -327,7 +327,11 @@ impl Client {
             if let Some(w) = p.welcome {
                 for dev in p.recipients { self.st.welcome_out.push(WelcomeOut { id: rand_hex(16), device: dev, data: w.clone(), gid: gid.into() }); }
             }
-            if !p.acl_remove.is_empty() { self.st.acl_jobs.push(AclJob { gid: gid.into(), remove: p.acl_remove, after: now_secs() + self.acl_delay_secs }); }
+            if !p.acl_remove.is_empty() {
+                // call tokens stop at once; read access keeps its grace period so the removed device can fetch its own removal
+                self.st.acl_jobs.push(AclJob { gid: gid.into(), remove: p.acl_remove.clone(), after: 0, call_only: true });
+                self.st.acl_jobs.push(AclJob { gid: gid.into(), remove: p.acl_remove, after: now_secs() + self.acl_delay_secs, call_only: false });
+            }
             self.notice("commit", format!("group {}: applied {}", &gid[..8], p.desc));
         }
         self.post_merge(gid, seq, &added);

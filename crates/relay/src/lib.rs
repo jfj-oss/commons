@@ -17,6 +17,32 @@ pub struct RelayState {
     db: Mutex<Connection>,
     blob_dir: PathBuf,
     tick: watch::Sender<u64>,
+    livekit: Option<LiveKitCfg>,
+}
+
+/// Optional call support: the relay signs short-lived LiveKit join tokens for current members of a group.
+/// It holds the LiveKit API secret, so it can mint tokens but sees no media and no keys.
+#[derive(Clone)]
+pub struct LiveKitCfg {
+    pub api_key: String,
+    pub api_secret: String,
+    /// The websocket URL clients should connect to (wss://... in production).
+    pub url: String,
+    pub token_ttl_secs: u64,
+}
+
+#[derive(serde::Serialize)]
+struct LkVideoGrant { room: String, #[serde(rename = "roomJoin")] room_join: bool, #[serde(rename = "canPublish")] can_publish: bool, #[serde(rename = "canSubscribe")] can_subscribe: bool, #[serde(rename = "canPublishData")] can_publish_data: bool }
+#[derive(serde::Serialize)]
+struct LkClaims { iss: String, sub: String, jti: String, nbf: u64, exp: u64, video: LkVideoGrant }
+
+/// Mint a LiveKit access token (HS256 JWT, standard `jsonwebtoken` crate). Public so tests can verify the exact claims.
+pub fn mint_livekit_token(cfg: &LiveKitCfg, identity: &str, room: &str, now: u64) -> Result<(String, u64), jsonwebtoken::errors::Error> {
+    let exp = now + cfg.token_ttl_secs;
+    let claims = LkClaims { iss: cfg.api_key.clone(), sub: identity.into(), jti: identity.into(), nbf: now.saturating_sub(30), exp,
+        video: LkVideoGrant { room: room.into(), room_join: true, can_publish: true, can_subscribe: true, can_publish_data: false } };
+    let tok = jsonwebtoken::encode(&jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256), &claims, &jsonwebtoken::EncodingKey::from_secret(cfg.api_secret.as_bytes()))?;
+    Ok((tok, exp))
 }
 
 type Resp = Response<Body>;
@@ -41,6 +67,7 @@ pub fn open_db(path: &str) -> rusqlite::Result<Connection> {
          CREATE TABLE IF NOT EXISTS group_members(gid TEXT NOT NULL, account TEXT NOT NULL, PRIMARY KEY(gid,account));
          CREATE TABLE IF NOT EXISTS entries(gid TEXT NOT NULL, seq INTEGER NOT NULL, id TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY(gid,seq), UNIQUE(gid,id));
          CREATE TABLE IF NOT EXISTS welcomes(device TEXT NOT NULL, id TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY(device,id));
+         CREATE TABLE IF NOT EXISTS call_denied(gid TEXT NOT NULL, account TEXT NOT NULL, PRIMARY KEY(gid,account));
          CREATE TABLE IF NOT EXISTS rendezvous(rid TEXT NOT NULL, slot TEXT NOT NULL, data BLOB NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(rid,slot));",
     )?;
     Ok(c)
@@ -60,11 +87,13 @@ impl RelayHandle {
 }
 
 /// Start a relay. `bind` should be 127.0.0.1:port for local use.
-pub async fn start(bind: SocketAddr, data_dir: PathBuf) -> std::io::Result<RelayHandle> {
+pub async fn start(bind: SocketAddr, data_dir: PathBuf) -> std::io::Result<RelayHandle> { start_with(bind, data_dir, None).await }
+
+pub async fn start_with(bind: SocketAddr, data_dir: PathBuf, livekit: Option<LiveKitCfg>) -> std::io::Result<RelayHandle> {
     std::fs::create_dir_all(data_dir.join("blobs"))?;
     let db = open_db(data_dir.join("relay.db").to_str().unwrap()).map_err(|e| std::io::Error::other(e.to_string()))?;
     let (tick, _) = watch::channel(0u64);
-    let st = Arc::new(RelayState { db: Mutex::new(db), blob_dir: data_dir.join("blobs"), tick });
+    let st = Arc::new(RelayState { db: Mutex::new(db), blob_dir: data_dir.join("blobs"), tick, livekit });
     let app = Router::new().fallback(handle).with_state(st);
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let addr = listener.local_addr()?;
@@ -205,9 +234,26 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
             }
             for x in r.add.iter().filter(|x| is_hex(x, 64)) {
                 db.execute("INSERT OR IGNORE INTO group_members(gid,account) VALUES(?1,?2)", params![gid, x]).map_err(dberr)?;
+                db.execute("DELETE FROM call_denied WHERE gid=?1 AND account=?2", params![gid, x]).map_err(dberr)?;
+            }
+            for x in r.call_remove.iter().filter(|x| is_hex(x, 64)) {
+                db.execute("INSERT OR IGNORE INTO call_denied(gid,account) VALUES(?1,?2)", params![gid, x]).map_err(dberr)?;
             }
             for x in r.remove.iter() { db.execute("DELETE FROM group_members WHERE gid=?1 AND account=?2", params![gid, x]).map_err(dberr)?; }
             Ok(status(StatusCode::OK, "ok"))
+        }
+        // ---- calls: a short-lived LiveKit join token for a current member. The media server is untrusted and
+        // never sees the group id (the room name is a one-way hash of it); the key comes from MLS, not from here.
+        (Method::POST, ["v1", "groups", gid, "call-token"]) => {
+            let a = authenticate(&db, headers, ms, path, body, true)?.1.unwrap();
+            let Some(cfg) = st.livekit.as_ref() else { return Err(status(StatusCode::NOT_FOUND, "this relay has no call server configured")) };
+            if !valid_gid(gid) { return Err(status(StatusCode::BAD_REQUEST, "bad group")); }
+            let member: i64 = db.query_row("SELECT COUNT(*) FROM group_members WHERE gid=?1 AND account=?2", params![gid, a.account], |r| r.get(0)).map_err(dberr)?;
+            let denied: i64 = db.query_row("SELECT COUNT(*) FROM call_denied WHERE gid=?1 AND account=?2", params![gid, a.account], |r| r.get(0)).map_err(dberr)?;
+            if member == 0 || denied > 0 { return Err(status(StatusCode::FORBIDDEN, "not a current member")); }
+            let room = call_room(gid);
+            let (token, expires) = mint_livekit_token(cfg, &a.device, &room, now_secs()).map_err(|_| status(StatusCode::INTERNAL_SERVER_ERROR, "token"))?;
+            Ok(json(&CallTokenResp { url: cfg.url.clone(), token, room, identity: a.device, expires }))
         }
         (Method::POST, ["v1", "groups", gid, "messages"]) => {
             let a = authenticate(&db, headers, ms, path, body, true)?.1.unwrap();

@@ -410,7 +410,8 @@ impl Client {
         let jobs = std::mem::take(&mut self.st.acl_jobs);
         for j in jobs {
             if now_secs() < j.after { self.st.acl_jobs.push(j); continue; }
-            if self.api.acl(&k, &j.gid, vec![], j.remove.clone()).is_err() { self.st.acl_jobs.push(j); }
+            let r = if j.call_only { self.api.acl_call_remove(&k, &j.gid, j.remove.clone()) } else { self.api.acl(&k, &j.gid, vec![], j.remove.clone()) };
+            if r.is_err() { self.st.acl_jobs.push(j); }
         }
     }
 

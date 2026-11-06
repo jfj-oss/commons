@@ -161,6 +161,13 @@ impl App {
             "set_name" => self.with(|c| c.set_name(&s(&a, "name")).map(|_| json!({})).map_err(e)),
             "set_typing_enabled" => self.with(|c| { c.st.typing_enabled = a["on"].as_bool().unwrap_or(false); c.save().map_err(e)?; Ok(json!({})) }),
             "notices" => self.with(|c| Ok(json!(c.st.notices.iter().rev().take(80).map(|n| json!({"ts": n.ts, "kind": n.kind, "text": n.text})).collect::<Vec<_>>()))),
+            "call_state" => self.with(|c| {
+                let st = c.call_state(&s(&a, "gid")).map_err(e)?;
+                let keys: serde_json::Map<String, Value> = st.keys.iter().map(|(d, k)| (d.clone(), json!(b64(k)))).collect();
+                Ok(json!({"epoch": st.epoch, "me": st.my_device, "keys": keys,
+                          "members": st.members.iter().map(|m| json!({"device": m.device, "account": m.account, "name": m.name, "me": m.is_me})).collect::<Vec<_>>()}))
+            }),
+            "call_token" => self.with(|c| c.call_token(&s(&a, "gid")).map(|t| json!({"url": t.url, "token": t.token, "room": t.room, "identity": t.identity, "expires": t.expires})).map_err(e)),
             _ => Err(format!("unknown method {m}")),
         }
     }

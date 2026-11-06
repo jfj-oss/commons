@@ -75,7 +75,21 @@ impl Api {
         Ok(match v.package { Some(p) => Some(unb64(&p)?), None => None })
     }
     pub fn acl(&self, k: &SigningKey, gid: &str, add: Vec<String>, remove: Vec<String>) -> Result<()> {
-        self.post(k, &format!("/v1/groups/{gid}/acl"), &AclReq { add, remove }).map(|_| ())
+        self.post(k, &format!("/v1/groups/{gid}/acl"), &AclReq { add, remove, call_remove: vec![] }).map(|_| ())
+    }
+    /// Cut accounts off from call tokens right away (the read ACL keeps its grace period).
+    pub fn acl_call_remove(&self, k: &SigningKey, gid: &str, accounts: Vec<String>) -> Result<()> {
+        self.post(k, &format!("/v1/groups/{gid}/acl"), &AclReq { add: vec![], remove: vec![], call_remove: accounts }).map(|_| ())
+    }
+    /// Ask the relay for a LiveKit join token for this group's call.
+    pub fn call_token(&self, k: &SigningKey, gid: &str) -> Result<CallTokenResp> {
+        let r = self.t.request(Some(k), "POST", &format!("/v1/groups/{gid}/call-token"), b"{}", T)?;
+        match r.status {
+            200 => Ok(serde_json::from_slice(&r.body)?),
+            404 => Err(anyhow!("this relay has no call server configured")),
+            403 => Err(anyhow!("the relay says you are not a current member of this room")),
+            c => Err(anyhow!("call token: relay said {c} {}", String::from_utf8_lossy(&r.body))),
+        }
     }
     pub fn post_entry(&self, k: &SigningKey, gid: &str, id: &str, data: &[u8]) -> Result<PostResp> {
         let r = self.post(k, &format!("/v1/groups/{gid}/messages"), &PostReq { id: id.into(), data: b64(data) })?;

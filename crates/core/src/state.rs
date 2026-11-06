@@ -160,7 +160,8 @@ pub struct OutItem {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct WelcomeOut { pub id: String, pub device: String, pub data: String, pub gid: String }
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct AclJob { pub gid: String, pub remove: Vec<String>, #[serde(default)] pub after: u64 }
+pub struct AclJob { pub gid: String, pub remove: Vec<String>, #[serde(default)] pub after: u64, /// only cut call-token access (immediate), not read access
+    #[serde(default)] pub call_only: bool }
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ParkedWelcome { pub id: String, pub data: String, pub ts: u64 }
 

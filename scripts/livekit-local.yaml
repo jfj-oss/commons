@@ -1,0 +1,14 @@
+# LOCAL TEST CONFIG ONLY: loopback, throwaway key. Production config is deploy/livekit.yaml.
+port: 27880
+bind_addresses: ["127.0.0.1"]
+rtc:
+  tcp_port: 27881
+  udp_port: 27882
+  use_external_ip: false
+  node_ip: 127.0.0.1
+keys:
+  commonstest: commons-local-test-secret-0123456789abcdef
+room:
+  auto_create: true
+logging:
+  level: info
