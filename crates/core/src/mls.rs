@@ -64,7 +64,7 @@ pub fn cred_with_key(cert: &DeviceCert) -> anyhow::Result<CredentialWithKey> {
     Ok(CredentialWithKey { credential: BasicCredential::new(cert.to_bytes()).into(), signature_key: dev.to_vec().into() })
 }
 pub fn caps() -> Capabilities {
-    Capabilities::new(None, None, Some(&[ExtensionType::Unknown(EXT_COMMONS)]), None, Some(&[CredentialType::Basic]))
+    Capabilities::new(None, None, Some(&[ExtensionType::Unknown(EXT_COMMONS), ExtensionType::LastResort]), None, Some(&[CredentialType::Basic]))
 }
 pub fn ext_of(g: &GroupExt) -> anyhow::Result<Extensions<GroupContext>> {
     Ok(Extensions::from_vec(vec![

@@ -145,6 +145,7 @@ impl Client {
 
     pub fn notice(&mut self, kind: &str, text: impl Into<String>) {
         let text = text.into();
+        if self.st.notices.back().is_some_and(|n| n.kind == kind && n.text == text) { return; } // no log spam from retried failures
         log::info!("[{}] {}", kind, text);
         self.st.notices.push_back(Notice { ts: now_secs(), kind: kind.into(), text });
         while self.st.notices.len() > 300 { self.st.notices.pop_front(); }

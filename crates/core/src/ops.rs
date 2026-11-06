@@ -161,6 +161,7 @@ impl Client {
         let mine = self.my_role(cid);
         let theirs = c.role_of(account).unwrap_or(Role::Member);
         if account == self.my_account() { bail!("use leave instead"); }
+        if !self.st.groups.get(cid).is_some_and(|g| g.accounts.contains(account)) { bail!("that person is not a member"); }
         if theirs == Role::Owner { bail!("the owner cannot be removed"); }
         if mine < Role::Admin || (mine == Role::Admin && theirs != Role::Member) { bail!("you are not allowed to remove a {}", theirs.name()); }
         self.st.communities.get_mut(cid).unwrap().kick_queue.insert(account.to_string());

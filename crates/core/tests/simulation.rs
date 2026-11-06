@@ -7,6 +7,7 @@ use common::*;
 use rand::{Rng, SeedableRng};
 
 fn run(seed: u64, steps: usize) {
+    eprintln!("seed {seed}");
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut net = Net::new();
     let mut peers: Vec<Peer> = vec![Peer::new(&net, "p0"), Peer::new(&net, "p1"), Peer::new(&net, "p2")];
@@ -33,8 +34,7 @@ fn run(seed: u64, steps: usize) {
             7 => { let mut f = peers[i].faults.lock().unwrap(); f.stale_sync = !f.stale_sync; }
             8 if i != 0 && !kicked.contains(&i) => {
                 let t = peers[i].acct();
-                let _ = peers[0].c.kick(&cid, &t);
-                kicked.push(i);
+                if peers[0].c.kick(&cid, &t).is_ok() { kicked.push(i); }
             }
             9 if peers.len() < 6 => {
                 let name = format!("p{}", peers.len());
