@@ -270,6 +270,8 @@
       room.on(E.Disconnected, reason => { this.log('disconnected: ' + reason); if (!this._leaving && this.room === room) this._autoRejoin(reason); });
       room.on(E.EncryptionError, (err, rp) => {
         const id = rp ? rp.identity : 'unknown';
+        // self-heal: the worker may have lost this member's key (it forgets keys when a participant drops out and returns)
+        this._rk = this._rk || new Map(); if (rp && Date.now() - (this._rk.get(id) || 0) > 2000) { this._rk.set(id, Date.now()); this._rekey(id); }
         const rec = this.decryptFail.get(id) || { n: 0, last: 0, msg: '' }; rec.n++; rec.last = Date.now(); rec.msg = (err && err.message) || ''; this.decryptFail.set(id, rec); this.changed();
       });
       room.on(E.MediaDevicesError, e => { const ce = this._explain(e); this.fail(ce.kind === 'other' ? 'device' : ce.kind, ce.message); });
