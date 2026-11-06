@@ -110,6 +110,14 @@ impl Client {
         c.save()?;
         Ok((c, format!("commons-pair:{}", b64(code.as_bytes()))))
     }
+    /// Like `open`, but the transport is built from the relay URL stored inside the encrypted state.
+    pub fn open_with(dir: &Path, pass: &str, mk: impl FnOnce(&str) -> Arc<dyn Transport>) -> Result<Client> {
+        let (vault, bytes) = Vault::open(&Self::state_path(dir), pass)?;
+        let st: State = serde_json::from_slice(&bytes).context("state file parse")?;
+        let prov = if st.mls.is_empty() { Prov::default() } else { Prov::load(&unb64(&st.mls)?)? };
+        let t = mk(&st.relay);
+        Ok(Client { dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, activity: 0, last_dir_check: HashMap::new() })
+    }
     pub fn open(dir: &Path, pass: &str, t: Arc<dyn Transport>) -> Result<Client> {
         let (vault, bytes) = Vault::open(&Self::state_path(dir), pass)?;
         let st: State = serde_json::from_slice(&bytes).context("state file parse")?;

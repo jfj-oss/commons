@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Commons</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="boot" hidden></div>
+<div id="app" hidden>
+  <aside id="rail">
+    <button id="switcher" class="switcher" title="Switch community"><span id="sw-name">—</span><span class="chev">▾</span></button>
+    <div id="sw-menu" class="menu" hidden></div>
+    <div class="rail-label">Rooms <button id="add-room" class="mini" title="New room" hidden>+</button></div>
+    <nav id="rooms"></nav>
+    <div class="grow"></div>
+    <div id="sync-status" class="sync"></div>
+    <div class="me">
+      <span id="me-dot" class="dot"></span>
+      <div class="me-text"><div id="me-name"></div><div class="muted small" id="me-sub"></div></div>
+      <button id="btn-devices" class="mini" title="Devices and recovery">⌘</button>
+      <button id="btn-activity" class="mini" title="Activity log">!</button>
+      <button id="btn-settings" class="mini" title="Settings">⚙</button>
+    </div>
+  </aside>
+  <main id="main">
+    <header id="head">
+      <div><h1 id="chan-title">Welcome</h1><div id="chan-sub" class="muted small"></div></div>
+      <div class="head-actions">
+        <input id="search" type="search" placeholder="Search messages on this device" autocomplete="off">
+        <button id="btn-invite" class="btn" hidden>Invite</button>
+        <button id="btn-people" class="btn ghost">People</button>
+      </div>
+    </header>
+    <div id="banner" hidden></div>
+    <section id="stream"><div id="empty" class="empty">Create a community or join one with an invite link.</div></section>
+    <div id="typing" class="typing small muted"></div>
+    <footer id="composer" hidden>
+      <div id="replybar" class="replybar" hidden></div>
+      <div class="row">
+        <button id="attach" class="mini big" title="Attach a file">＋</button>
+        <input type="file" id="file" hidden>
+        <textarea id="input" rows="1" placeholder="Write a message — end-to-end encrypted"></textarea>
+        <button id="send" class="btn">Send</button>
+      </div>
+    </footer>
+  </main>
+  <aside id="people" hidden></aside>
+</div>
+<div id="modal-root"></div>
+<div id="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

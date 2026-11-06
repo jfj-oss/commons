@@ -1,0 +1,17 @@
+{$COMMONS_DOMAIN} {
+	encode zstd gzip
+	request_body {
+		max_size 26MB
+	}
+	# no access log: do not keep client IPs
+	log {
+		output discard
+	}
+	reverse_proxy relay:8787 {
+		# long-poll sync waits up to 30 s
+		transport http {
+			read_timeout 60s
+			response_header_timeout 60s
+		}
+	}
+}

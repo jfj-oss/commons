@@ -351,6 +351,10 @@ impl Client {
         let comm = gs.community.clone();
         if !active { gs.removed = true; }
         let my_dev = self.my_device();
+        if kind == Kind::Control {
+            let certs = members.iter().filter(|(_, c)| added.contains(&c.device) && c.device != my_dev).map(|(_, c)| c.clone()).collect::<Vec<_>>();
+            for c in certs { let n = self.display_name(&c.account); self.notice("device", format!("{} has a new device ({}...) in this community", n, &c.device[..8])); }
+        }
         if (new_accounts > 0 || added.iter().any(|d| *d != my_dev)) && kind == Kind::Control { self.st.profile_dirty = true; }
         if kind == Kind::Control {
             if let Some(ext) = mls::group_ext(group.extensions()) {

@@ -1,0 +1,182 @@
+# Commons: design
+
+Private group chat for a handful of friends. Servers and channels like the apps you know, but the relay that carries the messages cannot read them. Reliability is ranked above features: a message that cannot be read must say why, and a client that falls behind must heal or tell you.
+
+Status: stage 1 (desktop, text, files, multi-device, recovery). Not independently audited. Read `THREAT-MODEL.md` for what this does and does not protect.
+
+## 1. Pieces
+
+```
+crates/proto   wire types, request signing, device certificates (Ed25519 + SHA-256 via dalek/sha2)
+crates/relay   the relay: axum + SQLite. Append-only log per group, key package directory, welcome inbox, blob store
+crates/core    the whole client without a UI: identity, OpenMLS, sync, local encrypted history, JSON `App::call` API
+app/src-tauri  Tauri 2 shell (Rust core in-process; JS can only call one `rpc` command)
+app/ui         plain HTML/CSS/JS, no build step
+crates/core/tests   integration harness: real relay (127.0.0.1), several simulated clients, fault injection, chaos soak, fuzz
+```
+
+Why Tauri 2 + Rust core: OpenMLS is Rust, so the same crate runs on desktop and later behind a UniFFI binding on iPhone. The UI never sees key material.
+
+Crypto is only ever invoked through reviewed libraries:
+
+| Job | Library |
+| --- | --- |
+| MLS (RFC 9420), ciphersuite `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` (0x0001, the RFC's mandatory suite) | `openmls` 0.9 + `openmls_rust_crypto` |
+| Signatures (device/account keys, request auth, invites) | `ed25519-dalek` |
+| Attachments (one fresh key and nonce per file) | `chacha20poly1305` |
+| State at rest (passphrase to key, then AEAD) | `argon2` (Argon2id, 64 MiB, t=3) + XChaCha20-Poly1305 |
+| Device pairing (sealed box to the new device's one-time key) | `crypto_box` |
+
+Nothing in this repository implements a cipher, a hash, a KDF, a signature scheme or a key exchange.
+
+## 2. Identity
+
+* **Account** = an Ed25519 key pair (`account key`). The account id is its public key (hex). It is the stable "who is this person".
+* **Device** = an Ed25519 key pair generated on that machine. The device key is also the MLS signature key.
+* **Device certificate**: the account key signs `(account, device, created)`. The MLS `BasicCredential` identity of every leaf is this certificate. Every client checks the certificate (signature and that it names the leaf's key) for every key package, welcome, and every member of every group it joins. A relay cannot invent a device for someone.
+* **Safety number**: SHA-256 chain over the two account ids (sorted), shown as 12 groups of 5 digits plus a QR of the same number. Comparing it out of band proves that both of you talk to the account keys you think. Because the account id *is* the key, there is nothing that can silently change underneath a verified friend; new *devices* appear in the member list's device count and as a notice.
+* Keys are generated on the device, stored only inside the encrypted state file, and never leave it. The one exception is on purpose: pairing a second device and the recovery key both move the *account* key (see section 8).
+
+## 3. Communities, channels, and the MLS mapping
+
+An MLS group has one set of members and one key schedule. The simplest honest mapping that gives per-channel cryptography is:
+
+* **channel = one MLS group** containing every community member's devices. Messages in a channel are MLS application messages in that group.
+* **community = one extra "control" MLS group** with the same members. Its *group context extension* (authenticated by every commit, and handed to every joiner inside the Welcome) holds the community table: name, owner account, admin grants, channel list (id and name), public halves of invites, and the ban list. The roster of the community is exactly the membership of the control group.
+
+Consequences worth knowing:
+
+* Names of communities and channels, and roles, exist only inside MLS-protected state. The relay sees random group ids.
+* Adding a person to a community costs one commit per channel plus one for the control group. That is cheap for the intended size (tens of people, a few dozen channels). If it ever hurts, the next step is to derive per-channel secrets from one group's exporter, at the price of weaker per-channel removal semantics. Not needed now.
+* All channels contain all members in stage 1 (no private channels). A private channel is just a channel group with a subset; the machinery does not assume otherwise.
+
+### Roles and authorization
+
+Roles: **owner** (the creator; fixed), **admin**, **member**.
+
+* The community id is `SHA-256("commons/community/v1" || owner || nonce)`, so the owner key is pinned in the id and in every invite link.
+* An admin is an *owner-signed grant* `Sign_owner(community, account)` stored in the control table and copied into each channel's own table. Anyone can verify a grant against the pinned owner; a rogue group cannot make up admins.
+* **Authorization is local to a group.** Every commit is checked by every member (including its author, before the author merges it) against the group's own authenticated table:
+  * Add: sender is admin/owner, or adds a device of their own account.
+  * Remove: owner can remove anyone but the owner; admin can remove members; anyone can remove their own account's devices.
+  * Group-context change: only the owner changes admins; only admins change names, channels, invites, bans.
+  * Everything else (PSK, reinit, external commits, standalone proposals) is rejected.
+  A commit that fails the check is skipped by all honest clients identically, so they do not fork. This rule came out of the chaos test: an earlier version consulted other groups' state (ban list, revocations) and two clients that interleaved logs differently disagreed about one commit. Authorization now depends on nothing but the group's own state; "soft" policy (banned accounts, revoked devices, join validation) is enforced by the admin that *creates* the commit.
+* Message-level rules (edit only by author; delete by author or admin; reactions by anyone) are enforced at display time. They affect what is shown, not cryptographic state.
+
+### Invite links
+
+`commons://join/<base64url json>` = relay URL, community id, owner account, invite id, and an **invite secret key**. The control table holds only the invite's public key. A joiner signs a join request with the secret key and posts it (in the clear, it contains no secrets) into the control group's log. Any online admin validates it (invite exists, not expired, uses left, signature, not banned, device not revoked), then commits `Add + table update` (consuming one use) in one commit and sends the Welcome. The joiner verifies the Welcome: group id derives from the owner and nonce, owner matches the link, every admin grant verifies, the sender is the owner or a granted admin. A relay that fabricates a lookalike group cannot pass this.
+
+Because an invite needs *an admin online at some point*, joining is asynchronous. The UI says so.
+
+### Join, leave, kick
+
+* **Leave**: the leaver posts `Leave` in the control group; an admin removes all of that account's devices from all groups (an MLS member cannot remove itself). The owner cannot leave in stage 1 (no ownership transfer yet).
+* **Kick** (owner removes anyone, admin removes members): one commit per group removes every device of the account, which rotates the group secrets. The same commit that removes the account from the control group adds it to the ban list, so the old invite no longer lets them back. A removed member keeps what they already received (nothing can change that) and cannot derive any later epoch. `tests/reliability.rs::removed_member_cannot_read_later_messages` feeds the removed client every ciphertext the relay holds and asserts that none of the post-removal ones opens.
+* The relay's read access for the removed account is cut after a grace period (default 120 s) so that the removed device can fetch and understand its own removal commit rather than just seeing "denied".
+
+## 4. The relay protocol and ordering
+
+The relay is a dumb, hostile-assumed append-only log:
+
+* `POST /v1/groups/{gid}/messages {id, data}` appends an opaque entry and returns a gap-free `seq` (1, 2, 3 ...). `id` is client-chosen (random 128-bit); a repeated `id` returns the original `seq`, which makes retries after a lost response exactly-once.
+* `POST /v1/sync {cursors, ack_welcomes, wait_ms}` returns everything after each cursor (and the device's welcome inbox) as one atomic snapshot, long-polling optionally. Offline queue = the log itself.
+* Entries start with a tag byte: `1` MLS application message, `4` commit, `2` rejoin request, `3` join request. The relay does not parse further.
+* There is **no epoch enforcement** on the relay. The log order *is* the order. Clients process each group's log strictly in `seq` order, and the first valid commit for an epoch wins; later commits for the same epoch are ignored by everyone alike (the loser's client notices, drops its pending change, re-evaluates and retries).
+
+Commit procedure (the committer):
+
+1. sync until caught up; build the commit; persist the staged commit and advanced key schedule to disk **before any network I/O**;
+2. post it; *do not merge yet*;
+3. when the log delivers the entry, check it against the group rules; if it is still the first commit at this epoch, merge, then send Welcomes to the added devices and schedule the relay-ACL changes. If another commit won, `clear_pending_commit` and recompute.
+
+Merge-after-acceptance is what makes concurrent commits converge instead of fork. Welcomes are only released after the commit is accepted.
+
+The reconcile loop (admins, and each user for their own devices) derives needed commits from state: *roster (control group) x device directory x current leaves*. Adds, removals, new channels' members, revoked devices, leave/kick requests all fall out of the same diff, so a crash halfway through only means the next tick finishes the job.
+
+## 5. Attachments
+
+The sender encrypts the file with a fresh ChaCha20-Poly1305 key, uploads the ciphertext as a blob under a random id, and sends `{blob id, key, nonce, name, mime, size}` inside an MLS message. Receivers download, authenticate, decrypt and cache locally (re-encrypted with the vault key). The relay sees the blob's exact size and who fetched it, not what it is. Limit 25 MB.
+
+## 6. Local storage
+
+One state file: magic, Argon2id parameters, salt, nonce, XChaCha20-Poly1305 ciphertext. It holds identity secrets, the whole OpenMLS store, every community's state, and the message history, so a stolen laptop yields nothing without the passphrase. Writes are atomic (temp file, fsync, rename) and the previous generation is kept as `state.bak`; a wrong passphrase is reported as such and is not mistaken for corruption. Search is a local scan of that history. Attachment cache files are sealed with the same key.
+
+Typing indicators are off by default. When on, they are ordinary padded application messages with no special tag, which leaks only that "a message-sized packet was sent now", something the relay sees about every message anyway.
+
+## 7. The hard parts (what hurt in Matrix) and what is done about them
+
+### 7.1 Never a silent undecryptable message
+
+Every failure turns into (a) a line in the channel timeline, in words, and (b) an entry in the Activity log. There is no code path that drops a log entry without one of these. The taxonomy:
+
+| What happened | Detection | What the client does |
+| --- | --- | --- |
+| Relay withholds or loses entries | `seq` is not `cursor+1` | Does **not** skip. Raises a `gap` notice and refetches. The cursor only advances over contiguous entries, so nothing is "missed" quietly. Dependent groups wait for the control group. |
+| Duplicates, reordering by the transport | sorted and de-duplicated by `seq` | Exactly-once processing. |
+| Same message posted twice by the sender after a lost response | relay de-dupes on `id` | Nothing to do. |
+| Garbage, malformed MLS, unknown tag | parse failure | Timeline line: "a malformed message was in the log"; group keeps working. |
+| Message from an older epoch than we keep (we keep 8) | MLS error | Timeline line explaining that its key was dropped. |
+| Replay / key already used | MLS error | Timeline line. |
+| Message for a future epoch | MLS error | If we are in the rolled-back state (below): resync. Otherwise a line explaining a commit in between was rejected or is missing. |
+| Commit not allowed by the group's rules | authorization check | Skipped identically by everybody; notice names who and why. |
+| **Own state is older than what we already sent** (restore from backup, cloned disk) | own entry in the log that we did not make | See 7.3. |
+| Relay says "denied" for a group | sync response | Marked, notice: probably removed while offline (a real removal is learned from the log itself during the grace period). |
+
+### 7.2 Multiple devices per person
+
+Account = one account key, any number of device keys, one MLS leaf per device. A device is added to every group by an existing device of the same account (members may add their own account's devices) or by an admin, driven by the relay's device directory (which is self-verifying: certs are signed by the account key).
+
+Adding a second device **by QR / code**:
+
+1. The new device generates a one-time X25519 key and a random rendezvous id, and shows `commons-pair:<base64 json {relay, rid, pk}>` as text and QR.
+2. An existing device scans or pastes it and posts a sealed box (to that one-time key) containing the account secret key and the display name to `rendezvous/rid/a`. The relay holds an opaque sealed blob for at most 15 minutes and cannot open it: it never saw the code.
+3. The new device opens it, makes its own device key and certificate, registers, publishes key packages, and answers on `rendezvous/rid/b`.
+4. Its account's existing devices (and admins) see the new device in the directory and add it to the control group and every channel. It then receives Welcomes and the community table.
+
+The code travels out-of-band (screen or camera), which is the authentication. A short check number derived from the account and the one-time key is shown on both sides.
+
+What the new device does **not** get: history from before it joined. MLS gives a device the keys of its epoch onward, by design, and the old plaintext lives only on other devices. A device-to-device encrypted history export over the same pairing channel is the obvious next feature (see section 9) and the seam exists (`rendezvous` can carry it, history is one JSON structure). The UI says this plainly.
+
+Accepting a community invitation you did not ask for: only if another device of *your own account* is already in that group (checked against the Welcome's member list). That is what an authentic pairing or recovery looks like, and it stops strangers from stuffing communities into your UI.
+
+### 7.3 Restored from an old state, cloned disks, and key reuse
+
+The dangerous case is a client that comes back from a backup: it believes it is at epoch N with unused sender keys, but the group has moved on and *it* used some of those keys. Reusing an AEAD key and nonce on different plaintexts is catastrophic. The defences:
+
+1. A client encrypts only after it has caught up with the relay in this process (`synced`), so a restored client sees the evidence before it can send.
+2. The state is saved, including the advanced key schedule and the ciphertext, **before** any network I/O when sending; the ciphertext is stored in the outbox and re-posted by the same id, never re-encrypted.
+3. Evidence = an entry in the log from our own leaf that our state did not create (we remember our own entry ids; they are part of the backup too).
+   * If it is an application message: the group is `tainted`; before sending anything the client commits a self-update, moving to a fresh epoch with fresh sender keys. The content of the lost message is not recoverable on this device; the timeline says so.
+   * If it is a **commit** (tag `4`): our private leaf keys from that commit are gone, so we can no longer follow the group at all. The client marks the group `broken` and posts a signed *rejoin request*. An admin (or one of our own other devices) replaces our leaf (one commit: remove + add) and we continue from a Welcome. Messages in between cannot be read on this device (shown as one explained notice); other devices still have them.
+
+### 7.4 Lost devices and the recovery key
+
+* **Lost or stolen device**: from any device (or a fresh one made from the recovery key) run `Revoke`. The account key signs a revocation; the relay stops serving that device (403) and deletes its key packages; the revocation is also broadcast into every community's control group; admins and the account's own devices remove its leaves, which rotates keys. Until revoked, a lost device is still a member. At rest it is protected by its passphrase only.
+* **Recovery key**: the account secret key as 55 base32 characters with a checksum (typo-checked). It restores *identity*: a new device can be created for the same account, and any online admin or other device adds it to the communities. It restores **no messages**: messages exist only as per-device local history and MLS epochs the new device was never part of. This is stated in the UI where the key is shown and where it is entered. If every device and the relay's key packages are gone and no old leaf of yours remains in a group, you need a fresh invite; the Welcome acceptance rule above only trusts welcomes that show another device of yours.
+* An optional encrypted backup of local history (key from the recovery key) is a stage 2 candidate.
+
+## 8. Trade-offs we took on purpose
+
+* The **account key is on every device** (needed to issue certs for new devices and to sign revocations). Stealing one unlocked device's state means being able to enroll more devices. Mitigations now: at-rest encryption, device-added notices, fast revocation. Planned: a cross-signing split (account key only on devices explicitly marked "trusted", others cannot enroll).
+* One MLS group per channel is simple and robust but multiplies commits. Fine for tens of people.
+* The relay can see which device posted each entry and when (it authenticates requests). Hiding that needs a different transport (sealed sender style); not in stage 1.
+* Past epoch secrets are kept for 8 epochs so that messages that cross a commit still decrypt. This widens the forward-secrecy window slightly.
+* No OS keychain in stage 1: the passphrase is the only at-rest protection and is asked at start. A keychain-wrapped key is an easy later addition.
+
+## 9. Seams for later stages (not built)
+
+* **Voice and screen share (LiveKit with E2EE)**: a voice room is a channel group (or a dedicated MLS group) whose per-epoch `export_secret("livekit-e2ee", room, 32)` is the shared frame key, rotated on every membership change exactly like text. The relay would hand out LiveKit tokens (a new endpoint; the relay already authenticates devices). `Client::epoch_fingerprint` already shows how an exporter secret is read.
+* **iPhone app**: `commons-core` has no UI or OS dependency except the filesystem path; put a UniFFI layer over `App::call` (already a JSON in/out API) and write a SwiftUI shell. Push: a wake-up-only APNs ping from the relay that carries no content.
+* **History transfer between devices** over the pairing rendezvous; **encrypted history backup**; **ownership transfer**; **private channels**; **ack/read markers** if wanted; **sealed sender** transport.
+
+## 10. Test strategy
+
+The point of the harness is to try to break the properties above with a real relay on loopback and several in-process clients:
+
+* `basic`: three people, messages/edits/deletes/replies/reactions/files/search/unread, roles, restart, plaintext absent from the state file.
+* `reliability`: kick (and the removed client fed the whole log), relay storage scanned for every plaintext marker (messages, file contents, file names, channel and community names, display names), offline periods, reversed and duplicated batches, withheld entries, lost responses, relay restart, garbage entries, concurrent commits and two admins racing for one invite, a hostile member's unauthorized removal, a client restored from an old disk including a lost commit.
+* `devices`: pairing by code, revocation, recovery key, leave, rename.
+* `simulation`: seeded chaos (joins, kicks, messages, offline, reorder, duplicates, stale views, relay restarts, app restarts) followed by a convergence check: same epoch secrets on every member for every group, kicked users cannot open any final message, every member can send and read.
+* `fuzz_parse`: mutation fuzzing of every parser that sees network bytes.
