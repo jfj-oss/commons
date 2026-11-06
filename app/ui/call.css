@@ -46,3 +46,7 @@
 #btn-call .ic { width: 16px; height: 16px; }
 #btn-call.live { background: var(--accent); color: var(--accent-ink); }
 .cp .av { font-family: var(--display); }
+/* keep the room header's buttons (Call, Invite, People) reachable under the panel; theme the sliders and checkboxes */
+#call-panel { max-height: calc(100vh - 88px); bottom: 16px; }
+#call-panel input[type=range], #call-panel input[type=checkbox] { accent-color: var(--accent); }
+#call-panel select { background: var(--page-sunk, var(--card)); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font: inherit; }

@@ -7,14 +7,14 @@
   // own icons, same stroke style as the app's sprite (ids are prefixed c- so they cannot clash)
   if (!document.getElementById('call-sprite')) {
     document.body.insertAdjacentHTML('beforeend', `<svg id="call-sprite" width="0" height="0" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-      <symbol id="c-mic" viewBox="0 0 20 20"><rect x="7.5" y="2.5" width="5" height="9" rx="2.5"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5"/></symbol>
-      <symbol id="c-micoff" viewBox="0 0 20 20"><path d="M3 3l14 14M7.5 7.5v1a2.5 2.5 0 0 0 4 2M12.5 8V5a2.5 2.5 0 0 0-5-.2M4.5 9.5a5.5 5.5 0 0 0 8.4 4.7M15.5 9.5c0 .8-.2 1.5-.5 2.2M10 15v2.5"/></symbol>
-      <symbol id="c-phones" viewBox="0 0 20 20"><path d="M3.5 12V10a6.5 6.5 0 0 1 13 0v2"/><rect x="2.5" y="11.5" width="3.5" height="5" rx="1.2"/><rect x="14" y="11.5" width="3.5" height="5" rx="1.2"/></symbol>
-      <symbol id="c-screen" viewBox="0 0 20 20"><rect x="2.5" y="3.5" width="15" height="10" rx="1.6"/><path d="M7 17h6M10 13.5V17"/></symbol>
-      <symbol id="c-cam" viewBox="0 0 20 20"><rect x="2.5" y="5.5" width="10.5" height="9" rx="1.8"/><path d="m13 9 4.5-2.5v7L13 11"/></symbol>
-      <symbol id="c-leave" viewBox="0 0 20 20"><path d="M3.5 12.5c4-3.5 9-3.5 13 0l-1.2 2.2-2.8-.9-.3-2c-1.5-.5-3-.5-4.4 0l-.3 2-2.8.9z"/></symbol>
-      <symbol id="c-gear" viewBox="0 0 20 20"><path d="M3 6h7.5M15.5 6H17M3 14h1.5M9.5 14H17"/><circle cx="13" cy="6" r="2.3"/><circle cx="7" cy="14" r="2.3"/></symbol>
-      <symbol id="c-wave" viewBox="0 0 20 20"><path d="M3 10v0M6 7v6M9 4.5v11M12 7v6M15 8.5v3M18 10v0"/></symbol>
+      <symbol id="ci-mic" viewBox="0 0 20 20"><rect x="7.5" y="2.5" width="5" height="9" rx="2.5"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5"/></symbol>
+      <symbol id="ci-micoff" viewBox="0 0 20 20"><path d="M3 3l14 14M7.5 7.5v1a2.5 2.5 0 0 0 4 2M12.5 8V5a2.5 2.5 0 0 0-5-.2M4.5 9.5a5.5 5.5 0 0 0 8.4 4.7M15.5 9.5c0 .8-.2 1.5-.5 2.2M10 15v2.5"/></symbol>
+      <symbol id="ci-phones" viewBox="0 0 20 20"><path d="M3.5 12V10a6.5 6.5 0 0 1 13 0v2"/><rect x="2.5" y="11.5" width="3.5" height="5" rx="1.2"/><rect x="14" y="11.5" width="3.5" height="5" rx="1.2"/></symbol>
+      <symbol id="ci-screen" viewBox="0 0 20 20"><rect x="2.5" y="3.5" width="15" height="10" rx="1.6"/><path d="M7 17h6M10 13.5V17"/></symbol>
+      <symbol id="ci-cam" viewBox="0 0 20 20"><rect x="2.5" y="5.5" width="10.5" height="9" rx="1.8"/><path d="m13 9 4.5-2.5v7L13 11"/></symbol>
+      <symbol id="ci-leave" viewBox="0 0 20 20"><path d="M3.5 12.5c4-3.5 9-3.5 13 0l-1.2 2.2-2.8-.9-.3-2c-1.5-.5-3-.5-4.4 0l-.3 2-2.8.9z"/></symbol>
+      <symbol id="ci-gear" viewBox="0 0 20 20"><path d="M3 6h7.5M15.5 6H17M3 14h1.5M9.5 14H17"/><circle cx="13" cy="6" r="2.3"/><circle cx="7" cy="14" r="2.3"/></symbol>
+      <symbol id="ci-wave" viewBox="0 0 20 20"><path d="M3 10v0M6 7v6M9 4.5v11M12 7v6M15 8.5v3M18 10v0"/></symbol>
     </g></svg>`);
   }
   const ic = n => `<svg class="ic"><use href="#${n}"/></svg>`;
@@ -35,7 +35,7 @@
   function ensureButton() {
     const bar = $q('.head-actions');
     if (!bar || $q('#btn-call')) return;
-    const b = document.createElement('button'); b.id = 'btn-call'; b.className = 'btn ghost'; b.innerHTML = ic('c-wave') + '<span class="lbl">Call</span>'; b.title = 'Voice and screen share in this room (end-to-end encrypted)';
+    const b = document.createElement('button'); b.id = 'btn-call'; b.className = 'btn ghost'; b.innerHTML = ic('ci-wave') + '<span class="lbl">Call</span>'; b.title = 'Voice and screen share in this room (end-to-end encrypted)';
     b.onclick = () => { open = !open; if (open) ensurePanel(); render(); };
     bar.insertBefore(b, $q('#btn-invite', bar) || bar.firstChild);
   }
@@ -45,7 +45,7 @@
     b.hidden = !room || !room.joined;
     const live = call.phase === 'connected' || call.phase === 'reconnecting' || call.phase === 'connecting';
     b.classList.toggle('live', live);
-    b.innerHTML = ic('c-wave') + '<span class="lbl">' + (live ? (call.gid === (room && room.gid) ? 'In call' : 'In call elsewhere') : 'Call') + '</span>';
+    b.innerHTML = ic('ci-wave') + '<span class="lbl">' + (live ? (call.gid === (room && room.gid) ? 'In call' : 'In call elsewhere') : 'Call') + '</span>';
   }
 
   function ensurePanel() {
@@ -108,14 +108,14 @@
     h += `<div class="cpeople">${s.peers.map(peerRow).join('')}</div>`;
     const ptt = s.ptt;
     h += `<div class="cbar">
-      <button class="btn ${s.muted ? 'on' : 'ghost'}" id="c-mute">${ic(s.muted ? 'c-micoff' : 'c-mic')}${s.muted ? 'Unmute' : 'Mute'}</button>
-      <button class="btn ${s.deafened ? 'on' : 'ghost'}" id="c-deaf">${ic('c-phones')}${s.deafened ? 'Undeafen' : 'Deafen'}</button>
+      <button class="btn ${s.muted ? 'on' : 'ghost'}" id="c-mute">${ic(s.muted ? 'ci-micoff' : 'ci-mic')}${s.muted ? 'Unmute' : 'Mute'}</button>
+      <button class="btn ${s.deafened ? 'on' : 'ghost'}" id="c-deaf">${ic('ci-phones')}${s.deafened ? 'Undeafen' : 'Deafen'}</button>
       ${ptt ? `<button class="btn ${s.pttHeld ? '' : 'ghost'}" id="c-ptt">Hold to talk</button>` : ''}
-      <button class="btn ${s.sharing ? 'on' : 'ghost'}" id="c-share" ${sup.canShareScreen ? '' : 'disabled title="This browser or webview cannot share a screen"'}>${ic('c-screen')}${s.sharing ? 'Stop sharing' : 'Share screen'}</button>
-      <button class="btn ${s.camera ? 'on' : 'ghost'}" id="c-cam">${ic('c-cam')}${s.camera ? 'Camera off' : 'Camera'}</button>
-      <button class="btn ghost" id="c-set">${ic('c-gear')}Settings</button>
+      <button class="btn ${s.sharing ? 'on' : 'ghost'}" id="c-share" ${sup.canShareScreen ? '' : 'disabled title="This browser or webview cannot share a screen"'}>${ic('ci-screen')}${s.sharing ? 'Stop sharing' : 'Share screen'}</button>
+      <button class="btn ${s.camera ? 'on' : 'ghost'}" id="c-cam">${ic('ci-cam')}${s.camera ? 'Camera off' : 'Camera'}</button>
+      <button class="btn ghost" id="c-set">${ic('ci-gear')}Settings</button>
       <span class="grow" style="flex:1"></span>
-      <button class="btn danger" id="c-leave">${ic('c-leave')}Leave</button></div>`;
+      <button class="btn danger" id="c-leave">${ic('ci-leave')}Leave</button></div>`;
     if (showSettings) {
       const d = devices || { mic: [], out: [], cam: [] };
       h += `<div class="cset">${devSelect('c-mic', d.mic, s.prefs.micId, 'Microphone')}${sup.outputSelect ? devSelect('c-out', d.out, s.prefs.outId, 'Speakers') : '<span class="full muted small">This web view cannot pick an output device; the system default is used.</span>'}${devSelect('c-camsel', d.cam, s.prefs.camId, 'Camera')}
