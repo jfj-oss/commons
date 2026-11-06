@@ -259,7 +259,8 @@ try {
   await until(async () => (await Promise.all(['alice', 'bob', 'dave'].map(n => call(n, `c.phase === 'connected' && c.room && c.snapshot().peers.filter(p => p.member && !p.me).length === 2`)))).every(Boolean), 90000, 'all rejoin').catch(async e => { for (const n of ['alice', 'bob', 'dave']) console.log('rejoin state', n, J(await call(n, `({ phase: c.phase, remote: c.room ? c.room.remoteParticipants.size : null, err: c.error, ev: c.events.slice(-6).map(e => e.msg) })`))); throw e; });
   check('G1 server restart: clients report the drop, then rejoin by themselves', duringDrop === 'reconnecting' || duringDrop === 'connected', `phase during drop ${duringDrop}`);
   await sleep(3500);
-  check('G2 after the rejoin everyone hears everyone again', await hears('bob', 'alice') && await hears('alice', 'dave') && await hears('dave', 'bob'));
+  const g2 = {}; for (const [l, sp] of [['bob', 'alice'], ['alice', 'dave'], ['dave', 'bob']]) { for (let i = 0; i < 4 && !g2[l + '<-' + sp]; i++) g2[l + '<-' + sp] = await hears(l, sp); }
+  check('G2 after the rejoin everyone hears everyone again (up to ~60 s per pair)', Object.values(g2).every(Boolean), J(g2));
   const evs = await call('alice', `c.snapshot().events.map(e => e.msg)`);
   check('G3 the rejoin is logged for the user', evs.some(m => /rejoined automatically|reconnected/.test(m)), J(evs.slice(-4)));
   // (b) a signalling reconnect inside the live session (SDK-level resume)

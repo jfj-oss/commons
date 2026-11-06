@@ -20,7 +20,7 @@ for (const [n, port] of [['alice', 7101], ['bob', 7102]]) run(bin('dev_bridge'),
 await sleep(1500);
 
 const chrome = run('chromium', ['--headless=new', '--remote-debugging-port=9333', '--user-data-dir=' + path.join(out, 'chrome'), '--use-gl=angle', '--use-angle=vulkan',
-  '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu', '--ozone-platform=headless', '--disable-software-rasterizer', '--no-first-run', '--window-size=1280,800', 'about:blank']);
+  '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu', '--ozone-platform=headless', '--disable-software-rasterizer', '--mute-audio', '--disable-audio-output', '--no-first-run', '--window-size=1280,800', 'about:blank']);
 let ver; for (let i = 0; i < 50; i++) { try { ver = await (await fetch('http://127.0.0.1:9333/json/version')).json(); break; } catch { await sleep(200); } }
 if (!ver) throw new Error('chromium did not start');
 
