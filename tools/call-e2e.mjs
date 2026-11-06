@@ -261,6 +261,7 @@ try {
   await sleep(3500);
   const g2 = {}; for (const [l, sp] of [['bob', 'alice'], ['alice', 'dave'], ['dave', 'bob']]) { for (let i = 0; i < 4 && !g2[l + '<-' + sp]; i++) g2[l + '<-' + sp] = await hears(l, sp); }
   check('G2 after the rejoin everyone hears everyone again (up to ~60 s per pair)', Object.values(g2).every(Boolean), J(g2));
+  if (!Object.values(g2).every(Boolean)) for (const n of ['alice', 'bob', 'dave']) console.log('G2 diag', n, J(await call(n, `({ phase: c.phase, e2ee: c.room.isE2EEEnabled, key: c.keyState, blocked: c.snapshot().blocked, fails: [...c.decryptFail].map(([k, v]) => [k.slice(0, 6), v.n, v.msg]), tracks: [...c.tracks.values()].map(t => [t.identity.slice(0, 6), t.source, t.pub.isEncrypted]), remote: [...c.room.remoteParticipants.values()].map(p => [p.identity.slice(0, 6), [...p.trackPublications.values()].map(x => [x.source, x.isSubscribed, x.isEncrypted, x.isMuted])]), ev: c.events.slice(-5).map(e => e.msg) })`)));
   const evs = await call('alice', `c.snapshot().events.map(e => e.msg)`);
   check('G3 the rejoin is logged for the user', evs.some(m => /rejoined automatically|reconnected/.test(m)), J(evs.slice(-4)));
   // (b) a signalling reconnect inside the live session (SDK-level resume)

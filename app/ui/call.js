@@ -197,8 +197,16 @@
         }
         this.log(`keys rotated: epoch ${prevEpoch} to ${st.epoch}`);
       }
+      this._mats = mats; this._idx = idx;
       this.appliedEpoch = st.epoch; this.keyState = { epoch: st.epoch, index: idx, devices: Object.keys(st.keys).length };
       if (this.room) this.room.remoteParticipants.forEach(rp => this._reviewParticipant(rp));
+    }
+
+    // The frame-encryption worker forgets a participant's keys when that participant drops out and comes back (server restart,
+    // network loss). Keys are therefore installed again whenever a participant appears or one of its tracks is subscribed.
+    _rekey(identity) {
+      const m = this._mats && this._mats.get(identity);
+      if (m && this.kp) this.kp.onSetEncryptionKey(m, identity, this._idx);
     }
 
     _startPoll() {
@@ -242,12 +250,13 @@
 
     _wire(room) {
       const E = this.LK.RoomEvent, LK = this.LK;
-      room.on(E.ParticipantConnected, rp => { this._reviewParticipant(rp); this.changed(); });
+      room.on(E.ParticipantConnected, rp => { this._rekey(rp.identity); this._reviewParticipant(rp); this.changed(); });
       room.on(E.ParticipantDisconnected, rp => { this.speaking.delete(rp.identity); for (const k of [...this.tracks.keys()]) if (k.startsWith(rp.identity + '/')) this.tracks.delete(k); this._dropAudio(rp.identity); this.changed(); });
       room.on(E.TrackPublished, (pub, rp) => this._reviewPub(rp, pub));
       room.on(E.TrackSubscribed, (track, pub, rp) => {
         // second line of defence: re-check before anything is attached
         if ((!this.members.has(rp.identity) && !this._testTrustAll) || !pub.isEncrypted) { pub.setSubscribed(false); return; }
+        this._rekey(rp.identity);
         if (track.kind === 'audio') this._attachAudio(rp.identity, pub, track);
         else this.tracks.set(rp.identity + '/' + pub.trackSid, { identity: rp.identity, pub, track, source: pub.source });
         this.changed();
