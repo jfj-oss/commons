@@ -2,7 +2,7 @@
 
 A private, end-to-end encrypted group chat for a small group of friends: communities with rooms, invite links, roles, replies, reactions, files, local search. The relay server stores and forwards ciphertext and cannot read anything. Built on MLS (RFC 9420) via OpenMLS; no cryptography is implemented here.
 
-**Stage 1 status: works end to end on one machine (20 tests plus an env-driven long soak), never deployed, never audited.** Read [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) before trusting it with anything that matters.
+**Stage 1 status: works end to end on one machine (integration tests plus an env-driven long soak), never deployed, never audited.** Read [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) before trusting it with anything that matters.
 
 * [docs/DESIGN.md](docs/DESIGN.md): architecture, the MLS mapping, multi-device, recovery, failure handling, stage 2 seams
 * [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md): what is and is not protected, exactly what the relay sees
@@ -31,7 +31,7 @@ CHAOS_SEEDS=60 CHAOS_STEPS=250 cargo test -p commons-core --release --test simul
 FUZZ_ITERS=2000000 cargo test -p commons-core --release --test fuzz_parse   # long fuzz
 ```
 
-Wrapping builds on a busy machine: `systemd-run --user --scope -q -p MemoryMax=8G cargo test -j 6`.
+Wrapping builds on a busy machine: `systemd-run --user --scope -q -p MemoryMax=6G cargo test -j 2`.
 
 ## Try it with two windows on one PC
 
@@ -47,7 +47,7 @@ scripts/try-two-windows.sh browser    # same with two browser tabs (127.0.0.1:70
 
 To add a second device of the same person: in a fresh window choose "This is a new device for my account", copy the code it shows, and in the first device open Devices > paste > Approve.
 
-Manual relay: `cargo run -p commons-relay -- --bind 127.0.0.1:8787 --data ./relay-data`. Data directories: `COMMONS_DATA=/some/dir` per instance; the relay URL default comes from `COMMONS_RELAY`.
+Manual relay: `cargo run -p commons-relay -- --bind 127.0.0.1:8787 --data ./relay-data`. Set `COMMONS_RELAY_INVITE=<secret>` to require a secret from new accounts (see docs/DEPLOY.md). Data directories: `COMMONS_DATA=/some/dir` per instance; the relay URL default comes from `COMMONS_RELAY`.
 
 ## Packaging
 
