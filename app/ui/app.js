@@ -187,6 +187,7 @@ async function boot() {
       <details class="relay-box"><summary>Relay server</summary><input type="text" id="relay" value="${relay}" aria-label="Relay server"></details>
       <div class="err" id="e" role="alert"></div><div class="boot-go"><button class="btn" id="go">${btn}</button></div><div class="boot-links">${links}</div></div>`;
     $('#go').onclick = async () => { $('#go').disabled = true; try { await run(); } catch (e) { $('#e').textContent = e.message; $('#go').disabled = false; } };
+    $$('input', el).forEach(i => i.onkeydown = e => { if (e.key === 'Enter') $('#go').click(); });
   };
   const links = which => [['new', 'Create an account'], ['pair', 'This is a new device for my account'], ['rec', 'I only have a recovery key']].filter(([k]) => k !== which).map(([k, l]) => `<button type="button" class="linkish" id="l-${k}">${l}</button>`).join('');
   const wire = () => { for (const [k, f] of [['new', showNew], ['pair', showPair], ['rec', showRec]]) { const b = $('#l-' + k); if (b) b.onclick = f; } };
@@ -207,7 +208,7 @@ async function boot() {
 }
 async function showRecoveryOnce() {
   const k = (await rpc('recovery_key')).key;
-  await modal('Save your recovery key', `<p>If you lose every device, this key restores <b>your identity</b> (so friends can add a new device of yours). It does <b>not</b> restore old messages.</p><div class="code key-code">${esc(k)}</div><button type="button" class="linkish copy-line" id="cp">${icon('copy')}Copy</button><p class="muted small">Write it down or store it in a password manager. Anyone who has it can act as you.</p>`, [{ label: 'I saved it', primary: true }], { cls: 'with-note' });
+  await modal('Save your recovery key', `<p>If you lose every device, this key restores <b>your identity</b> (so friends can add a new device of yours). It does <b>not</b> restore old messages.</p><div class="code key-code">${esc(k)}</div><button type="button" class="linkish copy-line" id="cp">${icon('copy')}Copy</button><p class="muted small">Write it down or store it in a password manager. Anyone who has it can act as you.</p>`, [{ label: 'I saved it', primary: true }]);
 }
 document.addEventListener('click', e => { if (e.target.closest('#cp')) copy($('.modal .code').textContent); });
 
@@ -268,7 +269,7 @@ function renderRail() {
   patch($('#rooms'), c ? c.channels.map(ch => {
     const active = ch.gid === S.gid, un = active && seen ? 0 : ch.unread, at = active ? 0 : (S.mention.get(ch.gid) || 0);
     const said = [ch.name, un ? `${un} unread` : '', at ? `${at} mention${at === 1 ? '' : 's'} of you` : '', ch.joined ? '' : 'waiting for keys'].filter(Boolean).join(', ');
-    return { k: ch.gid, h: `<button class="room ${active ? 'active' : ''} ${ch.joined ? '' : 'pending'} ${un ? 'unread' : ''} ${at ? 'mention' : ''}" data-g="${ch.gid}" aria-label="${esc(said)}"${active ? ' aria-current="true"' : ''}><svg class="kh" viewBox="0 0 12 14" aria-hidden="true"><use href="#i-keyhole"/></svg><span class="nm">${esc(ch.name)}</span>${at ? '<span class="at-mark">@</span>' : ''}${un ? `<span class="pill">${un}</span>` : ''}</button>` };
+    return { k: ch.gid, h: `<button class="room ${active ? 'active' : ''} ${ch.joined ? '' : 'pending'} ${un ? 'unread' : ''} ${at ? 'mention' : ''}" data-g="${esc(ch.gid)}" aria-label="${esc(said)}"${active ? ' aria-current="true"' : ''}><svg class="kh" viewBox="0 0 12 14" aria-hidden="true"><use href="#i-keyhole"/></svg><span class="nm">${esc(ch.name)}</span>${at ? '<span class="at-mark">@</span>' : ''}${un ? `<span class="pill">${un}</span>` : ''}</button>` };
   }) : sn.joining.map(j => ({ k: 'j' + j.id, h: `<div class="room-note">Asked to join “${esc(j.name)}”. An admin has to let you in; this can take a while if nobody is online.</div>` })), roomCache);
   const ch = currentChannel();
   $('#chan-title').textContent = ch ? ch.name : (c ? c.name : 'Welcome');
@@ -276,7 +277,7 @@ function renderRail() {
   $('#chan-sub').textContent = c ? [c.name, people, ch && ch.status !== 'ok' ? ch.status : ''].filter(Boolean).join(' · ') : '';
   $('#composer').hidden = !(ch && ch.joined && !(c && c.removed));
   if (!ch) paintEmpty(c, sn);
-  else if (!ch.joined && !S.msgs) paint([{ k: 'e:keys', h: emptyState('wait', 'The keys are on their way', 'You are in the community, but an admin still has to add this device to this room. It opens by itself once they do.') }]);
+  else if (!ch.joined && !S.msgs) paint([{ k: 'e:keys', h: KEYS_WAIT }]);
   const st = $('#sync-status');
   const unsent = sn.outbox ? `${sn.outbox} unsent · ` : '';
   st.textContent = unsent + 'relay ' + sn.relay.replace(/^https?:\/\//, ''); st.className = 'sync' + (sn.outbox ? ' bad' : '');
@@ -294,6 +295,7 @@ function renderRail() {
 }
 const roleWords = r => r === 'owner' ? 'the owner' : r === 'admin' ? 'an admin' : 'a member';
 const emptyState = (art, title, text, extra = '') => `<div class="empty"><svg class="art" viewBox="0 0 320 190" aria-hidden="true"><use href="#art-${art}"/></svg><h3>${esc(title)}</h3><p>${esc(text)}</p>${extra}</div>`;
+const KEYS_WAIT = emptyState('wait', 'The keys are on their way', 'You are in the community, but an admin still has to add this device to this room. It opens by itself once they do.');
 function paintEmpty(c, sn) {
   S.msgs = null;
   if (c) return paint([{ k: 'e:norooms', h: emptyState('door', 'No rooms to read yet', 'This community has no rooms you can read yet.') }]);
@@ -328,6 +330,7 @@ function fmt(text) {
     return s;
   }).join('');
 }
+const plain = t => String(t).replace(/\*\*([^*\n]+)\*\*/g, '$1').replace(/(^|[\s(])\*([^*\s](?:[^*\n]*[^*\s])?)\*/g, '$1$2').replace(/`([^`\n]+)`/g, '$1');
 function onlyEmoji(t) {
   const s = (t || '').trim(); if (!s || s.length > 28) return false;
   if (!/^(?:\p{Extended_Pictographic}|\p{Emoji_Modifier}|\p{Regional_Indicator}|️|‍|\s)+$/u.test(s)) return false;
@@ -362,7 +365,7 @@ function lineKind(t) {
 const crackedSeal = `<svg class="cracked" viewBox="0 0 40 40" aria-hidden="true"><use href="#s9"/><path d="M22 3.500 17.500 13l6 4.500-6.500 6.500 4 5-2.500 8"/></svg>`;
 function sysRow(x) {
   const k = lineKind(x.text);
-  return `<div class="sys ${k.c}" data-sys="${x.id}"><div class="who"><span class="name">${k.c === 'sealed' ? 'Unopened' : 'This device'}</span>${k.c === 'sealed' ? crackedSeal : `<span class="sys-ic">${icon(k.ic)}</span>`}</div><div class="txt"><div class="sys-h"><span>${esc(k.h)}</span><button type="button" class="linkish" data-a="log">Activity log</button></div><div class="sys-t">${esc(x.text)}</div></div><time class="when" title="${esc(fmtFull(x.ts))}">${fmtTime(x.ts)}</time></div>`;
+  return `<div class="sys ${k.c}" data-sys="${esc(x.id)}"><div class="who"><span class="name">${k.c === 'sealed' ? 'Unopened' : 'This device'}</span>${k.c === 'sealed' ? crackedSeal : `<span class="sys-ic">${icon(k.ic)}</span>`}</div><div class="txt"><div class="sys-h"><span>${esc(k.h)}</span><button type="button" class="linkish" data-a="log">Activity log</button></div><div class="sys-t">${esc(x.text)}</div></div><time class="when" title="${esc(fmtFull(x.ts))}">${fmtTime(x.ts)}</time></div>`;
 }
 function gapRow(g) {
   return `<div class="gap"><div class="gap-in"><div class="sys-h">${icon('warn')}Missing from the log</div><div class="sys-t">${esc(g.text)}</div><button type="button" class="linkish" data-a="log">Activity log</button></div></div>`;
@@ -378,24 +381,24 @@ function openGap(m) {
 function msgRow(x, cont, m, byId, admin) {
   const mention = !x.mine && !x.deleted && mentionsMe(x.text);
   const person = S.members.find(p => p.account === x.sender);
-  const reacts = x.reactions.length ? `<div class="reacts">${x.reactions.map(r => `<button class="react ${r.mine ? 'mine' : ''}" data-id="${x.id}" data-e="${esc(r.emoji)}" title="${esc(r.names.join(', '))}" aria-pressed="${r.mine}"><span class="em">${esc(r.emoji)}</span><span class="n">${r.count}</span></button>`).join('')}${x.deleted ? '' : `<button class="react add" data-a="react" data-id="${x.id}" aria-label="Add a reaction" title="Add a reaction">${icon('smile')}</button>`}</div>` : '';
+  const reacts = x.reactions.length ? `<div class="reacts">${x.reactions.map(r => `<button class="react ${r.mine ? 'mine' : ''}" data-id="${esc(x.id)}" data-e="${esc(r.emoji)}" title="${esc(r.names.join(', '))}" aria-pressed="${r.mine}"><span class="em">${esc(r.emoji)}</span><span class="n">${r.count}</span></button>`).join('')}${x.deleted ? '' : `<button class="react add" data-a="react" data-id="${esc(x.id)}" aria-label="Add a reaction" title="Add a reaction">${icon('smile')}</button>`}</div>` : '';
   let body;
   if (x.deleted) body = `<div class="body gone">message deleted</div>`;
   else if (x.kind === 'file') {
     const img = x.file.mime.startsWith('image/'), have = S.imgs.get(x.id);
     const meta = `<span class="small">${esc(fmtSize(x.file.size))}${img ? '' : ` · ${esc((x.file.mime.split('/')[1] || 'file').toUpperCase().slice(0, 12))}`}</span>`;
-    const dl = `<a href="#" class="dl" data-id="${x.id}" title="Download ${esc(x.file.name)}">${icon('download')}<span>Download</span></a>`;
-    body = (img ? `<div class="imgslot" data-id="${x.id}">${have ? `<img src="${have}" alt="${esc(x.file.name)}">` : ''}</div><div class="file photo" data-file="${x.id}"><span class="fname">${esc(x.file.name)}</span>${meta}${dl}</div>`
-      : `<div class="file" data-file="${x.id}">${icon('file', 'fi')}<div class="fbody"><div class="fname">${esc(x.file.name)}</div>${meta}</div>${dl}</div>`)
+    const dl = `<a href="#" class="dl" data-id="${esc(x.id)}" title="Download ${esc(x.file.name)}">${icon('download')}<span>Download</span></a>`;
+    body = (img ? `<div class="imgslot" data-id="${esc(x.id)}">${have ? `<img src="${esc(have)}" alt="${esc(x.file.name)}">` : ''}</div><div class="file photo" data-file="${esc(x.id)}"><span class="fname">${esc(x.file.name)}</span>${meta}${dl}</div>`
+      : `<div class="file" data-file="${esc(x.id)}">${icon('file', 'fi')}<div class="fbody"><div class="fname">${esc(x.file.name)}</div>${meta}</div>${dl}</div>`)
       + (x.text ? `<div class="body">${fmt(x.text)}</div>` : '');
   } else body = `<div class="body${onlyEmoji(x.text) ? ' jumbo' : ''}">${fmt(x.text)}${x.edited ? '<span class="edited">(edited)</span>' : ''}</div>`;
   const src = x.reply && byId.get(x.reply.id);
-  const quote = x.reply ? `<button type="button" class="quote" data-a="goto" data-id="${x.reply.id}" title="Go to this message">${seal(src ? src.sender : x.reply.name, x.reply.name, 'tiny')}<b>${esc(x.reply.name)}</b><span>${esc(x.reply.text)}</span></button>` : '';
+  const quote = x.reply ? `<button type="button" class="quote" data-a="goto" data-id="${esc(x.reply.id)}" title="Go to this message">${seal(src ? src.sender : x.reply.name, x.reply.name, 'tiny')}<b>${esc(x.reply.name)}</b><span>${esc(plain(x.reply.text))}</span></button>` : '';
   const state = x.status === 'sending' ? `<span class="state">${icon('clock')}sending…</span>` : '';
-  const acts = x.deleted ? '' : `<div class="actions"><button data-a="reply" data-id="${x.id}" title="Reply" aria-label="Reply">${icon('reply')}</button><button data-a="react" data-id="${x.id}" title="React" aria-label="React">${icon('smile')}</button>${x.mine && x.kind === 'text' ? `<button data-a="edit" data-id="${x.id}" title="Edit" aria-label="Edit">${icon('pencil')}</button>` : ''}${x.mine || admin ? `<button data-a="del" data-id="${x.id}" title="Delete" aria-label="Delete">${icon('trash')}</button>` : ''}</div>`;
+  const acts = x.deleted ? '' : `<div class="actions"><button data-a="reply" data-id="${esc(x.id)}" title="Reply" aria-label="Reply">${icon('reply')}</button><button data-a="react" data-id="${esc(x.id)}" title="React" aria-label="React">${icon('smile')}</button>${x.mine && x.kind === 'text' ? `<button data-a="edit" data-id="${esc(x.id)}" title="Edit" aria-label="Edit">${icon('pencil')}</button>` : ''}${x.mine || admin ? `<button data-a="del" data-id="${esc(x.id)}" title="Delete" aria-label="Delete">${icon('trash')}</button>` : ''}</div>`;
   const who = cont ? `<div class="who"><span class="sr">${esc(x.name)}</span></div>`
     : `<div class="who"><span class="name">${esc(x.name)}${person && person.verified ? `<span class="vf" title="Safety number verified">${icon('check')}</span>` : ''}</span>${seal(x.sender, x.name)}</div>`;
-  return `<article class="msg ${cont ? 'cont' : ''} ${x.mine ? 'mine' : ''} ${mention ? 'mention' : ''} ${x.deleted ? 'deleted' : ''} ${x.status === 'sending' ? 'sending' : ''}" style="--wax:${wax(x.sender)}" data-id="${x.id}">${who}<div class="txt">${quote}${body}${reacts}</div><time class="when" title="${esc(fmtFull(x.ts))}">${fmtTime(x.ts)}${state}</time>${acts}</article>`;
+  return `<article class="msg ${cont ? 'cont' : ''} ${x.mine ? 'mine' : ''} ${mention ? 'mention' : ''} ${x.deleted ? 'deleted' : ''} ${x.status === 'sending' ? 'sending' : ''}" style="--wax:${wax(x.sender)}" data-id="${esc(x.id)}">${who}<div class="txt">${quote}${body}${reacts}</div><time class="when" title="${esc(fmtFull(x.ts))}">${fmtTime(x.ts)}${state}</time>${acts}</article>`;
 }
 function renderStream() {
   const st = $('#stream'), m = S.msgs; if (!m) return;
@@ -417,8 +420,10 @@ function renderStream() {
     if (rowCache.has(x.id)) known++;
   }
   const gap = openGap(m); if (gap) rows.push({ k: gap.key, h: gapRow(gap) });
+  if (!rows.length && ch && !ch.joined) rows.push({ k: 'e:keys', h: KEYS_WAIT });
   if (!rows.length) rows.push({ k: 'e:quiet' + S.members.length, h: emptyState('table', ch ? `Nobody has said anything in ${ch.name}` : 'No messages yet', 'No messages yet. Say hello.', admin && S.members.length === 1 ? '<div class="empty-acts"><button class="btn" data-a="invite">Invite someone</button></div>' : '') });
   let added = 0;
+  st.setAttribute('aria-busy', S.first);   // a room change should not be read out line by line
   paint(rows, {
     onNew: el => { if (S.first) return; if (el.matches('.msg, .sys, .gap')) { el.classList.add('fresh'); setTimeout(() => el.classList.remove('fresh'), 400); if (el.matches('.msg:not(.mine)')) added++; } },
     onChange: (el, old) => {
@@ -430,7 +435,7 @@ function renderStream() {
   const t = m.typing.length ? m.typing.join(', ') + (m.typing.length > 1 ? ' are typing' : ' is typing') : '';
   const ty = $('#typing'); ty.innerHTML = t ? `<span>${esc(t)}</span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>` : ''; $('#hint').hidden = !!t;
   fillImages();
-  if (S.jumpTo) { const el = $(`[data-id="${S.jumpTo}"]`, st); S.jumpTo = null; if (el) flashTo(el); }
+  if (S.jumpTo) { const el = $(`.msg[data-id="${CSS.escape(S.jumpTo)}"]`, st); S.jumpTo = null; if (el) flashTo(el); }
   else if (S.first) {
     const nl = $('.newline', st);
     if (nl && nl.offsetTop > st.clientHeight * .4) st.scrollTop = nl.offsetTop - st.clientHeight * .3; else st.scrollTop = st.scrollHeight;
@@ -438,7 +443,7 @@ function renderStream() {
   }
   else if (near) st.scrollTop = st.scrollHeight;
   else if (added) { S.below += added; }
-  S.first = false; onScroll();
+  S.first = false; st.setAttribute('aria-busy', false); onScroll();
 }
 function flashTo(el) {
   el.scrollIntoView({ block: 'center', behavior: calm() ? 'auto' : 'smooth' });
@@ -483,7 +488,7 @@ $('#stream').addEventListener('click', async e => {
     else if (a === 'invite') $('#btn-invite').click();
     else if (a === 'new-community') newCommunity();
     else if (a === 'join-community') joinCommunity();
-    else if (a === 'goto') { const el = $(`.msg[data-id="${id}"]`); if (el) flashTo(el); else toast('That message is not on this device.'); }
+    else if (a === 'goto') { const el = $(`.msg[data-id="${CSS.escape(id)}"]`); if (el) flashTo(el); else toast('That message is not on this device.'); }
     else if (a === 'reply') { S.reply = m; S.edit = null; renderComposer(); $('#input').focus(); }
     else if (a === 'edit') { startEdit(m); }
     else if (a === 'del') { try { await rpc('delete', { gid: S.gid, id }); tick(); } catch (er) { toast(er.message); } }
@@ -503,7 +508,7 @@ $('#stream').addEventListener('click', async e => {
   if (matchMedia('(hover: none)').matches) { const row = t.closest('.msg'); const was = row && row.classList.contains('open'); $$('.msg.open').forEach(x => x.classList.remove('open')); if (row && !was) row.classList.add('open'); }
 });
 function lightbox(src, alt) {
-  const w = document.createElement('div'); w.className = 'lightbox'; w.innerHTML = `<img src="${src}" alt="${esc(alt)}">`;
+  const w = document.createElement('div'); w.className = 'lightbox'; w.innerHTML = `<img src="${esc(src)}" alt="${esc(alt)}">`;
   const done = () => { w.remove(); document.removeEventListener('keydown', key); };
   const key = e => { if (e.key === 'Escape') done(); };
   w.onclick = done; document.addEventListener('keydown', key); document.body.appendChild(w);
@@ -526,7 +531,7 @@ function sizeInput() { const i = $('#input'); i.style.height = 'auto'; i.style.h
 function renderComposer() {
   const r = $('#replybar');
   const excerpt = m => m.text || (m.file ? m.file.name : '');
-  if (S.reply) { r.hidden = false; r.innerHTML = `${icon('reply')}<span class="what">Replying to <b>${esc(S.reply.name)}</b> <span class="ex">${esc(excerpt(S.reply).slice(0, 120))}</span></span><button type="button" class="mini" id="cancel" aria-label="Cancel reply" title="Cancel">${icon('x')}</button>`; }
+  if (S.reply) { r.hidden = false; r.innerHTML = `${icon('reply')}<span class="what">Replying to <b>${esc(S.reply.name)}</b> <span class="ex">${esc(plain(excerpt(S.reply)).slice(0, 120))}</span></span><button type="button" class="mini" id="cancel" aria-label="Cancel reply" title="Cancel">${icon('x')}</button>`; }
   else if (S.edit) { r.hidden = false; r.innerHTML = `${icon('pencil')}<span class="what">Editing your message</span><button type="button" class="mini" id="cancel" aria-label="Cancel edit" title="Cancel">${icon('x')}</button>`; }
   else r.hidden = true;
   $('#composer').classList.toggle('editing', !!S.edit);
@@ -593,7 +598,7 @@ async function renderPeople() {
   const iAmOwner = c.role === 'owner', iAmAdmin = iAmOwner || c.role === 'admin';
   const others = ms.filter(m => !m.me), done = others.filter(m => m.verified).length;
   const rank = m => m.role === 'owner' ? 0 : m.role === 'admin' ? 1 : 2;
-  const row = m => `<div class="person"><span class="pseal">${seal(m.account, m.name)}${m.verified ? `<span class="vf-badge" title="Safety number verified">${icon('check')}</span>` : ''}</span><div class="nm"><b><span>${esc(m.name)}</span>${m.me ? '<span class="you">you</span>' : ''}${m.role !== 'member' ? `<span class="chip ok">${m.role}</span>` : ''}</b><span class="small">${m.devices} device${m.devices === 1 ? '' : 's'}${m.me ? '' : m.verified ? ' · <span class="ok">verified</span>' : ' · not verified'}</span></div><span class="p-acts">${m.me ? '' : `<button class="mini" data-a="verify" data-acct="${m.account}" title="Verify safety number" aria-label="Verify safety number of ${esc(m.name)}">${icon('key')}</button>`}${(iAmOwner && !m.me && m.role !== 'owner') ? `<button class="mini" data-a="role" data-acct="${m.account}" data-r="${m.role}" title="Change role" aria-label="Change role of ${esc(m.name)}">${icon('star')}</button>` : ''}${(!m.me && m.role !== 'owner' && (iAmOwner || (iAmAdmin && m.role === 'member'))) ? `<button class="mini" data-a="kick" data-acct="${m.account}" data-n="${esc(m.name)}" title="Remove from community" aria-label="Remove ${esc(m.name)}">${icon('x')}</button>` : ''}</span></div>`;
+  const row = m => `<div class="person"><span class="pseal">${seal(m.account, m.name)}${m.verified ? `<span class="vf-badge" title="Safety number verified">${icon('check')}</span>` : ''}</span><div class="nm"><b><span>${esc(m.name)}</span>${m.me ? '<span class="you">you</span>' : ''}${m.role !== 'member' ? `<span class="chip ok">${m.role}</span>` : ''}</b><span class="small">${m.devices} device${m.devices === 1 ? '' : 's'}${m.me ? '' : m.verified ? ' · <span class="ok">verified</span>' : ' · not verified'}</span></div><span class="p-acts">${m.me ? '' : `<button class="mini" data-a="verify" data-acct="${esc(m.account)}" title="Verify safety number" aria-label="Verify safety number of ${esc(m.name)}">${icon('key')}</button>`}${(iAmOwner && !m.me && m.role !== 'owner') ? `<button class="mini" data-a="role" data-acct="${esc(m.account)}" data-r="${m.role}" title="Change role" aria-label="Change role of ${esc(m.name)}">${icon('star')}</button>` : ''}${(!m.me && m.role !== 'owner' && (iAmOwner || (iAmAdmin && m.role === 'member'))) ? `<button class="mini" data-a="kick" data-acct="${esc(m.account)}" data-n="${esc(m.name)}" title="Remove from community" aria-label="Remove ${esc(m.name)}">${icon('x')}</button>` : ''}</span></div>`;
   el.innerHTML = `<div class="p-head"><h2>People <span class="count">${ms.length}</span></h2><button class="mini" id="people-close" aria-label="Close people" title="Close">${icon('x')}</button></div>
     ${others.length ? `<div class="p-trust"><div class="meter" aria-hidden="true"><i style="width:${others.length ? done / others.length * 100 : 0}%"></i></div><span>${done ? `You have verified ${done} of ${others.length}` : `Nobody verified yet. Compare safety numbers with the ${icon('key', 'inline')}`}</span></div>` : ''}
     <div class="p-list">${[...ms].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)).map(row).join('')}</div>` +
@@ -639,7 +644,7 @@ const newCommunity = () => modal('New community', `<p class="muted small">A priv
 const joinCommunity = () => modal('Join with an invite link', `<p class="muted small">Paste the link you were sent. An admin has to be online (now or later) to let you in.</p><input type="text" id="l" placeholder="commons://join/…" aria-label="Invite link" spellcheck="false">`, [{ label: 'Cancel', primary: false }, { label: 'Join', run: async w => { await rpc('join', { link: val(w, 'l') }); toast('Request sent'); } }]).then(() => tick());
 $('#switcher').onclick = e => {
   e.stopPropagation(); const m = $('#sw-menu'); if (!m.hidden) { m.hidden = true; return; }
-  m.innerHTML = S.snap.communities.map(c => `<button data-c="${c.id}" role="menuitem" class="${c.id === S.cid ? 'on' : ''}">${crest(c.id, c.name, 'small')}<span class="c-nm">${esc(c.name)}<span class="small">${c.removed ? 'you left' : `${c.channels.length} room${c.channels.length === 1 ? '' : 's'}`}</span></span>${c.unread ? `<span class="pill">${c.unread}</span>` : ''}</button>`).join('') + `${S.snap.communities.length ? '<hr>' : ''}<button id="mk-new" role="menuitem">${icon('plus')}<span>New community…</span></button><button id="mk-join" role="menuitem">${icon('key')}<span>Join with an invite link…</span></button>`;
+  m.innerHTML = S.snap.communities.map(c => `<button data-c="${esc(c.id)}" role="menuitem" class="${c.id === S.cid ? 'on' : ''}">${crest(c.id, c.name, 'small')}<span class="c-nm">${esc(c.name)}<span class="small">${c.removed ? 'you left' : `${c.channels.length} room${c.channels.length === 1 ? '' : 's'}`}</span></span>${c.unread ? `<span class="pill">${c.unread}</span>` : ''}</button>`).join('') + `${S.snap.communities.length ? '<hr>' : ''}<button id="mk-new" role="menuitem">${icon('plus')}<span>New community…</span></button><button id="mk-join" role="menuitem">${icon('key')}<span>Join with an invite link…</span></button>`;
   m.hidden = false;
   m.querySelectorAll('[data-c]').forEach(b => b.onclick = () => { if (S.cid !== b.dataset.c) { S.cid = b.dataset.c; S.gid = null; resetRoom(); S.membersKey = ''; refreshMembers(); } m.hidden = true; renderRail(); tick(); });
   $('#mk-new').onclick = () => { m.hidden = true; newCommunity(); };
