@@ -1,13 +1,61 @@
 //! Everything that travels inside an MLS application message or group-context extension.
 //! All parsing of untrusted bytes is here and must never panic (see tests/fuzz_parse.rs).
+use commons_proto::OwnerStep;
 use serde::{Deserialize, Serialize};
 
 pub const MAX_ENVELOPE: usize = 192 * 1024;
 pub const MAX_TEXT: usize = 16 * 1024;
 pub const EXT_COMMONS: u16 = 0xF0C1;
 
-fn is_id(s: &str) -> bool { s.len() == 32 && s.bytes().all(|c| c.is_ascii_hexdigit()) }
+pub fn is_id(s: &str) -> bool { s.len() == 32 && s.bytes().all(|c| c.is_ascii_hexdigit()) }
+fn is_gid(s: &str) -> bool { s.len() >= 8 && s.len() <= 128 && s.bytes().all(|c| c.is_ascii_hexdigit()) }
+fn is_key(s: &str) -> bool { s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()) }
 fn short(s: &str, n: usize) -> bool { s.len() <= n && !s.chars().any(|c| c.is_control() && c != '\n' && c != '\t') }
+/// Most distinct reactions on one message, and most from one account: enough for any real conversation, and it
+/// stops one member from growing everybody's state and timeline without end.
+pub const MAX_REACTIONS: usize = 32;
+pub const MAX_REACTIONS_PER_ACCOUNT: usize = 8;
+
+/// type/subtype in lower case, nothing else: `^[a-z0-9.+-]+/[a-z0-9.+-]+$`. A mime type ends up in a data or blob
+/// URL and in markup, so it must not be able to carry anything but a mime type.
+pub fn valid_mime(m: &str) -> bool {
+    let part = |p: &str| !p.is_empty() && p.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'+' | b'-'));
+    m.len() <= 100 && m.split_once('/').is_some_and(|(a, b)| part(a) && part(b))
+}
+/// What a sender does with whatever the file picker reported.
+pub fn clean_mime(m: &str) -> String {
+    let m = m.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    if valid_mime(&m) { m } else { "application/octet-stream".into() }
+}
+/// A person's, community's or room's name, already trimmed: one line, 1-64 bytes.
+pub fn check_name(what: &str, n: &str) -> Result<(), String> {
+    if n.is_empty() { return Err(format!("{what} cannot be empty")); }
+    if n.len() > 64 { return Err(format!("{what} is too long (64 bytes at most; this one is {})", n.len())); }
+    if n.chars().any(|c| c.is_control()) { return Err(format!("{what} cannot contain line breaks or control characters")); }
+    Ok(())
+}
+/// Names that look the same to a person compare equal: case, spacing and invisible characters do not count.
+pub fn name_key(n: &str) -> String {
+    n.chars().filter(|c| !c.is_whitespace() && !c.is_control() && !matches!(*c, '\u{ad}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')).flat_map(char::to_lowercase).collect()
+}
+/// A file name that is safe to hand to a save dialog on any system: no path, no hidden file, no reversed text.
+pub fn safe_file_name(n: &str) -> String {
+    let s: String = n.chars().filter(|c| !c.is_control() && !matches!(*c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+        .map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c }).collect();
+    let s = s.trim().trim_start_matches('.').trim_end_matches(['.', ' ']);
+    let s = cut_name(s, 200);
+    let stem = s.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
+    if s.is_empty() { "file".into() } else if reserved { format!("_{s}") } else { s }
+}
+/// At most `max` bytes, cut on a character boundary, keeping a short extension.
+pub fn cut_name(n: &str, max: usize) -> String {
+    if n.len() <= max { return n.to_string(); }
+    let ext = n.rfind('.').map(|i| &n[i..]).filter(|e| e.len() <= 16).unwrap_or("");
+    let mut end = max - ext.len();
+    while !n.is_char_boundary(end) { end -= 1; }
+    format!("{}{ext}", &n[..end])
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "t")]
@@ -48,15 +96,19 @@ impl Envelope {
             }
             Edit { target, text, .. } => if !is_id(target) || text.len() > MAX_TEXT { return bad("bad edit"); },
             Delete { target } => if !is_id(target) { return bad("bad delete"); },
-            React { target, emoji, .. } => if !is_id(target) || emoji.is_empty() || emoji.len() > 32 || !short(emoji, 32) { return bad("bad reaction"); },
+            React { target, emoji, .. } => {
+                // Emoji, not text: ASCII only appears in keycaps such as 1️⃣ and #️⃣.
+                let emojiish = emoji.chars().all(|c| !c.is_ascii() || c.is_ascii_digit() || c == '#' || c == '*') && emoji.chars().any(|c| !c.is_ascii());
+                if !is_id(target) || emoji.is_empty() || emoji.chars().count() > 16 || !short(emoji, 32) || !emojiish { return bad("bad reaction"); }
+            }
             File { id, name, mime, size, blob, key, nonce, caption, reply, .. } => {
-                if !is_id(id) || !is_id(blob) || !short(name, 255) || !short(mime, 100) || *size > commons_proto::MAX_BLOB_BYTES as u64 || caption.len() > MAX_TEXT { return bad("bad file"); }
+                if !is_id(id) || !is_id(blob) || !short(name, 255) || !valid_mime(mime) || *size > commons_proto::MAX_BLOB_BYTES as u64 || caption.len() > MAX_TEXT { return bad("bad file"); }
                 if key.len() != 64 || nonce.len() != 24 || hex::decode(key).is_err() || hex::decode(nonce).is_err() { return bad("bad file key"); }
                 if reply.as_deref().is_some_and(|r| !is_id(r)) { return bad("bad reply"); }
             }
             Typing | Leave => {}
             Profile { name, .. } => if name.is_empty() || !short(name, 64) { return bad("bad profile"); },
-            Revoked { account, device, sig } => if account.len() != 64 || device.len() != 64 || sig.len() != 128 { return bad("bad revocation"); },
+            Revoked { account, device, sig } => if !is_key(account) || !is_key(device) || sig.len() != 128 { return bad("bad revocation"); },
         }
         Ok(())
     }
@@ -77,44 +129,48 @@ pub struct AdminGrant { pub account: String, pub sig: String }
 pub fn community_id(owner: &str, nonce: &str) -> String {
     hex::encode(commons_proto::sha256(&[b"commons/community/v1", owner.as_bytes(), nonce.as_bytes()]))
 }
-fn grant_msg(community: &str, account: &str) -> Vec<u8> {
-    let mut m = b"commons/admin/v1".to_vec();
-    m.extend_from_slice(&commons_proto::sha256(&[community.as_bytes(), account.as_bytes()])); m
-}
+use commons_proto::grant_msg;
 pub fn sign_grant(owner_key: &ed25519_dalek::SigningKey, community: &str, account: &str) -> AdminGrant {
     use ed25519_dalek::Signer;
     AdminGrant { account: account.into(), sig: hex::encode(owner_key.sign(&grant_msg(community, account)).to_bytes()) }
 }
-impl GroupExt {
-    /// Full authenticity check for a control-group table against the community id (which pins the owner).
-    /// Returns the verified admin account list.
-    /// Same for a channel group: the owner-signed admin list embedded in the channel itself, so that the
-    /// authorization of a channel commit depends on nothing but that channel's own authenticated state.
-    pub fn verify_channel(&self) -> Result<(String, String, Vec<String>), ParseError> {
-        use ed25519_dalek::Verifier;
-        let GroupExt::Channel { community, owner, nonce, admins, .. } = self else { return bad("not a channel table") };
-        if community_id(owner, nonce) != *community { return bad("channel does not belong to the community its owner/nonce name"); }
-        let ok = commons_proto::unhex32(owner).ok().and_then(|o| ed25519_dalek::VerifyingKey::from_bytes(&o).ok()).ok_or(ParseError("bad owner key".into()))?;
-        let mut out = vec![];
-        for a in admins {
-            let sig = hex::decode(&a.sig).ok().and_then(|s| ed25519_dalek::Signature::from_slice(&s).ok()).ok_or(ParseError("bad admin grant".into()))?;
-            ok.verify(&grant_msg(community, &a.account), &sig).map_err(|_| ParseError("admin grant not signed by owner".into()))?;
-            out.push(a.account.clone());
-        }
-        Ok((community.clone(), owner.clone(), out))
+/// Every key that has owned the community, founder first, each step checked. The last one is the owner now.
+/// The founder stays pinned in the community id; a transfer is a signed step away from it.
+pub fn owner_chain(founder: &str, community: &str, transfers: &[OwnerStep]) -> Result<Vec<String>, ParseError> {
+    let mut chain = vec![founder.to_string()];
+    for (i, t) in transfers.iter().enumerate() {
+        let (seq, from) = (i as u64 + 1, chain.last().unwrap());
+        if t.seq != seq || &t.from != from || !is_key(&t.to) || commons_proto::verify_transfer(community, seq, &t.from, &t.to, &t.sig).is_err() { return bad("bad ownership transfer"); }
+        chain.push(t.to.clone());
     }
+    Ok(chain)
+}
+/// A grant counts if any owner in the chain signed it: that keeps the admins in place across a transfer, until the
+/// new owner has re-signed them. Who may *change* the list is decided by the commit rules, not here.
+fn check_grants(community: &str, chain: &[String], admins: &[AdminGrant]) -> Result<Vec<String>, ParseError> {
+    let mut out = vec![];
+    for a in admins {
+        if !chain.iter().any(|o| commons_proto::verify_grant(o, community, &a.account, &a.sig).is_ok()) { return bad("admin grant not signed by owner"); }
+        out.push(a.account.clone());
+    }
+    Ok(out)
+}
+impl GroupExt {
+    /// Full authenticity check for a control-group table against the community id (which pins the founder).
+    /// Returns the current owner and the verified admin account list.
     pub fn verify_control(&self, gid: &str) -> Result<(String, Vec<String>), ParseError> {
-        use ed25519_dalek::Verifier;
-        let GroupExt::Control { owner, nonce, admins, .. } = self else { return bad("not a control table") };
+        let GroupExt::Control { owner, nonce, admins, transfers, .. } = self else { return bad("not a control table") };
         if community_id(owner, nonce) != gid { return bad("community id does not match owner and nonce"); }
-        let ok = commons_proto::unhex32(owner).ok().and_then(|o| ed25519_dalek::VerifyingKey::from_bytes(&o).ok()).ok_or(ParseError("bad owner key".into()))?;
-        let mut out = vec![];
-        for a in admins {
-            let sig = hex::decode(&a.sig).ok().and_then(|s| ed25519_dalek::Signature::from_slice(&s).ok()).ok_or(ParseError("bad admin grant".into()))?;
-            ok.verify(&grant_msg(gid, &a.account), &sig).map_err(|_| ParseError("admin grant not signed by owner".into()))?;
-            out.push(a.account.clone());
-        }
-        Ok((owner.clone(), out))
+        let chain = owner_chain(owner, gid, transfers)?;
+        Ok((chain.last().unwrap().clone(), check_grants(gid, &chain, admins)?))
+    }
+    /// Same for a channel group: the signed admin list embedded in the channel itself, so that the authorization
+    /// of a channel commit depends on nothing but that channel's own authenticated state.
+    pub fn verify_channel(&self) -> Result<(String, String, Vec<String>), ParseError> {
+        let GroupExt::Channel { community, owner, nonce, admins, transfers, .. } = self else { return bad("not a channel table") };
+        if community_id(owner, nonce) != *community { return bad("channel does not belong to the community its owner/nonce name"); }
+        let chain = owner_chain(owner, community, transfers)?;
+        Ok((community.clone(), chain.last().unwrap().clone(), check_grants(community, &chain, admins)?))
     }
 }
 
@@ -127,9 +183,10 @@ pub struct ChanMeta { pub id: String, pub name: String }
 #[serde(tag = "k")]
 pub enum GroupExt {
     /// The community control group: roster = its members; this is the roles/channels/invites table.
-    Control { name: String, owner: String, nonce: String, admins: Vec<AdminGrant>, channels: Vec<ChanMeta>, invites: Vec<InviteMeta>, #[serde(default)] banned: Vec<String> },
+    /// `owner` is the founder, pinned in the community id. `transfers` is the signed chain from there to today's owner.
+    Control { name: String, owner: String, nonce: String, admins: Vec<AdminGrant>, channels: Vec<ChanMeta>, invites: Vec<InviteMeta>, #[serde(default)] banned: Vec<String>, #[serde(default, skip_serializing_if = "Vec::is_empty")] transfers: Vec<OwnerStep> },
     /// A channel group. `community` is the control group id; `name` is only a hint, the control table is authoritative.
-    Channel { community: String, name: String, owner: String, nonce: String, admins: Vec<AdminGrant> },
+    Channel { community: String, name: String, owner: String, nonce: String, admins: Vec<AdminGrant>, #[serde(default, skip_serializing_if = "Vec::is_empty")] transfers: Vec<OwnerStep> },
 }
 
 impl GroupExt {
@@ -138,15 +195,68 @@ impl GroupExt {
         if b.len() > 64 * 1024 { return bad("group ext too large"); }
         let g: GroupExt = serde_json::from_slice(b).map_err(|e| ParseError(format!("bad group ext: {e}")))?;
         match &g {
-            GroupExt::Control { name, owner, nonce, admins, channels, invites, banned } => {
-                if banned.len() > 2000 { return bad("too many bans"); }
-                if name.is_empty() || !short(name, 64) || owner.len() != 64 || nonce.len() != 32 || admins.len() > 512 || channels.len() > 500 || invites.len() > 200 { return bad("bad control ext"); }
-                for c in channels { if c.id.len() < 8 || !short(&c.name, 64) || c.name.is_empty() { return bad("bad channel"); } }
-                for i in invites { if !is_id(&i.id) || i.pk.len() != 64 { return bad("bad invite"); } }
+            GroupExt::Control { name, owner, nonce, admins, channels, invites, banned, transfers } => {
+                if banned.len() > 2000 || transfers.len() > 200 { return bad("too many bans or transfers"); }
+                if name.is_empty() || !short(name, 64) || !is_key(owner) || nonce.len() != 32 || admins.len() > 512 || channels.len() > 500 || invites.len() > 200 { return bad("bad control ext"); }
+                // A channel id goes into URLs and into markup: hex only, whoever wrote this table.
+                for c in channels { if !is_gid(&c.id) || !short(&c.name, 64) || c.name.is_empty() { return bad("bad channel"); } }
+                for i in invites { if !is_id(&i.id) || !is_key(&i.pk) { return bad("bad invite"); } }
             }
-            GroupExt::Channel { community, name, owner, nonce, admins } => if community.len() < 8 || !short(name, 64) || owner.len() != 64 || nonce.len() != 32 || admins.len() > 512 { return bad("bad channel ext"); },
+            GroupExt::Channel { community, name, owner, nonce, admins, transfers } => if !is_gid(community) || !short(name, 64) || !is_key(owner) || nonce.len() != 32 || admins.len() > 512 || transfers.len() > 200 { return bad("bad channel ext"); },
         }
         Ok(g)
+    }
+}
+
+/// Why a join will not happen. Codes, not text: whoever sends one does not get to put words on the joiner's screen.
+pub const JOIN_INVITE_GONE: &str = "invite-gone";
+pub const JOIN_BANNED: &str = "banned";
+pub fn join_reason_text(code: &str) -> &'static str {
+    match code {
+        JOIN_BANNED => "you are banned from this community",
+        JOIN_INVITE_GONE => "that invite is no longer valid (it was used up, revoked, or it expired); ask for a new one",
+        _ => "the community refused the request",
+    }
+}
+/// An admin's answer to a join request it cannot grant, sent to the joiner's inbox: the joiner is not in any group
+/// yet, so there is no other way to reach them. It proves its author is an admin of the community the invite link
+/// names, so that a stranger cannot talk somebody out of joining.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct JoinReply {
+    pub community: String,
+    pub reason: String,
+    pub cert: commons_proto::DeviceCert,
+    /// Signature by the admin's device key.
+    pub sig: String,
+    /// The admin's grant; absent if they are the owner.
+    #[serde(default)]
+    pub grant: Option<String>,
+    #[serde(default)]
+    pub transfers: Vec<OwnerStep>,
+}
+pub fn join_reply_msg(community: &str, device: &str, reason: &str) -> Vec<u8> {
+    let mut m = b"commons/join-reply/v1".to_vec();
+    m.extend_from_slice(&commons_proto::sha256(&[community.as_bytes(), device.as_bytes(), reason.as_bytes()]));
+    m
+}
+impl JoinReply {
+    pub fn parse(b: &[u8]) -> Result<Self, ParseError> {
+        if b.len() > 64 * 1024 { return bad("join reply too large"); }
+        let j: JoinReply = serde_json::from_slice(b).map_err(|e| ParseError(format!("bad join reply: {e}")))?;
+        if !is_gid(&j.community) || j.reason.len() > 32 || j.sig.len() != 128 { return bad("bad join reply"); }
+        j.cert.verify().map_err(|_| ParseError("bad cert".into()))?;
+        Ok(j)
+    }
+    /// Checks a reply addressed to `device` against the founder in the invite link.
+    pub fn verify(&self, founder: &str, device: &str) -> Result<(), ParseError> {
+        use ed25519_dalek::Verifier;
+        let sig = hex::decode(&self.sig).ok().and_then(|s| ed25519_dalek::Signature::from_slice(&s).ok()).ok_or(ParseError("bad signature".into()))?;
+        let dk = commons_proto::unhex32(&self.cert.device).ok().and_then(|d| ed25519_dalek::VerifyingKey::from_bytes(&d).ok()).ok_or(ParseError("bad key".into()))?;
+        dk.verify(&join_reply_msg(&self.community, device, &self.reason), &sig).map_err(|_| ParseError("bad signature".into()))?;
+        let chain = owner_chain(founder, &self.community, &self.transfers)?;
+        if chain.last() == Some(&self.cert.account) { return Ok(()); }
+        let g = self.grant.as_deref().ok_or(ParseError("not from an admin".into()))?;
+        if chain.iter().any(|o| commons_proto::verify_grant(o, &self.community, &self.cert.account, g).is_ok()) { Ok(()) } else { bad("not from an admin") }
     }
 }
 
@@ -181,7 +291,8 @@ impl InviteLink {
         let b = commons_proto::unb64(s).map_err(|_| ParseError("bad invite link".into()))?;
         if b.len() > 4096 { return bad("invite too large"); }
         let l: InviteLink = serde_json::from_slice(&b).map_err(|_| ParseError("bad invite link".into()))?;
-        if !is_id(&l.invite) || l.sk.len() != 64 || l.owner.len() != 64 || l.community.len() < 8 || !(l.relay.starts_with("http://") || l.relay.starts_with("https://")) { return bad("bad invite link"); }
+        // These go into URLs and keys: a link is pasted from outside, so nothing about it is trusted.
+        if !is_id(&l.invite) || !is_key(&l.sk) || !is_key(&l.owner) || !is_gid(&l.community) || !short(&l.name, 64) || !(l.relay.starts_with("http://") || l.relay.starts_with("https://")) { return bad("bad invite link"); }
         Ok(l)
     }
 }

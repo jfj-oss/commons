@@ -1,10 +1,15 @@
 use std::net::SocketAddr;
 
+const USAGE: &str = "usage: commons-relay [--bind 127.0.0.1:8787] [--data ./relay-data] [--max-accounts N] [--quota-mb N]
+  COMMONS_RELAY_INVITE=<secret>  new accounts need this secret to register (set it in the environment, not on the command line)
+  --quota-mb N                   per-account limit for messages and, separately, for files\n  calls (optional): --livekit-url wss://host --livekit-key K --livekit-secret-file F  (or COMMONS_LIVEKIT_URL / _API_KEY / _API_SECRET)";
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().with_env_filter(std::env::var("RUST_LOG").unwrap_or("info".into())).init();
     let mut bind: SocketAddr = "127.0.0.1:8787".parse().unwrap();
     let mut data = std::path::PathBuf::from("./relay-data");
+    let mut limits = commons_relay::Limits { invite_secret: std::env::var("COMMONS_RELAY_INVITE").ok().filter(|s| !s.is_empty()), ..Default::default() };
     // Call support (optional). The API secret comes from the environment or a file, never from argv.
     let mut lk_url = std::env::var("COMMONS_LIVEKIT_URL").ok().filter(|x| !x.is_empty());
     let mut lk_key = std::env::var("COMMONS_LIVEKIT_API_KEY").ok().filter(|x| !x.is_empty());
@@ -15,16 +20,23 @@ async fn main() {
         match x.as_str() {
             "--bind" => bind = a.next().expect("--bind addr").parse().expect("addr"),
             "--data" => data = a.next().expect("--data dir").into(),
+            "--max-accounts" => limits.max_accounts = a.next().expect("--max-accounts N").parse().expect("number"),
+            "--quota-mb" => {
+                let mb: u64 = a.next().expect("--quota-mb N").parse().expect("number");
+                limits.max_entry_bytes_per_account = mb << 20;
+                limits.max_blob_bytes_per_account = mb << 20;
+            }
             "--livekit-url" => lk_url = Some(a.next().expect("--livekit-url ws(s)://host")),
             "--livekit-key" => lk_key = Some(a.next().expect("--livekit-key api-key")),
             "--livekit-secret-file" => lk_secret = Some(std::fs::read_to_string(a.next().expect("--livekit-secret-file path")).expect("read secret file").trim().to_string()),
-            _ => { eprintln!("usage: commons-relay [--bind 127.0.0.1:8787] [--data ./relay-data] [--livekit-url wss://host --livekit-key K --livekit-secret-file F]"); std::process::exit(2) }
+            _ => { eprintln!("{USAGE}"); std::process::exit(2) }
         }
     }
     if !bind.ip().is_loopback() {
         eprintln!("warning: binding to non-loopback address {bind}. Run behind a TLS-terminating proxy; see docs/DEPLOY.md");
+        if limits.invite_secret.is_none() { eprintln!("warning: anyone who can reach this address can register. Set COMMONS_RELAY_INVITE; see docs/DEPLOY.md"); }
     }
-    let lk = match (lk_url, lk_key, lk_secret) {
+    limits.livekit = match (lk_url, lk_key, lk_secret) {
         (Some(url), Some(api_key), Some(api_secret)) => {
             if api_secret.len() < 32 { eprintln!("refusing to start: the LiveKit API secret must be at least 32 characters"); std::process::exit(2) }
             tracing::info!("call tokens enabled for {url}");
@@ -33,7 +45,7 @@ async fn main() {
         (None, None, None) => None,
         _ => { eprintln!("call support needs all of: livekit url, key and secret"); std::process::exit(2) }
     };
-    let h = commons_relay::start_with(bind, data, lk).await.expect("start relay");
+    let h = commons_relay::start_with(bind, data, limits).await.expect("start relay");
     tracing::info!("commons relay listening on {}", h.addr);
     let _ = tokio::signal::ctrl_c().await;
     h.stop().await;

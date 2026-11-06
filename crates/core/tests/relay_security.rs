@@ -14,7 +14,7 @@ fn register(net: &Net) -> (SigningKey, SigningKey, DeviceCert) {
     let acct = SigningKey::generate(&mut rand::rngs::OsRng);
     let dev = SigningKey::generate(&mut rand::rngs::OsRng);
     let cert = DeviceCert::issue(&acct, &dev.verifying_key().to_bytes());
-    let r = t(net).request(Some(&dev), "POST", "/v1/devices", &serde_json::to_vec(&RegisterReq { cert: cert.clone() }).unwrap(), D).unwrap();
+    let r = t(net).request(Some(&dev), "POST", "/v1/devices", &serde_json::to_vec(&RegisterReq { cert: cert.clone(), invite: None }).unwrap(), D).unwrap();
     assert_eq!(r.status, 200);
     (acct, dev, cert)
 }
@@ -35,7 +35,7 @@ fn relay_enforces_auth_membership_and_limits() {
     assert_eq!(post(&net, &d1, &gid, &[1, 2, 3]), 200);
     assert_eq!(post(&net, &d2, &gid, &[1, 2, 3]), 403, "non-member may not post");
     assert_eq!(t(&net).request(Some(&d2), "POST", &format!("/v1/groups/{gid}/acl"), &serde_json::to_vec(&AclReq { add: vec![c1.account.clone()], ..Default::default() }).unwrap(), D).unwrap().status, 403, "non-member may not edit the ACL");
-    let sync = serde_json::to_vec(&SyncReq { cursors: [(gid.clone(), 0)].into(), ack_welcomes: vec![], wait_ms: 0 }).unwrap();
+    let sync = serde_json::to_vec(&SyncReq { cursors: [(gid.clone(), 0)].into(), ..Default::default() }).unwrap();
     let r: SyncResp = serde_json::from_slice(&t(&net).request(Some(&d2), "POST", "/v1/sync", &sync, D).unwrap().body).unwrap();
     assert!(r.messages.is_empty() && r.denied == vec![gid.clone()], "stranger gets nothing, only a denial");
     let r: SyncResp = serde_json::from_slice(&t(&net).request(Some(&d1), "POST", "/v1/sync", &sync, D).unwrap().body).unwrap();
@@ -58,7 +58,7 @@ fn relay_enforces_auth_membership_and_limits() {
     let other_acct = SigningKey::generate(&mut rand::rngs::OsRng);
     let mut forged = DeviceCert::issue(&other_acct, &rogue.verifying_key().to_bytes());
     forged.account = c1.account.clone(); // claim to be device of account 1
-    assert_eq!(t(&net).request(Some(&rogue), "POST", "/v1/devices", &serde_json::to_vec(&RegisterReq { cert: forged }).unwrap(), D).unwrap().status, 400);
+    assert_eq!(t(&net).request(Some(&rogue), "POST", "/v1/devices", &serde_json::to_vec(&RegisterReq { cert: forged, invite: None }).unwrap(), D).unwrap().status, 400);
     assert_eq!(post(&net, &rogue, &gid, &[1]), 403, "unregistered device");
 
     // size limits and quotas

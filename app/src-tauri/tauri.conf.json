@@ -7,7 +7,7 @@
   "app": {
     "withGlobalTauri": true,
     "windows": [ { "title": "Commons", "width": 1100, "height": 760, "minWidth": 720, "minHeight": 520, "visible": true } ],
-    "security": { "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost ws: wss: https:; worker-src 'self' blob:; media-src 'self' blob: mediastream:" }
+    "security": { "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost ws: wss: https:; worker-src 'self' blob:; media-src 'self' blob: mediastream:; base-uri 'none'; form-action 'none'; object-src 'none'" }
   },
   "bundle": {
     "active": true,

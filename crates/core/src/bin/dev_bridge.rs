@@ -3,32 +3,39 @@
 //!   COMMONS_DATA=/tmp/alice COMMONS_RELAY=http://127.0.0.1:8787 dev_bridge 7001 ../../app/ui
 //! A small thread-per-connection HTTP/1.1 server (every response closes its connection). It replaced tiny_http, whose
 //! fixed worker pool made a browser's parallel script downloads (the 600 KB call library) stall for seconds or forever.
-use commons_core::api::App;
+use commons_core::api::{bridge_request_ok, App};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+// Same policy as the desktop shell, widened only for what calls need: the LiveKit signalling socket, the frame-encryption worker, media streams.
+const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws: wss:; worker-src 'self' blob:; media-src 'self' blob: mediastream:; base-uri 'none'; form-action 'none'; object-src 'none'";
+
 fn reply(s: &mut TcpStream, code: u16, ct: &str, body: &[u8]) {
-    let reason = match code { 200 => "OK", 400 => "Bad Request", 404 => "Not Found", _ => "Error" };
-    let head = format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n", body.len());
+    let reason = match code { 200 => "OK", 403 => "Forbidden", 400 => "Bad Request", 404 => "Not Found", _ => "Error" };
+    let head = format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Security-Policy: {CSP}\r\n\r\n", body.len());
     let _ = s.write_all(head.as_bytes()).and_then(|_| s.write_all(body));
     let _ = s.flush();
 }
 
-fn handle(mut s: TcpStream, app: Arc<App>, ui: Arc<PathBuf>) {
+fn handle(mut s: TcpStream, app: Arc<App>, ui: Arc<PathBuf>, port: u16) {
     let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(30)));
     let mut r = BufReader::new(s.try_clone().expect("clone"));
     let mut line = String::new();
     if r.read_line(&mut line).unwrap_or(0) == 0 { return; }
     let mut parts = line.split_whitespace();
     let (method, url) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
-    let mut len = 0usize;
+    let (mut len, mut host, mut origin) = (0usize, None::<String>, None::<String>);
     loop {
         let mut h = String::new();
         if r.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" || h == "\n" { break; }
-        if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") { len = v.trim().parse().unwrap_or(0); }
+        let low = h.to_ascii_lowercase();
+        if let Some(v) = low.strip_prefix("content-length:") { len = v.trim().parse().unwrap_or(0); }
+        if let Some(v) = low.strip_prefix("host:") { host = Some(v.trim().to_string()); }
+        if let Some(v) = low.strip_prefix("origin:") { origin = Some(v.trim().to_string()); }
     }
+    if !bridge_request_ok(host.as_deref(), origin.as_deref(), port) { return reply(&mut s, 403, "text/plain", b"forbidden"); }
     if method == "POST" && url == "/rpc" {
         let mut body = vec![0u8; len.min(40 << 20)];
         if r.read_exact(&mut body).is_err() { return reply(&mut s, 400, "text/plain", b"bad body"); }
@@ -61,6 +68,6 @@ fn main() {
     eprintln!("dev bridge on http://127.0.0.1:{port}  (ui: {})", ui.display());
     for conn in listener.incoming().flatten() {
         let (app, ui) = (app.clone(), ui.clone());
-        std::thread::spawn(move || handle(conn, app, ui));
+        std::thread::spawn(move || handle(conn, app, ui, port));
     }
 }

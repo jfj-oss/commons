@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { startServers, startBridge, startChrome, openPage, rpc, sleep, stopAll, lkAdmin, operatorToken, FAKE_DISPLAY, RELAY_PORT, LK_PORT } from './lib/env.mjs';
 import { makeWorld, openApps } from './lib/world.mjs';
+const UMD = fs.readFileSync(path.join(new URL('..', import.meta.url).pathname, 'app/ui/vendor/livekit-client.umd.js'), 'utf8');
 
 const out = process.argv[2] || '/tmp/commons-call-e2e';
 fs.rmSync(out, { recursive: true, force: true });
@@ -133,7 +134,7 @@ try {
   // An operator can mint tokens, so it can join the room with no key. It records the frames the server forwards, and a plaintext
   // control publisher of its own tone shows what an unencrypted call would look like.
   const spy = await openPage(P('alice').chrome, `http://127.0.0.1:${P('alice').port}/vendor/README.txt`, 'spy');
-  await spy.ev(`(async()=>{ const src = await (await fetch('/vendor/livekit-client.umd.js')).text(); (0, eval)(src); return typeof LivekitClient; })()`);
+  await spy.ev(UMD);   // evaluated through the debugger: the page's CSP forbids eval, the test does not need to
   const spyTok = operatorToken({ room: roomName, roomJoin: true, canPublish: true, canSubscribe: true }, 'operator-spy');
   const plainTok = operatorToken({ room: roomName, roomJoin: true, canPublish: true, canSubscribe: true }, 'operator-plain');
   const spyRes = await spy.ev(`(async()=>{
@@ -150,7 +151,8 @@ try {
     return true; })()`);
   // the plaintext control: an unencrypted publisher with the same kind of tone (500 Hz, from alice's browser's fake microphone)
   const ctl = await openPage(P('alice').chrome, `http://127.0.0.1:${P('alice').port}/vendor/README.txt`, 'plain');
-  await ctl.ev(`(async()=>{ const src = await (await fetch('/vendor/livekit-client.umd.js')).text(); (0, eval)(src); const room = new LivekitClient.Room(); await room.connect('ws://127.0.0.1:${LK_PORT}', ${J(plainTok)}); await room.localParticipant.setMicrophoneEnabled(true, undefined, { red: false }); window.__r = room; return true; })()`);
+  await ctl.ev(UMD);
+  await ctl.ev(`(async()=>{ const room = new LivekitClient.Room(); await room.connect('ws://127.0.0.1:${LK_PORT}', ${J(plainTok)}); await room.localParticipant.setMicrophoneEnabled(true, undefined, { red: false }); window.__r = room; return true; })()`);
   await sleep(6000);
   const sub = await spy.ev(`window.__sub`);
   const analysis = await spy.ev(`(async()=>{

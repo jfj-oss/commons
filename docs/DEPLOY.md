@@ -22,17 +22,19 @@ Steps, once you decide to:
 # on the server
 git clone <your private copy> commons && cd commons/deploy
 echo 'COMMONS_DOMAIN=chat.example.org' > .env      # your domain
+echo "COMMONS_RELAY_INVITE=$(openssl rand -hex 16)" >> .env   # share this with friends
 docker compose up -d --build
 curl https://chat.example.org/health                 # -> ok
 ```
 
-In the app, set the relay to `https://chat.example.org` when creating an account (the invite links carry it, so friends do not type it).
+In the app, set the relay to `https://chat.example.org` when creating an account (the invite links carry it, so friends do not type it). The app checks the address before it creates anything. If the relay moves with its data, change the address in Settings.
 
 ## Operating it
 
-* **Backups**: copy `/data` (`relay.db` and `blobs/`). Losing the relay loses undelivered messages, key packages, and group logs; clients keep their own history and key packages are republished automatically, but groups would need re-inviting. SQLite is in WAL mode with `synchronous=FULL`; use `sqlite3 relay.db ".backup"` for a consistent copy while it runs.
-* **Updates**: `git pull && docker compose up -d --build`. The wire protocol is versioned by path (`/v1`); stage 1 has no migration tooling.
-* **Abuse and cost**: there is no registration gate in stage 1: anyone who can reach the server can register a device and use storage (per-request caps exist: 512 KB messages, 25 MB blobs, key package and inbox quotas, no per-account quota). For friends only, restrict by network (VPN/Tailscale, firewall allow-list) or put HTTP basic auth in front for registration. A shared-secret registration token is a small, obvious addition.
+* **Backups**: copy `/data` (`relay.db` and `blobs/`). Losing the relay loses undelivered messages, key packages, and group logs; clients keep their own history, notice, and register again, and key packages are republished automatically, but groups would need re-inviting. SQLite is in WAL mode with `synchronous=FULL`; use `sqlite3 relay.db ".backup"` for a consistent copy while it runs.
+* **Updates**: `git pull && docker compose up -d --build`. The wire protocol is versioned by path (`/v1`); stage 1 has no migration tooling. Groups in a database from before owners were recorded get their owner from the first member to claim them.
+* **Who can use it**: set `COMMONS_RELAY_INVITE=<secret>` in the environment and new accounts need that secret (the app asks for it under Relay server). Use a long random one, for example `openssl rand -hex 16`, and share it the way you share a Wi-Fi password. A friend's second device or a recovery needs no secret, since the account is already known. Do this whenever the relay can be reached from outside, including over Tailscale Funnel; on a private tailnet the network is already a gate. Tailscale gives you TLS with `tailscale serve` or `tailscale funnel`, so no Caddy is needed.
+* **Limits** (per-account, in `Limits` in `crates/relay/src/lib.rs`): 1000 accounts (`--max-accounts`), 32 devices per account, 4 GiB of messages and 2 GiB of files per account (`--quota-mb` sets both), 500 items or 64 MB in a device's inbox, 20 open pairings, 256 KB per message and 25 MB per file. Rates per 10 minutes: 60 new accounts or wrong secrets, 10 join requests per device and 120 per community, 200 key packages taken per device and 2000 in all, 2000 invitations sent. The message quota is a lifetime figure, because the log is append-only and nothing expires yet.
 * **Logs**: the relay logs only startup and errors. Caddy will log IPs by default; turn that off if you do not want them.
 * **Metadata you accept by hosting**: see `THREAT-MODEL.md`. The host (or anyone who compromises it) sees the account-level membership graph, timing, sizes, and which device posts what, never content.
 * **Rough cost**: a 3-5 EUR/month VPS and a domain.
@@ -101,4 +103,4 @@ Data: voice about 0.5 GB/hour for the whole room; a screen share to five viewers
 
 ## Not covered
 
-High availability, multiple relays/federation, rate limiting per account, push notifications (stage 2+).
+High availability, multiple relays/federation, log expiry, push notifications (stage 2+).

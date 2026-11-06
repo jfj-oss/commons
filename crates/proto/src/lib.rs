@@ -6,7 +6,16 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const MAX_MESSAGE_BYTES: usize = 512 * 1024;
+/// Largest single log entry the relay accepts. Far above a real message or commit (an envelope is at most
+/// 192 KB, a group table 64 KB), and small enough that a sync response always holds several.
+pub const MAX_MESSAGE_BYTES: usize = 256 * 1024;
+/// Upper bound on one sync response, in encoded bytes. A response always carries at least one entry, so a
+/// huge old entry cannot stop a group, and it can never approach the 25 MB a client reads from one response.
+pub const SYNC_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// Smallest budget a client may ask for after a response it could not read.
+pub const SYNC_MIN_BYTES: u64 = 64 * 1024;
+/// Most accounts one ACL request may name, so that one request cannot hold the relay's database for long.
+pub const MAX_ACL_BATCH: usize = 256;
 pub const MAX_BLOB_BYTES: usize = 25 * 1024 * 1024;
 pub const MAX_WELCOME_BYTES: usize = 1024 * 1024;
 pub const MAX_RENDEZVOUS_BYTES: usize = 8 * 1024;
@@ -27,6 +36,8 @@ pub enum ProtoError {
     BadSignature,
     #[error("bad length")]
     Length,
+    #[error("request timestamp is too far from the relay's clock")]
+    ClockSkew,
 }
 
 pub fn now_secs() -> u64 {
@@ -101,6 +112,33 @@ pub fn verify_revocation(account: &str, device: &str, sig: &str) -> Result<(), P
         .verify(&revoke_msg(&d), &sig).map_err(|_| ProtoError::BadSignature)
 }
 
+// ---- group authority, as far as the relay needs to see it ----
+fn hex_sig(sig: &str) -> Result<Signature, ProtoError> {
+    let b = hex::decode(sig).map_err(|e| ProtoError::Encoding(e.to_string()))?;
+    Signature::from_slice(&b).map_err(|_| ProtoError::BadSignature)
+}
+fn vk_of(account: &str) -> Result<VerifyingKey, ProtoError> {
+    VerifyingKey::from_bytes(&unhex32(account)?).map_err(|_| ProtoError::BadSignature)
+}
+/// What the community owner signs to make an account an admin. The same grant sits in the group's own table,
+/// so a client proves "I am an admin here" to the relay with the bytes every member already verifies.
+pub fn grant_msg(community: &str, account: &str) -> Vec<u8> {
+    let mut m = b"commons/admin/v1".to_vec();
+    m.extend_from_slice(&sha256(&[community.as_bytes(), account.as_bytes()])); m
+}
+pub fn verify_grant(owner: &str, community: &str, account: &str, sig: &str) -> Result<(), ProtoError> {
+    vk_of(owner)?.verify(&grant_msg(community, account), &hex_sig(sig)?).map_err(|_| ProtoError::BadSignature)
+}
+/// What an owner signs to hand a community to someone else. `seq` is the position in the chain of owners, so an
+/// old transfer cannot be replayed after the community has changed hands again.
+pub fn transfer_msg(community: &str, seq: u64, from: &str, to: &str) -> Vec<u8> {
+    let mut m = b"commons/owner/v1".to_vec();
+    m.extend_from_slice(&sha256(&[community.as_bytes(), &seq.to_be_bytes(), from.as_bytes(), to.as_bytes()])); m
+}
+pub fn verify_transfer(community: &str, seq: u64, from: &str, to: &str, sig: &str) -> Result<(), ProtoError> {
+    vk_of(from)?.verify(&transfer_msg(community, seq, from, to), &hex_sig(sig)?).map_err(|_| ProtoError::BadSignature)
+}
+
 // ---- request authentication: X-Commons-Auth: <device_hex>.<ts>.<sig_hex> ----
 pub const AUTH_HEADER: &str = "x-commons-auth";
 fn auth_msg(method: &str, path: &str, ts: u64, body: &[u8]) -> Vec<u8> {
@@ -119,7 +157,7 @@ pub fn verify_request(header: &str, method: &str, path: &str, body: &[u8]) -> Re
     let (d, ts, sig) = (it.next().ok_or(ProtoError::Length)?, it.next().ok_or(ProtoError::Length)?, it.next().ok_or(ProtoError::Length)?);
     if it.next().is_some() { return Err(ProtoError::Length); }
     let ts: u64 = ts.parse().map_err(|_| ProtoError::Length)?;
-    if now_secs().abs_diff(ts) > AUTH_SKEW_SECS { return Err(ProtoError::BadSignature); }
+    if now_secs().abs_diff(ts) > AUTH_SKEW_SECS { return Err(ProtoError::ClockSkew); }
     let dk = unhex32(d)?;
     let sig = hex::decode(sig).map_err(|e| ProtoError::Encoding(e.to_string()))?;
     let sig = Signature::from_slice(&sig).map_err(|_| ProtoError::BadSignature)?;
@@ -130,7 +168,12 @@ pub fn verify_request(header: &str, method: &str, path: &str, body: &[u8]) -> Re
 
 // ---- relay API bodies (all opaque payloads are base64url) ----
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct RegisterReq { pub cert: DeviceCert }
+pub struct RegisterReq {
+    pub cert: DeviceCert,
+    /// The relay's invite secret, needed for a new account when the relay runs with a registration gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite: Option<String>,
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RevokeReq { pub account: String, pub device: String, pub sig: String }
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -145,15 +188,49 @@ pub struct KpResp { pub package: Option<String> }
 pub struct AclReq {
     pub add: Vec<String>,
     pub remove: Vec<String>,
-    /// Accounts to cut off from call tokens immediately (the read ACL itself keeps its grace period). Old clients omit it.
-    #[serde(default)]
+    /// When claiming a new channel group: the control group it belongs to. Absent = this group is its own root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    /// The requester's owner-signed admin grant for the root group. The owner needs none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant: Option<String>,
+    /// Owner only: accounts whose grant no longer counts (the grant itself cannot be recalled), and undoing that.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub demote: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub promote: Vec<String>,
+    /// Accounts to cut off from call tokens at once (their read access keeps its grace period). Needs the same authority as `remove`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub call_remove: Vec<String>,
+    /// A step of the ownership chain the relay has not seen yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer: Option<OwnerStep>,
 }
 /// Reply of `POST /v1/groups/{gid}/call-token`: everything the client needs to join the media room.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CallTokenResp { pub url: String, pub token: String, pub room: String, pub identity: String, pub expires: u64 }
 /// The opaque media-room name for a group: the media server never sees the group id itself.
 pub fn call_room(gid: &str) -> String { hex::encode(sha256(&[b"commons/livekit-room/v1", gid.as_bytes()])) }
+/// One link of the chain of owners: `from` hands the community to `to` as step `seq` (1 = from the founder).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct OwnerStep { pub seq: u64, pub from: String, pub to: String, pub sig: String }
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct AclResp {
+    /// Group's current owner as the relay understands it, and how many transfers it has seen.
+    pub owner: String,
+    pub owner_seq: u64,
+    pub members: Vec<String>,
+}
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct InfoReq { pub invite: String }
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct InfoResp {
+    /// New accounts need the relay's invite secret.
+    pub gated: bool,
+    /// Only meaningful in answer to a POST carrying a secret.
+    #[serde(default)]
+    pub ok: bool,
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PostReq { pub id: String, pub data: String }
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -163,6 +240,9 @@ pub struct SyncReq {
     pub cursors: std::collections::BTreeMap<String, u64>,
     pub ack_welcomes: Vec<String>,
     pub wait_ms: u64,
+    /// Budget for this response. A client lowers it after a response it could not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Entry { pub seq: u64, pub id: String, pub data: String }
@@ -173,4 +253,7 @@ pub struct SyncResp {
     pub messages: std::collections::BTreeMap<String, Vec<Entry>>,
     pub welcomes: Vec<WelcomeEntry>,
     pub denied: Vec<String>,
+    /// Groups with entries beyond this response: the client is not caught up on them yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more: Vec<String>,
 }

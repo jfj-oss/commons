@@ -46,7 +46,7 @@ try {
   await A.shot('01-onboarding');
   for (const [P, name] of [[A, 'Alice'], [B, 'Bob']]) {
     await P.waitFor(`!!document.querySelector('#nm')`);
-    await type(P, '#nm', name); await type(P, '#pp', 'correct horse battery'); await click(P, '#go');
+    await type(P, '#nm', name); await type(P, '#pp', 'correct horse battery'); await type(P, '#pp2', 'correct horse battery'); await click(P, '#go');
     await P.waitFor(`document.querySelector('.modal')`); await sleep(300);
     if (name === 'Alice') await A.shot('02-recovery-key');
     await click(P, '.modal .acts button');

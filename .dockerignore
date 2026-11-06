@@ -1,0 +1,14 @@
+# Keeps build output, local state and anything secret out of the image's build context.
+target/
+.git/
+.env
+*.env
+*.key
+*.pem
+*.db
+*.db-*
+relay-data/
+dev-data-*/
+node_modules/
+docs/screenshots/
+app/ui/fonts/

@@ -10,5 +10,6 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
 commons-core = { path = "../../crates/core" }
 serde_json = "1"

@@ -17,7 +17,11 @@ impl KdfParams {
     pub const TEST: KdfParams = KdfParams { m_kib: 8, t: 1, p: 1 };
 }
 
-pub struct Vault { path: PathBuf, key: [u8; 32], salt: [u8; 16], params: KdfParams }
+pub struct Vault {
+    path: PathBuf, key: [u8; 32], salt: [u8; 16], params: KdfParams,
+    /// The newest generation was damaged and this came from the backup.
+    pub recovered: bool,
+}
 
 fn derive(pass: &str, salt: &[u8; 16], p: KdfParams) -> Result<[u8; 32]> {
     let params = Params::new(p.m_kib, p.t, p.p, Some(32)).map_err(|e| anyhow!("kdf params: {e}"))?;
@@ -56,7 +60,7 @@ fn try_open(path: &Path, pass: &str) -> Result<(Vault, Vec<u8>), anyhow::Error> 
     let key = derive(pass, &salt, params)?;
     let c = XChaCha20Poly1305::new((&key).into());
     let pt = c.decrypt(XNonce::from_slice(nonce), Payload { msg: &raw[58..], aad: &raw[..34] }).map_err(|_| VaultError::WrongPassphrase)?;
-    Ok((Vault { path: path.to_path_buf(), key, salt, params }, pt))
+    Ok((Vault { path: path.to_path_buf(), key, salt, params, recovered: false }, pt))
 }
 
 impl Vault {
@@ -65,19 +69,33 @@ impl Vault {
         if Vault::exists(path) { bail!("state already exists at {}", path.display()); }
         if let Some(d) = path.parent() { fs::create_dir_all(d)?; }
         let mut salt = [0u8; 16]; rand::rngs::OsRng.fill_bytes(&mut salt);
-        Ok(Vault { path: path.to_path_buf(), key: derive(pass, &salt, params)?, salt, params })
+        Ok(Vault { path: path.to_path_buf(), key: derive(pass, &salt, params)?, salt, params, recovered: false })
     }
-    /// Opens the newest readable generation. A wrong passphrase is reported as such, not as corruption.
+    /// Opens the newest readable generation. A failed authentication tag means a wrong passphrase *or* a damaged
+    /// file, and only the backup can tell them apart: if it opens, the passphrase was right. It is what makes
+    /// "wrong passphrase" a true statement, at the cost of a second key derivation when the passphrase is wrong.
     pub fn open(path: &Path, pass: &str) -> Result<(Vault, Vec<u8>)> {
-        match try_open(path, pass) {
-            Ok(r) => Ok(r),
-            Err(e) => {
-                if matches!(e.downcast_ref::<VaultError>(), Some(VaultError::WrongPassphrase)) { return Err(e); }
-                let bak = path.with_extension("bak");
-                if bak.exists() { if let Ok(r) = try_open(&bak, pass) { return Ok(r); } }
-                Err(e)
+        let e = match try_open(path, pass) { Ok(r) => return Ok(r), Err(e) => e };
+        let bak = path.with_extension("bak");
+        if !bak.exists() { return Err(e); }
+        match try_open(&bak, pass) {
+            Ok((mut v, pt)) => {
+                // Keep the damaged file out of the way: the next save would otherwise rotate it over the good backup.
+                let _ = fs::rename(path, path.with_extension("damaged"));
+                v.path = path.to_path_buf();
+                v.recovered = true;
+                Ok((v, pt))
             }
+            // A main file too damaged to judge the passphrase by says nothing; the backup's answer stands.
+            Err(b) => Err(if matches!(e.downcast_ref::<VaultError>(), Some(VaultError::WrongPassphrase)) { e } else { b }),
         }
+    }
+    /// Delete every generation of the state file.
+    pub fn remove(path: &Path) -> Result<()> {
+        for ext in ["cmns", "bak", "tmp", "damaged"] {
+            match fs::remove_file(path.with_extension(ext)) { Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()), _ => {} }
+        }
+        Ok(())
     }
     pub fn key(&self) -> &[u8; 32] { &self.key }
     pub fn save(&self, plaintext: &[u8]) -> Result<()> {

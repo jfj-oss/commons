@@ -12,12 +12,8 @@ use std::collections::BTreeMap;
 const SECRET: &str = "unit-test-secret-0123456789abcdef-0123456789";
 
 fn net_with_calls() -> Net {
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-    let data = tempfile::tempdir().unwrap();
     let cfg = LiveKitCfg { api_key: "k1".into(), api_secret: SECRET.into(), url: "wss://calls.example.test".into(), token_ttl_secs: 600 };
-    let relay = rt.block_on(commons_relay::start_with("127.0.0.1:0".parse().unwrap(), data.path().join("relay"), Some(cfg))).unwrap();
-    let addr = relay.addr;
-    Net { rt, relay: Some(relay), data, addr }
+    Net::with_limits(commons_relay::Limits { livekit: Some(cfg), ..Default::default() })
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -32,7 +28,7 @@ fn keys(p: &Peer, gid: &str) -> Result<(u64, BTreeMap<String, [u8; 32]>), String
 #[test]
 fn tokens_only_for_current_members_and_reveal_no_group_id() {
     let net = net_with_calls();
-    let (mut a, mut b, mut c) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"), Peer::new(&net, "carol"));
+    let (mut a, mut b, c) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"), Peer::new(&net, "carol"));
     let (_cid, gid) = { let mut r: Vec<&mut Peer> = vec![&mut b]; community_with(&net, &mut a, &mut r) };
     let t = a.c.call_token(&gid).expect("member gets a token");
     assert_eq!(t.url, "wss://calls.example.test");
@@ -58,7 +54,7 @@ fn tokens_only_for_current_members_and_reveal_no_group_id() {
     let tr = commons_core::transport::HttpTransport::new(&net.url());
     use commons_core::transport::Transport;
     let d5 = std::time::Duration::from_secs(5);
-    assert_eq!(tr.request(Some(&k), "POST", "/v1/devices", &serde_json::to_vec(&RegisterReq { cert }).unwrap(), d5).unwrap().status, 200);
+    assert_eq!(tr.request(Some(&k), "POST", "/v1/devices", &serde_json::to_vec(&RegisterReq { cert, invite: None }).unwrap(), d5).unwrap().status, 200);
     assert_eq!(tr.request(Some(&k), "POST", &format!("/v1/groups/{gid}/call-token"), b"{}", d5).unwrap().status, 403, "registered non-member");
     assert_eq!(tr.request(None, "POST", &format!("/v1/groups/{gid}/call-token"), b"{}", d5).unwrap().status, 401, "unsigned");
     // removal: refused immediately, although read access is still in its grace period
@@ -154,4 +150,21 @@ fn browser_bridge_is_one_room_one_secret_loopback_only() {
     let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     s.write_all(format!("GET /callpage.html HTTP/1.1\r\nHost: {h}\r\n\r\n").as_bytes()).unwrap(); let mut out = String::new(); let _ = s.read_to_string(&mut out);
     assert!(out.contains("200 OK") && out.contains("Commons call"));
+}
+
+#[test]
+fn ordinary_member_cannot_cut_others_off_from_calls() {
+    use commons_core::transport::Transport;
+    let net = net_with_calls();
+    let (mut a, mut b) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"));
+    let (_cid, gid) = { let mut r: Vec<&mut Peer> = vec![&mut b]; community_with(&net, &mut a, &mut r) };
+    let bk = ed25519_dalek::SigningKey::from_bytes(&hex::decode(&b.c.st.device_secret).unwrap().try_into().unwrap());
+    let tr = commons_core::transport::HttpTransport::new(&net.url());
+    let d5 = std::time::Duration::from_secs(5);
+    let req = serde_json::to_vec(&AclReq { call_remove: vec![a.acct()], ..Default::default() }).unwrap();
+    let r = tr.request(Some(&bk), "POST", &format!("/v1/groups/{gid}/acl"), &req, d5).unwrap();
+    assert_eq!(r.status, 403, "a plain member is not allowed to deny the owner (or anyone) call tokens: {}", String::from_utf8_lossy(&r.body));
+    let req = serde_json::to_vec(&AclReq { call_remove: vec![hex::encode([7u8; 32])], ..Default::default() }).unwrap();
+    assert_eq!(tr.request(Some(&bk), "POST", &format!("/v1/groups/{gid}/acl"), &req, d5).unwrap().status, 403);
+    assert!(a.c.call_token(&gid).is_ok(), "owner still gets tokens");
 }

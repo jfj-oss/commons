@@ -12,7 +12,15 @@ async fn rpc(app: tauri::State<'_, Arc<App>>, method: String, args: serde_json::
 }
 
 fn main() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // Opening the app twice brings the window forward; two copies on one account would reuse keys. With COMMONS_DATA set,
+    // several instances on separate folders are the point, and the core's lock on each folder still guards every case.
+    if std::env::var_os("COMMONS_DATA").is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(w) = app.get_webview_window("main") { let _ = w.unminimize(); let _ = w.show(); let _ = w.set_focus(); }
+        }));
+    }
+    builder
         .setup(|t| {
             // COMMONS_DATA lets you run several independent instances ("two windows") on one machine.
             let dir = std::env::var("COMMONS_DATA").map(std::path::PathBuf::from).unwrap_or_else(|_| t.path().app_data_dir().expect("app data dir"));

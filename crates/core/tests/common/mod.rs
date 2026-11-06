@@ -22,6 +22,10 @@ pub struct Faults {
     pub offline: bool,
     /// sync returns nothing new (relay withholds; client acts on stale state)
     pub stale_sync: bool,
+    /// cut sync responses at this many bytes, like a proxy or a connection dropping mid-way
+    pub cut_sync_at: Option<usize>,
+    /// the relay answers every signed request as if this computer's clock were wrong
+    pub skewed_clock: bool,
 }
 
 pub struct FlakyTransport { inner: HttpTransport, pub faults: Arc<Mutex<Faults>> }
@@ -30,6 +34,7 @@ impl Transport for FlakyTransport {
         {
             let f = self.faults.lock().unwrap();
             if f.offline { anyhow::bail!("network: simulated offline"); }
+            if f.skewed_clock && key.is_some() { return Ok(HttpResp { status: 401, body: format!("clock skew: relay time is {}", now_secs() + 3000).into_bytes() }); }
         }
         let mut r = self.inner.request(key, method, path, body, timeout)?;
         let mut f = self.faults.lock().unwrap();
@@ -37,6 +42,7 @@ impl Transport for FlakyTransport {
             f.lose_post_responses -= 1;
             anyhow::bail!("network: simulated lost response");
         }
+        if let Some(n) = f.cut_sync_at { if path == "/v1/sync" && r.body.len() > n { r.body.truncate(n); } }
         if path == "/v1/sync" && r.status == 200 && f.stale_sync {
             let s = SyncResp::default();
             r.body = serde_json::to_vec(&s)?;
@@ -59,20 +65,22 @@ pub struct Net {
     pub relay: Option<commons_relay::RelayHandle>,
     pub data: tempfile::TempDir,
     pub addr: std::net::SocketAddr,
+    limits: commons_relay::Limits,
 }
 impl Net {
-    pub fn new() -> Net {
+    pub fn new() -> Net { Self::with_limits(Default::default()) }
+    pub fn with_limits(limits: commons_relay::Limits) -> Net {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
         let data = tempfile::tempdir().unwrap();
-        let relay = rt.block_on(commons_relay::start("127.0.0.1:0".parse().unwrap(), data.path().join("relay"))).unwrap();
+        let relay = rt.block_on(commons_relay::start_with("127.0.0.1:0".parse().unwrap(), data.path().join("relay"), limits.clone())).unwrap();
         let addr = relay.addr;
         assert!(addr.ip().is_loopback());
-        Net { rt, relay: Some(relay), data, addr }
+        Net { rt, relay: Some(relay), data, addr, limits }
     }
     pub fn url(&self) -> String { format!("http://{}", self.addr) }
     pub fn stop_relay(&mut self) { if let Some(r) = self.relay.take() { self.rt.block_on(r.stop()); } }
     pub fn start_relay(&mut self) {
-        self.relay = Some(self.rt.block_on(commons_relay::start(self.addr, self.data.path().join("relay"))).unwrap());
+        self.relay = Some(self.rt.block_on(commons_relay::start_with(self.addr, self.data.path().join("relay"), self.limits.clone())).unwrap());
     }
     pub fn db_path(&self) -> std::path::PathBuf { self.data.path().join("relay").join("relay.db") }
 }
@@ -84,11 +92,15 @@ pub fn transport(url: &str) -> (Arc<dyn Transport>, Arc<Mutex<Faults>>) {
     (Arc::new(FlakyTransport { inner: HttpTransport::new(url), faults: faults.clone() }), faults)
 }
 
+/// Tests do not wait 30 seconds for a device list to go stale.
+pub fn impatient(c: &mut Client) { c.dir_ttl_secs = 0; c.acl_check_secs = 0; }
+
 impl Peer {
     pub fn new(net: &Net, name: &str) -> Peer {
         let dir = tempfile::tempdir().unwrap();
         let (t, faults) = transport(&net.url());
-        let c = Client::create(dir.path(), "pw", &net.url(), name, KdfParams::TEST, t).unwrap();
+        let mut c = Client::create(dir.path(), "pw", &net.url(), name, KdfParams::TEST, t).unwrap();
+        impatient(&mut c);
         Peer { name: name.into(), c, dir, faults }
     }
     pub fn acct(&self) -> String { self.c.my_account() }
@@ -96,7 +108,9 @@ impl Peer {
     /// Re-open from disk (simulates app restart), optionally with a different state dir (restore).
     pub fn reopen(&mut self, net: &Net) {
         let (t, faults) = transport(&net.url());
+        self.c.debug_release_lock();
         self.c = Client::open(self.dir.path(), "pw", t).unwrap();
+        impatient(&mut self.c);
         self.faults = faults;
     }
 }
