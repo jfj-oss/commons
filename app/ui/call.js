@@ -186,7 +186,8 @@
           // The previous epoch's key stays for a moment so frames in flight still play, then its slot is overwritten
           // with random bytes, so that a removed member who still holds that key cannot be decoded either.
           // Setting a key at an index also makes it the sender's current index, so the current keys are set again last.
-          const members = [...this._keyed];   // every device ever keyed, including ones that just left: their old slot must die too
+          const members = [...this._keyed].filter(d => d !== this.me);   // never our own slot: setting a slot also selects it for SENDING, and the worker applies these asynchronously, so a late junk key could win the race and silence us
+             // every device ever keyed, including ones that just left: their old slot must die too
           const gen = this.rotations;
           setTimeout(async () => {
             if (this.rotations !== gen || !this.kp) return;
