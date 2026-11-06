@@ -1,0 +1,9 @@
+target/
+node_modules/
+*.db
+*.db-*
+/data/
+.env
+*.key
+*.pem
+app/src-tauri/gen/

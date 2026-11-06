@@ -1,0 +1,24 @@
+[package]
+name = "commons-relay"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+name = "commons_relay"
+
+[[bin]]
+name = "commons-relay"
+path = "src/main.rs"
+
+[dependencies]
+commons-proto = { path = "../proto" }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+rand = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
