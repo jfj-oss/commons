@@ -112,3 +112,46 @@ fn call_keys_come_from_the_group_and_rotate_with_membership() {
     let (ea3, ka3) = keys(&a, &gid).unwrap(); let (ed3, kd3) = keys(&d, &gid).unwrap();
     assert!(ea3 > ea2); assert_eq!((ea3, &ka3), (ed3, &kd3)); assert_eq!(ka3.len(), 3);
 }
+
+// ---- the browser route (desktop web view without WebRTC): what the loopback call page may and may not do
+#[test]
+fn browser_bridge_is_one_room_one_secret_loopback_only() {
+    use std::io::{Read, Write};
+    let net = net_with_calls();
+    let dir = tempfile::tempdir().unwrap();
+    let app = commons_core::api::App::with_kdf(dir.path().to_path_buf(), &net.url(), commons_core::vault::KdfParams::TEST);
+    app.call("create_account", serde_json::json!({"name": "A", "passphrase": "correct horse battery", "relay": net.url()})).unwrap();
+    let cid = app.call("create_community", serde_json::json!({"name": "club"})).unwrap()["id"].as_str().unwrap().to_string();
+    let snap = app.call("snapshot", serde_json::json!({})).unwrap();
+    let gid = snap["communities"][0]["channels"][0]["gid"].as_str().unwrap().to_string();
+    let _ = cid;
+    assert!(app.call("open_call_in_browser", serde_json::json!({"gid": "00".repeat(16), "launch": false})).is_err(), "not for rooms we are not in");
+    let r = app.call("open_call_in_browser", serde_json::json!({"gid": gid, "name": "general", "launch": false})).unwrap();
+    let url = r["url"].as_str().unwrap().to_string();
+    assert!(url.starts_with("http://127.0.0.1:") && url.contains("#s="), "{url}");
+    let port: u16 = url.split(':').nth(2).unwrap().split('/').next().unwrap().parse().unwrap();
+    let secret = url.split("#s=").nth(1).unwrap().split('&').next().unwrap().to_string();
+    let http = |host: &str, sec: &str, body: &str| -> String {
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let req = format!("POST /rpc HTTP/1.1\r\nHost: {host}\r\nx-call-secret: {sec}\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+        s.write_all(req.as_bytes()).unwrap(); let mut out = String::new(); let _ = s.read_to_string(&mut out); out
+    };
+    let ok_body = format!(r#"{{"method":"call_state","args":{{"gid":"{gid}"}}}}"#);
+    let h = format!("127.0.0.1:{port}");
+    assert!(http(&h, &secret, &ok_body).contains("200 OK"), "right secret, right room, allowed method");
+    assert!(http(&h, "wrong", &ok_body).contains("403"), "wrong secret");
+    assert!(http(&h, "", &ok_body).contains("403"), "no secret");
+    assert!(http("evil.example:80", &secret, &ok_body).contains("400"), "DNS-rebinding style host");
+    assert!(http(&h, &secret, r#"{"method":"snapshot","args":{}}"#).contains("403"), "other rpc methods are not exposed");
+    assert!(http(&h, &secret, r#"{"method":"send_text","args":{"gid":"x","text":"hi"}}"#).contains("403"));
+    let other = format!(r#"{{"method":"call_state","args":{{"gid":"{}"}}}}"#, "ab".repeat(16));
+    assert!(http(&h, &secret, &other).contains("403"), "another room is not exposed");
+    // re-opening revokes the old secret
+    let r2 = app.call("open_call_in_browser", serde_json::json!({"gid": gid, "launch": false})).unwrap();
+    assert_ne!(r2["url"], r["url"]);
+    assert!(http(&h, &secret, &ok_body).contains("403"), "old secret revoked");
+    // the page itself is served, without the secret in any request line
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.write_all(format!("GET /callpage.html HTTP/1.1\r\nHost: {h}\r\n\r\n").as_bytes()).unwrap(); let mut out = String::new(); let _ = s.read_to_string(&mut out);
+    assert!(out.contains("200 OK") && out.contains("Commons call"));
+}

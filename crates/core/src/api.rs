@@ -18,6 +18,8 @@ pub struct App {
     /// Pairing in progress (new device waiting for approval).
     wake: (Mutex<bool>, Condvar),
     stop: Mutex<bool>,
+    bridge: Mutex<Option<crate::callbridge::CallBridge>>,
+    me: std::sync::Weak<App>,
 }
 
 fn s(v: &Value, k: &str) -> String { v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string() }
@@ -26,10 +28,10 @@ fn e<T: std::fmt::Display>(x: T) -> String { format!("{x}") }
 
 impl App {
     pub fn new(dir: PathBuf, default_relay: &str) -> Arc<App> {
-        Arc::new(App { dir, default_relay: default_relay.into(), kdf: KdfParams::STRONG, client: Mutex::new(None), wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false) })
+        Arc::new_cyclic(|me| App { me: me.clone(), dir, default_relay: default_relay.into(), kdf: KdfParams::STRONG, client: Mutex::new(None), wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), bridge: Mutex::new(None) })
     }
     pub fn with_kdf(dir: PathBuf, default_relay: &str, kdf: KdfParams) -> Arc<App> {
-        Arc::new(App { dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None), wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false) })
+        Arc::new_cyclic(|me| App { me: me.clone(), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None), wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), bridge: Mutex::new(None) })
     }
     pub fn shutdown(&self) { *self.stop.lock().unwrap() = true; self.nudge(); }
     fn nudge(&self) { *self.wake.0.lock().unwrap() = true; self.wake.1.notify_all(); }
@@ -64,6 +66,18 @@ impl App {
         let c = f(HttpTransport::new(relay).into_arc()).map_err(|x| format!("{x:#}"))?;
         *self.client.lock().unwrap() = Some(c);
         Ok(json!({"ok": true}))
+    }
+
+    fn self_arc(&self) -> Arc<App> { self.me.upgrade().expect("app alive") }
+    fn open_call_in_browser(&self, gid: &str, name: &str, launch: bool) -> R {
+        self.with(|c| c.call_state(gid).map(|_| ()).map_err(e))?;      // only for rooms we are really in
+        let url = {
+            let mut g = self.bridge.lock().unwrap();
+            if g.is_none() { *g = Some(crate::callbridge::CallBridge::start(self.self_arc()).map_err(e)?); }
+            g.as_ref().unwrap().grant(gid, name)
+        };
+        let opened = launch && crate::callbridge::open_in_browser(&url);
+        Ok(json!({"url": url, "opened": opened}))
     }
 
     fn dispatch(&self, m: &str, a: Value) -> R {
@@ -167,6 +181,7 @@ impl App {
                 Ok(json!({"epoch": st.epoch, "me": st.my_device, "keys": keys,
                           "members": st.members.iter().map(|m| json!({"device": m.device, "account": m.account, "name": m.name, "me": m.is_me})).collect::<Vec<_>>()}))
             }),
+            "open_call_in_browser" => self.open_call_in_browser(&s(&a, "gid"), &s(&a, "name"), a["launch"].as_bool().unwrap_or(true)),
             "call_token" => self.with(|c| c.call_token(&s(&a, "gid")).map(|t| json!({"url": t.url, "token": t.token, "room": t.room, "identity": t.identity, "expires": t.expires})).map_err(e)),
             _ => Err(format!("unknown method {m}")),
         }

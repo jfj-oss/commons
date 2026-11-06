@@ -155,7 +155,7 @@
     const on = (id, fn) => { const el = $q('#' + id, panel); if (el) el.onclick = fn; };
     on('c-close', () => { open = false; render(); });
     on('c-join', async () => { const room = currentRoom(); if (!room) return; try { await call.join(room.gid, room.name); } catch { } render(); });
-    on('c-browser', async () => { const room = currentRoom(); try { const r = await rpc('open_call_in_browser', { gid: room.gid }); toast('Opened in your browser'); } catch (e) { call.fail('browser', e.message); } });
+    on('c-browser', async () => { const room = currentRoom(); try { const r = await rpc('open_call_in_browser', { gid: room.gid, name: room.name }); if (r.opened) toast('Opened in your browser'); else call.fail('browser', 'Could not start a browser automatically. Open this link in Chrome, Edge, Brave, Chromium or Firefox on this computer: ' + r.url);  } catch (e) { call.fail('browser', e.message); } });
     on('c-leave', () => call.leave());
     on('c-mute', () => call.setMuted(!call.muted));
     on('c-deaf', () => call.setDeafened(!call.deafened));
@@ -178,4 +178,5 @@
   call.addEventListener('change', () => { if (call.phase === 'connected' || call.phase === 'error' || call.phase === 'idle' || call.phase === 'reconnecting' || call.phase === 'connecting') render(); });
   setInterval(() => { ensureButton(); updateButton(); }, 700);
   ensurePanel();
+  window.__callUI = { open() { open = true; ensurePanel(); render(); }, render };
 })();

@@ -7,12 +7,13 @@ gi.require_version('Gtk', '3.0'); gi.require_version('WebKit2', '4.1')
 from gi.repository import Gtk, WebKit2, GLib
 mode = sys.argv[1] if len(sys.argv) > 1 else 'default'
 win = Gtk.OffscreenWindow() if False else Gtk.Window()
-view = WebKit2.WebView()
-s = view.get_settings()
+s = WebKit2.Settings()
+view = None
 props = [p.name for p in s.list_properties()]
 if mode == 'enabled':
     for p in ('enable-media-stream', 'enable-mediasource', 'enable-webrtc', 'enable-mock-capture-devices', 'enable-webrtc-codecs'):
         if p in props and p != 'enable-mock-capture-devices': s.set_property(p, True)
+view = WebKit2.WebView.new_with_settings(s)
 print('webkit', WebKit2.get_major_version(), WebKit2.get_minor_version(), WebKit2.get_micro_version(), '| relevant settings:', {p: s.get_property(p) for p in props if any(k in p for k in ('media-stream', 'webrtc', 'mediasource', 'media-capabilities', 'mock'))})
 PROBE = """(async () => { const r = {};
  r.secure = isSecureContext; r.RTCPeerConnection = typeof RTCPeerConnection; r.getUserMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
@@ -25,7 +26,8 @@ PROBE = """(async () => { const r = {};
  return JSON.stringify(r); })()"""
 def done(webview, res):
     try:
-        v = webview.run_javascript_finish(res).get_js_value().to_string() if hasattr(webview.run_javascript_finish(res), 'get_js_value') else '?'
+        r = webview.run_javascript_finish(res)
+        v = r.get_js_value().to_string()
     except Exception as e:
         v = 'ERR ' + str(e)
     print('probe', v); Gtk.main_quit()
