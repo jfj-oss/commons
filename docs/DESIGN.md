@@ -135,7 +135,7 @@ Adding a second device **by QR / code**:
 3. The new device opens it, makes its own device key and certificate, registers, publishes key packages, and answers on `rendezvous/rid/b`.
 4. Its account's existing devices (and admins) see the new device in the directory and add it to the control group and every channel. It then receives Welcomes and the community table.
 
-The code travels out-of-band (screen or camera), which is the authentication. A short check number derived from the account and the one-time key is shown on both sides.
+The code travels out-of-band (screen or camera), which is the authentication. A four-digit check number derived from the one-time key is shown on the new device and again on the approving device, so you know you approved the screen in front of you.
 
 What the new device does **not** get: history from before it joined. MLS gives a device the keys of its epoch onward, by design, and the old plaintext lives only on other devices. A device-to-device encrypted history export over the same pairing channel is the obvious next feature (see section 9) and the seam exists (`rendezvous` can carry it, history is one JSON structure). The UI says this plainly.
 

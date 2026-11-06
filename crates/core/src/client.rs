@@ -26,6 +26,7 @@ pub struct Client {
     pub(crate) applied: BTreeSet<String>,
     /// How long a removed member keeps relay read access so that it can still fetch (and understand) its own removal.
     pub acl_delay_secs: u64,
+    pub(crate) last_saved: [u8; 32],
     /// number of "things happened" since start; the harness uses it to detect quiescence
     pub activity: u64,
     pub(crate) last_dir_check: HashMap<String, u64>,
@@ -73,7 +74,7 @@ impl Client {
     fn blank(dir: &Path, vault: Vault, relay: &str, name: &str, t: Arc<dyn Transport>) -> Client {
         let mut st = State::default();
         st.v = 1; st.relay = relay.into(); st.name = name.into();
-        Client { dir: dir.into(), vault, st, prov: Prov::default(), api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, activity: 0, last_dir_check: HashMap::new() }
+        Client { dir: dir.into(), vault, st, prov: Prov::default(), api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new() }
     }
 
     /// First device of a new account. Generates account + device keys on this machine; nothing is sent
@@ -116,13 +117,13 @@ impl Client {
         let st: State = serde_json::from_slice(&bytes).context("state file parse")?;
         let prov = if st.mls.is_empty() { Prov::default() } else { Prov::load(&unb64(&st.mls)?)? };
         let t = mk(&st.relay);
-        Ok(Client { dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, activity: 0, last_dir_check: HashMap::new() })
+        Ok(Client { dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new() })
     }
     pub fn open(dir: &Path, pass: &str, t: Arc<dyn Transport>) -> Result<Client> {
         let (vault, bytes) = Vault::open(&Self::state_path(dir), pass)?;
         let st: State = serde_json::from_slice(&bytes).context("state file parse")?;
         let prov = if st.mls.is_empty() { Prov::default() } else { Prov::load(&unb64(&st.mls)?)? };
-        Ok(Client { dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, activity: 0, last_dir_check: HashMap::new() })
+        Ok(Client { dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new() })
     }
 
     fn install_identity(&mut self, acct: &SigningKey) -> Result<()> {
@@ -137,7 +138,11 @@ impl Client {
     pub fn save(&mut self) -> Result<()> {
         self.st.mls = b64(&self.prov.dump());
         let bytes = serde_json::to_vec(&self.st)?;
-        self.vault.save(&bytes)
+        let h = sha256(&[&bytes]);
+        if h == self.last_saved { return Ok(()); } // nothing changed: no disk writes while idle
+        self.vault.save(&bytes)?;
+        self.last_saved = h;
+        Ok(())
     }
 
     pub fn has_identity(&self) -> bool { self.st.cert.is_some() }
@@ -216,11 +221,11 @@ impl Client {
         let sealed = pkb.seal(&mut rand::rngs::OsRng, &payload).map_err(|_| anyhow!("seal failed"))?;
         self.api.rv_put(rid, "a", &sealed)?;
         self.notice("pair", "pairing data sent; the new device will appear in your device list once it registers");
-        Ok(pairing_check(&self.my_account(), pk))
+        Ok(pairing_check(pk))
     }
     pub fn pairing_check_new(&self) -> Option<String> {
         let p = self.st.pairing.as_ref()?;
-        Some(pairing_check_pending(&p.public))
+        Some(pairing_check(&p.public))
     }
 
     // ------------------------------------------------------------------ directory
@@ -255,11 +260,12 @@ impl Client {
     }
 }
 
-fn pairing_check(account: &str, new_pk: &str) -> String {
-    let h = sha256(&[b"commons/pair-check", account.as_bytes(), new_pk.as_bytes()]);
+/// Four digits both screens show, derived from the new device's one-time key, so a person can confirm that
+/// the code they approve is the one on the screen in front of them.
+pub fn pairing_check(new_pk: &str) -> String {
+    let h = sha256(&[b"commons/pair-check", new_pk.as_bytes()]);
     format!("{:04}", u32::from_be_bytes(h[..4].try_into().unwrap()) % 10000)
 }
-fn pairing_check_pending(_pk: &str) -> String { String::new() }
 
 pub fn safety_number(a: &str, b: &str) -> String {
     let (x, y) = if a <= b { (a, b) } else { (b, a) };

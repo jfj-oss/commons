@@ -93,8 +93,9 @@ impl App {
                 let pass = s(&a, "passphrase");
                 if pass.len() < 8 { return Err("Passphrase must be at least 8 characters.".into()); }
                 let mut out = String::new();
-                self.open_with(|t| { let (c, code) = Client::create_for_pairing(&self.dir, &pass, &relay, "", self.kdf, t)?; out = code; Ok(c) }, &relay)?;
-                Ok(json!({"code": out, "qr": Client::qr_svg(&out)}))
+                let mut chk = String::new();
+                self.open_with(|t| { let (c, code) = Client::create_for_pairing(&self.dir, &pass, &relay, "", self.kdf, t)?; out = code; chk = c.pairing_check_new().unwrap_or_default(); Ok(c) }, &relay)?;
+                Ok(json!({"code": out, "qr": Client::qr_svg(&out), "check": chk}))
             }
             "pairing_status" => self.with(|c| { let done = c.pairing_poll().map_err(e)?; Ok(json!({"done": done})) }),
             "unlock" => {

@@ -2,7 +2,7 @@
 
 A private, end-to-end encrypted group chat for a small group of friends: communities with rooms, invite links, roles, replies, reactions, files, local search. The relay server stores and forwards ciphertext and cannot read anything. Built on MLS (RFC 9420) via OpenMLS; no cryptography is implemented here.
 
-**Stage 1 status: works end to end on one machine, 15 integration tests pass, never deployed, never audited.** Read [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) before trusting it with anything that matters.
+**Stage 1 status: works end to end on one machine (20 tests plus an env-driven long soak), never deployed, never audited.** Read [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) before trusting it with anything that matters.
 
 * [docs/DESIGN.md](docs/DESIGN.md): architecture, the MLS mapping, multi-device, recovery, failure handling, stage 2 seams
 * [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md): what is and is not protected, exactly what the relay sees

@@ -74,7 +74,7 @@ async function boot() {
     `<label>Passphrase for this device</label><input type="password" id="pp">`, 'Get pairing code', async () => {
       const r = await rpc('start_pairing', { passphrase: $('#pp').value, relay: $('#relay').value });
       el.innerHTML = `<div class="boot-card"><h1>Approve this device</h1><div class="tag">On a device you already use: Devices → “Add a device”, then scan or paste this code.</div>
-        <div class="qr">${r.qr}</div><div class="code" style="font-size:12px">${esc(r.code)}</div><div class="muted small" style="margin-top:10px">Waiting for approval…</div></div>`;
+        <div class="qr">${r.qr}</div><div class="code" style="font-size:12px">${esc(r.code)}</div><p>Check code <b class="mono">${esc(r.check)}</b> (the other device must show the same one when you approve).</p><div class="muted small" style="margin-top:10px">Waiting for approval…</div></div>`;
       const t = setInterval(async () => { try { const s = await rpc('pairing_status'); if (s.done) { clearInterval(t); el.hidden = true; startApp(); } } catch (e) { } }, 1500);
     }, links); wire(); };
   const showRec = () => { form('Recover your account on this device with your recovery key. Old messages are not recoverable (they only live on devices).',

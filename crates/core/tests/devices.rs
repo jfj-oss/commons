@@ -25,6 +25,7 @@ fn second_device_by_pairing_code_and_revocation() {
     assert!(bob.c.pairing_approve("commons-pair:AAAA").is_err());
     let check = bob.c.pairing_approve(&code).unwrap();
     assert_eq!(check.len(), 4);
+    assert_eq!(Some(check.clone()), bob2.c.pairing_check_new(), "both screens show the same check digits");
     settle(&mut [&mut alice, &mut bob, &mut bob2]);
     assert!(bob2.c.has_identity());
     assert_eq!(bob2.acct(), bob.acct(), "same account, different device");

@@ -131,7 +131,6 @@ impl Client {
         let l = InviteLink::decode(link)?;
         if l.relay.trim_end_matches('/') != self.st.relay.trim_end_matches('/') { bail!("this invite is for a different relay ({})", l.relay); }
         if self.st.communities.get(&l.community).is_some_and(|c| !c.removed) { bail!("you are already in this community"); }
-        if community_id(&l.owner, &self.st.communities.get(&l.community).map(|c| c.nonce.clone()).unwrap_or_default()).is_empty() { bail!("bad invite"); }
         self.st.joining.insert(l.community.clone(), l.clone());
         self.st.join_sent.remove(&l.community);
         self.save()?;
@@ -648,7 +647,7 @@ impl Client {
     }
     pub fn unread(&self, gid: &str) -> usize {
         let me = self.my_account();
-        self.st.chans.get(gid).map(|l| l.msgs.iter().skip(l.read_upto).filter(|m| m.sender != me && !m.deleted && !matches!(m.body, MsgBody::Notice(_)) || matches!(m.body, MsgBody::Notice(_)) && m.status == "system" && false).count()).unwrap_or(0)
+        self.st.chans.get(gid).map(|l| l.msgs.iter().skip(l.read_upto).filter(|m| m.sender != me && !m.deleted && !matches!(m.body, MsgBody::Notice(_))).count()).unwrap_or(0)
     }
     pub fn mark_read(&mut self, gid: &str) { if let Some(l) = self.st.chans.get_mut(gid) { l.read_upto = l.msgs.len(); } }
     pub fn messages(&self, gid: &str) -> Vec<Msg> {
