@@ -364,7 +364,7 @@ impl Client {
         if let Some(g) = &plan.gce { cb = cb.propose_group_context_extensions(mls::ext_of(g)?)?; }
         if plan.force_update { cb = cb.force_self_update(true); }
         let bundle = cb.load_psks(self.prov.storage())?.build(self.prov.rand(), self.prov.crypto(), &signer, |_| true)?.stage_commit(&self.prov)?;
-        let mut data = vec![TAG_MLS]; data.extend(bundle.commit().to_bytes()?);
+        let mut data = vec![TAG_COMMIT]; data.extend(bundle.commit().to_bytes()?);
         let welcome = match bundle.to_welcome_msg() { Some(w) => Some(b64(&w.to_bytes()?)), None => None };
         let msg_id = rand_hex(16);
         self.remember_own(&msg_id);
@@ -408,6 +408,7 @@ impl Client {
         }
         let jobs = std::mem::take(&mut self.st.acl_jobs);
         for j in jobs {
+            if now_secs() < j.after { self.st.acl_jobs.push(j); continue; }
             if self.api.acl(&k, &j.gid, vec![], j.remove.clone()).is_err() { self.st.acl_jobs.push(j); }
         }
     }
@@ -719,7 +720,7 @@ impl Client {
     #[doc(hidden)]
     pub fn debug_try_decrypt(&mut self, gid: &str, entry: &[u8]) -> std::result::Result<Vec<u8>, String> {
         let mut group = self.load_group(gid).ok_or("no group state")?;
-        if entry.is_empty() || entry[0] != TAG_MLS { return Err("not an mls entry".into()); }
+        if entry.is_empty() || (entry[0] != TAG_MLS && entry[0] != TAG_COMMIT) { return Err("not an mls entry".into()); }
         let m = MlsMessageIn::tls_deserialize_exact(&entry[1..]).map_err(|e| e.to_string())?;
         let pm = m.try_into_protocol_message().map_err(|e| e.to_string())?;
         match group.process_message(&self.prov, pm).map_err(|e| format!("{e:?}"))?.into_content() {
@@ -735,6 +736,13 @@ impl Client {
         for (i, c) in mls::members_of(&g) { if c.account == account { plan.removes.push(i); } }
         self.run_commit(gid, plan).map(|_| ())
     }
+    /// Post arbitrary bytes into a group log as this device (a misbehaving member / relay-injected garbage).
+    #[doc(hidden)]
+    pub fn debug_post_raw(&mut self, gid: &str, data: &[u8]) -> Result<()> {
+        let k = self.dev_key()?; self.api.post_entry(&k, gid, &rand_hex(16), data).map(|_| ())
+    }
+    #[doc(hidden)]
+    pub fn debug_expire_acl_jobs(&mut self) { for j in self.st.acl_jobs.iter_mut() { j.after = 0; } }
     #[doc(hidden)]
     pub fn outbox_len(&self) -> usize { self.st.outbox.len() }
 

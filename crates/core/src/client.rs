@@ -24,6 +24,8 @@ pub struct Client {
     pub(crate) synced: BTreeSet<String>,
     pub typing: BTreeMap<String, u64>,
     pub(crate) applied: BTreeSet<String>,
+    /// How long a removed member keeps relay read access so that it can still fetch (and understand) its own removal.
+    pub acl_delay_secs: u64,
     /// number of "things happened" since start; the harness uses it to detect quiescence
     pub activity: u64,
     pub(crate) last_dir_check: HashMap<String, u64>,
@@ -71,7 +73,7 @@ impl Client {
     fn blank(dir: &Path, vault: Vault, relay: &str, name: &str, t: Arc<dyn Transport>) -> Client {
         let mut st = State::default();
         st.v = 1; st.relay = relay.into(); st.name = name.into();
-        Client { dir: dir.into(), vault, st, prov: Prov::default(), api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), applied: BTreeSet::new(), activity: 0, last_dir_check: HashMap::new() }
+        Client { dir: dir.into(), vault, st, prov: Prov::default(), api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, activity: 0, last_dir_check: HashMap::new() }
     }
 
     /// First device of a new account. Generates account + device keys on this machine; nothing is sent
@@ -112,7 +114,7 @@ impl Client {
         let (vault, bytes) = Vault::open(&Self::state_path(dir), pass)?;
         let st: State = serde_json::from_slice(&bytes).context("state file parse")?;
         let prov = if st.mls.is_empty() { Prov::default() } else { Prov::load(&unb64(&st.mls)?)? };
-        Ok(Client { dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), applied: BTreeSet::new(), activity: 0, last_dir_check: HashMap::new() })
+        Ok(Client { dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, activity: 0, last_dir_check: HashMap::new() })
     }
 
     fn install_identity(&mut self, acct: &SigningKey) -> Result<()> {

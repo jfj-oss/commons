@@ -101,6 +101,8 @@ pub struct GroupState {
     pub broken_count: u64,
     pub rejoin_sent: bool,
     pub rejoin_ts: u64,
+    #[serde(default)]
+    pub denied: bool,
     pub removed: bool,
     pub dev_seq: BTreeMap<String, u64>,
     pub accounts: BTreeSet<String>,
@@ -110,7 +112,7 @@ pub struct GroupState {
 impl GroupState {
     pub fn new(gid: &str, community: &str, kind: Kind) -> Self {
         GroupState { gid: gid.into(), community: community.into(), kind, cursor: 0, pending: None, tainted: false, broken: false, broken_from: 0, join_epoch: 0, broken_count: 0,
-            rejoin_sent: false, rejoin_ts: 0, removed: false, dev_seq: BTreeMap::new(), accounts: BTreeSet::new(), requests: vec![], gaps: 0 }
+            rejoin_sent: false, rejoin_ts: 0, denied: false, removed: false, dev_seq: BTreeMap::new(), accounts: BTreeSet::new(), requests: vec![], gaps: 0 }
     }
 }
 
@@ -158,7 +160,7 @@ pub struct OutItem {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct WelcomeOut { pub id: String, pub device: String, pub data: String, pub gid: String }
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct AclJob { pub gid: String, pub remove: Vec<String> }
+pub struct AclJob { pub gid: String, pub remove: Vec<String>, #[serde(default)] pub after: u64 }
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ParkedWelcome { pub id: String, pub data: String, pub ts: u64 }
 

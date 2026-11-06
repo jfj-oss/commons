@@ -20,6 +20,8 @@ pub struct Faults {
     pub drop_middle: bool,
     /// fail every request (client is offline)
     pub offline: bool,
+    /// sync returns nothing new (relay withholds; client acts on stale state)
+    pub stale_sync: bool,
 }
 
 pub struct FlakyTransport { inner: HttpTransport, pub faults: Arc<Mutex<Faults>> }
@@ -34,6 +36,10 @@ impl Transport for FlakyTransport {
         if method == "POST" && f.lose_post_responses > 0 && path.contains("/messages") {
             f.lose_post_responses -= 1;
             anyhow::bail!("network: simulated lost response");
+        }
+        if path == "/v1/sync" && r.status == 200 && f.stale_sync {
+            let s = SyncResp::default();
+            r.body = serde_json::to_vec(&s)?;
         }
         if path == "/v1/sync" && r.status == 200 && (f.reorder || f.duplicate || f.drop_middle) {
             let mut s: SyncResp = serde_json::from_slice(&r.body)?;
@@ -127,3 +133,19 @@ pub fn community_with(net: &Net, alice: &mut Peer, others: &mut [&mut Peer]) -> 
     let _ = net;
     (cid, gen)
 }
+
+pub fn relay_entries(net: &Net, gid: &str) -> Vec<(u64, Vec<u8>)> {
+    let c = rusqlite::Connection::open_with_flags(net.db_path(), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let mut s = c.prepare("SELECT seq,data FROM entries WHERE gid=?1 ORDER BY seq").unwrap();
+    s.query_map([gid], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|x| x.unwrap()).collect()
+}
+/// All bytes the relay holds on disk (db, wal, blobs).
+pub fn relay_bytes(net: &Net) -> Vec<u8> {
+    let mut all = vec![];
+    fn walk(p: &std::path::Path, out: &mut Vec<u8>) {
+        for e in std::fs::read_dir(p).unwrap() { let e = e.unwrap(); if e.path().is_dir() { walk(&e.path(), out) } else { out.extend(std::fs::read(e.path()).unwrap_or_default()) } }
+    }
+    walk(&net.data.path().join("relay"), &mut all);
+    all
+}
+pub fn contains(hay: &[u8], needle: &str) -> bool { hay.windows(needle.len()).any(|w| w == needle.as_bytes()) }

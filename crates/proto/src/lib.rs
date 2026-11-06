@@ -16,6 +16,8 @@ pub const AUTH_SKEW_SECS: u64 = 600;
 pub const TAG_MLS: u8 = 1;
 pub const TAG_REJOIN: u8 = 2;
 pub const TAG_JOIN_REQUEST: u8 = 3;
+/// A commit (membership/epoch change). Visible to the relay as a different tag; see THREAT-MODEL.md.
+pub const TAG_COMMIT: u8 = 4;
 
 #[derive(thiserror::Error, Debug)]
 pub enum ProtoError {

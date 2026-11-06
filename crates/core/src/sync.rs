@@ -53,10 +53,12 @@ impl Client {
             if kind == Kind::Control { ctl_ok.insert(comm, ok); }
         }
         for gid in &resp.denied {
-            if self.st.groups.get(gid).is_some_and(|g| !g.removed) {
-                self.notice("relay", format!("the relay no longer lets this account read group {} (removed, or the relay is misbehaving)", &gid[..8.min(gid.len())]));
+            if self.st.groups.get(gid).is_some_and(|g| !g.removed && !g.denied) {
+                self.st.groups.get_mut(gid).unwrap().denied = true;
+                self.notice("relay", format!("the relay no longer lets this account read group {} (you were probably removed while offline, or the relay is misbehaving)", &gid[..8.min(gid.len())]));
             }
         }
+        for g in self.st.groups.values_mut() { if g.denied && !resp.denied.contains(&g.gid) { g.denied = false; } }
         self.save()
     }
 
@@ -81,7 +83,7 @@ impl Client {
             if data.is_empty() { self.notice("parse", format!("empty log entry {} in group {}", e.seq, &gid[..8])); }
             else {
                 match data[0] {
-                    TAG_MLS => self.apply_mls(gid, e.seq, &e.id, &data[1..]),
+                    TAG_MLS | TAG_COMMIT => self.apply_mls(gid, e.seq, &e.id, data[0], &data[1..]),
                     TAG_REJOIN | TAG_JOIN_REQUEST => {
                         let g = self.st.groups.get_mut(gid).unwrap();
                         if g.requests.len() < 200 { g.requests.push(ReqItem { seq: e.seq, tag: data[0], data: b64(&data[1..]), tries: 0 }); }
@@ -115,7 +117,11 @@ impl Client {
     fn handle_welcome(&mut self, _id: &str, bytes: &[u8]) -> Result<bool> {
         let msg = MlsMessageIn::tls_deserialize_exact(bytes).map_err(|e| anyhow!("malformed welcome: {e}"))?;
         let welcome = match msg.extract() { MlsMessageBodyIn::Welcome(w) => w, _ => bail!("not a welcome message") };
-        let staged = StagedWelcome::new_from_welcome(&self.prov, &mls::join_cfg(), welcome, None).map_err(|e| anyhow!("cannot open welcome: {e}"))?;
+        let jb = StagedWelcome::build_from_welcome(&self.prov, &mls::join_cfg(), welcome).map_err(|e| anyhow!("cannot open welcome: {e}"))?;
+        let wgid = hex::encode(jb.processed_welcome().unverified_group_info().group_id().as_slice());
+        let replace = self.st.groups.get(&wgid).is_some_and(|g| g.broken);
+        let jb = if replace { jb.replace_old_group() } else { jb };
+        let staged = jb.build().map_err(|e| anyhow!("cannot open welcome: {e}"))?;
         let gid = hex::encode(staged.group_context().group_id().as_slice());
         let ext = mls::group_ext(staged.group_context().extensions()).ok_or_else(|| anyhow!("group has no commons metadata"))?;
         for m in staged.members() {
@@ -124,6 +130,10 @@ impl Client {
         let sender = staged.welcome_sender().map_err(|_| anyhow!("no welcome sender"))?;
         let sender_cert = mls::cert_of(sender.credential(), sender.signature_key().as_slice()).ok_or_else(|| anyhow!("welcome sender has an invalid certificate"))?;
         let me = self.my_account();
+        let my_dev = self.my_device();
+        // A community we never asked for is only accepted when another device of ours is already in it
+        // (that is what an authentic 'second device' or 'recovered device' welcome looks like).
+        let other_device_of_mine = staged.members().any(|m| mls::cert_of(&m.credential, &m.signature_key).is_some_and(|c| c.account == me && c.device != my_dev));
         let existing_broken = self.st.groups.get(&gid).is_some_and(|g| g.broken);
         if self.st.groups.get(&gid).is_some_and(|g| !g.broken && !g.removed) { return Ok(true); } // duplicate welcome
         let (kind, community) = match &ext {
@@ -131,20 +141,21 @@ impl Client {
                 let (owner, admins) = ext.verify_control(&gid).map_err(|e| anyhow!("control table rejected: {e}"))?;
                 let sender_ok = sender_cert.account == owner || admins.contains(&sender_cert.account) || sender_cert.account == me;
                 if !sender_ok { bail!("welcome to a community from someone who is not its owner or admin"); }
-                let expected = self.st.joining.get(&gid).is_some_and(|l| l.owner == owner) || self.st.communities.get(&gid).is_some_and(|c| c.owner == owner);
+                let expected = self.st.joining.get(&gid).is_some_and(|l| l.owner == owner) || self.st.communities.get(&gid).is_some_and(|c| c.owner == owner) || other_device_of_mine;
                 if !expected { bail!("unsolicited community invitation (no invite link of ours matches it)"); }
                 (Kind::Control, gid.clone())
             }
             GroupExt::Channel { community, .. } => {
-                let Some(c) = self.st.communities.get(community) else { return Ok(false) };
-                let ok = c.role_of(&sender_cert.account) >= Some(Role::Admin) || sender_cert.account == me;
-                if !ok { bail!("channel welcome from someone who is not an admin"); }
+                // The key material of a welcome is consumed when it is opened, so it cannot be parked and retried.
+                // If the community table has not arrived yet we join anyway; the channel stays invisible until
+                // the (authenticated) community table lists it, and commits in it are judged by that table.
+                if let Some(c) = self.st.communities.get(community) {
+                    let ok = c.role_of(&sender_cert.account) >= Some(Role::Admin) || sender_cert.account == me;
+                    if !ok { bail!("channel welcome from someone who is not an admin"); }
+                }
                 (Kind::Channel, community.clone())
             }
         };
-        if existing_broken {
-            if let Some(old) = self.load_group(&gid) { let _ = { let mut o = old; o.delete(self.prov.storage()) }; }
-        }
         let group = staged.into_group(&self.prov).map_err(|e| anyhow!("cannot join: {e}"))?;
         let epoch = group.epoch().as_u64();
         let prev_broken = if existing_broken { self.st.groups.get(&gid).map(|g| (g.broken_count, g.cursor)) } else { None };
@@ -171,7 +182,7 @@ impl Client {
     }
 
     // ------------------------------------------------------------------ log entry: MLS message
-    fn apply_mls(&mut self, gid: &str, seq: u64, id: &str, bytes: &[u8]) {
+    fn apply_mls(&mut self, gid: &str, seq: u64, id: &str, tag: u8, bytes: &[u8]) {
         let gs = self.st.groups[gid].clone();
         let Some(mut group) = self.load_group(gid) else { self.notice("state", format!("group {} missing from local MLS state", &gid[..8])); return };
         let msg_in = match MlsMessageIn::tls_deserialize_exact(bytes) {
@@ -188,7 +199,7 @@ impl Client {
         if epoch < gs.join_epoch { return; } // predates our membership: never addressed to us
         let is_own = self.st.own_ids.iter().any(|x| x == id);
         match group.process_message(&self.prov, pm) {
-            Ok(p) => self.handle_processed(gid, seq, id, is_own, &mut group, p),
+            Ok(p) => self.handle_processed(gid, seq, id, tag, is_own, &mut group, p),
             Err(e) => {
                 let s = format!("{e:?}");
                 let cur = group.epoch().as_u64();
@@ -235,7 +246,7 @@ impl Client {
         self.st.chans.entry(gid.to_string()).or_default().msgs.push(m);
     }
 
-    fn handle_processed(&mut self, gid: &str, seq: u64, id: &str, is_own: bool, group: &mut MlsGroup, p: ProcessedMessage) {
+    fn handle_processed(&mut self, gid: &str, seq: u64, id: &str, tag: u8, is_own: bool, group: &mut MlsGroup, p: ProcessedMessage) {
         let sender_idx = match p.sender() { Sender::Member(i) => Some(*i), _ => None };
         let cert = sender_idx.and_then(|i| group.member_at(i)).and_then(|m| mls::cert_of(&m.credential, &m.signature_key));
         let pending_id = self.st.groups[gid].pending.as_ref().map(|p| p.msg_id.clone());
@@ -250,6 +261,8 @@ impl Client {
                     } else {
                         self.drop_pending(gid, "lost the race to another commit");
                     }
+                } else if !is_own && tag == TAG_COMMIT {
+                    self.mark_broken(gid, seq, "a commit made by this device is missing from its saved state (restored from an older backup)");
                 } else if !is_own {
                     // We sent something from a state newer than the one we are running now.
                     self.st.groups.get_mut(gid).unwrap().tainted = true;
@@ -297,13 +310,14 @@ impl Client {
 
     fn finish_own_commit(&mut self, gid: &str, seq: u64) {
         let mut added = vec![];
+        self.st.groups.get_mut(gid).unwrap().tainted = false; // a fresh epoch means fresh sender keys
         if let Some(p) = self.st.groups.get_mut(gid).unwrap().pending.take() {
             added = p.recipients.clone();
             self.applied.insert(p.msg_id.clone());
             if let Some(w) = p.welcome {
                 for dev in p.recipients { self.st.welcome_out.push(WelcomeOut { id: rand_hex(16), device: dev, data: w.clone(), gid: gid.into() }); }
             }
-            if !p.acl_remove.is_empty() { self.st.acl_jobs.push(AclJob { gid: gid.into(), remove: p.acl_remove }); }
+            if !p.acl_remove.is_empty() { self.st.acl_jobs.push(AclJob { gid: gid.into(), remove: p.acl_remove, after: now_secs() + self.acl_delay_secs }); }
             self.notice("commit", format!("group {}: applied {}", &gid[..8], p.desc));
         }
         self.post_merge(gid, seq, &added);
@@ -326,7 +340,8 @@ impl Client {
         let kind = gs.kind.clone();
         let comm = gs.community.clone();
         if !active { gs.removed = true; }
-        if new_accounts > 0 && kind == Kind::Control { self.st.profile_dirty = true; }
+        let my_dev = self.my_device();
+        if (new_accounts > 0 || added.iter().any(|d| *d != my_dev)) && kind == Kind::Control { self.st.profile_dirty = true; }
         if kind == Kind::Control {
             if let Some(ext) = mls::group_ext(group.extensions()) {
                 if let Ok((owner, admins)) = ext.verify_control(gid) {
