@@ -6,6 +6,7 @@ use crate::state::*;
 use crate::sync::BATCH;
 use anyhow::{anyhow, bail, Result};
 use chacha20poly1305::{aead::{Aead, KeyInit}, ChaCha20Poly1305, Nonce};
+use crate::transport::Api;
 use commons_proto::*;
 use ed25519_dalek::{Signer as _, SigningKey, Verifier as _};
 use openmls::prelude::{tls_codec::*, *};
@@ -18,15 +19,16 @@ pub(crate) struct Plan {
     gce: Option<GroupExt>,
     desc: String,
     acl_remove: Vec<String>,
+    acl_demote: Vec<String>,
     force_update: bool,
+    /// Queued requests this commit answers.
+    handled: Vec<u64>,
 }
 impl Plan {
-    fn empty(desc: &str) -> Plan { Plan { adds: vec![], removes: vec![], gce: None, desc: desc.into(), acl_remove: vec![], force_update: false } }
+    fn empty(desc: &str) -> Plan { Plan { adds: vec![], removes: vec![], gce: None, desc: desc.into(), acl_remove: vec![], acl_demote: vec![], force_update: false, handled: vec![] } }
 }
 #[derive(Debug, PartialEq)]
 pub enum Outcome { Applied, Pending, Lost }
-
-type DirCache = BTreeMap<String, Vec<(DeviceCert, bool)>>;
 
 impl Client {
     fn ctl_ext(&self, cid: &str) -> Result<GroupExt> {
@@ -38,21 +40,35 @@ impl Client {
     }
     fn short(g: &str) -> &str { &g[..8.min(g.len())] }
 
+    /// This account's owner-signed grant, which is what proves its authority to the relay.
+    pub(crate) fn my_grant(&self, cid: &str) -> Option<String> {
+        let me = self.my_account();
+        let Ok(GroupExt::Control { admins, .. }) = self.ctl_ext(cid) else { return None };
+        admins.into_iter().find(|a| a.account == me).map(|a| a.sig)
+    }
+    fn delete_group(&mut self, gid: &str) {
+        if let Some(mut g) = self.load_group(gid) { let _ = g.delete(self.prov.storage()); }
+        self.st.groups.remove(gid);
+    }
+
     // ------------------------------------------------------------------ communities and channels
     pub fn create_community(&mut self, name: &str) -> Result<String> {
-        if name.trim().is_empty() || name.len() > 64 { bail!("community name must be 1-64 characters"); }
-        let ak = self.acct_key()?;
+        let name = name.trim();
+        check_name("a community name", name).map_err(|e| anyhow!(e))?;
         let owner = self.my_account();
         let nonce = rand_hex(16);
         let cid = community_id(&owner, &nonce);
-        let ext = GroupExt::Control { name: name.trim().into(), owner: owner.clone(), nonce: nonce.clone(), admins: vec![], channels: vec![], invites: vec![], banned: vec![] };
-        let _ = ak;
+        let ext = GroupExt::Control { name: name.into(), owner: owner.clone(), nonce: nonce.clone(), admins: vec![], channels: vec![], invites: vec![], banned: vec![], transfers: vec![] };
         let signer = self.signer()?;
         let cfg = mls::create_cfg(&ext)?;
-        let group = MlsGroup::new_with_group_id(&self.prov, &signer, &cfg, GroupId::from_slice(&hex::decode(&cid)?), mls::cred_with_key(&self.cert()?)?)?;
-        drop(group);
+        let mut group = MlsGroup::new_with_group_id(&self.prov, &signer, &cfg, GroupId::from_slice(&hex::decode(&cid)?), mls::cred_with_key(&self.cert()?)?)?;
         let k = self.dev_key()?;
-        self.api.acl(&k, &cid, vec![owner.clone()], vec![])?;
+        if let Err(e) = self.api.acl(&k, &cid, &AclReq { add: vec![owner.clone()], ..Default::default() }) {
+            let _ = group.delete(self.prov.storage());
+            self.note_failure(&e);
+            return Err(e);
+        }
+        drop(group);
         let mut gs = GroupState::new(&cid, &cid, Kind::Control);
         gs.join_epoch = 0;
         self.st.groups.insert(cid.clone(), gs);
@@ -61,39 +77,69 @@ impl Client {
         self.synced.insert(cid.clone());
         self.st.profile_dirty = true;
         self.save()?;
-        self.create_channel(&cid, "general")?;
+        if let Err(e) = self.create_channel(&cid, "general") {
+            // Without its first room a new community is only a thing to explain. Nobody else knows it yet.
+            self.delete_group(&cid);
+            self.st.communities.remove(&cid);
+            self.synced.remove(&cid);
+            self.save()?;
+            return Err(e);
+        }
         Ok(cid)
     }
 
     pub fn create_channel(&mut self, cid: &str, name: &str) -> Result<String> {
         if self.my_role(cid) < Role::Admin { bail!("only admins can create channels"); }
         let name = name.trim().to_lowercase().replace(' ', "-");
-        if name.is_empty() || name.len() > 64 { bail!("channel name must be 1-64 characters"); }
+        check_name("a room name", &name).map_err(|e| anyhow!(e))?;
+        if self.st.communities[cid].channels.iter().any(|c| name_key(&c.name) == name_key(&name)) { bail!("there is already a room called {name}"); }
         let gid = rand_hex(16);
-        let GroupExt::Control { owner: c_owner, nonce: c_nonce, admins: c_admins, .. } = self.ctl_ext(cid)? else { bail!("bad table") };
-        let ext = GroupExt::Channel { community: cid.into(), name: name.clone(), owner: c_owner, nonce: c_nonce, admins: c_admins };
+        let GroupExt::Control { owner: c_owner, nonce: c_nonce, admins: c_admins, transfers: c_transfers, .. } = self.ctl_ext(cid)? else { bail!("bad table") };
+        let ext = GroupExt::Channel { community: cid.into(), name: name.clone(), owner: c_owner, nonce: c_nonce, admins: c_admins, transfers: c_transfers };
         let signer = self.signer()?;
         let cfg = mls::create_cfg(&ext)?;
-        let group = MlsGroup::new_with_group_id(&self.prov, &signer, &cfg, GroupId::from_slice(&hex::decode(&gid)?), mls::cred_with_key(&self.cert()?)?)?;
+        let mut group = MlsGroup::new_with_group_id(&self.prov, &signer, &cfg, GroupId::from_slice(&hex::decode(&gid)?), mls::cred_with_key(&self.cert()?)?)?;
         let epoch = group.epoch().as_u64();
         let k = self.dev_key()?;
         let mut accounts = vec![self.my_account()];
         if let Some(g) = self.st.groups.get(cid) { accounts.extend(g.accounts.iter().cloned()); }
         accounts.sort(); accounts.dedup();
-        self.api.acl(&k, &gid, accounts, vec![])?;
+        let grant = self.my_grant(cid);
+        let mut claim = AclReq { root: Some(cid.to_string()), grant: grant.clone(), ..Default::default() };
+        for part in accounts.chunks(MAX_ACL_BATCH) {
+            claim.add = part.to_vec();
+            if let Err(e) = self.api.acl(&k, &gid, &claim) {
+                let _ = group.delete(self.prov.storage());
+                self.note_failure(&e);
+                return Err(e);
+            }
+        }
+        drop(group);
         let mut gs = GroupState::new(&gid, cid, Kind::Channel);
         gs.join_epoch = epoch;
         self.st.groups.insert(gid.clone(), gs);
         self.post_merge(&gid, 0, &[]);
         self.synced.insert(gid.clone());
         self.save()?;
-        let GroupExt::Control { name: n, owner, nonce, admins, mut channels, invites, banned } = self.ctl_ext(cid)? else { bail!("bad table") };
-        channels.push(ChanMeta { id: gid.clone(), name });
-        let mut plan = Plan::empty(&format!("create channel"));
-        plan.gce = Some(GroupExt::Control { name: n, owner, nonce, admins, channels, invites, banned });
-        match self.run_commit(cid, plan)? {
-            Outcome::Lost => bail!("another admin changed the community at the same time; try again"),
-            _ => {}
+        // Until the community's table lists it, a room is nothing. A commit lost to another admin's is redone on the
+        // new table; if it cannot be done at all, the room goes again instead of lingering unlisted.
+        let mut listed = Err(anyhow!("another admin changed the community at the same time; try again"));
+        for _ in 0..3 {
+            let mut t = self.ctl_ext(cid)?;
+            if let GroupExt::Control { channels, .. } = &mut t { channels.push(ChanMeta { id: gid.clone(), name: name.clone() }); }
+            let mut plan = Plan::empty("create channel");
+            plan.gce = Some(t);
+            match self.run_commit(cid, plan) {
+                Ok(Outcome::Lost) => continue,
+                Ok(_) => { listed = Ok(()); break }
+                Err(e) => { listed = Err(e); break }
+            }
+        }
+        if let Err(e) = listed {
+            self.delete_group(&gid);
+            self.synced.remove(&gid);
+            self.save()?;
+            return Err(e);
         }
         self.reconcile();
         Ok(gid)
@@ -101,17 +147,19 @@ impl Client {
 
     pub fn create_invite(&mut self, cid: &str, uses: Option<u32>, ttl_secs: u64) -> Result<String> {
         if self.my_role(cid) < Role::Admin { bail!("only admins can create invites"); }
+        if uses == Some(0) { bail!("an invite needs at least one use"); }
         let sk = SigningKey::generate(&mut rand::rngs::OsRng);
         let id = rand_hex(16);
-        let GroupExt::Control { name, owner, nonce, admins, channels, mut invites, banned } = self.ctl_ext(cid)? else { bail!("bad table") };
+        let mut t = self.ctl_ext(cid)?;
+        let GroupExt::Control { name, owner, invites, .. } = &mut t else { bail!("bad table") };
+        let (cname, founder) = (name.clone(), owner.clone());
         let now = now_secs();
         invites.retain(|i| i.expires > now);
-        invites.push(InviteMeta { id: id.clone(), pk: hex::encode(sk.verifying_key().to_bytes()), expires: now + ttl_secs, uses_left: uses });
-        let cname = name.clone();
+        invites.push(InviteMeta { id: id.clone(), pk: hex::encode(sk.verifying_key().to_bytes()), expires: now + ttl_secs.min(365 * 86400), uses_left: uses });
         let mut plan = Plan::empty("create invite");
-        plan.gce = Some(GroupExt::Control { name, owner: owner.clone(), nonce, admins, channels, invites, banned });
+        plan.gce = Some(t);
         if self.run_commit(cid, plan)? == Outcome::Lost { bail!("another admin changed the community at the same time; try again"); }
-        let link = InviteLink { owner, relay: self.st.relay.clone(), community: cid.into(), invite: id.clone(), sk: hex::encode(sk.to_bytes()), name: cname };
+        let link = InviteLink { owner: founder, relay: self.st.relay.clone(), community: cid.into(), invite: id.clone(), sk: hex::encode(sk.to_bytes()), name: cname };
         self.st.communities.get_mut(cid).unwrap().invite_sks.insert(id, link.sk.clone());
         self.save()?;
         Ok(link.encode())
@@ -119,40 +167,45 @@ impl Client {
 
     pub fn revoke_invite(&mut self, cid: &str, invite: &str) -> Result<()> {
         if self.my_role(cid) < Role::Admin { bail!("only admins can revoke invites"); }
-        let GroupExt::Control { name, owner, nonce, admins, channels, mut invites, banned } = self.ctl_ext(cid)? else { bail!("bad table") };
-        invites.retain(|i| i.id != invite);
+        let mut t = self.ctl_ext(cid)?;
+        if let GroupExt::Control { invites, .. } = &mut t { invites.retain(|i| i.id != invite); }
         let mut plan = Plan::empty("revoke invite");
-        plan.gce = Some(GroupExt::Control { name, owner, nonce, admins, channels, invites, banned });
+        plan.gce = Some(t);
         self.run_commit(cid, plan).map(|_| ())
     }
 
-    /// Joining only records the intent and sends a signed request; an admin must be online (now or later) to add us.
+    /// Joining only records the intent; the request goes out with the next round and an admin must be online
+    /// (now or later) to add us.
     pub fn join_with_link(&mut self, link: &str) -> Result<String> {
         let l = InviteLink::decode(link)?;
         if l.relay.trim_end_matches('/') != self.st.relay.trim_end_matches('/') { bail!("this invite is for a different relay ({})", l.relay); }
         if self.st.communities.get(&l.community).is_some_and(|c| !c.removed) { bail!("you are already in this community"); }
+        self.st.join_refused.remove(&l.community);
+        self.st.join_retry.remove(&l.community);
         self.st.joining.insert(l.community.clone(), l.clone());
         self.st.join_sent.remove(&l.community);
         self.save()?;
-        let _ = self.send_join_requests();
         Ok(l.community)
     }
 
-    pub(crate) fn send_join_requests(&mut self) -> Result<()> {
-        let k = self.dev_key()?;
-        let pending: Vec<InviteLink> = self.st.joining.values().filter(|l| !self.st.join_sent.contains(&l.community)).cloned().collect();
-        for l in pending {
-            self.ensure_registered()?;
-            let isk = SigningKey::from_bytes(&hex32(&l.sk)?);
-            let cert = self.cert()?;
-            let sig = isk.sign(&join_msg(&l.community, &cert.device, &l.invite));
-            let jr = JoinRequest { invite: l.invite.clone(), cert, sig: hex::encode(sig.to_bytes()) };
-            let mut data = vec![TAG_JOIN_REQUEST]; data.extend(serde_json::to_vec(&jr)?);
-            self.api.post_entry(&k, &l.community, &rand_hex(16), &data)?;
-            self.st.join_sent.insert(l.community.clone());
-            self.notice("join", format!("asked to join \"{}\"; waiting for an admin to let you in", l.name));
-        }
-        Ok(())
+    /// Stop waiting for a join, or put away the news that one was refused.
+    pub fn cancel_join(&mut self, cid: &str) -> Result<()> {
+        self.st.joining.remove(cid);
+        self.st.join_sent.remove(cid);
+        self.st.join_asked.remove(cid);
+        self.st.join_retry.remove(cid);
+        self.st.join_refused.remove(cid);
+        self.save()
+    }
+
+    /// The bytes of a join request to post.
+    pub(crate) fn join_request_data(&self, l: &InviteLink) -> Result<Vec<u8>> {
+        let isk = SigningKey::from_bytes(&hex32(&l.sk)?);
+        let cert = self.cert()?;
+        let sig = isk.sign(&join_msg(&l.community, &cert.device, &l.invite));
+        let jr = JoinRequest { invite: l.invite.clone(), cert, sig: hex::encode(sig.to_bytes()) };
+        let mut data = vec![TAG_JOIN_REQUEST]; data.extend(serde_json::to_vec(&jr)?);
+        Ok(data)
     }
 
     pub fn kick(&mut self, cid: &str, account: &str) -> Result<()> {
@@ -171,33 +224,68 @@ impl Client {
 
     pub fn set_role(&mut self, cid: &str, account: &str, role: Role) -> Result<()> {
         if self.my_role(cid) != Role::Owner { bail!("only the owner can change roles"); }
-        if role == Role::Owner || account == self.my_account() { bail!("ownership cannot be transferred in this version"); }
+        if role == Role::Owner { bail!("use transfer ownership to make someone the owner"); }
+        if account == self.my_account() { bail!("you are the owner; transfer ownership first"); }
         let ak = self.acct_key()?;
-        let GroupExt::Control { name, owner, nonce, mut admins, channels, invites, banned } = self.ctl_ext(cid)? else { bail!("bad table") };
-        admins.retain(|a| a.account != account);
+        let roster = self.st.groups.get(cid).map(|g| g.accounts.clone()).unwrap_or_default();
+        let mut t = self.ctl_ext(cid)?;
+        let GroupExt::Control { admins, .. } = &mut t else { bail!("bad table") };
+        // Nobody who has left keeps a grant in the table, whatever brought us here.
+        admins.retain(|a| a.account != account && roster.contains(&a.account));
         if role == Role::Admin {
-            if !self.st.groups.get(cid).is_some_and(|g| g.accounts.contains(account)) { bail!("that person is not in the community"); }
+            if !roster.contains(account) { bail!("that person is not in the community"); }
             admins.push(sign_grant(&ak, cid, account));
         }
         let mut plan = Plan::empty(&format!("set role {}", role.name()));
-        plan.gce = Some(GroupExt::Control { name, owner, nonce, admins, channels, invites, banned });
+        plan.gce = Some(t);
         if self.run_commit(cid, plan)? == Outcome::Lost { bail!("the community changed at the same time; try again"); }
-        Ok(())
+        // A grant cannot be recalled, only stopped from counting: the relay is told, and each room's copy of the list is
+        // rewritten right away, not whenever the next change happens to come along.
+        let job = if role == Role::Admin { AclJob { gid: cid.into(), promote: vec![account.into()], ..Default::default() } } else { AclJob { gid: cid.into(), demote: vec![account.into()], ..Default::default() } };
+        self.st.acl_jobs.push(job);
+        self.reconcile();
+        self.save()
+    }
+
+    /// Hand the community to another member. The previous owner stays on as an admin, and can then leave like anyone.
+    /// The signed step goes into the control table here; the new owner carries it into the rooms and re-signs the admins.
+    pub fn transfer_ownership(&mut self, cid: &str, to: &str) -> Result<()> {
+        if self.my_role(cid) != Role::Owner { bail!("only the owner can transfer ownership"); }
+        let me = self.my_account();
+        if to == me { bail!("you already own this community"); }
+        if !self.st.groups.get(cid).is_some_and(|g| g.accounts.contains(to)) { bail!("that person is not in the community"); }
+        let ak = self.acct_key()?;
+        let mut t = self.ctl_ext(cid)?;
+        let GroupExt::Control { admins, transfers, .. } = &mut t else { bail!("bad table") };
+        let seq = transfers.len() as u64 + 1;
+        let sig = hex::encode(ak.sign(&transfer_msg(cid, seq, &me, to)).to_bytes());
+        let step = OwnerStep { seq, from: me.clone(), to: to.into(), sig };
+        transfers.push(step.clone());
+        admins.retain(|a| a.account != to);
+        admins.push(sign_grant(&ak, cid, &me));
+        let mut plan = Plan::empty("transfer ownership");
+        plan.gce = Some(t);
+        if self.run_commit(cid, plan)? == Outcome::Lost { bail!("the community changed at the same time; try again"); }
+        self.st.acl_jobs.push(AclJob { gid: cid.into(), transfer: Some(step), ..Default::default() });
+        self.save()
     }
 
     pub fn leave(&mut self, cid: &str) -> Result<()> {
-        if self.my_role(cid) == Role::Owner { bail!("the owner cannot leave; ownership transfer is not in this version"); }
+        if self.my_role(cid) == Role::Owner { bail!("the owner cannot leave: transfer ownership to someone first"); }
         self.queue_env(cid, Envelope::Leave);
-        for _ in 0..3 { let _ = self.tick(0); }
-        Ok(())
+        self.save()
     }
 
     pub fn rename_community(&mut self, cid: &str, new_name: &str) -> Result<()> {
         if self.my_role(cid) < Role::Admin { bail!("only admins can rename"); }
-        let GroupExt::Control { owner, nonce, admins, channels, invites, banned, .. } = self.ctl_ext(cid)? else { bail!("bad table") };
+        let new_name = new_name.trim();
+        check_name("a community name", new_name).map_err(|e| anyhow!(e))?;
+        let mut t = self.ctl_ext(cid)?;
+        if let GroupExt::Control { name, .. } = &mut t { *name = new_name.into(); }
         let mut plan = Plan::empty("rename");
-        plan.gce = Some(GroupExt::Control { name: new_name.trim().into(), owner, nonce, admins, channels, invites, banned });
-        self.run_commit(cid, plan).map(|_| ())
+        plan.gce = Some(t);
+        if self.run_commit(cid, plan)? == Outcome::Lost { bail!("the community changed at the same time; try again"); }
+        Ok(())
     }
 
     // ------------------------------------------------------------------ messages
@@ -220,7 +308,9 @@ impl Client {
         self.check_chan(gid)?;
         if text.trim().is_empty() || text.len() > MAX_TEXT { bail!("message must be 1-{MAX_TEXT} bytes"); }
         let id = rand_hex(16);
-        self.queue_env(gid, Envelope::Text { id: id.clone(), text: text.into(), reply, ts: now_secs() });
+        let env = Envelope::Text { id: id.clone(), text: text.into(), reply, ts: now_secs() };
+        env.validate().map_err(|e| anyhow!("{e}"))?;
+        self.queue_env(gid, env);
         self.save()?;
         Ok(id)
     }
@@ -228,7 +318,10 @@ impl Client {
         self.check_chan(gid)?;
         let mine = self.st.chans.get(gid).and_then(|l| l.msgs.iter().find(|m| m.id == id)).is_some_and(|m| m.sender == self.my_account() && !m.deleted);
         if !mine { bail!("you can only edit your own messages"); }
-        self.queue_env(gid, Envelope::Edit { target: id.into(), text: text.into(), ts: now_secs() }); self.save()
+        if text.trim().is_empty() || text.len() > MAX_TEXT { bail!("message must be 1-{MAX_TEXT} bytes"); }
+        let env = Envelope::Edit { target: id.into(), text: text.into(), ts: now_secs() };
+        env.validate().map_err(|e| anyhow!("{e}"))?;
+        self.queue_env(gid, env); self.save()
     }
     pub fn delete_message(&mut self, gid: &str, id: &str) -> Result<()> {
         self.check_chan(gid)?;
@@ -239,51 +332,69 @@ impl Client {
     }
     pub fn react(&mut self, gid: &str, id: &str, emoji: &str, on: bool) -> Result<()> {
         self.check_chan(gid)?;
-        self.queue_env(gid, Envelope::React { target: id.into(), emoji: emoji.into(), on }); self.save()
+        let env = Envelope::React { target: id.into(), emoji: emoji.into(), on };
+        env.validate().map_err(|_| anyhow!("that is not a reaction"))?;
+        if !self.st.chans.get(gid).is_some_and(|l| l.msgs.iter().any(|m| m.id == id && !m.deleted)) { bail!("no such message"); }
+        self.queue_env(gid, env); self.save()
     }
-    pub fn send_file(&mut self, gid: &str, name: &str, mime: &str, data: &[u8], caption: &str) -> Result<String> {
+    /// Everything about a file message that can go wrong before any bytes move. Encrypts the file (no network).
+    pub fn file_prepare(&self, gid: &str, name: &str, mime: &str, data: &[u8], caption: &str) -> Result<OutFile> {
         self.check_chan(gid)?;
         if data.len() > MAX_BLOB_BYTES - 64 { bail!("file is larger than the {} MB limit", MAX_BLOB_BYTES / 1024 / 1024); }
+        if caption.len() > MAX_TEXT { bail!("the caption is longer than {MAX_TEXT} bytes"); }
         let mut key = [0u8; 32]; let mut nonce = [0u8; 12];
         rand::rngs::OsRng.fill_bytes(&mut key); rand::rngs::OsRng.fill_bytes(&mut nonce);
         let ct = ChaCha20Poly1305::new((&key).into()).encrypt(Nonce::from_slice(&nonce), data).map_err(|_| anyhow!("encrypt"))?;
-        let blob = rand_hex(16);
-        let k = self.dev_key()?;
-        self.api.put_blob(&k, &blob, &ct)?;
-        let id = rand_hex(16);
-        let safe: String = name.chars().filter(|c| !c.is_control()).take(200).collect();
-        self.queue_env(gid, Envelope::File { id: id.clone(), name: if safe.is_empty() { "file".into() } else { safe }, mime: mime.chars().take(100).collect(), size: data.len() as u64, blob, key: hex::encode(key), nonce: hex::encode(nonce), caption: caption.into(), reply: None, ts: now_secs() });
+        let safe: String = name.chars().filter(|c| !c.is_control()).collect();
+        let safe = cut_name(safe.trim(), 200);
+        let env = Envelope::File { id: rand_hex(16), name: if safe.is_empty() { "file".into() } else { safe }, mime: clean_mime(mime), size: data.len() as u64, blob: rand_hex(16), key: hex::encode(key), nonce: hex::encode(nonce), caption: caption.into(), reply: None, ts: now_secs() };
+        env.validate().map_err(|e| anyhow!("{e}"))?;
+        Ok(OutFile { gid: gid.into(), env, ct })
+    }
+    /// The bytes are on the relay: now the message may go.
+    pub fn file_queue(&mut self, f: OutFile) -> Result<String> {
+        let Envelope::File { id, .. } = &f.env else { bail!("not a file") };
+        let id = id.clone();
+        self.check_chan(&f.gid)?;
+        self.queue_env(&f.gid, f.env);
         self.save()?;
         Ok(id)
     }
-    pub fn fetch_file(&mut self, gid: &str, msg_id: &str) -> Result<(String, String, Vec<u8>)> {
-        let m = self.st.chans.get(gid).and_then(|l| l.msgs.iter().find(|m| m.id == msg_id)).cloned().ok_or_else(|| anyhow!("no such message"))?;
-        let MsgBody::File { name, mime, blob, key, nonce, .. } = m.body else { bail!("not a file") };
-        let cache = self.dir.join("blobs").join(&blob);
-        if let Ok(sealed) = std::fs::read(&cache) { if let Ok(p) = self.vault.unseal(&sealed) { return Ok((name, mime, p)); } }
-        let k = self.dev_key()?;
-        let ct = self.api.get_blob(&k, &blob)?;
-        let pt = ChaCha20Poly1305::new((&hex32(&key)?).into()).decrypt(Nonce::from_slice(&hex::decode(&nonce)?), ct.as_slice())
-            .map_err(|_| anyhow!("the attachment is corrupt or was tampered with on the relay (authentication failed)"))?;
+    pub fn send_file(&mut self, gid: &str, name: &str, mime: &str, data: &[u8], caption: &str) -> Result<String> {
+        let f = self.file_prepare(gid, name, mime, data, caption)?;
+        f.upload(&self.api, &self.dev_key()?)?;
+        self.file_queue(f)
+    }
+    /// What it takes to get one attachment: from the cache if we can, otherwise from the relay.
+    pub fn file_locate(&self, gid: &str, msg_id: &str) -> Result<InFile> {
+        let m = self.st.chans.get(gid).and_then(|l| l.msgs.iter().find(|m| m.id == msg_id)).ok_or_else(|| anyhow!("no such message"))?;
+        let MsgBody::File { name, mime, blob, key, nonce, .. } = &m.body else { bail!("not a file") };
+        // The cache is keyed by everything that identifies the plaintext. By blob id alone, anyone who knows an id could
+        // send a message naming it with their own name and type, and get the cached bytes shown under them.
+        let slot = hex::encode(sha256(&[b"commons/cache/v1", blob.as_bytes(), key.as_bytes(), nonce.as_bytes()]));
+        let cached = std::fs::read(self.dir.join("blobs").join(&slot)).ok().and_then(|s| self.vault.unseal(&s).ok());
+        Ok(InFile { name: name.clone(), mime: mime.clone(), blob: blob.clone(), key: key.clone(), nonce: nonce.clone(), slot, cached })
+    }
+    /// Keep a decrypted attachment for next time, sealed with the vault key.
+    pub fn file_cache(&self, slot: &str, plain: &[u8]) {
         let _ = std::fs::create_dir_all(self.dir.join("blobs"));
-        let _ = std::fs::write(&cache, self.vault.seal(&pt)?);
-        Ok((name, mime, pt))
+        if let Ok(sealed) = self.vault.seal(plain) { let _ = std::fs::write(self.dir.join("blobs").join(slot), sealed); }
+    }
+    pub fn fetch_file(&mut self, gid: &str, msg_id: &str) -> Result<(String, String, Vec<u8>)> {
+        let mut f = self.file_locate(gid, msg_id)?;
+        let fresh = f.cached.is_none();
+        let plain = f.bytes(&self.api, &self.dev_key()?)?;
+        if fresh { self.file_cache(&f.slot, &plain); }
+        Ok((f.name, f.mime, plain))
     }
     /// Best-effort typing hint. Off by default (see THREAT-MODEL.md).
     pub fn send_typing(&mut self, gid: &str) {
-        if !self.st.typing_enabled || self.check_chan(gid).is_err() { return; }
+        if !self.st.typing_enabled || self.check_chan(gid).is_err() || !self.ready_to_encrypt(gid) { return; }
         let key = format!("{gid}|me");
         let now = now_secs();
         if self.typing.get(&key).is_some_and(|t| now < t + 4) { return; }
         self.typing.insert(key, now);
-        let _ = self.send_ephemeral(gid, Envelope::Typing);
-    }
-    fn send_ephemeral(&mut self, gid: &str, env: Envelope) -> Result<()> {
-        if !self.ready_to_encrypt(gid) { return Ok(()); }
-        let (data, id) = self.encrypt_env(gid, &env)?;
-        self.save()?;
-        let k = self.dev_key()?;
-        self.api.post_entry(&k, gid, &id, &data).map(|_| ())
+        self.queue_env(gid, Envelope::Typing);
     }
     fn ready_to_encrypt(&self, gid: &str) -> bool {
         self.st.groups.get(gid).is_some_and(|g| !g.removed && !g.broken && !g.tainted && g.pending.is_none()) && self.synced.contains(gid)
@@ -303,56 +414,43 @@ impl Client {
         while self.st.own_ids.len() > 4000 { self.st.own_ids.pop_front(); }
     }
 
-    fn flush_outbox(&mut self) {
-        let items = std::mem::take(&mut self.st.outbox);
-        let mut keep = vec![];
-        let k = match self.dev_key() { Ok(k) => k, Err(_) => { self.st.outbox = items; return } };
-        for mut it in items {
-            let Some(gs) = self.st.groups.get(&it.gid).cloned() else { continue }; // group gone
-            if gs.removed { self.notice("outbox", "dropped an unsent message: you are no longer in that group".to_string()); continue; }
-            if it.cipher.is_none() {
-                if gs.tainted && gs.pending.is_none() && self.synced.contains(&it.gid) && !gs.broken {
-                    let mut p = Plan::empty("refresh keys after restore"); p.force_update = true;
-                    let _ = self.run_commit(&it.gid, p);
-                }
-                if !self.ready_to_encrypt(&it.gid) { keep.push(it); continue; }
-                match self.encrypt_env(&it.gid, &it.env) {
-                    Ok((data, id)) => { it.cipher = Some(b64(&data)); it.id = id; }
-                    Err(e) => { it.tries += 1; if it.tries > 20 { self.notice("outbox", format!("could not encrypt a message, giving up: {e}")); } else { keep.push(it); } continue; }
-                }
-                // persist ratchet + ciphertext BEFORE touching the network: never encrypt twice with one key
-                self.st.outbox = keep.clone(); self.st.outbox.push(it.clone());
-                if self.save().is_err() { keep.push(it); continue; }
+    /// Encrypt everything that can be, with one save for the whole batch. The ratchet and the ciphertext reach the disk
+    /// before anything reaches the network: never encrypt twice with one key.
+    pub(crate) fn encrypt_outbox(&mut self) -> Result<()> {
+        let mut changed = false;
+        let mut gone = BTreeSet::new();
+        for i in 0..self.st.outbox.len() {
+            let (id, gid, ready) = { let it = &self.st.outbox[i]; (it.id.clone(), it.gid.clone(), it.cipher.is_some()) };
+            let Some(gs) = self.st.groups.get(&gid).cloned() else { gone.insert(id); continue }; // group gone
+            if gs.removed { self.notice("outbox", "dropped an unsent message: you are no longer in that group"); gone.insert(id); continue; }
+            if ready { continue; }
+            if gs.tainted && gs.pending.is_none() && self.synced.contains(&gid) && !gs.broken {
+                let mut p = Plan::empty("refresh keys after restore"); p.force_update = true;
+                if let Err(e) = self.build_commit(&gid, p) { log::warn!("refresh after restore: {e}"); }
             }
-            let data = unb64(it.cipher.as_ref().unwrap()).unwrap_or_default();
-            match self.api.post_entry(&k, &it.gid, &it.id, &data) {
-                Ok(r) => {
-                    self.activity += 1;
-                    let me = self.my_account();
-                    let tid = match &it.env { Envelope::Text { id, .. } | Envelope::File { id, .. } => Some(id.clone()), _ => None };
-                    if let Some(tid) = tid {
-                        if let Some(m) = self.st.chans.get_mut(&it.gid).and_then(|l| l.msgs.iter_mut().find(|m| m.id == tid && m.sender == me)) { m.seq = r.seq; m.status = "sent".into(); }
-                    }
+            if !self.ready_to_encrypt(&gid) { continue; }
+            let env = self.st.outbox[i].env.clone();
+            match self.encrypt_env(&gid, &env) {
+                Ok((data, nid)) => {
+                    let it = &mut self.st.outbox[i];
+                    it.cipher = Some(b64(&data)); it.id = nid;
+                    changed = true;
                 }
-                Err(e) => { log::warn!("post failed, will retry: {e}"); keep.push(it); }
+                Err(e) => {
+                    let it = &mut self.st.outbox[i];
+                    it.tries += 1;
+                    if it.tries > 20 { gone.insert(id); self.notice("outbox", format!("could not encrypt a message, giving up: {e}")); }
+                }
             }
         }
-        let mut now = std::mem::take(&mut self.st.outbox);
-        // items queued by reentrant calls (e.g. run_commit -> tick) while we iterated
-        now.retain(|n| !keep.iter().any(|k| k.id == n.id));
-        self.st.outbox = keep; self.st.outbox.extend(now.into_iter().filter(|n| n.cipher.is_none()));
+        self.st.outbox.retain(|i| !gone.contains(&i.id));
+        if changed { self.save()?; }
+        Ok(())
     }
 
     // ------------------------------------------------------------------ commit machinery
-    /// Create, persist, post and (try to) confirm one commit. Never merges before the relay log shows it won.
-    pub(crate) fn run_commit(&mut self, gid: &str, plan: Plan) -> Result<Outcome> {
-        if self.st.groups.get(gid).is_some_and(|g| g.pending.is_some()) {
-            self.try_post_pending(gid);
-            let _ = self.sync_once(0);
-            if self.st.groups[gid].pending.is_some() { return Ok(Outcome::Pending); }
-        }
-        self.sync_once(0)?;
-        if !self.synced.contains(gid) { bail!("not caught up with the group yet"); }
+    /// Create and persist one commit. No network: it goes out with the next round, or from `run_commit`.
+    pub(crate) fn build_commit(&mut self, gid: &str, plan: Plan) -> Result<String> {
         let gs = self.st.groups.get(gid).cloned().ok_or_else(|| anyhow!("unknown group"))?;
         if gs.removed || gs.broken { bail!("cannot change a group we are not a working member of"); }
         let mut group = self.load_group(gid).ok_or_else(|| anyhow!("group state missing"))?;
@@ -370,14 +468,37 @@ impl Client {
         let msg_id = rand_hex(16);
         self.remember_own(&msg_id);
         let recipients: Vec<String> = plan.adds.iter().map(|(c, _)| c.device.clone()).collect();
-        let new_accounts: Vec<String> = { let mut v: Vec<String> = plan.adds.iter().map(|(c, _)| c.account.clone()).collect(); v.sort(); v.dedup(); v };
-        self.st.groups.get_mut(gid).unwrap().pending = Some(PendingCommit { msg_id: msg_id.clone(), data: b64(&data), welcome, recipients, acl_remove: plan.acl_remove.clone(), posted: false, desc: plan.desc.clone() });
+        // A member adding a device of their own needs nothing from the relay: their account is in already.
+        let acl_add: Vec<String> = { let mut v: Vec<String> = plan.adds.iter().map(|(c, _)| c.account.clone()).filter(|a| !gs.accounts.contains(a)).collect(); v.sort(); v.dedup(); v };
+        self.st.groups.get_mut(gid).unwrap().pending = Some(PendingCommit { msg_id: msg_id.clone(), data: b64(&data), welcome, recipients, acl_remove: plan.acl_remove.clone(), posted: false, desc: plan.desc.clone(), acl_add, handled: plan.handled.clone(), acl_demote: plan.acl_demote.clone() });
         self.save()?; // the staged commit and advanced key schedule hit disk before the network
+        Ok(msg_id)
+    }
+
+    /// Give up on a commit the relay will not take.
+    pub(crate) fn abandon_pending(&mut self, gid: &str, why: &str) {
+        if let Some(mut g) = self.load_group(gid) { let _ = g.clear_pending_commit(self.prov.storage()); }
+        self.drop_pending(gid, why);
+    }
+
+    /// Create, persist, post and (try to) confirm one commit, for actions that need the answer now. Never merges before
+    /// the relay log shows it won.
+    pub(crate) fn run_commit(&mut self, gid: &str, plan: Plan) -> Result<Outcome> {
+        if self.st.groups.get(gid).is_some_and(|g| g.pending.is_some()) {
+            self.try_post_pending(gid);
+            let _ = self.sync_once(0);
+            if self.st.groups[gid].pending.is_some() { return Ok(Outcome::Pending); }
+        }
+        self.catch_up()?;
+        if !self.synced.contains(gid) { bail!("not caught up with the group yet"); }
+        let msg_id = self.build_commit(gid, plan)?;
         let k = self.dev_key()?;
-        if !new_accounts.is_empty() {
-            if let Err(e) = self.api.acl(&k, gid, new_accounts, vec![]) {
-                let mut g = self.load_group(gid).unwrap(); let _ = g.clear_pending_commit(self.prov.storage());
-                self.st.groups.get_mut(gid).unwrap().pending = None; self.save()?;
+        let p = self.st.groups[gid].pending.clone().unwrap();
+        if !p.acl_add.is_empty() {
+            let req = AclReq { add: p.acl_add.clone(), grant: self.my_grant(&self.st.groups[gid].community.clone()), ..Default::default() };
+            if let Err(e) = self.api.acl(&k, gid, &req) {
+                self.abandon_pending(gid, "the relay would not let the new member in");
+                self.save()?;
                 return Err(e);
             }
         }
@@ -389,7 +510,7 @@ impl Client {
         Ok(if self.applied.contains(&msg_id) { Outcome::Applied } else if self.st.groups[gid].pending.is_some() { Outcome::Pending } else { Outcome::Lost })
     }
 
-    fn try_post_pending(&mut self, gid: &str) {
+    pub(crate) fn try_post_pending(&mut self, gid: &str) {
         let Some(p) = self.st.groups.get(gid).and_then(|g| g.pending.clone()) else { return };
         let Ok(k) = self.dev_key() else { return };
         match self.api.post_entry(&k, gid, &p.msg_id, &unb64(&p.data).unwrap_or_default()) {
@@ -398,99 +519,58 @@ impl Client {
         }
     }
 
-    fn flush_welcomes(&mut self) {
-        let Ok(k) = self.dev_key() else { return };
-        let items = std::mem::take(&mut self.st.welcome_out);
-        for w in items {
-            match self.api.post_welcome(&k, &w.device, &w.id, &unb64(&w.data).unwrap_or_default()) {
-                Ok(()) => { self.activity += 1; }
-                Err(e) => { log::warn!("welcome post failed, will retry: {e}"); self.st.welcome_out.push(w); }
-            }
-        }
-        let jobs = std::mem::take(&mut self.st.acl_jobs);
-        for j in jobs {
-            if now_secs() < j.after { self.st.acl_jobs.push(j); continue; }
-            if self.api.acl(&k, &j.gid, vec![], j.remove.clone()).is_err() { self.st.acl_jobs.push(j); }
-        }
-    }
-
-    // ------------------------------------------------------------------ the tick
-    /// Everything a running client does periodically. Errors are logged, never fatal.
-    pub fn tick(&mut self, wait_ms: u64) -> Result<()> {
-        if !self.has_identity() { return self.pairing_poll().map(|_| ()); }
-        let now = now_secs();
-        if self.last_dir_check.get("kp").is_none_or(|t| now >= t + 60) || !self.st.registered {
-            self.last_dir_check.insert("kp".into(), now);
-            if let Err(e) = self.ensure_registered() { log::warn!("register/keypackages: {e}"); }
-        }
-        if let Err(e) = self.send_join_requests() { log::warn!("join request: {e}"); }
-        let pend: Vec<String> = self.st.groups.values().filter(|g| g.pending.as_ref().is_some_and(|p| !p.posted)).map(|g| g.gid.clone()).collect();
-        for g in pend { self.try_post_pending(&g); }
-        self.sync_once(wait_ms)?;
-        self.flush_welcomes();
-        self.send_rejoin_requests();
-        if self.st.profile_dirty {
-            self.st.profile_dirty = false;
-            let name = self.st.name.clone();
-            let ctls: Vec<String> = self.st.groups.values().filter(|g| g.kind == Kind::Control && !g.removed && !g.broken).map(|g| g.gid.clone()).collect();
-            for g in ctls { self.queue_env(&g, Envelope::Profile { name: name.clone(), ts: now_secs() }); }
-        }
-        self.reconcile();
-        self.flush_outbox();
-        self.flush_welcomes();
-        self.save()
-    }
-
-    fn send_rejoin_requests(&mut self) {
-        let Ok(k) = self.dev_key() else { return };
-        let now = now_secs();
-        let broken: Vec<String> = self.st.groups.values().filter(|g| g.broken && !g.removed && (!g.rejoin_sent || now > g.rejoin_ts + 300)).map(|g| g.gid.clone()).collect();
-        for gid in broken {
-            let cert = match self.cert() { Ok(c) => c, Err(_) => return };
-            let nonce = rand_hex(8);
-            let mut m = b"commons/rejoin/v1".to_vec(); m.extend_from_slice(&sha256(&[gid.as_bytes(), nonce.as_bytes()]));
-            let sig = k.sign(&m);
-            let body = serde_json::json!({"cert": cert, "nonce": nonce, "sig": hex::encode(sig.to_bytes())});
-            let mut data = vec![TAG_REJOIN]; data.extend(serde_json::to_vec(&body).unwrap_or_default());
-            if self.api.post_entry(&k, &gid, &rand_hex(16), &data).is_ok() {
-                let g = self.st.groups.get_mut(&gid).unwrap(); g.rejoin_sent = true; g.rejoin_ts = now;
-            }
-        }
-    }
-
     // ------------------------------------------------------------------ reconcile
     /// Bring group membership in line with the roster (control group) and the device directory.
     /// Admins/owner reconcile everyone; plain members only reconcile their own devices.
+    /// This is planning, with no network: what it needs from the relay it asks for, and it finds the answer on a later
+    /// round. The commits it makes go out with the next round.
     pub fn reconcile(&mut self) {
         let cids: Vec<String> = self.st.communities.values().filter(|c| !c.removed).map(|c| c.id.clone()).collect();
-        let mut cache = DirCache::new();
         for cid in cids {
-            if let Err(e) = self.reconcile_community(&cid, &mut cache) { log::warn!("reconcile {}: {e}", Self::short(&cid)); }
+            if let Err(e) = self.reconcile_community(&cid) { log::warn!("reconcile {}: {e}", Self::short(&cid)); }
         }
     }
 
-    fn dir_for(&mut self, cache: &mut DirCache, acct: &str) -> Result<Vec<(DeviceCert, bool)>> {
-        if let Some(d) = cache.get(acct) { return Ok(d.clone()); }
-        let d = self.directory(acct)?;
-        cache.insert(acct.to_string(), d.clone());
-        Ok(d)
+    fn dir_for(&mut self, acct: &str) -> Vec<(DeviceCert, bool)> {
+        let now = now_secs();
+        match self.dir_cache.get(acct) {
+            Some((t, d)) => { let d = d.clone(); if now >= t + self.dir_ttl_secs { self.dir_wanted.insert(acct.to_string()); } d }
+            None => { self.dir_wanted.insert(acct.to_string()); vec![] }
+        }
     }
 
-    fn reconcile_community(&mut self, cid: &str, cache: &mut DirCache) -> Result<()> {
+    fn reconcile_community(&mut self, cid: &str) -> Result<()> {
         let c = self.st.communities[cid].clone();
         let me = self.my_account();
         let role = self.my_role(cid);
         let Some(ctl) = self.st.groups.get(cid).cloned() else { return Ok(()) };
         if ctl.removed || ctl.broken || !self.synced.contains(cid) { return Ok(()); }
         // admins turn valid join requests into joiners
-        let mut joiners: Vec<(DeviceCert, String)> = vec![];
+        let mut joiners: Vec<Joiner> = vec![];
         if role >= Role::Admin {
+            // however many people hold a link, it only admits as many as it has uses left; the others wait for the
+            // next pass, when the table shows the uses are gone and they are told
+            let mut left: BTreeMap<String, u32> = BTreeMap::new();
             let reqs = ctl.requests.clone();
             for r in reqs.iter().filter(|r| r.tag == TAG_JOIN_REQUEST) {
                 match self.check_join(&c, r) {
-                    Ok(Some(j)) => joiners.push(j),
-                    Ok(None) => { self.drop_request(cid, r.seq); }
-                    Err(e) => { self.notice("join", format!("ignored a join request: {e}")); self.drop_request(cid, r.seq); }
+                    JoinCheck::Accept(cert, invite) => {
+                        if joiners.iter().any(|j| j.cert.device == cert.device) { self.drop_request(cid, r.seq); continue; }
+                        let uses = c.invites.iter().find(|i| i.id == invite).and_then(|i| i.uses_left);
+                        if let Some(n) = uses {
+                            let l = left.entry(invite.clone()).or_insert(n);
+                            if *l == 0 { continue; }
+                            *l -= 1;
+                        }
+                        joiners.push(Joiner { cert, invite, seq: r.seq });
+                    }
+                    JoinCheck::Stale => self.drop_request(cid, r.seq),
+                    JoinCheck::Junk(why) => { self.notice("join", format!("ignored a join request: {why}")); self.drop_request(cid, r.seq); }
+                    JoinCheck::Refuse(device, code) => {
+                        self.notice("join", format!("turned down a join request: {}", join_reason_text(code)));
+                        if let Err(e) = self.send_join_reply(&c, &device, code) { log::warn!("join reply: {e}"); }
+                        self.drop_request(cid, r.seq);
+                    }
                 }
             }
         }
@@ -506,34 +586,41 @@ impl Client {
             let is_ctl = gid == cid;
             let Some(gs) = self.st.groups.get(&gid).cloned() else { continue };
             if gs.removed || gs.broken || gs.pending.is_some() || !self.synced.contains(&gid) { continue; }
-            if let Err(e) = self.reconcile_group(&c, &gid, is_ctl, role, &me, &remove_accounts, if is_ctl { &joiners } else { &[] }, cache) {
+            if let Err(e) = self.reconcile_group(&c, &gid, is_ctl, role, &me, &remove_accounts, if is_ctl { &joiners } else { &[] }) {
                 log::warn!("reconcile group {}: {e}", Self::short(&gid));
             }
         }
         Ok(())
     }
 
-    fn drop_request(&mut self, gid: &str, seq: u64) {
+    pub(crate) fn drop_request(&mut self, gid: &str, seq: u64) {
         if let Some(g) = self.st.groups.get_mut(gid) { g.requests.retain(|r| r.seq != seq); }
     }
 
-    /// Validate a join request against the current control table. Ok(None) = stale/duplicate.
-    fn check_join(&mut self, c: &Community, r: &ReqItem) -> Result<Option<(DeviceCert, String)>> {
-        let jr = JoinRequest::parse(&unb64(&r.data)?)?;
-        let inv = c.invites.iter().find(|i| i.id == jr.invite).ok_or_else(|| anyhow!("invite no longer valid"))?;
-        if inv.expires < now_secs() { bail!("invite expired"); }
-        if inv.uses_left == Some(0) { bail!("invite used up"); }
-        let pk = ed25519_dalek::VerifyingKey::from_bytes(&hex32(&inv.pk)?)?;
-        let sig = ed25519_dalek::Signature::from_slice(&hex::decode(&jr.sig)?)?;
-        pk.verify(&join_msg(&c.id, &jr.cert.device, &jr.invite), &sig).map_err(|_| anyhow!("bad invite signature"))?;
-        if c.banned.contains(&jr.cert.account) { bail!("that account is banned from this community"); }
-        if self.st.revoked.contains_key(&jr.cert.device) { bail!("device revoked"); }
-        if self.st.groups.get(&c.id).is_some_and(|g| g.dev_seq.contains_key(&jr.cert.device)) { return Ok(None); }
-        Ok(Some((jr.cert, jr.invite)))
+    /// Validate a join request against the current control table.
+    fn check_join(&self, c: &Community, r: &ReqItem) -> JoinCheck {
+        let jr = match unb64(&r.data).map_err(|e| e.to_string()).and_then(|d| JoinRequest::parse(&d).map_err(|e| e.to_string())) { Ok(j) => j, Err(e) => return JoinCheck::Junk(e) };
+        // Already in: that comes first, or a request answered by another admin would look like a used-up invite.
+        if self.st.groups.get(&c.id).is_some_and(|g| g.dev_seq.contains_key(&jr.cert.device)) { return JoinCheck::Stale; }
+        if self.st.revoked.contains_key(&jr.cert.device) { return JoinCheck::Junk("device revoked".into()); }
+        let Some(inv) = c.invites.iter().find(|i| i.id == jr.invite) else { return JoinCheck::Refuse(jr.cert.device, JOIN_INVITE_GONE) };
+        if !crate::sync::join_signature_ok(inv, &c.id, &jr) { return JoinCheck::Junk("bad invite signature".into()); }
+        if c.banned.contains(&jr.cert.account) { return JoinCheck::Refuse(jr.cert.device, JOIN_BANNED); }
+        if inv.expires < now_secs() || inv.uses_left == Some(0) { return JoinCheck::Refuse(jr.cert.device, JOIN_INVITE_GONE); }
+        JoinCheck::Accept(jr.cert, jr.invite)
+    }
+
+    /// The joiner is in no group yet, so the answer goes to their inbox, the one place an outsider can be reached.
+    fn send_join_reply(&mut self, c: &Community, device: &str, code: &str) -> Result<()> {
+        let k = self.dev_key()?;
+        let sig = k.sign(&join_reply_msg(&c.id, device, code));
+        let reply = JoinReply { community: c.id.clone(), reason: code.into(), cert: self.cert()?, sig: hex::encode(sig.to_bytes()), grant: self.my_grant(&c.id), transfers: c.transfers.clone() };
+        self.st.welcome_out.push(WelcomeOut { id: rand_hex(16), device: device.into(), data: b64(&serde_json::to_vec(&reply)?), gid: c.id.clone() });
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn reconcile_group(&mut self, c: &Community, gid: &str, is_ctl: bool, role: Role, me: &str, remove_accounts: &BTreeSet<String>, joiners: &[(DeviceCert, String)], cache: &mut DirCache) -> Result<()> {
+    fn reconcile_group(&mut self, c: &Community, gid: &str, is_ctl: bool, role: Role, me: &str, remove_accounts: &BTreeSet<String>, joiners: &[Joiner]) -> Result<()> {
         let group = self.load_group(gid).ok_or_else(|| anyhow!("no group"))?;
         let members = mls::members_of(&group);
         let ctl_accounts = self.st.groups[&c.id].accounts.clone();
@@ -542,7 +629,20 @@ impl Client {
         let may = |a: &str| role >= Role::Admin || a == me;
         let mut plan = Plan::empty("");
         let mut descs: Vec<String> = vec![];
-        let mut removed_devices: BTreeSet<String> = BTreeSet::new();
+        // A room's table may still name the previous owner, and every other change here would be judged by that.
+        // So the signed chain goes in first, on its own; the new owner is who can do that, with the same re-check as any commit.
+        if !is_ctl && role == Role::Owner {
+            if let (Some(GroupExt::Channel { community, name, owner, nonce, admins, transfers }), Ok(GroupExt::Control { admins: ctl_admins, transfers: ctl_transfers, .. })) = (mls::group_ext(group.extensions()), self.ctl_ext(&c.id)) {
+                if transfers != ctl_transfers {
+                    plan.gce = Some(GroupExt::Channel { community, name, owner, nonce, admins: ctl_admins, transfers: ctl_transfers });
+                    plan.desc = "update owner".into();
+                    self.build_commit(gid, plan)?;
+                    return Ok(());
+                }
+                // keep each channel's own copy of the admin list current (only the owner may change it)
+                if admins != ctl_admins { plan.gce = Some(GroupExt::Channel { community, name, owner, nonce, admins: ctl_admins, transfers }); descs.push("update channel admins".into()); }
+            }
+        }
         // resync requests from devices whose state fell behind
         let mut handled_reqs: Vec<u64> = vec![];
         let mut rejoin_devices: Vec<DeviceCert> = vec![];
@@ -555,9 +655,12 @@ impl Client {
                 .zip(hex::decode(sig).ok().and_then(|s| ed25519_dalek::Signature::from_slice(&s).ok())).is_some_and(|(vk, s)| vk.verify(&m, &s).is_ok());
             if !ok || !may(&cert.account) || !desired.contains(&cert.account) { handled_reqs.push(r.seq); continue; }
             match gs.dev_seq.get(&cert.device) { Some(&s) if s >= r.seq => { handled_reqs.push(r.seq); continue } _ => {} }
+            // Remove and re-add are one commit, or the person drops off the roster and every room follows. So the old
+            // leaf only goes once the key package for the new one is in hand; the request waits until then.
+            if self.kp_cache.get(&cert.device).is_none_or(|v| v.is_empty()) { *self.kp_wanted.entry(cert.device.clone()).or_insert(0) += 1; continue; }
             rejoin_devices.push(cert); handled_reqs.push(r.seq);
         }
-        if is_ctl { for (cert, _) in joiners { desired.insert(cert.account.clone()); } }
+        if is_ctl { for j in joiners { desired.insert(j.cert.account.clone()); } }
         // removals
         for (idx, cert) in &members {
             let acct_removed = !desired.contains(&cert.account) && role >= Role::Admin && cert.account != c.owner
@@ -566,7 +669,7 @@ impl Client {
             let revoked = self.st.revoked.contains_key(&cert.device) && may(&cert.account);
             let rejoin = rejoin_devices.iter().any(|d| d.device == cert.device);
             if acct_removed || revoked || rejoin {
-                plan.removes.push(*idx); removed_devices.insert(cert.device.clone());
+                plan.removes.push(*idx);
                 if acct_removed && !members.iter().any(|(i, m)| m.account == cert.account && !plan.removes.contains(i)) { plan.acl_remove.push(cert.account.clone()); }
             }
         }
@@ -576,60 +679,62 @@ impl Client {
         let mut want: Vec<DeviceCert> = vec![];
         for acct in desired.iter().filter(|a| may(a)) {
             if is_ctl && !ctl_accounts.contains(acct) {
-                for (j, _) in joiners.iter().filter(|(j, _)| &j.account == acct) { want.push(j.clone()); }
+                for j in joiners.iter().filter(|j| &j.cert.account == acct) { want.push(j.cert.clone()); }
                 continue;
             }
             if c.banned.contains(acct) { continue; }
-            for (cert, revoked) in self.dir_for(cache, acct)? { if !revoked && !have.contains(&cert.device) { want.push(cert); } }
+            for (cert, revoked) in self.dir_for(acct) { if !revoked && !have.contains(&cert.device) { want.push(cert); } }
         }
         for j in &rejoin_devices { if !want.iter().any(|w| w.device == j.device) { want.push(j.clone()); } }
         if is_ctl {
-            for (j, _) in joiners { if ctl_accounts.contains(&j.account) && !have.contains(&j.device) && !want.iter().any(|w| w.device == j.device) && role >= Role::Admin { want.push(j.clone()); } }
+            for j in joiners { if ctl_accounts.contains(&j.cert.account) && !have.contains(&j.cert.device) && !want.iter().any(|w| w.device == j.cert.device) && role >= Role::Admin { want.push(j.cert.clone()); } }
         }
         let mut seen = BTreeSet::new();
         want.retain(|w| seen.insert(w.device.clone()) && !self.st.revoked.contains_key(&w.device));
         for w in want {
-            match self.api.take_kp(&self.dev_key()?, &w.device) {
-                Ok(Some(b)) => match mls::parse_kp(&self.prov, &b) {
-                    Ok((kp, cert)) if cert.device == w.device && cert.account == w.account => plan.adds.push((cert, kp)),
-                    Ok(_) => self.notice("keypackage", format!("relay returned a key package for the wrong device (device {}); ignored", &w.device[..8])),
-                    Err(e) => self.notice("keypackage", format!("invalid key package for device {}: {e}", &w.device[..8])),
-                },
-                Ok(None) => log::info!("device {} has no key package yet", &w.device[..8]),
-                Err(e) => log::warn!("key package fetch: {e}"),
+            let Some(b) = self.kp_cache.get_mut(&w.device).and_then(|v| v.pop()) else { *self.kp_wanted.entry(w.device.clone()).or_insert(0) += 1; continue };
+            match mls::parse_kp(&self.prov, &b) {
+                Ok((kp, cert)) if cert.device == w.device && cert.account == w.account => plan.adds.push((cert, kp)),
+                Ok(_) => self.notice("keypackage", format!("relay returned a key package for the wrong device (device {}); ignored", &w.device[..8])),
+                Err(e) => self.notice("keypackage", format!("invalid key package for device {}: {e}", &w.device[..8])),
             }
         }
         if !plan.adds.is_empty() { descs.push(format!("add {} device(s)", plan.adds.len())); }
-        // control table: consume invites, record bans
+        // control table: consume invites, record bans, keep the admin list true to the roster
         if is_ctl && role >= Role::Admin {
-            let GroupExt::Control { name, owner, nonce, admins, channels, mut invites, mut banned } = self.ctl_ext(&c.id)? else { bail!("bad table") };
+            let mut t = self.ctl_ext(&c.id)?;
+            let GroupExt::Control { admins, invites, banned, .. } = &mut t else { bail!("bad table") };
             let mut changed = false;
-            for (j, inv) in joiners {
-                if plan.adds.iter().any(|(c2, _)| c2.device == j.device) {
-                    if let Some(i) = invites.iter_mut().find(|i| &i.id == inv) { if let Some(n) = i.uses_left.as_mut() { *n = n.saturating_sub(1); changed = true; } }
+            for j in joiners {
+                if plan.adds.iter().any(|(c2, _)| c2.device == j.cert.device) {
+                    if let Some(i) = invites.iter_mut().find(|i| i.id == j.invite) { if let Some(n) = i.uses_left.as_mut() { *n = n.saturating_sub(1); changed = true; } }
+                    plan.handled.push(j.seq);
                 }
             }
             let before = invites.len();
             invites.retain(|i| i.uses_left != Some(0));
             if invites.len() != before { changed = true; }
             for a in &c.kick_queue { if !banned.contains(a) && members.iter().any(|(_, m)| &m.account == a) { banned.push(a.clone()); changed = true; } }
-            if changed { plan.gce = Some(GroupExt::Control { name, owner, nonce, admins, channels, invites, banned }); descs.push("update table".into()); }
-        }
-        // keep each channel's own copy of the owner-signed admin list current (only the owner may change it)
-        if !is_ctl && role == Role::Owner {
-            if let (Some(GroupExt::Channel { community, name, owner, nonce, admins }), Ok(GroupExt::Control { admins: ctl_admins, .. })) = (mls::group_ext(group.extensions()), self.ctl_ext(&c.id)) {
-                if admins != ctl_admins { plan.gce = Some(GroupExt::Channel { community, name, owner, nonce, admins: ctl_admins }); descs.push("update channel admins".into()); }
+            if role == Role::Owner {
+                // Someone leaving takes their grant with them, in the same commit; if they ever come back they come back
+                // as a member. Grants from a previous owner are re-signed, since the relay only takes the owner's word.
+                let ak = self.acct_key()?;
+                let gone: Vec<String> = admins.iter().filter(|a| !desired.contains(&a.account)).map(|a| a.account.clone()).collect();
+                admins.retain(|a| !gone.contains(&a.account));
+                if !gone.is_empty() { plan.acl_demote = gone; changed = true; }
+                for a in admins.iter_mut() {
+                    if verify_grant(me, &c.id, &a.account, &a.sig).is_err() { *a = sign_grant(&ak, &c.id, &a.account); changed = true; }
+                }
             }
+            if changed { plan.gce = Some(t); descs.push("update table".into()); }
         }
         if plan.removes.is_empty() && plan.adds.is_empty() && plan.gce.is_none() {
             for s in handled_reqs { self.drop_request(gid, s); }
             return Ok(());
         }
         plan.desc = descs.join(", ");
-        let out = self.run_commit(gid, plan)?;
-        if out != Outcome::Lost { for s in handled_reqs { self.drop_request(gid, s); } }
-        // joiners are handled (or will be re-validated from the table) once the commit is applied
-        if out == Outcome::Applied && is_ctl { for r in self.st.groups[gid].requests.clone().iter().filter(|r| r.tag == TAG_JOIN_REQUEST) { if let Ok(jr) = JoinRequest::parse(&unb64(&r.data).unwrap_or_default()) { if joiners.iter().any(|(j, _)| j.device == jr.cert.device) { self.drop_request(gid, r.seq); } } } }
+        plan.handled.extend(handled_reqs);
+        self.build_commit(gid, plan)?;
         Ok(())
     }
 
@@ -650,22 +755,32 @@ impl Client {
         self.st.chans.get(gid).map(|l| l.msgs.iter().skip(l.read_upto).filter(|m| m.sender != me && !m.deleted && !matches!(m.body, MsgBody::Notice(_))).count()).unwrap_or(0)
     }
     pub fn mark_read(&mut self, gid: &str) { if let Some(l) = self.st.chans.get_mut(gid) { l.read_upto = l.msgs.len(); } }
-    pub fn messages(&self, gid: &str) -> Vec<Msg> {
-        let mut v = self.st.chans.get(gid).map(|l| l.msgs.clone()).unwrap_or_default();
+    pub fn messages(&self, gid: &str) -> Vec<Msg> { self.message_log(gid).into_iter().cloned().collect() }
+    /// A room's messages in reading order, by reference: a page of a long history costs a page, not a copy of it all.
+    pub fn message_log(&self, gid: &str) -> Vec<&Msg> {
+        let v: Vec<&Msg> = self.st.chans.get(gid).map(|l| l.msgs.iter().collect()).unwrap_or_default();
         // relay order for delivered messages; local unsent ones stay at the end in the order sent
-        let (mut sent, pending): (Vec<Msg>, Vec<Msg>) = v.drain(..).partition(|m| m.seq > 0 || m.status == "system");
+        let (mut sent, pending): (Vec<&Msg>, Vec<&Msg>) = v.into_iter().partition(|m| m.seq > 0 || m.status == "system");
         sent.sort_by_key(|m| (if m.seq > 0 { m.seq } else { u64::MAX }, m.ts));
         sent.extend(pending);
         sent
+    }
+    /// Each member's role, and whether their name is shared with someone else here.
+    pub fn people_of(&self, cid: &str) -> BTreeMap<String, (Role, bool)> {
+        let (Some(c), Some(g)) = (self.st.communities.get(cid), self.st.groups.get(cid)) else { return BTreeMap::new() };
+        let keys: Vec<(&String, String)> = g.accounts.iter().map(|a| (a, name_key(&self.display_name(a)))).collect();
+        keys.iter().map(|(a, k)| ((*a).clone(), (c.role_of(a).unwrap_or(Role::Member), keys.iter().filter(|(_, x)| x == k).count() > 1))).collect()
     }
     pub fn members(&self, cid: &str) -> Vec<MemberInfo> {
         let (Some(c), Some(g)) = (self.st.communities.get(cid), self.st.groups.get(cid)) else { return vec![] };
         let Some(group) = self.load_group(cid) else { return vec![] };
         let all = mls::members_of(&group);
         let me = self.my_account();
-        g.accounts.iter().map(|a| MemberInfo {
+        let keys: Vec<String> = g.accounts.iter().map(|a| name_key(&self.display_name(a))).collect();
+        g.accounts.iter().enumerate().map(|(i, a)| MemberInfo {
             account: a.clone(), name: self.display_name(a), role: c.role_of(a).unwrap_or(Role::Member),
             devices: all.iter().filter(|(_, m)| &m.account == a).count(), verified: self.st.verified.contains(a), is_me: *a == me,
+            tag: account_tag(a), same_name: keys.iter().filter(|k| **k == keys[i]).count() > 1,
         }).collect()
     }
     pub fn search(&self, q: &str) -> Vec<(String, String, Msg)> {
@@ -693,8 +808,16 @@ impl Client {
         qrcode::QrCode::new(data.as_bytes()).map(|q| q.render::<qrcode::render::svg::Color>().min_dimensions(200, 200).quiet_zone(true).build()).unwrap_or_default()
     }
     pub fn set_name(&mut self, name: &str) -> Result<()> {
-        if name.trim().is_empty() || name.len() > 64 { bail!("name must be 1-64 characters"); }
-        self.st.name = name.trim().into(); self.st.profile_dirty = true; self.save()
+        let name = name.trim();
+        check_name("a name", name).map_err(|e| anyhow!(e))?;
+        let me = self.my_account();
+        // Two people answering to one name is how someone gets impersonated. Names are ours to pick, not the community's
+        // to enforce (a modified client can ignore this), so receivers also show who is who: see `tag`.
+        for c in self.st.communities.values().filter(|c| !c.removed) {
+            let taken = self.st.groups.get(&c.id).is_some_and(|g| g.accounts.iter().any(|a| *a != me && name_key(&self.display_name(a)) == name_key(name)));
+            if taken { bail!("someone in {} is already called that; pick another name", c.name); }
+        }
+        self.st.name = name.into(); self.st.profile_dirty = true; self.save()
     }
     pub fn group_status(&self, gid: &str) -> String {
         match self.st.groups.get(gid) {
@@ -703,6 +826,7 @@ impl Client {
             Some(g) if g.broken => "out of sync, waiting to be re-added".into(),
             Some(g) if g.tainted => "refreshing keys".into(),
             Some(g) if g.pending.is_some() => "applying a change".into(),
+            Some(g) if g.denied => "the relay is not letting this account in".into(),
             Some(_) => "ok".into(),
         }
     }
@@ -748,6 +872,21 @@ impl Client {
     pub fn debug_post_raw(&mut self, gid: &str, data: &[u8]) -> Result<()> {
         let k = self.dev_key()?; self.api.post_entry(&k, gid, &rand_hex(16), data).map(|_| ())
     }
+    /// A hostile admin adding someone to a group without asking them (test builds only).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_add_account_devices(&mut self, gid: &str, account: &str) -> Result<()> {
+        let k = self.dev_key()?; let dir = self.directory(account)?; let mut plan = Plan::empty("hostile add");
+        for (cert, rev) in dir { if rev { continue; } if let Some(b) = self.api.take_kp(&k, &cert.device)? { let (kp, c) = mls::parse_kp(&self.prov, &b)?; plan.adds.push((c, kp)); } }
+        self.run_commit(gid, plan).map(|_| ())
+    }
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_my_grant(&self, cid: &str) -> Option<String> { self.my_grant(cid) }
+    /// The device key, so a test can talk to the relay as a misbehaving client (test builds only).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_dev_key(&self) -> Result<SigningKey> { self.dev_key() }
     #[doc(hidden)]
     pub fn debug_expire_acl_jobs(&mut self) { for j in self.st.acl_jobs.iter_mut() { j.after = 0; } }
     #[doc(hidden)]
@@ -756,3 +895,30 @@ impl Client {
     #[allow(dead_code)]
     fn _batch() -> usize { BATCH }
 }
+
+/// A file on its way out: encrypted, not yet uploaded.
+pub struct OutFile { gid: String, env: Envelope, ct: Vec<u8> }
+impl OutFile {
+    /// The only slow part. Takes no reference to the client, so it can run with the client free for others.
+    pub fn upload(&self, api: &Api, k: &SigningKey) -> Result<()> {
+        let Envelope::File { blob, .. } = &self.env else { bail!("not a file") };
+        api.put_blob(k, blob, &self.ct)
+    }
+}
+/// An attachment we want to read.
+pub struct InFile { pub name: String, pub mime: String, blob: String, key: String, nonce: String, pub slot: String, pub cached: Option<Vec<u8>> }
+impl InFile {
+    /// Decrypted bytes, downloading them if they are not cached. No reference to the client, as above.
+    pub fn bytes(&mut self, api: &Api, k: &SigningKey) -> Result<Vec<u8>> {
+        if let Some(p) = self.cached.take() { return Ok(p); }
+        let ct = api.get_blob(k, &self.blob)?;
+        ChaCha20Poly1305::new((&hex32(&self.key)?).into()).decrypt(Nonce::from_slice(&hex::decode(&self.nonce)?), ct.as_slice())
+            .map_err(|_| anyhow!("the attachment is corrupt or was tampered with on the relay (authentication failed)"))
+    }
+}
+
+struct Joiner { cert: DeviceCert, invite: String, seq: u64 }
+enum JoinCheck { Accept(DeviceCert, String), Stale, Junk(String), Refuse(String, &'static str) }
+
+/// Six characters of the account id: enough to tell two people apart, and the same on every screen.
+pub fn account_tag(a: &str) -> String { a.chars().take(6).collect() }

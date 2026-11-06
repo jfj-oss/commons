@@ -30,6 +30,8 @@ tiny_http = { version = "0.12", optional = true }
 
 [features]
 devbridge = ["dep:tiny_http"]
+# Hooks that let the integration tests act as a misbehaving client. Never enabled in a normal build.
+test-hooks = []
 
 [[bin]]
 name = "dev_bridge"
@@ -37,6 +39,8 @@ path = "src/bin/dev_bridge.rs"
 required-features = ["devbridge"]
 
 [dev-dependencies]
+commons-core = { path = ".", features = ["test-hooks"] }
+ureq = "2"
 commons-relay = { path = "../relay" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 tempfile = "3"

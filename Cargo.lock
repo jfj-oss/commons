@@ -585,6 +585,7 @@ dependencies = [
  "argon2",
  "base64 0.22.1",
  "chacha20poly1305",
+ "commons-core",
  "commons-proto",
  "commons-relay",
  "crypto_box",
@@ -634,6 +635,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

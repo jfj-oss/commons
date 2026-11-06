@@ -5,6 +5,7 @@ pub mod mls;
 pub mod state;
 pub mod transport;
 pub mod vault;
-mod ops;
+pub mod ops;
+mod round;
 mod sync;
 pub mod api;

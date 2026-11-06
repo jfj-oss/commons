@@ -18,40 +18,74 @@ impl Client {
         MlsGroup::load(self.prov.storage(), &id).ok().flatten()
     }
 
-    /// One round trip with the relay plus processing of everything it returned.
-    /// `wait_ms` > 0 makes it a long-poll (the UI loop uses it; tests use 0).
-    pub fn sync_once(&mut self, wait_ms: u64) -> Result<()> {
-        let k = self.dev_key()?;
+    pub(crate) fn sync_req(&mut self, wait_ms: u64) -> SyncReq {
         let mut cursors = BTreeMap::new();
         for g in self.st.groups.values().filter(|g| !g.removed) { cursors.insert(g.gid.clone(), g.cursor); }
-        let req = SyncReq { cursors, ack_welcomes: std::mem::take(&mut self.st.ack_welcomes), wait_ms };
-        let resp = match self.api.sync(&k, &req) {
+        SyncReq { cursors, ack_welcomes: std::mem::take(&mut self.st.ack_welcomes), wait_ms, max_bytes: None }
+    }
+
+    /// One round trip with the relay plus processing of everything it returned.
+    /// `wait_ms` > 0 makes it a long-poll. Used by actions that must see the log right now; the background loop
+    /// does the same work in rounds, without holding the client while it waits for the network.
+    pub fn sync_once(&mut self, wait_ms: u64) -> Result<()> {
+        let k = self.dev_key()?;
+        let req = self.sync_req(wait_ms);
+        let (r, cap, bad) = crate::round::fetch_sync(&self.api, &k, &req, self.sync_cap);
+        self.sync_cap = cap;
+        let resp = match r {
             Ok(r) => r,
-            Err(e) => { self.st.ack_welcomes = req.ack_welcomes; return Err(e); }
+            Err(e) => { self.st.ack_welcomes.extend(req.ack_welcomes); self.note_failure(&e); return Err(e); }
         };
-        let mut resp = resp;
+        self.apply_sync(resp, &bad);
+        self.save()
+    }
+
+    /// Sync until the relay has nothing more for us, within reason.
+    pub(crate) fn catch_up(&mut self) -> Result<()> {
+        for _ in 0..8 {
+            self.more = false;
+            self.sync_once(0)?;
+            if !self.more { break; }
+        }
+        Ok(())
+    }
+
+    /// Everything the relay returned. Local work only. `unreadable` lists groups whose entries could not be fetched:
+    /// they say so and wait, and every other group carries on.
+    pub(crate) fn apply_sync(&mut self, mut resp: SyncResp, unreadable: &[String]) {
+        let mut opened = false;
         for w in &resp.welcomes {
+            if !self.seen_welcomes.insert(w.id.clone()) { self.st.ack_welcomes.push(w.id.clone()); continue; }
             let data = match unb64(&w.data) { Ok(d) => d, Err(_) => { self.st.ack_welcomes.push(w.id.clone()); continue; } };
             if self.st.parked_welcomes.iter().any(|p| p.id == w.id) { self.st.ack_welcomes.push(w.id.clone()); continue; }
+            // MLS messages start with a version number, our JSON with a brace.
+            if data.first() == Some(&b'{') { self.handle_join_reply(&data); self.st.ack_welcomes.push(w.id.clone()); continue; }
             match self.handle_welcome(&w.id, &data) {
-                Ok(true) => {}
-                Ok(false) => self.st.parked_welcomes.push(ParkedWelcome { id: w.id.clone(), data: w.data.clone(), ts: now_secs() }),
+                Ok(true) => opened = true,
+                Ok(false) => self.park_welcome(w.id.clone(), w.data.clone()),
                 Err(e) => self.notice("welcome", format!("ignored an invitation to a group: {e}")),
             }
             self.st.ack_welcomes.push(w.id.clone());
         }
-        self.retry_parked();
+        self.retry_parked(opened);
         let mut order: Vec<String> = self.st.groups.values().filter(|g| !g.removed).map(|g| g.gid.clone()).collect();
         order.sort_by_key(|g| (self.st.groups[g].kind != Kind::Control, g.clone()));
         let mut ctl_ok: BTreeMap<String, bool> = BTreeMap::new();
         for gid in order {
             let kind = self.st.groups[&gid].kind.clone();
             let comm = self.st.groups[&gid].community.clone();
+            if unreadable.contains(&gid) {
+                self.synced.remove(&gid);
+                self.notice("relay", format!("group {}: the relay's answer could not be read, so this group is paused; the others carry on", &gid[..8.min(gid.len())]));
+                if kind == Kind::Control { ctl_ok.insert(comm, false); }
+                continue;
+            }
             if kind == Kind::Channel && ctl_ok.get(&comm) == Some(&false) { continue; }
             let entries = resp.messages.remove(&gid).unwrap_or_default();
-            let ok = self.process_entries(&gid, entries);
+            let ok = self.process_entries(&gid, entries, resp.more.contains(&gid));
             if kind == Kind::Control { ctl_ok.insert(comm, ok); }
         }
+        self.more |= !resp.more.is_empty();
         for gid in &resp.denied {
             if self.st.groups.get(gid).is_some_and(|g| !g.removed && !g.denied) {
                 self.st.groups.get_mut(gid).unwrap().denied = true;
@@ -59,11 +93,11 @@ impl Client {
             }
         }
         for g in self.st.groups.values_mut() { if g.denied && !resp.denied.contains(&g.gid) { g.denied = false; } }
-        self.save()
     }
 
     /// Returns false if the log had a gap or processing could not complete (caller must not trust dependents this round).
-    fn process_entries(&mut self, gid: &str, mut entries: Vec<Entry>) -> bool {
+    /// `more`: the relay holds further entries for this group, so we are not caught up however few arrived.
+    fn process_entries(&mut self, gid: &str, mut entries: Vec<Entry>, more: bool) -> bool {
         entries.sort_by_key(|e| e.seq);
         entries.dedup_by_key(|e| e.seq);
         let total = entries.len();
@@ -84,9 +118,11 @@ impl Client {
             else {
                 match data[0] {
                     TAG_MLS | TAG_COMMIT => self.apply_mls(gid, e.seq, &e.id, data[0], &data[1..]),
-                    TAG_REJOIN | TAG_JOIN_REQUEST => {
+                    TAG_JOIN_REQUEST => self.queue_join(gid, e.seq, &data[1..]),
+                    TAG_REJOIN => {
                         let g = self.st.groups.get_mut(gid).unwrap();
-                        if g.requests.len() < 200 { g.requests.push(ReqItem { seq: e.seq, tag: data[0], data: b64(&data[1..]), tries: 0 }); }
+                        if g.requests.iter().filter(|r| r.tag == TAG_REJOIN).count() < 200 { g.requests.push(ReqItem { seq: e.seq, tag: data[0], data: b64(&data[1..]), tries: 0, unverified: false }); }
+                        else { self.notice("reject", format!("group {}: too many re-add requests are waiting; dropped one, the device will ask again", &gid[..8])); }
                     }
                     t => self.notice("parse", format!("unknown log entry type {t} in group {} ignored", &gid[..8])),
                 }
@@ -94,13 +130,73 @@ impl Client {
             self.st.groups.get_mut(gid).unwrap().cursor = e.seq;
             self.activity += 1;
         }
-        if complete && total < BATCH { self.synced.insert(gid.to_string()); } else if !complete { self.synced.remove(gid); }
+        if complete && total < BATCH && !more { self.synced.insert(gid.to_string()); } else if !complete { self.synced.remove(gid); }
         complete
     }
 
-    fn retry_parked(&mut self) {
-        let parked = std::mem::take(&mut self.st.parked_welcomes);
+    /// A knock on the door, from anyone who can reach the relay. Only admins act on these, and only what checks out
+    /// takes up room: a signature made with the invite's secret key proves the knocker holds the link. A request for an
+    /// invite we no longer list cannot be checked; it is kept apart, because it may be someone we owe an answer.
+    fn queue_join(&mut self, gid: &str, seq: u64, payload: &[u8]) {
+        let Some(g) = self.st.groups.get(gid) else { return };
+        if g.kind != Kind::Control { return; }
+        let Some(c) = self.st.communities.get(gid) else { return };
+        if c.role_of(&self.my_account()).unwrap_or(Role::Member) < Role::Admin { return; }
+        let jr = match JoinRequest::parse(payload) {
+            Ok(j) => j,
+            Err(_) => { self.notice("join", "ignored malformed join requests"); return }
+        };
+        let unverified = match c.invites.iter().find(|i| i.id == jr.invite) {
+            Some(inv) => {
+                if !join_signature_ok(inv, gid, &jr) { self.notice("join", "ignored a join request with a bad invite signature"); return; }
+                false
+            }
+            None => true,
+        };
+        let dup = g.requests.iter().any(|r| r.tag == TAG_JOIN_REQUEST && JoinRequest::parse(&unb64(&r.data).unwrap_or_default()).is_ok_and(|x| x.cert.device == jr.cert.device && x.invite == jr.invite));
+        let held = g.requests.iter().filter(|r| r.tag == TAG_JOIN_REQUEST && r.unverified == unverified).count();
+        if dup { return; }
+        if held >= if unverified { 200 } else { 1000 } {
+            self.notice("join", "too many join requests are waiting; dropped one. A real request is sent again later.");
+            return;
+        }
+        self.st.groups.get_mut(gid).unwrap().requests.push(ReqItem { seq, tag: TAG_JOIN_REQUEST, data: b64(payload), tries: 0, unverified });
+    }
+
+    /// An admin says our join will not happen. Believed only if it is for a join we asked for and comes from an admin
+    /// of the community the invite link named.
+    fn handle_join_reply(&mut self, data: &[u8]) {
+        let Ok(r) = JoinReply::parse(data) else { self.notice("welcome", "ignored a malformed reply to a join request"); return };
+        let Some(l) = self.st.joining.get(&r.community).cloned() else { return };
+        if let Err(e) = r.verify(&l.owner, &self.my_device()) { self.notice("welcome", format!("ignored a reply to a join request: {e}")); return; }
+        let text = join_reason_text(&r.reason);
+        self.refuse_join(&r.community, text);
+    }
+
+    /// The join is over: stop waiting and keep the reason where the person will see it.
+    pub(crate) fn refuse_join(&mut self, community: &str, reason: &str) {
+        let Some(l) = self.st.joining.remove(community) else { return };
+        self.st.join_sent.remove(community);
+        self.st.join_asked.remove(community);
+        self.st.join_retry.remove(community);
+        self.st.join_refused.insert(community.to_string(), JoinRefused { name: l.name.clone(), reason: reason.into(), ts: now_secs() });
+        self.notice("reject", format!("could not join \"{}\": {reason}", l.name));
+    }
+
+    fn park_welcome(&mut self, id: String, data: String) {
+        if self.st.parked_welcomes.len() >= 64 {
+            self.st.parked_welcomes.remove(0);
+            self.notice("welcome", "dropped an old invitation to a room of a community we never joined");
+        }
+        self.st.parked_welcomes.push(ParkedWelcome { id, data, ts: now_secs() });
+    }
+
+    /// Retried when a community may just have arrived, and now and then in case one arrived another way.
+    fn retry_parked(&mut self, opened: bool) {
         let now = now_secs();
+        if self.st.parked_welcomes.is_empty() || !(opened || now >= self.last_parked_try + 30) { return; }
+        self.last_parked_try = now;
+        let parked = std::mem::take(&mut self.st.parked_welcomes);
         for p in parked {
             if now.saturating_sub(p.ts) > 14 * 86400 { self.notice("welcome", "dropped an old invitation that never became usable"); continue; }
             let data = unb64(&p.data).unwrap_or_default();
@@ -114,12 +210,23 @@ impl Client {
 
     // ------------------------------------------------------------------ welcome
     /// Ok(true)=joined or deliberately ignored, Ok(false)=cannot place it yet (park), Err=reject.
-    fn handle_welcome(&mut self, _id: &str, bytes: &[u8]) -> Result<bool> {
+    fn handle_welcome(&mut self, id: &str, bytes: &[u8]) -> Result<bool> {
+        // Opening a welcome uses up the key package behind it, and we only know what it is once it is open. To be able
+        // to set one aside for later, the key store is put back the way it was.
+        let before = self.prov.dump();
+        match self.open_welcome(id, bytes) {
+            Ok(false) => { self.prov = mls::Prov::load(&before)?; Ok(false) }
+            r => r,
+        }
+    }
+
+    fn open_welcome(&mut self, _id: &str, bytes: &[u8]) -> Result<bool> {
         let msg = MlsMessageIn::tls_deserialize_exact(bytes).map_err(|e| anyhow!("malformed welcome: {e}"))?;
         let welcome = match msg.extract() { MlsMessageBodyIn::Welcome(w) => w, _ => bail!("not a welcome message") };
         let jb = StagedWelcome::build_from_welcome(&self.prov, &mls::join_cfg(), welcome).map_err(|e| anyhow!("cannot open welcome: {e}"))?;
         let wgid = hex::encode(jb.processed_welcome().unverified_group_info().group_id().as_slice());
-        let replace = self.st.groups.get(&wgid).is_some_and(|g| g.broken);
+        // A group we fell out of, or left, is still in the MLS store: coming back replaces it.
+        let replace = self.st.groups.get(&wgid).is_some_and(|g| g.broken || g.removed);
         let jb = if replace { jb.replace_old_group() } else { jb };
         let staged = jb.build().map_err(|e| anyhow!("cannot open welcome: {e}"))?;
         let gid = hex::encode(staged.group_context().group_id().as_slice());
@@ -137,25 +244,23 @@ impl Client {
         let existing_broken = self.st.groups.get(&gid).is_some_and(|g| g.broken);
         if self.st.groups.get(&gid).is_some_and(|g| !g.broken && !g.removed) { return Ok(true); } // duplicate welcome
         let (kind, community) = match &ext {
-            GroupExt::Control { .. } => {
+            GroupExt::Control { owner: founder, .. } => {
                 let (owner, admins) = ext.verify_control(&gid).map_err(|e| anyhow!("control table rejected: {e}"))?;
                 let sender_ok = sender_cert.account == owner || admins.contains(&sender_cert.account) || sender_cert.account == me;
                 if !sender_ok { bail!("welcome to a community from someone who is not its owner or admin"); }
-                let expected = self.st.joining.get(&gid).is_some_and(|l| l.owner == owner) || self.st.communities.get(&gid).is_some_and(|c| c.owner == owner) || other_device_of_mine;
+                let live = self.st.communities.get(&gid).is_some_and(|c| !c.removed);
+                let expected = self.st.joining.get(&gid).is_some_and(|l| &l.owner == founder) || live || other_device_of_mine;
                 if !expected { bail!("unsolicited community invitation (no invite link of ours matches it)"); }
                 (Kind::Control, gid.clone())
             }
             GroupExt::Channel { community, .. } => {
                 let (_, ch_owner, ch_admins) = ext.verify_channel().map_err(|e| anyhow!("channel table rejected: {e}"))?;
-                if let Some(c) = self.st.communities.get(community) { if c.owner != ch_owner { bail!("channel names a different owner than its community"); } }
-                // The key material of a welcome is consumed when it is opened, so it cannot be parked and retried.
-                // If the community table has not arrived yet we join anyway; the channel stays invisible until
-                // the (authenticated) community table lists it, and commits in it are judged by that table.
-                if let Some(c) = self.st.communities.get(community) {
-                    let _ = c;
-                    let ok = sender_cert.account == ch_owner || ch_admins.contains(&sender_cert.account) || sender_cert.account == me;
-                    if !ok { bail!("channel welcome from someone who is not an admin"); }
-                }
+                // A room only means something inside a community we are in, and only its owner and admins hand them
+                // out; a device of ours may add this one. The community's own welcome can still be on its way
+                // (another admin may send it later), so an unknown one means wait, not refuse.
+                if !self.st.communities.get(community).is_some_and(|c| !c.removed) { return Ok(false); }
+                let ok = sender_cert.account == ch_owner || ch_admins.contains(&sender_cert.account) || sender_cert.account == me;
+                if !ok { bail!("channel welcome from someone who is not an admin"); }
                 (Kind::Channel, community.clone())
             }
         };
@@ -167,9 +272,13 @@ impl Client {
         if let Some(old) = self.st.groups.get(&gid) { gs.cursor = old.cursor; }
         self.st.groups.insert(gid.clone(), gs);
         if kind == Kind::Control {
-            self.st.communities.entry(gid.clone()).or_insert_with(|| Community { id: gid.clone(), ..Default::default() });
+            let c = self.st.communities.entry(gid.clone()).or_insert_with(|| Community { id: gid.clone(), ..Default::default() });
+            c.removed = false; c.removed_reason.clear(); c.leaving.clear(); c.kick_queue.clear();
             self.st.joining.remove(&gid);
             self.st.join_sent.remove(&gid);
+            self.st.join_asked.remove(&gid);
+            self.st.join_retry.remove(&gid);
+            self.st.join_refused.remove(&gid);
             self.st.profile_dirty = true;
         }
         self.post_merge(&gid, 0, &[]);
@@ -313,7 +422,7 @@ impl Client {
         }
     }
 
-    fn drop_pending(&mut self, gid: &str, why: &str) {
+    pub(crate) fn drop_pending(&mut self, gid: &str, why: &str) {
         let g = self.st.groups.get_mut(gid).unwrap();
         if let Some(p) = g.pending.take() { self.notice("commit", format!("group {}: our pending change ({}) was not applied: {why}; it will be re-evaluated", &gid[..8], p.desc)); }
     }
@@ -327,7 +436,9 @@ impl Client {
             if let Some(w) = p.welcome {
                 for dev in p.recipients { self.st.welcome_out.push(WelcomeOut { id: rand_hex(16), device: dev, data: w.clone(), gid: gid.into() }); }
             }
-            if !p.acl_remove.is_empty() { self.st.acl_jobs.push(AclJob { gid: gid.into(), remove: p.acl_remove, after: now_secs() + self.acl_delay_secs }); }
+            if !p.acl_remove.is_empty() { self.st.acl_jobs.push(AclJob { gid: gid.into(), remove: p.acl_remove, after: now_secs() + self.acl_delay_secs, ..Default::default() }); }
+            if !p.acl_demote.is_empty() { self.st.acl_jobs.push(AclJob { gid: gid.into(), demote: p.acl_demote, ..Default::default() }); }
+            for s in p.handled { self.drop_request(gid, s); }
             self.notice("commit", format!("group {}: applied {}", &gid[..8], p.desc));
         }
         self.post_merge(gid, seq, &added);
@@ -359,9 +470,9 @@ impl Client {
         if kind == Kind::Control {
             if let Some(ext) = mls::group_ext(group.extensions()) {
                 if let Ok((owner, admins)) = ext.verify_control(gid) {
-                    if let GroupExt::Control { name, nonce, channels, invites, banned, .. } = ext {
+                    if let GroupExt::Control { name, nonce, channels, invites, banned, transfers, .. } = ext {
                         let c = self.st.communities.entry(gid.to_string()).or_insert_with(|| Community { id: gid.into(), ..Default::default() });
-                        c.name = name; c.owner = owner; c.admins = admins; c.nonce = nonce; c.channels = channels; c.invites = invites; c.banned = banned;
+                        c.name = name; c.owner = owner; c.admins = admins; c.nonce = nonce; c.channels = channels; c.invites = invites; c.banned = banned; c.transfers = transfers;
                         let leaving: Vec<String> = c.leaving.iter().cloned().collect();
                         let acct_set = self.st.groups[gid].accounts.clone();
                         let c = self.st.communities.get_mut(gid).unwrap();
@@ -418,7 +529,7 @@ impl Client {
                 Proposal::GroupContextExtensions(e) => {
                     let Some(new) = mls::group_ext(e.extensions()) else { return Reject("bad group extension".into()) };
                     let Some(old) = mls::group_ext(group.extensions()) else { return Reject("no old extension".into()) };
-                    if let Err(w) = ext_change_allowed(gid, &old, &new, srole) { return Reject(w); }
+                    if let Err(w) = ext_change_allowed(gid, &old, &new, srole, &sender.account) { return Reject(w); }
                 }
                 _ => return Reject("unsupported proposal type".into()),
             }
@@ -433,6 +544,7 @@ impl Client {
         let acct = cert.account.clone();
         match (&kind, env) {
             (Kind::Control, Envelope::Profile { name, ts }) => {
+                let ts = sane_ts(ts);
                 let p = self.st.profiles.entry(acct).or_default();
                 if ts >= p.ts { p.name = name; p.ts = ts; }
             }
@@ -442,8 +554,10 @@ impl Client {
                 }
             }
             (Kind::Control, Envelope::Revoked { account, device, sig }) => {
-                if verify_revocation(&account, &device, &sig).is_ok() { self.st.revoked.insert(device, sig); }
-                else { self.notice("reject", "ignored a device revocation with a bad signature".to_string()); }
+                if verify_revocation(&account, &device, &sig).is_ok() {
+                    if device == self.my_device() { self.revoked_here(); }
+                    self.st.revoked.insert(device, sig);
+                } else { self.notice("reject", "ignored a device revocation with a bad signature".to_string()); }
             }
             (Kind::Channel, Envelope::Typing) => { self.typing.insert(format!("{gid}|{acct}"), now_secs()); }
             (Kind::Channel, env @ (Envelope::Text { .. } | Envelope::File { .. } | Envelope::Edit { .. } | Envelope::Delete { .. } | Envelope::React { .. })) => {
@@ -461,11 +575,13 @@ impl Client {
         let status = if cert.account == me { "sent" } else { "received" };
         match env {
             Envelope::Text { id, text, reply, ts } => {
+                let ts = sane_ts(ts);
                 if let Some(m) = log.msgs.iter_mut().find(|m| m.id == id) { if local { return; } if m.sender == cert.account { m.seq = seq; m.status = "sent".into(); } return; }
                 log.msgs.push(Msg { id: id.clone(), sender: cert.account.clone(), device: cert.device.clone(), ts, seq, body: MsgBody::Text(text), reply, edited: false, deleted: false, reactions: Default::default(), status: if local { "sending".into() } else { status.into() } });
                 Self::drain_orphans(log, &id, gid);
             }
             Envelope::File { id, name, mime, size, blob, key, nonce, caption, reply, ts } => {
+                let ts = sane_ts(ts);
                 if let Some(m) = log.msgs.iter_mut().find(|m| m.id == id) { if local { return; } if m.sender == cert.account { m.seq = seq; m.status = "sent".into(); } return; }
                 log.msgs.push(Msg { id: id.clone(), sender: cert.account.clone(), device: cert.device.clone(), ts, seq, body: MsgBody::File { name, mime, size, blob, key, nonce, caption }, reply, edited: false, deleted: false, reactions: Default::default(), status: if local { "sending".into() } else { status.into() } });
                 Self::drain_orphans(log, &id, gid);
@@ -486,11 +602,7 @@ impl Client {
             }
             Envelope::React { ref target, ref emoji, on } => {
                 match log.msgs.iter_mut().find(|m| &m.id == target) {
-                    Some(m) if !m.deleted => {
-                        let s = m.reactions.entry(emoji.clone()).or_default();
-                        if on { s.insert(cert.account.clone()); } else { s.remove(&cert.account); }
-                        if s.is_empty() { m.reactions.remove(emoji); }
-                    }
+                    Some(m) if !m.deleted => set_reaction(m, emoji, &cert.account, on),
                     Some(_) => {}
                     None => Self::orphan(log, env, &cert.account, seq),
                 }
@@ -510,7 +622,7 @@ impl Client {
                 match e {
                     Envelope::Edit { text, .. } if m.sender == acct => { if let MsgBody::Text(t) = &mut m.body { *t = text; m.edited = true; } }
                     Envelope::Delete { .. } if m.sender == acct => { m.deleted = true; m.body = MsgBody::Text(String::new()); }
-                    Envelope::React { emoji, on, .. } => { let s = m.reactions.entry(emoji.clone()).or_default(); if on { s.insert(acct); } else { s.remove(&acct); } if s.is_empty() { m.reactions.remove(&emoji); } }
+                    Envelope::React { emoji, on, .. } => set_reaction(m, &emoji, &acct, on),
                     _ => {}
                 }
             }
@@ -518,20 +630,54 @@ impl Client {
     }
 }
 
+/// A sender's clock is the sender's claim: it may be a little ahead, but a message cannot come from the future.
+/// Old timestamps are fine, a message can wait in an outbox for days. Order always comes from the log.
+fn sane_ts(ts: u64) -> u64 { ts.min(now_secs() + 300) }
+
+/// One member cannot pile up reactions without limit. Everyone applies the same rule to the same log order, so
+/// everyone ends up with the same reactions.
+fn set_reaction(m: &mut Msg, emoji: &str, acct: &str, on: bool) {
+    if on {
+        let mine = m.reactions.values().filter(|w| w.contains(acct)).count();
+        let known = m.reactions.contains_key(emoji);
+        if (!known && m.reactions.len() >= MAX_REACTIONS) || mine >= MAX_REACTIONS_PER_ACCOUNT { return; }
+    }
+    let s = m.reactions.entry(emoji.to_string()).or_default();
+    if on { s.insert(acct.to_string()); } else { s.remove(acct); }
+    if s.is_empty() { m.reactions.remove(emoji); }
+}
+
+/// Made with the invite's secret key, so whoever made it holds the link.
+pub(crate) fn join_signature_ok(inv: &InviteMeta, community: &str, jr: &JoinRequest) -> bool {
+    use ed25519_dalek::Verifier as _;
+    (|| -> Option<bool> {
+        let pk = ed25519_dalek::VerifyingKey::from_bytes(&unhex32(&inv.pk).ok()?).ok()?;
+        let sig = ed25519_dalek::Signature::from_slice(&hex::decode(&jr.sig).ok()?).ok()?;
+        Some(pk.verify(&join_msg(community, &jr.cert.device, &jr.invite), &sig).is_ok())
+    })().unwrap_or(false)
+}
+
 /// Rules for editing a group's authenticated table (shared by receivers and tests).
-pub fn ext_change_allowed(gid: &str, old: &GroupExt, new: &GroupExt, sender: Role) -> std::result::Result<(), String> {
+/// A step in the chain of owners speaks for itself: it is signed by the owner before, so the new owner may install it
+/// in a group whose table has not caught up. Nothing else about a table can be changed that way.
+pub fn ext_change_allowed(gid: &str, old: &GroupExt, new: &GroupExt, sender: Role, sender_account: &str) -> std::result::Result<(), String> {
     match (old, new) {
-        (GroupExt::Control { owner: o1, nonce: n1, admins: a1, name: nm1, channels: c1, invites: i1, banned: b1 }, GroupExt::Control { owner: o2, nonce: n2, admins: a2, name: nm2, channels: c2, invites: i2, banned: b2 }) => {
-            if o1 != o2 || n1 != n2 { return Err("owner cannot change".into()); }
-            new.verify_control(gid).map_err(|e| e.to_string())?;
-            if a1 != a2 && sender != Role::Owner { return Err("only the owner can change admins".into()); }
+        (GroupExt::Control { owner: o1, nonce: n1, admins: a1, name: nm1, channels: c1, invites: i1, banned: b1, transfers: t1 }, GroupExt::Control { owner: o2, nonce: n2, admins: a2, name: nm2, channels: c2, invites: i2, banned: b2, transfers: t2 }) => {
+            if o1 != o2 || n1 != n2 { return Err("the founder cannot change".into()); }
+            let (new_owner, _) = new.verify_control(gid).map_err(|e| e.to_string())?;
+            if !t2.starts_with(t1) { return Err("the chain of owners cannot be rewritten".into()); }
+            let owner = sender == Role::Owner || new_owner == sender_account;
+            if t1 != t2 && !owner { return Err("only the owner can hand over a community".into()); }
+            if a1 != a2 && !owner { return Err("only the owner can change admins".into()); }
             if (nm1 != nm2 || c1 != c2 || i1 != i2 || b1 != b2) && sender < Role::Admin { return Err("only admins can change channels, invites or the name".into()); }
             Ok(())
         }
-        (GroupExt::Channel { community: c1, owner: o1, nonce: n1, admins: a1, name: nm1 }, GroupExt::Channel { community: c2, owner: o2, nonce: n2, admins: a2, name: nm2 }) => {
+        (GroupExt::Channel { community: c1, owner: o1, nonce: n1, admins: a1, name: nm1, transfers: t1 }, GroupExt::Channel { community: c2, owner: o2, nonce: n2, admins: a2, name: nm2, transfers: t2 }) => {
             if c1 != c2 || o1 != o2 || n1 != n2 { return Err("channel identity cannot change".into()); }
-            new.verify_channel().map_err(|e| e.to_string())?;
-            if a1 != a2 && sender != Role::Owner { return Err("only the owner can change admins".into()); }
+            let (_, new_owner, _) = new.verify_channel().map_err(|e| e.to_string())?;
+            if !t2.starts_with(t1) { return Err("the chain of owners cannot be rewritten".into()); }
+            let owner = sender == Role::Owner || new_owner == sender_account;
+            if (a1 != a2 || t1 != t2) && !owner { return Err("only the owner can change admins".into()); }
             if nm1 != nm2 && sender < Role::Admin { return Err("only admins can rename".into()); }
             Ok(())
         }

@@ -1,14 +1,20 @@
 //! JSON dispatch used by both the Tauri shell and the local dev bridge: the UI talks to the Rust core only
 //! through `App::call(method, args)`. Keys and plaintext never leave this process.
 use crate::client::*;
+use crate::envelope::{check_name, safe_file_name};
 use crate::state::*;
-use crate::transport::HttpTransport;
+use crate::transport::{Api, HttpTransport};
 use crate::vault::KdfParams;
 use commons_proto::{b64, unb64};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
+
+/// Decrypted attachments kept for the chunked reads of `file_read`: a few, and only while unlocked.
+const OPEN_FILES: usize = 4;
+const FILE_CHUNK: usize = 1 << 20;
 
 pub struct App {
     dir: PathBuf,
@@ -18,23 +24,47 @@ pub struct App {
     /// Pairing in progress (new device waiting for approval).
     wake: (Mutex<bool>, Condvar),
     stop: Mutex<bool>,
+    /// The last answer to each read-only call. The UI asks every second, and gets this if the client is busy.
+    seen: Mutex<HashMap<String, Value>>,
+    files: Mutex<Vec<(String, Arc<Vec<u8>>)>>,
 }
 
 fn s(v: &Value, k: &str) -> String { v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string() }
 type R = Result<Value, String>;
 fn e<T: std::fmt::Display>(x: T) -> String { format!("{x}") }
 
+/// A usable relay address, in the one spelling we store: `http(s)://host[:port][/path]`, no trailing slash.
+pub fn clean_relay_url(u: &str) -> Result<String, String> {
+    let u = u.trim().trim_end_matches('/');
+    let bad = || format!("\"{u}\" is not a relay address. It should look like https://chat.example.org or http://127.0.0.1:8787");
+    let rest = u.strip_prefix("https://").or_else(|| u.strip_prefix("http://")).ok_or_else(bad)?;
+    let host = rest.split('/').next().unwrap_or("");
+    let name = host.rsplit_once(':').filter(|(_, p)| p.parse::<u16>().is_ok()).map(|(h, _)| h).unwrap_or(host);
+    let ok = !name.is_empty() && !name.contains(':') && name.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_')) && !rest.contains(['?', '#', '@', ' ', '\\']);
+    if ok { Ok(u.to_string()) } else { Err(bad()) }
+}
+
+/// The dev bridge has no password, so nothing but a page it served itself may reach it. Host stops DNS rebinding,
+/// where a hostile site's name is pointed at 127.0.0.1; Origin stops a hostile page from posting to the loopback port.
+pub fn bridge_request_ok(host: Option<&str>, origin: Option<&str>, port: u16) -> bool {
+    let ours = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
+    let host_ok = host.is_some_and(|h| ours.iter().any(|o| o == h));
+    let origin_ok = origin.is_none_or(|o| ours.iter().any(|x| o == format!("http://{x}")));
+    host_ok && origin_ok
+}
+
 impl App {
-    pub fn new(dir: PathBuf, default_relay: &str) -> Arc<App> {
-        Arc::new(App { dir, default_relay: default_relay.into(), kdf: KdfParams::STRONG, client: Mutex::new(None), wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false) })
-    }
+    pub fn new(dir: PathBuf, default_relay: &str) -> Arc<App> { Self::with_kdf(dir, default_relay, KdfParams::STRONG) }
     pub fn with_kdf(dir: PathBuf, default_relay: &str, kdf: KdfParams) -> Arc<App> {
-        Arc::new(App { dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None), wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false) })
+        Arc::new(App { dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None), wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), files: Mutex::new(vec![]) })
     }
     pub fn shutdown(&self) { *self.stop.lock().unwrap() = true; self.nudge(); }
     fn nudge(&self) { *self.wake.0.lock().unwrap() = true; self.wake.1.notify_all(); }
+    /// A panic in one call must not take every later call down with it.
+    fn lock(&self) -> MutexGuard<'_, Option<Client>> { self.client.lock().unwrap_or_else(|p| p.into_inner()) }
 
-    /// Background sync loop: every second (or immediately after a user action).
+    /// Background sync loop: every second and a half (or immediately after a user action). The client is held
+    /// only to plan a round and to apply its result, never while waiting for the relay.
     pub fn start_background(self: &Arc<Self>) {
         let app = self.clone();
         std::thread::spawn(move || loop {
@@ -44,81 +74,179 @@ impl App {
                 *app.wake.0.lock().unwrap() = false;
             }
             if *app.stop.lock().unwrap() { break; }
-            let mut g = app.client.lock().unwrap();
-            if let Some(c) = g.as_mut() { let _ = c.tick(0); }
+            for _ in 0..16 {
+                let Some(round) = app.lock().as_mut().map(|c| c.begin_round(0)) else { break };
+                let done = round.run();
+                let mut g = app.lock();
+                let Some(c) = g.as_mut() else { break };
+                let _ = c.finish_round(done);
+                if !c.more { break; }
+            }
         });
     }
 
     pub fn call(&self, method: &str, a: Value) -> R {
         let r = self.dispatch(method, a);
-        if !matches!(method, "snapshot" | "messages" | "state") { self.nudge(); }
+        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "pairing_status") { self.nudge(); }
         r
     }
 
     fn with<T>(&self, f: impl FnOnce(&mut Client) -> Result<T, String>) -> Result<T, String> {
-        let mut g = self.client.lock().unwrap();
+        let mut g = self.lock();
         match g.as_mut() { Some(c) => f(c), None => Err("locked".into()) }
+    }
+
+    /// A read-only call. If the client is busy with something long (an admin action waiting for the relay),
+    /// the last answer is good enough: the UI must not freeze for that.
+    fn read(&self, key: String, f: impl FnOnce(&Client) -> Value) -> R {
+        let g = match self.client.try_lock() {
+            Ok(g) => g,
+            Err(TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                if let Some(v) = self.seen.lock().unwrap().get(&key) { return Ok(v.clone()); }
+                self.lock()
+            }
+        };
+        let v = f(g.as_ref().ok_or("locked")?);
+        self.seen.lock().unwrap().insert(key, v.clone());
+        Ok(v)
+    }
+
+    /// Before anything is created for a relay: is it there, and will it have us?
+    fn probe(&self, relay: &str, invite: Option<&str>) -> Result<(), String> {
+        let api = Api { t: HttpTransport::new(relay).into_arc() };
+        api.health().map_err(|x| format!("Could not reach a Commons relay at {relay}: {x:#}"))?;
+        let Some(invite) = invite else { return Ok(()) };
+        let Ok(info) = api.info(None) else { return Ok(()) };
+        if !info.gated { return Ok(()); }
+        if invite.is_empty() { return Err("This relay only takes new accounts with its invite secret. Ask whoever runs it, and enter it under Relay server.".into()); }
+        if !api.info(Some(invite)).map_err(|x| format!("{x:#}"))?.ok { return Err("That is not this relay's invite secret.".into()); }
+        Ok(())
+    }
+
+    fn relay_arg(&self, a: &Value) -> Result<String, String> {
+        clean_relay_url(&if s(a, "relay").is_empty() { self.default_relay.clone() } else { s(a, "relay") })
     }
 
     fn open_with(&self, f: impl FnOnce(Arc<dyn crate::transport::Transport>) -> anyhow::Result<Client>, relay: &str) -> R {
         let c = f(HttpTransport::new(relay).into_arc()).map_err(|x| format!("{x:#}"))?;
-        *self.client.lock().unwrap() = Some(c);
+        *self.lock() = Some(c);
         Ok(json!({"ok": true}))
+    }
+
+    /// A decrypted attachment, from memory if it was opened a moment ago.
+    fn open_file(&self, gid: &str, id: &str) -> Result<(String, String, Arc<Vec<u8>>), String> {
+        let key = format!("{gid}/{id}");
+        let mut f = self.with(|c| c.file_locate(gid, id).map_err(e))?;
+        let (name, mime) = (f.name.clone(), f.mime.clone());
+        if let Some((_, d)) = self.files.lock().unwrap().iter().find(|(k, _)| *k == key) { return Ok((name, mime, d.clone())); }
+        let fresh = f.cached.is_none();
+        let (api, k) = self.with(|c| c.net_handle().map_err(e))?;
+        let plain = f.bytes(&api, &k).map_err(e)?; // the slow part, with the client free
+        if fresh { let _ = self.with(|c| { c.file_cache(&f.slot, &plain); Ok(()) }); }
+        let d = Arc::new(plain);
+        let mut files = self.files.lock().unwrap();
+        files.push((key, d.clone()));
+        if files.len() > OPEN_FILES { files.remove(0); }
+        Ok((name, mime, d))
     }
 
     fn dispatch(&self, m: &str, a: Value) -> R {
         match m {
             "state" => {
-                let g = self.client.lock().unwrap();
+                let g = self.lock();
                 match g.as_ref() {
                     None => Ok(json!({"locked": true, "exists": Client::exists(&self.dir), "default_relay": self.default_relay})),
                     Some(c) => Ok(json!({"locked": false, "has_identity": c.has_identity(), "relay": c.st.relay})),
                 }
             }
             "create_account" => {
-                let relay = if s(&a, "relay").is_empty() { self.default_relay.clone() } else { s(&a, "relay") };
-                let (pass, name) = (s(&a, "passphrase"), s(&a, "name"));
+                let relay = self.relay_arg(&a)?;
+                let (pass, name, invite) = (s(&a, "passphrase"), s(&a, "name"), s(&a, "invite"));
                 if pass.len() < 8 { return Err("Passphrase must be at least 8 characters.".into()); }
                 if name.trim().is_empty() { return Err("Please choose a display name.".into()); }
-                self.open_with(|t| Client::create(&self.dir, &pass, &relay, name.trim(), self.kdf, t), &relay)
+                check_name("A display name", name.trim())?;
+                self.probe(&relay, Some(invite.trim()))?;
+                self.open_with(|t| Client::create_with_invite(&self.dir, &pass, &relay, name.trim(), invite.trim(), self.kdf, t), &relay)
             }
             "recover_account" => {
-                let relay = if s(&a, "relay").is_empty() { self.default_relay.clone() } else { s(&a, "relay") };
+                let relay = self.relay_arg(&a)?;
                 let (pass, name, key) = (s(&a, "passphrase"), s(&a, "name"), s(&a, "recovery_key"));
                 if pass.len() < 8 { return Err("Passphrase must be at least 8 characters.".into()); }
+                if name.trim().is_empty() { return Err("Please choose a display name.".into()); }
+                check_name("A display name", name.trim())?;
+                decode_recovery(&key).map_err(e)?;
+                self.probe(&relay, None)?;
                 self.open_with(|t| Client::create_from_recovery(&self.dir, &pass, &relay, name.trim(), &key, self.kdf, t), &relay)
             }
             "start_pairing" => {
-                let relay = if s(&a, "relay").is_empty() { self.default_relay.clone() } else { s(&a, "relay") };
+                let relay = self.relay_arg(&a)?;
                 let pass = s(&a, "passphrase");
                 if pass.len() < 8 { return Err("Passphrase must be at least 8 characters.".into()); }
+                self.probe(&relay, None)?;
                 let mut out = String::new();
                 let mut chk = String::new();
                 self.open_with(|t| { let (c, code) = Client::create_for_pairing(&self.dir, &pass, &relay, "", self.kdf, t)?; out = code; chk = c.pairing_check_new().unwrap_or_default(); Ok(c) }, &relay)?;
                 Ok(json!({"code": out, "qr": Client::qr_svg(&out), "check": chk}))
             }
-            "pairing_status" => self.with(|c| { let done = c.pairing_poll().map_err(e)?; Ok(json!({"done": done})) }),
+            // The background rounds do the polling; this only reports.
+            "pairing_status" => self.with(|c| Ok(json!({"done": c.has_identity()}))),
+            // After a restart mid-pairing the code has to come back on screen, or the device is stuck.
+            "pairing_resume" => self.with(|c| {
+                let code = c.pairing_code().ok_or("no pairing in progress")?;
+                Ok(json!({"qr": Client::qr_svg(&code), "check": c.pairing_check_new().unwrap_or_default(), "code": code}))
+            }),
+            "pairing_abandon" => {
+                let c = self.lock().take().ok_or("locked")?;
+                c.abandon_pairing().map_err(e)?;
+                Ok(json!({"ok": true}))
+            }
             "unlock" => {
+                if self.lock().is_some() { return Ok(json!({"ok": true})); } // already open in this window
                 let pass = s(&a, "passphrase");
                 let c = Client::open_with(&self.dir, &pass, |relay| HttpTransport::new(relay).into_arc())
                     .map_err(|x| if format!("{x}").contains("wrong passphrase") { "Wrong passphrase.".to_string() } else { format!("{x:#}") })?;
-                *self.client.lock().unwrap() = Some(c);
+                *self.lock() = Some(c);
                 Ok(json!({"ok": true}))
             }
-            "lock" => { *self.client.lock().unwrap() = None; Ok(json!({"ok": true})) }
-            "snapshot" => self.with(|c| Ok(snapshot(c))),
-            "messages" => self.with(|c| Ok(messages(c, &s(&a, "gid")))),
+            "lock" => {
+                *self.lock() = None;
+                self.seen.lock().unwrap().clear();
+                self.files.lock().unwrap().clear();
+                Ok(json!({"ok": true}))
+            }
+            "snapshot" => self.read("snapshot".into(), snapshot),
+            "messages" => {
+                let (gid, around) = (s(&a, "gid"), s(&a, "around"));
+                let limit = a.get("limit").and_then(|x| x.as_u64()).unwrap_or(200).clamp(1, 5000) as usize;
+                self.read(format!("messages/{gid}/{limit}/{around}"), |c| messages(c, &gid, limit, &around))
+            }
             "mark_read" => self.with(|c| { c.mark_read(&s(&a, "gid")); c.save().map_err(e)?; Ok(json!({})) }),
             "send_text" => self.with(|c| { let r = a.get("reply").and_then(|x| x.as_str()).map(|x| x.to_string()); c.send_text(&s(&a, "gid"), &s(&a, "text"), r).map(|id| json!({"id": id})).map_err(e) }),
             "edit" => self.with(|c| c.edit_message(&s(&a, "gid"), &s(&a, "id"), &s(&a, "text")).map(|_| json!({})).map_err(e)),
             "delete" => self.with(|c| c.delete_message(&s(&a, "gid"), &s(&a, "id")).map(|_| json!({})).map_err(e)),
             "react" => self.with(|c| c.react(&s(&a, "gid"), &s(&a, "id"), &s(&a, "emoji"), a["on"].as_bool().unwrap_or(true)).map(|_| json!({})).map_err(e)),
             "typing" => self.with(|c| { c.send_typing(&s(&a, "gid")); Ok(json!({})) }),
-            "send_file" => self.with(|c| {
+            "send_file" => {
                 let data = unb64(&s(&a, "data")).map_err(e)?;
-                c.send_file(&s(&a, "gid"), &s(&a, "name"), &s(&a, "mime"), &data, &s(&a, "caption")).map(|id| json!({"id": id})).map_err(e)
-            }),
-            "fetch_file" => self.with(|c| c.fetch_file(&s(&a, "gid"), &s(&a, "id")).map(|(n, m, d)| json!({"name": n, "mime": m, "data": b64(&d)})).map_err(e)),
+                let (f, (api, k)) = self.with(|c| Ok((c.file_prepare(&s(&a, "gid"), &s(&a, "name"), &s(&a, "mime"), &data, &s(&a, "caption")).map_err(e)?, c.net_handle().map_err(e)?)))?;
+                f.upload(&api, &k).map_err(e)?; // the slow part, with the client free
+                self.with(|c| c.file_queue(f).map(|id| json!({"id": id})).map_err(e))
+            }
+            "fetch_file" => {
+                let (n, m, d) = self.open_file(&s(&a, "gid"), &s(&a, "id"))?;
+                Ok(json!({"name": n, "save_name": safe_file_name(&n), "mime": m, "data": b64(&d)}))
+            }
+            // The same file, without one message of tens of megabytes: open it, then read it in pieces.
+            "file_open" => {
+                let (n, m, d) = self.open_file(&s(&a, "gid"), &s(&a, "id"))?;
+                Ok(json!({"name": n, "save_name": safe_file_name(&n), "mime": m, "size": d.len(), "chunk": FILE_CHUNK}))
+            }
+            "file_read" => {
+                let (_, _, d) = self.open_file(&s(&a, "gid"), &s(&a, "id"))?;
+                let at = a.get("offset").and_then(|x| x.as_u64()).unwrap_or(0).min(d.len() as u64) as usize;
+                Ok(json!({"data": b64(&d[at..(at + FILE_CHUNK).min(d.len())])}))
+            }
             "create_community" => self.with(|c| c.create_community(&s(&a, "name")).map(|id| json!({"id": id})).map_err(e)),
             "create_channel" => self.with(|c| c.create_channel(&s(&a, "cid"), &s(&a, "name")).map(|id| json!({"id": id})).map_err(e)),
             "create_invite" => self.with(|c| {
@@ -128,12 +256,14 @@ impl App {
                 Ok(json!({"link": link, "qr": Client::qr_svg(&link)}))
             }),
             "join" => self.with(|c| c.join_with_link(&s(&a, "link")).map(|id| json!({"id": id})).map_err(e)),
+            "cancel_join" => self.with(|c| c.cancel_join(&s(&a, "id")).map(|_| json!({})).map_err(e)),
             "kick" => self.with(|c| c.kick(&s(&a, "cid"), &s(&a, "account")).map(|_| json!({})).map_err(e)),
             "set_role" => self.with(|c| c.set_role(&s(&a, "cid"), &s(&a, "account"), if s(&a, "role") == "admin" { Role::Admin } else { Role::Member }).map(|_| json!({})).map_err(e)),
+            "transfer_ownership" => self.with(|c| c.transfer_ownership(&s(&a, "cid"), &s(&a, "account")).map(|_| json!({})).map_err(e)),
             "leave" => self.with(|c| c.leave(&s(&a, "cid")).map(|_| json!({})).map_err(e)),
             "rename_community" => self.with(|c| c.rename_community(&s(&a, "cid"), &s(&a, "name")).map(|_| json!({})).map_err(e)),
             "revoke_invite" => self.with(|c| c.revoke_invite(&s(&a, "cid"), &s(&a, "id")).map(|_| json!({})).map_err(e)),
-            "members" => self.with(|c| Ok(json!(c.members(&s(&a, "cid")).into_iter().map(|m| json!({"account": m.account, "name": m.name, "role": m.role.name(), "devices": m.devices, "verified": m.verified, "me": m.is_me})).collect::<Vec<_>>()))),
+            "members" => { let cid = s(&a, "cid"); self.read(format!("members/{cid}"), |c| json!(c.members(&cid).into_iter().map(|m| json!({"account": m.account, "name": m.name, "role": m.role.name(), "devices": m.devices, "verified": m.verified, "me": m.is_me, "tag": m.tag, "same_name": m.same_name})).collect::<Vec<_>>())) }
             "safety" => self.with(|c| {
                 let acct = s(&a, "account");
                 let num = safety_number(&c.my_account(), &acct);
@@ -141,13 +271,25 @@ impl App {
                 Ok(json!({"number": num, "qr": Client::qr_svg(&payload), "verified": c.st.verified.contains(&acct), "name": c.display_name(&acct)}))
             }),
             "set_verified" => self.with(|c| c.set_verified(&s(&a, "account"), a["on"].as_bool().unwrap_or(true)).map(|_| json!({})).map_err(e)),
-            "devices" => self.with(|c| {
-                let me = c.my_device();
-                let list = c.my_devices().map_err(e)?;
+            "devices" => {
+                let (me, acct, (api, k)) = self.with(|c| Ok((c.my_device(), c.my_account(), c.net_handle().map_err(e)?)))?;
+                let got = api.devices(&k, &acct).map_err(e)?;
+                let list = self.with(|c| Ok(c.merge_directory(&acct, got)))?;
                 Ok(json!(list.into_iter().map(|(d, rev)| json!({"device": d.device, "created": d.created, "revoked": rev, "this": d.device == me})).collect::<Vec<_>>()))
-            }),
-            "revoke_device" => self.with(|c| c.revoke_device(&s(&a, "device")).map(|_| json!({})).map_err(e)),
-            "approve_pairing" => self.with(|c| c.pairing_approve(&s(&a, "code")).map(|chk| json!({"check": chk})).map_err(e)),
+            }
+            "revoke_device" => {
+                let dev = s(&a, "device");
+                let (acct, sig, api) = self.with(|c| Ok((c.my_account(), c.revocation_sig(&dev).map_err(e)?, c.net_handle().map_err(e)?.0)))?;
+                api.revoke(&acct, &dev, &sig).map_err(e)?;
+                self.with(|c| c.revocation_done(&dev, sig).map(|_| json!({})).map_err(e))
+            }
+            // Shows the check digits before anything is sent: comparing them afterwards would be too late.
+            "pairing_preview" => self.with(|c| c.pairing_check_code(&s(&a, "code")).map(|chk| json!({"check": chk})).map_err(e)),
+            "approve_pairing" => {
+                let (rid, sealed, chk, (api, k)) = self.with(|c| { let (r, x, chk) = c.pairing_seal(&s(&a, "code")).map_err(e)?; Ok((r, x, chk, c.net_handle().map_err(e)?)) })?;
+                api.rv_put(&k, &rid, "a", &sealed).map_err(e)?;
+                self.with(|c| { c.notice("pair", "pairing data sent; the new device will appear in your device list once it registers"); Ok(json!({"check": chk})) })
+            }
             "recovery_key" => self.with(|c| c.recovery_key().map(|k| json!({"key": k})).map_err(e)),
             "search" => self.with(|c| {
                 let r = c.search(&s(&a, "q"));
@@ -159,8 +301,14 @@ impl App {
                 }).collect::<Vec<_>>()))
             }),
             "set_name" => self.with(|c| c.set_name(&s(&a, "name")).map(|_| json!({})).map_err(e)),
+            // For a relay that moved, keeping its data: see Client::set_relay.
+            "set_relay" => {
+                let relay = clean_relay_url(&s(&a, "relay"))?;
+                self.probe(&relay, None)?;
+                self.with(|c| c.set_relay(&relay, HttpTransport::new(&relay).into_arc()).map(|_| json!({"relay": relay})).map_err(e))
+            }
             "set_typing_enabled" => self.with(|c| { c.st.typing_enabled = a["on"].as_bool().unwrap_or(false); c.save().map_err(e)?; Ok(json!({})) }),
-            "notices" => self.with(|c| Ok(json!(c.st.notices.iter().rev().take(80).map(|n| json!({"ts": n.ts, "kind": n.kind, "text": n.text})).collect::<Vec<_>>()))),
+            "notices" => self.read("notices".into(), |c| json!(c.st.notices.iter().rev().take(80).map(|n| json!({"ts": n.ts, "kind": n.kind, "text": n.text})).collect::<Vec<_>>())),
             _ => Err(format!("unknown method {m}")),
         }
     }
@@ -170,33 +318,42 @@ fn snapshot(c: &Client) -> Value {
     let me = c.my_account();
     let comms: Vec<Value> = c.st.communities.values().map(|co| {
         let role = co.role_of(&me).unwrap_or(Role::Member);
-        let chans: Vec<Value> = c.channels_of(&co.id).into_iter().map(|ch| json!({"gid": ch.gid, "name": ch.name, "joined": ch.joined, "unread": ch.unread, "status": c.group_status(&ch.gid)})).collect();
-        let unread: usize = c.channels_of(&co.id).iter().map(|x| x.unread).sum();
+        let list = c.channels_of(&co.id);
+        let unread: usize = list.iter().map(|x| x.unread).sum();
+        let chans: Vec<Value> = list.into_iter().map(|ch| json!({"gid": ch.gid, "name": ch.name, "joined": ch.joined, "unread": ch.unread, "status": c.group_status(&ch.gid)})).collect();
         json!({"id": co.id, "name": if co.name.is_empty() { "…".to_string() } else { co.name.clone() }, "role": role.name(), "removed": co.removed, "removed_reason": co.removed_reason, "channels": chans, "unread": unread,
                "invites": co.invites.iter().map(|i| json!({"id": i.id, "expires": i.expires, "uses_left": i.uses_left, "mine": co.invite_sks.contains_key(&i.id)})).collect::<Vec<_>>(),
                "status": c.group_status(&co.id)})
     }).collect();
-    let joining: Vec<Value> = c.st.joining.values().map(|l| json!({"id": l.community, "name": l.name, "sent": c.st.join_sent.contains(&l.community)})).collect();
-    let problems: Vec<Value> = c.st.notices.iter().rev().filter(|n| matches!(n.kind.as_str(), "decrypt" | "broken" | "rollback" | "reject" | "gap" | "welcome" | "relay")).take(5).map(|n| json!({"ts": n.ts, "kind": n.kind, "text": n.text})).collect();
-    json!({"me": {"account": me, "name": c.st.name, "device": c.my_device()}, "relay": c.st.relay, "communities": comms, "joining": joining,
-           "typing_enabled": c.st.typing_enabled, "outbox": c.st.outbox.len(), "problems": problems,
+    let joining: Vec<Value> = c.st.joining.values().map(|l| json!({"id": l.community, "name": l.name, "sent": c.st.join_sent.contains(&l.community), "asked": c.st.join_asked.get(&l.community)})).collect();
+    let refused: Vec<Value> = c.st.join_refused.iter().map(|(id, r)| json!({"id": id, "name": r.name, "reason": r.reason, "ts": r.ts})).collect();
+    let problems: Vec<Value> = c.st.notices.iter().rev().filter(|n| matches!(n.kind.as_str(), "decrypt" | "broken" | "rollback" | "reject" | "gap" | "welcome" | "relay" | "state" | "clock" | "revoked")).take(5).map(|n| json!({"ts": n.ts, "kind": n.kind, "text": n.text})).collect();
+    let net = match c.net.state { NetState::Connecting => "connecting", NetState::Online => "online", NetState::Offline => "offline" };
+    json!({"me": {"account": me, "name": c.st.name, "device": c.my_device()}, "relay": c.st.relay, "communities": comms, "joining": joining, "refused": refused,
+           "typing_enabled": c.st.typing_enabled, "outbox": c.st.outbox.len(), "problems": problems, "net": net, "net_detail": c.net.detail, "revoked": c.st.self_revoked,
            "version": c.activity})
 }
 
-fn messages(c: &Client, gid: &str) -> Value {
+/// The newest `limit` messages of a room, reaching back far enough to include `around` if that is set.
+fn messages(c: &Client, gid: &str, limit: usize, around: &str) -> Value {
     let me = c.my_account();
-    let all = c.messages(gid);
-    let find = |id: &str| all.iter().find(|m| m.id == id);
-    let out: Vec<Value> = all.iter().map(|m| {
+    let all = c.message_log(gid);
+    let mut start = all.len().saturating_sub(limit);
+    if !around.is_empty() { if let Some(p) = all.iter().position(|m| m.id == around) { start = start.min(p.saturating_sub(20)); } }
+    let find: HashMap<&str, &Msg> = all.iter().map(|m| (m.id.as_str(), *m)).collect();
+    let who = c.st.groups.get(gid).map(|g| c.people_of(&g.community)).unwrap_or_default();
+    let out: Vec<Value> = all[start..].iter().map(|m| {
         let (kind, text, file) = match &m.body {
             MsgBody::Text(t) => ("text", t.clone(), Value::Null),
             MsgBody::File { name, mime, size, caption, .. } => ("file", caption.clone(), json!({"name": name, "mime": mime, "size": size})),
             MsgBody::Notice(t) => ("notice", t.clone(), Value::Null),
         };
-        let reply = m.reply.as_deref().and_then(find).map(|r| json!({"id": r.id, "name": c.display_name(&r.sender), "text": match &r.body { MsgBody::Text(t) if !r.deleted => t.chars().take(120).collect::<String>(), MsgBody::File { name, .. } => format!("[file] {name}"), _ => "(deleted)".into() }}));
+        let reply = m.reply.as_deref().and_then(|id| find.get(id)).map(|r| json!({"id": r.id, "name": c.display_name(&r.sender), "text": match &r.body { MsgBody::Text(t) if !r.deleted => t.chars().take(120).collect::<String>(), MsgBody::File { name, .. } => format!("[file] {name}"), _ => "(deleted)".into() }}));
+        let (role, same_name) = who.get(&m.sender).cloned().unwrap_or((Role::Member, false));
         json!({"id": m.id, "sender": m.sender, "name": if m.sender.is_empty() { String::new() } else { c.display_name(&m.sender) }, "mine": m.sender == me, "ts": m.ts, "seq": m.seq,
+               "role": role.name(), "tag": crate::ops::account_tag(&m.sender), "same_name": same_name,
                "status": m.status, "kind": kind, "text": text, "file": file, "reply": reply, "edited": m.edited, "deleted": m.deleted,
                "reactions": m.reactions.iter().map(|(e, who)| json!({"emoji": e, "count": who.len(), "mine": who.contains(&me), "names": who.iter().map(|w| c.display_name(w)).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }).collect();
-    json!({"messages": out, "typing": c.typing_now(gid), "status": c.group_status(gid)})
+    json!({"messages": out, "more": start > 0, "typing": c.typing_now(gid), "status": c.group_status(gid)})
 }

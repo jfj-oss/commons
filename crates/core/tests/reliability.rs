@@ -83,9 +83,9 @@ fn relay_holds_no_plaintext() {
     // the relay sees only these tables
     let c = rusqlite::Connection::open_with_flags(net.db_path(), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
     let tables: Vec<String> = c.prepare("SELECT name FROM sqlite_master WHERE type='table'").unwrap().query_map([], |r| r.get(0)).unwrap().map(|x| x.unwrap()).collect();
-    for t in ["devices", "keypackages", "group_members", "entries", "welcomes", "rendezvous"] { assert!(tables.iter().any(|x| x == t), "{t}"); }
+    for t in ["devices", "keypackages", "group_members", "group_auth", "acl_demoted", "entries", "welcomes", "rendezvous", "blobs", "usage"] { assert!(tables.iter().any(|x| x == t), "{t}"); }
     let tables: Vec<String> = tables.into_iter().filter(|t| t != "sqlite_sequence").collect();
-    assert_eq!(tables.len(), 6, "{tables:?}");
+    assert_eq!(tables.len(), 10, "{tables:?}");
 }
 
 #[test]
@@ -240,7 +240,7 @@ fn client_restored_from_old_state_recovers_visibly() {
     let ns = notices(&carol);
     assert!(ns.iter().any(|n| n.starts_with("broken") || n.starts_with("rollback")), "{ns:?}");
     // and she must recover: new messages flow both ways
-    carol.c.send_text(&gen, "carol after restore", None).unwrap();
+    carol.c.send_text(&gen, "carol after restore", None).unwrap_or_else(|e| panic!("{e}: {} {:#?}", carol.c.group_status(&gen), notices(&carol)));
     alice.c.send_text(&gen, "alice to restored carol", None).unwrap();
     settle(&mut [&mut alice, &mut bob, &mut carol]);
     assert!(has_text(&alice, &gen, "carol after restore"), "{:?}\n{:?}", notices(&carol), notices(&alice));

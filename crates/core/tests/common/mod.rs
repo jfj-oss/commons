@@ -22,6 +22,8 @@ pub struct Faults {
     pub offline: bool,
     /// sync returns nothing new (relay withholds; client acts on stale state)
     pub stale_sync: bool,
+    /// cut sync responses at this many bytes, like a proxy or a connection dropping mid-way
+    pub cut_sync_at: Option<usize>,
 }
 
 pub struct FlakyTransport { inner: HttpTransport, pub faults: Arc<Mutex<Faults>> }
@@ -37,6 +39,7 @@ impl Transport for FlakyTransport {
             f.lose_post_responses -= 1;
             anyhow::bail!("network: simulated lost response");
         }
+        if let Some(n) = f.cut_sync_at { if path == "/v1/sync" && r.body.len() > n { r.body.truncate(n); } }
         if path == "/v1/sync" && r.status == 200 && f.stale_sync {
             let s = SyncResp::default();
             r.body = serde_json::to_vec(&s)?;
@@ -84,11 +87,15 @@ pub fn transport(url: &str) -> (Arc<dyn Transport>, Arc<Mutex<Faults>>) {
     (Arc::new(FlakyTransport { inner: HttpTransport::new(url), faults: faults.clone() }), faults)
 }
 
+/// Tests do not wait 30 seconds for a device list to go stale.
+pub fn impatient(c: &mut Client) { c.dir_ttl_secs = 0; c.acl_check_secs = 0; }
+
 impl Peer {
     pub fn new(net: &Net, name: &str) -> Peer {
         let dir = tempfile::tempdir().unwrap();
         let (t, faults) = transport(&net.url());
-        let c = Client::create(dir.path(), "pw", &net.url(), name, KdfParams::TEST, t).unwrap();
+        let mut c = Client::create(dir.path(), "pw", &net.url(), name, KdfParams::TEST, t).unwrap();
+        impatient(&mut c);
         Peer { name: name.into(), c, dir, faults }
     }
     pub fn acct(&self) -> String { self.c.my_account() }
@@ -96,7 +103,9 @@ impl Peer {
     /// Re-open from disk (simulates app restart), optionally with a different state dir (restore).
     pub fn reopen(&mut self, net: &Net) {
         let (t, faults) = transport(&net.url());
+        self.c.debug_release_lock();
         self.c = Client::open(self.dir.path(), "pw", t).unwrap();
+        impatient(&mut self.c);
         self.faults = faults;
     }
 }

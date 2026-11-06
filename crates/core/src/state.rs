@@ -12,6 +12,7 @@ impl Role { pub fn name(&self) -> &'static str { match self { Role::Member => "m
 pub enum Kind { Control, Channel }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(default)]
 pub struct State {
     pub v: u32,
     pub device_secret: String,
@@ -40,7 +41,21 @@ pub struct State {
     pub profile_dirty: bool,
     pub lr_published: bool,
     pub typing_enabled: bool,
+    /// The relay's invite secret, kept so that we can register again if the relay ever forgets this device.
+    pub relay_invite: String,
+    /// When we last asked to join (community id -> time), and when we may next try.
+    pub join_asked: BTreeMap<String, u64>,
+    pub join_retry: BTreeMap<String, u64>,
+    /// Joins that will not happen, and why, until the person dismisses them.
+    pub join_refused: BTreeMap<String, JoinRefused>,
+    /// The relay says this device is revoked: nothing more can happen here.
+    pub self_revoked: bool,
+    /// Devices of our own account we have seen, so that a new one can be pointed out.
+    pub known_devices: BTreeSet<String>,
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct JoinRefused { pub name: String, pub reason: String, pub ts: u64 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct Profile { pub name: String, pub ts: u64 }
@@ -64,6 +79,9 @@ pub struct Community {
     pub removed_reason: String,
     /// Secrets of invites this device created (the group only holds the public half).
     pub invite_sks: BTreeMap<String, String>,
+    /// The signed chain of owners after the founder.
+    #[serde(default)]
+    pub transfers: Vec<commons_proto::OwnerStep>,
 }
 impl Community {
     pub fn role_of(&self, acct: &str) -> Option<Role> {
@@ -80,10 +98,24 @@ pub struct PendingCommit {
     pub acl_remove: Vec<String>,
     pub posted: bool,
     pub desc: String,
+    /// Accounts the relay must let in before this commit is posted.
+    #[serde(default)]
+    pub acl_add: Vec<String>,
+    /// Queued requests this commit answers: dropped when it is applied, kept for another try if it loses.
+    #[serde(default)]
+    pub handled: Vec<u64>,
+    /// Admin grants this commit takes away, to be withdrawn at the relay too.
+    #[serde(default)]
+    pub acl_demote: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ReqItem { pub seq: u64, pub tag: u8, pub data: String, pub tries: u32 }
+pub struct ReqItem {
+    pub seq: u64, pub tag: u8, pub data: String, pub tries: u32,
+    /// A join request we cannot check against an invite: kept separately so that junk cannot crowd out real ones.
+    #[serde(default)]
+    pub unverified: bool,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GroupState {
@@ -159,8 +191,16 @@ pub struct OutItem {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct WelcomeOut { pub id: String, pub device: String, pub data: String, pub gid: String }
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct AclJob { pub gid: String, pub remove: Vec<String>, #[serde(default)] pub after: u64 }
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct AclJob {
+    pub gid: String,
+    #[serde(default)] pub add: Vec<String>,
+    #[serde(default)] pub remove: Vec<String>,
+    #[serde(default)] pub demote: Vec<String>,
+    #[serde(default)] pub promote: Vec<String>,
+    #[serde(default)] pub transfer: Option<commons_proto::OwnerStep>,
+    #[serde(default)] pub after: u64,
+}
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ParkedWelcome { pub id: String, pub data: String, pub ts: u64 }
 
