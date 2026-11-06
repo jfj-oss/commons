@@ -287,7 +287,7 @@ try {
   await ui.send('Page.bringToFront');
   const shotRes = await ui.send('Page.captureScreenshot', { format: 'png' });
   fs.writeFileSync(path.join(out, 'call-panel.png'), Buffer.from(shotRes.result.data, 'base64'));
-  await ui.ev(`document.querySelector('#c-leave').click()`);
+  await ui.ev(`document.querySelector('#c-leave')?.click()`);
 } catch (e) { console.error('TEST RUN ABORTED:', e); failed++; results.push({ name: 'run', ok: false, detail: String(e.stack || e) }); }
 finally {
   fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify(results, null, 1));
