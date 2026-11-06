@@ -139,7 +139,7 @@ try {
   const spyRes = await spy.ev(`(async()=>{
     // capture every encoded frame the server forwards to us (what is on the wire after SRTP), per remote track
     const Orig = window.RTCPeerConnection; window.__frames = {}; window.__decoded = {};
-    window.RTCPeerConnection = function (cfg, ...r) { cfg = Object.assign({}, cfg, { encodedInsertableStreams: true }); const pc = new Orig(cfg, ...r); const sc = pc.setConfiguration.bind(pc); pc.setConfiguration = c => sc(Object.assign({}, c, { encodedInsertableStreams: true })); const sc = pc.setConfiguration.bind(pc); pc.setConfiguration = c => sc(Object.assign({}, c, { encodedInsertableStreams: true }));
+    window.RTCPeerConnection = function (cfg, ...r) { cfg = Object.assign({}, cfg, { encodedInsertableStreams: true }); const pc = new Orig(cfg, ...r); const origSetCfg = pc.setConfiguration.bind(pc); pc.setConfiguration = c => origSetCfg(Object.assign({}, c, { encodedInsertableStreams: true }));
       pc.addEventListener('track', ev => { if (ev.track.kind !== 'audio') return; const key = ev.track.id; window.__frames[key] = []; const { readable, writable } = ev.receiver.createEncodedStreams();
         readable.pipeThrough(new TransformStream({ transform(f, ctl) { if (window.__frames[key].length < 150) window.__frames[key].push(Array.from(new Uint8Array(f.data))); ctl.enqueue(f); } })).pipeTo(writable); });
       return pc; };
@@ -150,7 +150,7 @@ try {
     return true; })()`);
   // the plaintext control: an unencrypted publisher with the same kind of tone (500 Hz, from alice's browser's fake microphone)
   const ctl = await openPage(P('alice').chrome, `http://127.0.0.1:${P('alice').port}/vendor/README.txt`, 'plain');
-  await ctl.ev(`(async()=>{ const src = await (await fetch('/vendor/livekit-client.umd.js')).text(); (0, eval)(src); const room = new LivekitClient.Room(); await room.connect('ws://127.0.0.1:${LK_PORT}', ${J(plainTok)}); await room.localParticipant.setMicrophoneEnabled(true); window.__r = room; return true; })()`);
+  await ctl.ev(`(async()=>{ const src = await (await fetch('/vendor/livekit-client.umd.js')).text(); (0, eval)(src); const room = new LivekitClient.Room(); await room.connect('ws://127.0.0.1:${LK_PORT}', ${J(plainTok)}); await room.localParticipant.setMicrophoneEnabled(true, undefined, { red: false }); window.__r = room; return true; })()`);
   await sleep(6000);
   const sub = await spy.ev(`window.__sub`);
   const analysis = await spy.ev(`(async()=>{
@@ -158,8 +158,8 @@ try {
     const eq = (a, b) => { let n = 0, m = Math.min(a.length, b.length); for (let i = 0; i < m; i++) if (a[i] === b[i]) n++; return m ? n / m : 0; };
     for (const [id, fr] of Object.entries(frames)) {
       const sub = window.__sub.find(s => s.trackId === id) || {};
-      const big = fr.filter(f => f.length > 40);
-      let same = 0, cnt = 0; for (let i = 1; i < big.length; i++) { same += eq(big[i], big[i - 1]); cnt++; }
+      const big = fr.filter(f => f.length > 40); const body = big.map(f => f.slice(1, f.length - 14));
+      let same = 0, cnt = 0, bs = 0; for (let i = 1; i < big.length; i++) { same += eq(big[i], big[i - 1]); bs += eq(body[i], body[i - 1]); cnt++; }
       // decode the forwarded frames with a real Opus decoder and measure the tone
       let toneShare = null, derr = 0;
       try {
@@ -172,7 +172,7 @@ try {
         toneShare = tot > 0 ? (2 * (re * re + im * im) / N) / tot : 0;
         if (!(N > 4000)) toneShare = null;
       } catch (e) { toneShare = 'ERR ' + e.message; }
-      out.push({ who: sub.who, src: sub.src, markedEncrypted: sub.enc, frames: fr.length, bytesEqualBetweenFrames: +(cnt ? same / cnt : 0).toFixed(4), opusToneShare500: toneShare, decodeErrors: derr, sizes: fr.slice(0, 5).map(f => f.length) });
+      out.push({ who: sub.who, src: sub.src, markedEncrypted: sub.enc, frames: fr.length, bytesEqualBetweenFrames: +(cnt ? same / cnt : 0).toFixed(4), bodyEqual: +(cnt ? bs / cnt : 0).toFixed(4), opusToneShare500: toneShare, decodeErrors: derr, sizes: fr.slice(0, 5).map(f => f.length) });
     }
     return out; })()`);
   console.log('operator view of forwarded audio frames:'); for (const a of analysis) console.log('   ', J(a));
@@ -184,7 +184,7 @@ try {
   const encTones = enc.map(toneOf).filter(x => x !== null);
   const aliceEnc = enc.find(a => a.who === dev('alice')); const aliceShare = aliceEnc ? toneOf(aliceEnc) : null;
   check('E3 the same tone inside our E2EE frames is NOT decodable at the operator (alice tone 500 Hz)', aliceShare !== null && aliceShare < 0.05, `alice share ${aliceShare}; all ${J(encTones)}`);
-  check('E4 forwarded E2EE frames are not predictable from one frame to the next (byte equality ~0.4% for ciphertext)', enc.every(a => a.bytesEqualBetweenFrames < 0.03), J(enc.map(a => a.bytesEqualBetweenFrames)) + ' vs plaintext ' + J(plain.map(a => a.bytesEqualBetweenFrames)));
+  check('E4 forwarded E2EE frame bodies are not predictable from one frame to the next (ciphertext: ~0.4% equal bytes)', enc.every(a => a.bodyEqual < 0.02), J(enc.map(a => a.bodyEqual)) + ' vs plaintext frames ' + J(plain.map(a => a.bodyEqual)) + ' (the unencrypted 1-byte header and 14-byte IV/trailer are excluded)');
   const spyHear = await spy.ev(`(async()=>{ const el = [...document.querySelectorAll('audio')]; const res = []; for (const a of el) { const ctx = new AudioContext(); await ctx.resume(); const s = ctx.createMediaStreamSource(a.srcObject); const an = ctx.createAnalyser(); an.fftSize = 8192; s.connect(an); const buf = new Float32Array(an.frequencyBinCount); let best = 0; for (let k = 0; k < 12; k++) { await new Promise(r => setTimeout(r, 100)); an.getFloatFrequencyData(buf); let tot = 0; for (const v of buf) tot += Math.pow(10, v / 10); const bin = Math.round(500 / (ctx.sampleRate / 8192)); let pk = 0; for (let i = bin - 2; i <= bin + 2; i++) pk = Math.max(pk, Math.pow(10, buf[i] / 10)); best = Math.max(best, pk / tot); } res.push(+best.toFixed(3)); await ctx.close(); } return res; })()`);
   console.log('operator playback tone shares (plain control among them):', J(spyHear));
   await spy.ev(`window.__room.disconnect().then(() => true)`); await ctl.ev(`window.__r.disconnect().then(() => true)`);

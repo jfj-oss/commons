@@ -1,0 +1,30 @@
+# LiveKit media server for Commons voice rooms and screen share. TEMPLATE: nothing here is deployed.
+# Replace the key pair (see docs/DEPLOY.md: `openssl rand -hex 32` for the secret) and the domain.
+# The Commons relay holds the same key pair and signs join tokens; clients never see the secret.
+port: 7880                      # HTTP + WebSocket signalling. Put TLS in front (Caddy) for anything but a tailnet/loopback.
+bind_addresses: [""]            # all interfaces; the firewall decides who reaches it (see DEPLOY.md)
+rtc:
+  tcp_port: 7881                # ICE/TCP fallback for clients that cannot use UDP
+  udp_port: 7882                # ONE UDP port for all media (instead of a 50000-60000 range): easy to open, fine for a few friends
+  use_external_ip: true         # rented server with a public IP. On a home PC behind NAT set `node_ip:` to the tailnet/LAN address instead.
+  # node_ip: 100.x.y.z          # PC + Tailscale: the PC's tailnet address (tailscale ip -4)
+  stun_servers: []              # do NOT use LiveKit's default (Google STUN): use our own TURN/STUN below
+turn:
+  enabled: true                 # built-in TURN: relays media for people behind strict firewalls
+  domain: livekit.example.org   # must match the TLS certificate below; needs a real certificate
+  tls_port: 5349                # TURN over TLS (TCP), looks like HTTPS to firewalls
+  udp_port: 3478                # plain TURN/STUN over UDP
+  relay_range_start: 50000      # TURN relay ports (UDP). Keep the range small for a few friends.
+  relay_range_end: 50100
+  cert_file: /certs/fullchain.pem
+  key_file: /certs/privkey.pem
+keys:
+  COMMONS_KEY: REPLACE_WITH_64_HEX_CHARS_FROM_openssl_rand_-hex_32
+room:
+  auto_create: true             # rooms exist only while someone is in them; the name is a hash, see THREAT-MODEL.md
+  empty_timeout: 60
+  max_participants: 12
+logging:
+  level: info
+  json: false
+# No webhooks, no egress/ingress, no redis: a single node.

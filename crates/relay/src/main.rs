@@ -6,9 +6,9 @@ async fn main() {
     let mut bind: SocketAddr = "127.0.0.1:8787".parse().unwrap();
     let mut data = std::path::PathBuf::from("./relay-data");
     // Call support (optional). The API secret comes from the environment or a file, never from argv.
-    let mut lk_url = std::env::var("COMMONS_LIVEKIT_URL").ok();
-    let mut lk_key = std::env::var("COMMONS_LIVEKIT_API_KEY").ok();
-    let mut lk_secret = std::env::var("COMMONS_LIVEKIT_API_SECRET").ok();
+    let mut lk_url = std::env::var("COMMONS_LIVEKIT_URL").ok().filter(|x| !x.is_empty());
+    let mut lk_key = std::env::var("COMMONS_LIVEKIT_API_KEY").ok().filter(|x| !x.is_empty());
+    let mut lk_secret = std::env::var("COMMONS_LIVEKIT_API_SECRET").ok().filter(|x| !x.is_empty());
     let lk_ttl: u64 = std::env::var("COMMONS_LIVEKIT_TOKEN_TTL").ok().and_then(|x| x.parse().ok()).unwrap_or(900);
     let mut a = std::env::args().skip(1);
     while let Some(x) = a.next() {

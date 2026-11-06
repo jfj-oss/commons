@@ -172,8 +172,10 @@
       const prevEpoch = this.appliedEpoch;
       this.members = new Map(st.members.map(m => [m.device, m]));
       this.byAccount = new Map(); st.members.forEach(m => { if (!this.byAccount.has(m.account)) this.byAccount.set(m.account, []); this.byAccount.get(m.account).push(m.device); });
+      const mats = new Map();
       for (const [device, key] of Object.entries(st.keys)) {
         const material = await LK.createKeyMaterialFromBuffer(b64d(key));
+        mats.set(device, material);
         kp.onSetEncryptionKey(material, device, idx);
       }
       if (prevEpoch !== null && prevEpoch !== st.epoch) {
@@ -182,11 +184,13 @@
         if (oldIdx !== idx) {
           // The previous epoch's key stays for a moment so frames in flight still play, then its slot is overwritten
           // with random bytes, so that a removed member who still holds that key cannot be decoded either.
+          // Setting a key at an index also makes it the sender's current index, so the current keys are set again last.
           const members = [...this.members.keys()];
           const gen = this.rotations;
           setTimeout(async () => {
             if (this.rotations !== gen || !this.kp) return;
             for (const d of members) { const junk = crypto.getRandomValues(new Uint8Array(32)); kp.onSetEncryptionKey(await LK.createKeyMaterialFromBuffer(junk.buffer), d, oldIdx); }
+            for (const [d, m] of mats) kp.onSetEncryptionKey(m, d, idx);
             this.log('old key slot ' + oldIdx + ' wiped');
           }, OLD_KEY_GRACE_MS);
         }
