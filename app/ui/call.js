@@ -219,6 +219,7 @@
       this._polling = false;
       this._poll = setInterval(async () => {
         if (this._polling || !this.room || this.phase === 'idle') return;
+        this.audioEls.forEach(e => { if (e.paused && !this.deafened) this._play(e); });
         this._polling = true;
         try {
           const st = await this.rpc('call_state', { gid: this.gid });
@@ -292,13 +293,24 @@
       return this.audioHost;
     }
     _attachAudio(identity, pub, track) {
-      const el = track.attach(); el.autoplay = true; el.muted = this.deafened; this._audioHostEl().appendChild(el);
+      const el = track.attach(); el.autoplay = true; el.muted = this.deafened; this._audioHostEl().appendChild(el); this._play(el);
       this.audioEls.set(identity + '/' + pub.trackSid, el);
       const m = this.members.get(identity);
       const vol = m ? this.volumes[m.account] : undefined;
       if (vol !== undefined) track.setVolume ? track.setVolume(vol) : (el.volume = vol);
       this.tracks.set(identity + '/' + pub.trackSid, { identity, pub, track, source: pub.source, el });
       if (this.prefs.outId && el.setSinkId) el.setSinkId(this.prefs.outId).catch(() => { });
+    }
+    // Browsers may refuse to start sound until the user has clicked in the page; a paused element would mean silence for the user
+    // (and for WebAudio taps of the track). Retry, and if the browser keeps refusing say so and resume on the next click.
+    _play(el) {
+      const p = el.play && el.play();
+      if (p && p.catch) p.catch(() => {
+        if (this._audioBlocked) return;
+        this._audioBlocked = true; this.fail('audio-blocked', 'Your browser is holding back the sound until you click somewhere in this page. Click once and it will start.');
+        const go = () => { document.removeEventListener('pointerdown', go, true); this._audioBlocked = false; if (this.error && this.error.kind === 'audio-blocked') this.error = null; try { this.room && this.room.startAudio(); } catch { } this.audioEls.forEach(e => this._play(e)); this.changed(); };
+        document.addEventListener('pointerdown', go, true);
+      });
     }
     _dropAudio(identity, sid) {
       for (const [k, el] of [...this.audioEls]) if (k.startsWith(identity + '/') && (!sid || k.endsWith('/' + sid))) { try { el.remove(); } catch { } this.audioEls.delete(k); }
