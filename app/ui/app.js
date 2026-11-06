@@ -91,7 +91,7 @@ const S = {
   snap: null, cid: null, gid: null, msgs: null, reply: null, edit: null, people: false, last: '', lastMsgs: '', imgs: new Map(),
   members: [], membersFor: null, membersKey: '',
   mention: new Map(), mentionSig: new Map(),   // gid -> unread messages that name me, gid -> unread count it was computed for
-  first: true, firstNew: null, newCount: 0, jumpTo: null, pinned: true, below: 0, drafts: new Map(),
+  first: true, painted: 0, firstNew: null, newCount: 0, jumpTo: null, pinned: true, below: 0, drafts: new Map(),
 };
 const rowCache = new Map(), roomCache = new Map();
 
@@ -443,7 +443,7 @@ function renderStream() {
   }
   else if (near) st.scrollTop = st.scrollHeight;
   else if (added) { S.below += added; }
-  S.first = false; st.setAttribute('aria-busy', false); onScroll();
+  S.first = false; S.painted = Date.now(); st.setAttribute('aria-busy', false); onScroll();
 }
 function flashTo(el) {
   el.scrollIntoView({ block: 'center', behavior: calm() ? 'auto' : 'smooth' });
@@ -456,7 +456,16 @@ function onScroll() {
   $('#jump-label').textContent = S.below ? `${S.below} new` : 'Latest';
   j.classList.toggle('has-new', !!S.below);
 }
-$('#stream').addEventListener('scroll', onScroll, { passive: true });
+// While scrolling through old pages, a small label says which day you are in.
+function showDay() {
+  const st = $('#stream'), f = $('#day-float'); let cur = null;
+  if (Date.now() - S.painted < 500) return;   // the scroll came from us placing the room, not from reading
+  for (const d of $$('.day', st)) { if (d.offsetTop < st.scrollTop + 4) cur = d; else break; }
+  if (!cur || cur.offsetTop > st.scrollTop - 6) { f.classList.remove('on'); return; }
+  f.textContent = cur.textContent; f.classList.add('on');
+  clearTimeout(showDay.t); showDay.t = setTimeout(() => f.classList.remove('on'), 1100);
+}
+$('#stream').addEventListener('scroll', () => { onScroll(); showDay(); }, { passive: true });
 $('#stream').addEventListener('load', () => { if (S.pinned) { const st = $('#stream'); st.scrollTop = st.scrollHeight; } }, true);
 $('#jump').onclick = () => { const st = $('#stream'); st.scrollTo({ top: st.scrollHeight, behavior: calm() ? 'auto' : 'smooth' }); };
 

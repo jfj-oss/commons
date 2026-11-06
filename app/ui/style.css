@@ -367,6 +367,9 @@ mark { background: var(--brass-soft); color: inherit; border-radius: 3px; paddin
 .gap .sys-t { color: inherit; opacity: .9; }
 .gap .linkish { color: inherit; font-size: 12.5px; }
 
+#day-float { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 2px 13px 3px; font: italic 480 13px var(--display); font-variation-settings: "SOFT" 100, "WONK" 1; color: var(--ink-2); box-shadow: var(--shadow-s); opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 4; white-space: nowrap; }
+#day-float.on { opacity: 1; }
+
 /* ---- jump + composer ---- */
 #jump { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); display: flex; gap: 5px; align-items: center; background: var(--card); color: var(--ink); border: 1px solid var(--line-2); border-radius: 999px; padding: 5px 13px 5px 9px; font-size: 12.5px; font-weight: 650; box-shadow: var(--shadow); z-index: 4; animation: rise .18s var(--ease); }
 #jump .ic { width: 15px; height: 15px; }
