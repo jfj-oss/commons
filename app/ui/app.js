@@ -87,10 +87,12 @@ async function copy(text, done = 'Copied') {
   toast(done);
 }
 
+const quiet = x => x.kind === 'notice' || x.kind === 'member';   // lines nobody wrote: never unread, never a mention
 const S = {
   snap: null, cid: null, gid: null, msgs: null, reply: null, edit: null, people: false, last: '', lastMsgs: '', imgs: new Map(), limit: 200,
   members: [], membersFor: null, membersKey: '',
   mention: new Map(), mentionSig: new Map(),   // gid -> unread messages that name me, gid -> unread count it was computed for
+  outgoing: [],   // sent but not yet back from the core: shown at once, so pressing Send never looks like nothing happened
   first: true, painted: 0, firstNew: null, newCount: 0, jumpTo: null, pinned: true, below: 0, drafts: new Map(),
 };
 const rowCache = new Map(), roomCache = new Map();
@@ -134,7 +136,7 @@ function modal(title, html, actions = [{ label: 'Close', primary: false }], opts
       resolve(v);
     };
     const onKey = e => {
-      if (e.key === 'Escape') { e.stopPropagation(); close(-1); }
+      if (e.key === 'Escape') { e.stopPropagation(); if (!opts.sticky) close(-1); }
       else if (e.key === 'Tab') {
         const f = $$('button:not(:disabled), input:not([type=hidden]), select, textarea, a[href], summary', w).filter(x => x.offsetParent !== null);
         if (!f.length) return;
@@ -154,7 +156,7 @@ function modal(title, html, actions = [{ label: 'Close', primary: false }], opts
       };
       $('.acts', w).appendChild(b);
     });
-    w.addEventListener('mousedown', e => { if (e.target === w) close(-1); });
+    w.addEventListener('mousedown', e => { if (e.target === w && !opts.sticky) close(-1); });
     const first = $('input:not([type=hidden]), textarea', w); (first || $('.modal', w)).focus({ preventScroll: true });
   });
 }
@@ -184,13 +186,16 @@ async function boot() {
   const relay = esc(st.default_relay || '');
   let invited = null; // what a pasted invite said
   const invBox = `<label for="lnk">Invite link</label><input type="text" id="lnk" autocomplete="off" spellcheck="false" placeholder="Paste what your friend sent you"><div class="lnk-note small muted" id="lnk-note" role="status"></div>`;
+  // A second device or a recovery only needs to know where the server is; any invite link says that, even a used one.
+  const invBoxOld = `<label for="lnk">Any invite link from your friends <span class="muted">(if this device does not know the server yet)</span></label><input type="text" id="lnk" autocomplete="off" spellcheck="false" placeholder="An old or used one works too"><div class="lnk-note small muted" id="lnk-note" role="status"></div>`;
   const readLink = async () => {
     const box = $('#lnk'); if (!box) return; const v = box.value.trim(); invited = null; $('#lnk-note').textContent = '';
     if (!v) return;
     try {
       invited = await rpc('parse_link', { link: v });
       $('#relay').value = invited.relay; $('#inv').value = invited.secret;
-      $('#lnk-note').textContent = invited.kind === 'community' ? `You are joining “${invited.name}” on ${invited.relay.replace(/^https?:\/\//, '')}.` : `This puts you on the relay at ${invited.relay.replace(/^https?:\/\//, '')}.`;
+      const where = invited.relay.replace(/^https?:\/\//, '');
+      $('#lnk-note').textContent = !$('#nm') || $('#rk') ? `Server: ${where}.` : invited.kind === 'community' ? `You are joining “${invited.name}” on ${where}.` : `This puts you on the relay at ${where}.`;
     } catch (e) { invited = null; $('#lnk-note').textContent = e.message; throw e; }
   };
   const form = (title, extra, btn, run, links) => {
@@ -199,7 +204,7 @@ async function boot() {
       <div class="err" id="e" role="alert"></div><div class="boot-go"><button class="btn" id="go">${btn}</button></div><div class="boot-links">${links}</div></div>`;
     const pp = $('#pp'); if (pp && $('#pp2')) pp.oninput = () => { $('#pph').textContent = ppStrength(pp.value); };
     if ($('#lnk')) $('#lnk').oninput = () => readLink().catch(() => { });
-    $('#go').onclick = async () => { $('#go').disabled = true; try { await readLink(); if ($('#pp2') && $('#pp').value !== $('#pp2').value) throw new Error('The two passphrases are different.'); await run(); } catch (e) { $('#e').textContent = e.message; $('#go').disabled = false; if (/relay/i.test(e.message)) $('.relay-box').open = true; } };
+    $('#go').onclick = async () => { $('#go').disabled = true; $('#e').textContent = ''; try { await readLink(); if ($('#pp2') && $('#pp').value !== $('#pp2').value) throw new Error('The two passphrases are different.'); await run(); } catch (e) { $('#e').textContent = e.message; $('#go').disabled = false; if (/relay/i.test(e.message)) $('.relay-box').open = true; } };
     $$('input', el).forEach(i => i.onkeydown = e => { if (e.key === 'Enter') $('#go').click(); });
   };
   const links = which => [['new', 'Create an account'], ['pair', 'This is a new device for my account'], ['rec', 'I only have a recovery key']].filter(([k]) => k !== which).map(([k, l]) => `<button type="button" class="linkish" id="l-${k}">${l}</button>`).join('');
@@ -208,21 +213,22 @@ async function boot() {
     `${invBox}<label for="nm">Display name</label><input type="text" id="nm" autocomplete="off"><label for="pp">Passphrase (protects the keys on this device)</label><input type="password" id="pp">${PP2}`, 'Create account',
     async () => { const pass = $('#pp').value; await rpc('create_account', { name: $('#nm').value, passphrase: pass, relay: $('#relay').value, invite: $('#inv').value }); if (invited && invited.kind === 'community') await rpc('join', { link: invited.link }).catch(e => toast(e.message)); await showRecoveryOnce(pass); el.hidden = true; startApp(); }, links('new')); wire(); };
   const showPair = () => { form('Add this device to your account. You will get a code to approve on a device you already use.',
-    `${invBox}<label for="pp">Passphrase for this device</label><input type="password" id="pp">${PP2}`, 'Get pairing code', async () => {
+    `${invBoxOld}<label for="pp">Passphrase for this device</label><input type="password" id="pp">${PP2}`, 'Get pairing code', async () => {
       const r = await rpc('start_pairing', { passphrase: $('#pp').value, relay: $('#relay').value });
       pairScreen(r);
     }, links('pair')); wire(); };
   const showRec = () => { form('Recover your account on this device with your recovery key. Old messages are not recoverable (they only live on devices).',
-    `${invBox}<label for="nm">Display name</label><input type="text" id="nm" autocomplete="off"><label for="rk">Recovery key</label><input type="text" id="rk" class="mono" autocomplete="off" spellcheck="false"><label for="pp">New passphrase for this device</label><input type="password" id="pp">${PP2}`, 'Recover',
+    `${invBoxOld}<label for="nm">Display name</label><input type="text" id="nm" autocomplete="off"><label for="rk">Recovery key</label><input type="text" id="rk" class="mono" autocomplete="off" spellcheck="false"><label for="pp">New passphrase for this device</label><input type="password" id="pp">${PP2}`, 'Recover',
     async () => { await rpc('recover_account', { name: $('#nm').value, recovery_key: $('#rk').value, passphrase: $('#pp').value, relay: $('#relay').value }); el.hidden = true; startApp(); }, links('rec')); wire(); };
   showNew();
 }
 // Waiting for a device you already use to approve this one. Also where a pairing resumes after a restart, and the way out of one that went nowhere.
 function pairScreen(r) {
   const el = $('#boot'); el.hidden = false; $('#app').hidden = true;
-  el.innerHTML = `<div class="boot-card">${BRAND}<h1>Approve this device</h1><div class="tag">On a device you already use: Devices → “Add a device”, then scan or paste this code.</div>
-    <div class="qr">${r.qr}</div><div class="code small-code">${esc(r.code)}</div><p>Check code <b class="mono">${esc(r.check)}</b> (the other device must show the same one when you approve).</p><div class="waiting"><span class="dots"><i></i><i></i><i></i></span> Waiting for approval…</div><div class="boot-links"><button type="button" class="linkish" id="l-over">Start over</button></div></div>`;
+  el.innerHTML = `<div class="boot-card">${BRAND}<h1>Approve this device</h1><div class="tag">Copy this code to a device where you already use Commons (send it to yourself, for example). There, open Devices (the ${icon('devices', 'inline')} button at the bottom left), paste it under “Add a device” and press Approve.</div>
+    <div class="code small-code">${esc(r.code)}</div><button type="button" class="linkish copy-line" id="cp-pair">${icon('copy')}Copy the code</button><div class="qr">${r.qr}</div><p>Check code <b class="mono">${esc(r.check)}</b>: the other device shows the same four digits when you paste the code. If they differ, do not approve.</p><div class="waiting"><span class="dots"><i></i><i></i><i></i></span> Waiting for approval…</div><div class="boot-links"><button type="button" class="linkish" id="l-over">Start over</button></div></div>`;
   const t = setInterval(async () => { try { const s = await rpc('pairing_status'); if (s.done) { clearInterval(t); el.hidden = true; startApp(); } } catch (e) { } }, 1500);
+  $('#cp-pair').onclick = () => copy(r.code, 'Code copied');
   $('#l-over').onclick = async () => { clearInterval(t); try { await rpc('pairing_abandon'); } catch (e) { } boot(); };
 }
 const PP2 = `<label for="pp2">Type it again</label><input type="password" id="pp2"><div class="muted small" id="pph" aria-live="polite"></div>`;
@@ -235,20 +241,63 @@ function ppStrength(p) {
 }
 async function showRecoveryOnce(pass) {
   const k = (await rpc('recovery_key', { passphrase: pass })).key;
-  await modal('Save your recovery key', `<p>If you lose every device, this key restores <b>your identity</b> (so friends can add a new device of yours). It does <b>not</b> restore old messages.</p><div class="code key-code">${esc(k)}</div><button type="button" class="linkish copy-line" id="cp">${icon('copy')}Copy</button><p class="muted small">Write it down or store it in a password manager. Anyone who has it can act as you.</p>`, [{ label: 'I saved it', primary: true }]);
+  await modal('Save your recovery key', `<p>If this computer is lost or broken, this key gets you back into your account on a new one, and your communities let you back in. Messages from before do <b>not</b> come back.</p><div class="code key-code">${esc(k)}</div><button type="button" class="linkish copy-line" id="cp">${icon('copy')}Copy</button><p class="muted small">Write it down, or keep it in a password manager, somewhere that is not this computer. Anyone who has it can act as you. You can see it again later under Devices.</p>`, [{ label: 'I saved it', primary: true }], { sticky: true });
 }
 document.addEventListener('click', e => { if (e.target.closest('#cp')) copy($('.modal .code').textContent); });
 
+// ---- something new came in: the count in the window title, and a soft chime (Settings: all, mentions only, or off) ----
+const soundPref = () => pref.get('sound') || 'all';
+let chimeCtx = null, chimeAt = 0;
+// Browsers only allow sound after the person has touched the page, so the audio is set up on the first click or key.
+const unlockAudio = () => { try { chimeCtx = chimeCtx || new (window.AudioContext || window.webkitAudioContext)(); if (chimeCtx.state === 'suspended') chimeCtx.resume().catch(() => { }); } catch { } };
+document.addEventListener('pointerdown', unlockAudio, { once: true, capture: true });
+document.addEventListener('keydown', unlockAudio, { once: true, capture: true });
+function chime() {
+  if (!chimeCtx || chimeCtx.state !== 'running' || Date.now() - chimeAt < 2000) return;
+  chimeAt = Date.now();
+  try {
+    const c = chimeCtx, t = c.currentTime, g = c.createGain(); g.connect(c.destination);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.09, t + 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.55);
+    [[660, 0], [990, 0.085]].forEach(([f, d]) => { const o = c.createOscillator(); o.type = 'sine'; o.frequency.value = f; o.connect(g); o.start(t + d); o.stop(t + 0.6); });
+  } catch { }
+}
+const away = () => document.visibilityState !== 'visible' || !document.hasFocus();
+let seenUnread = null, titleNow = '';
+function news(sn) {
+  const now = new Map(); let total = 0;
+  for (const c of sn.communities) if (!c.removed) for (const ch of c.channels) { now.set(ch.gid, ch.unread); total += ch.unread; }
+  const fresh = seenUnread && [...now].some(([g, n]) => n > (seenUnread.get(g) || 0) && (away() || g !== S.gid));
+  seenUnread = now;
+  if (fresh && soundPref() === 'all') chime();
+  const t = (total ? `(${total > 99 ? '99+' : total}) ` : '') + 'Commons';
+  if (t !== titleNow) { titleNow = t; document.title = t; try { T && T.window && T.window.getCurrentWindow().setTitle(t).catch(() => { }); } catch { } }
+}
+let seenMentions = 0;
+function mentionNews() {
+  const n = [...S.mention].filter(([g]) => g !== S.gid || away()).reduce((a, [, b]) => a + b, 0);
+  if (n > seenMentions) {
+    if (soundPref() !== 'off') chime();
+    if (away()) try { T && T.window && T.window.getCurrentWindow().requestUserAttention(2).catch(() => { }); } catch { }
+  }
+  seenMentions = n;
+}
+
 // ---- main app ----
 let polling = false;
-function startApp() { $('#app').hidden = false; $('#boot').hidden = true; if (!polling) { polling = true; tick(); setInterval(tick, 1000); } }
+function startApp() { $('#app').hidden = false; $('#boot').hidden = true; if (!polling) { polling = true; tick(); setInterval(tick, 500); } }
+// One look at a time; a look asked for while one runs happens right after it.
 async function tick() {
+  if (tick.busy) { tick.again = true; return; }
+  tick.busy = true;
+  try { await tickOnce(); } finally { tick.busy = false; if (tick.again) { tick.again = false; tick(); } }
+}
+async function tickOnce() {
   try {
     const snap = await rpc('snapshot');
     const st = $('#sync-status'); if (st.classList.contains('down')) { st.className = 'sync'; S.last = ''; }
     const key = JSON.stringify(snap);
     const changed = key !== S.last; S.last = key; S.snap = snap;
-    if (changed) { renderRail(); refreshMembers(); refreshMentions(); }
+    if (changed) { renderRail(); refreshMembers(); refreshMentions(); news(snap); }
     const gid = S.gid;
     if (gid) {
       const m = await rpc('messages', { gid, limit: S.limit, around: S.jumpTo || '' });
@@ -281,6 +330,7 @@ $('#rooms').addEventListener('click', async e => {
   const b = e.target.closest('.room'); if (b) openRoom(b.dataset.g);
 });
 
+const gone = new Set();
 function renderRail() {
   const sn = S.snap;
   $('#me-name').textContent = sn.me.name;
@@ -291,7 +341,8 @@ function renderRail() {
   const c = currentCommunity();
   $('#sw-name').textContent = c ? c.name : (sn.joining.length ? 'Waiting to join…' : 'No community');
   $('#sw-crest').innerHTML = c ? crest(c.id, c.name) : '';
-  $('#sw-sub').textContent = c ? (c.removed ? 'no longer a member' : `you are ${roleWords(c.role)}`) : 'Open the menu to start';
+  $('#sw-sub').textContent = c ? (c.removed ? (pref.get('left.' + c.id) ? 'you left' : 'no longer a member') : `you are ${roleWords(c.role)}`) : 'Open the menu to start';
+  for (const x of sn.communities) { if (x.removed) gone.add(x.id); else if (gone.delete(x.id)) pref.set('left.' + x.id, ''); }   // came back
   const isAdmin = c && (c.role === 'admin' || c.role === 'owner');
   $('#add-room').hidden = !isAdmin; $('#btn-invite').hidden = !isAdmin; $('#btn-people').hidden = !c;
   $('.search-wrap').hidden = !c; $('#btn-search').hidden = !c;
@@ -299,14 +350,14 @@ function renderRail() {
   if (!c) { S.gid = null; }
   const seen = document.visibilityState === 'visible';
   patch($('#rooms'), (c ? c.channels.map(ch => {
-    const active = ch.gid === S.gid, un = active && seen ? 0 : ch.unread, at = active ? 0 : (S.mention.get(ch.gid) || 0);
+    const active = ch.gid === S.gid, un = (active && seen) || c.removed ? 0 : ch.unread, at = active ? 0 : (S.mention.get(ch.gid) || 0);
     const said = [ch.name, un ? `${un} unread` : '', at ? `${at} mention${at === 1 ? '' : 's'} of you` : '', ch.joined ? '' : 'waiting for keys'].filter(Boolean).join(', ');
     return { k: ch.gid, h: `<button class="room ${active ? 'active' : ''} ${ch.joined ? '' : 'pending'} ${un ? 'unread' : ''} ${at ? 'mention' : ''}" data-g="${esc(ch.gid)}" aria-label="${esc(said)}"${active ? ' aria-current="true"' : ''}><svg class="kh" viewBox="0 0 12 14" aria-hidden="true"><use href="#i-keyhole"/></svg><span class="nm">${esc(ch.name)}</span>${at ? '<span class="at-mark">@</span>' : ''}${un ? `<span class="pill">${un}</span>` : ''}</button>` };
   }) : []).concat(joinNotes(sn)), roomCache);
   const ch = currentChannel();
   $('#chan-title').textContent = ch ? ch.name : (c ? c.name : 'Welcome');
   const people = S.membersFor === S.cid && S.members.length ? `${S.members.length} ${S.members.length === 1 ? 'person' : 'people'}` : '';
-  $('#chan-sub').textContent = c ? [c.name, people, ch && ch.status !== 'ok' ? ch.status : ''].filter(Boolean).join(' · ') : '';
+  $('#chan-sub').textContent = c ? [c.name, c.removed ? '' : people, ch && ch.status !== 'ok' && !c.removed ? ch.status : ''].filter(Boolean).join(' · ') : '';
   $('#composer').hidden = !(ch && ch.joined && !(c && c.removed)) || sn.revoked;
   if (!ch) paintEmpty(c, sn);
   else if (!ch.joined && !S.msgs) paint([{ k: 'e:keys', h: KEYS_WAIT }]);
@@ -317,7 +368,7 @@ function renderRail() {
   const b = $('#banner');
   const log = '<button type="button" class="linkish" data-a="log">Open the activity log</button>';
   if (sn.revoked) { b.hidden = false; b.className = ''; b.innerHTML = `${icon('door')}<span>This device has been revoked, so it can no longer send or receive. What it already received stays readable here.</span>${log}`; }
-  else if (c && c.removed) { b.hidden = false; b.className = ''; b.innerHTML = `${icon('door')}<span>${esc(c.removed_reason || 'You are no longer in this community.')}</span>`; }
+  else if (c && c.removed) { b.hidden = false; b.className = ''; b.innerHTML = `${icon('door')}<span>${esc(pref.get('left.' + c.id) ? 'You left this community. What you received before stays readable here. To come back, ask for a new invite.' : c.removed_reason || 'You are no longer in this community.')}</span>`; }
   else if (ch && ch.joined && /out of sync|removed/.test(ch.status)) { b.hidden = false; b.className = ''; b.innerHTML = `${icon('sync')}<span>This room is ${esc(ch.status)}.</span>${log}`; }
   else if (ch && ch.joined && ch.status === 'refreshing keys') { b.hidden = false; b.className = 'calm'; b.innerHTML = `${icon('key')}<span>This room is refreshing its keys. Sending resumes in a moment.</span>${log}`; }
   else b.hidden = true;
@@ -338,7 +389,7 @@ const KEYS_WAIT = emptyState('wait', 'The keys are on their way', 'You are in th
 function paintEmpty(c, sn) {
   S.msgs = null;
   if (c) return paint([{ k: 'e:norooms', h: emptyState('door', 'No rooms to read yet', 'This community has no rooms you can read yet.') }]);
-  if (sn.joining.length) return paint([{ k: 'e:joining', h: emptyState('wait', 'You are on the doorstep', 'Waiting for an admin to let you in…') }]);
+  if (sn.joining.length) return paint([{ k: 'e:joining', h: emptyState('wait', 'You are on the doorstep', 'You are let in by itself as soon as someone who can let you in has Commons open. You can close Commons and come back later.') }]);
   paint([{ k: 'e:none', h: emptyState('door', 'Come on in', 'Create a community or join one with an invite link.', `<div class="empty-acts"><button class="btn" data-a="new-community">New community</button><button class="btn ghost" data-a="join-community">Join with an invite link</button></div>`) }]);
 }
 function paint(rows, opts) { patch($('#stream'), rows, rowCache, opts); }
@@ -356,6 +407,7 @@ async function refreshMembers() {
 }
 const nameAlts = names => [...new Set(names.flatMap(n => [n, n.split(/\s+/)[0]]))].filter(Boolean).sort((a, b) => b.length - a.length).map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
 const AT = alts => new RegExp(`(^|[^\\p{L}\\p{N}_@])@(${alts})(?![\\p{L}\\p{N}_])`, 'giu');
+const repliesToMe = (x, list) => !!(x.reply && !x.mine && list.some(y => y.id === x.reply.id && y.mine));
 function mentionsMe(t) { if (!t || !S.snap) return false; const re = AT(nameAlts([S.snap.me.name])); return re.test(t); }
 function fmt(text) {
   const me = S.snap ? S.snap.me.name : '';
@@ -364,10 +416,22 @@ function fmt(text) {
   const mine = AT(nameAlts([esc(me)]));
   return esc(text).split(/(`[^`\n]+`)/).map((seg, i) => {
     if (i % 2) return `<code>${seg.slice(1, -1)}</code>`;
-    let s = seg.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>').replace(/(^|[\s(])\*([^*\s](?:[^*\n]*[^*\s])?)\*(?=$|[\s.,;:!?)])/gm, '$1<em>$2</em>');
+    let s = linkify(seg).replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>').replace(/(^|[\s(])\*([^*\s](?:[^*\n]*[^*\s])?)\*(?=$|[\s.,;:!?)])/gm, '$1<em>$2</em>');
     if (re) s = s.replace(re, (m, pre, n) => { mine.lastIndex = 0; return `${pre}<span class="at${mine.test("@" + n) ? " self" : ""}">@${n}</span>`; });
     return s;
   }).join('');
+}
+// Web addresses become links (on already-escaped text, so the address is used exactly as it is shown).
+function linkify(t) {
+  return t.replace(/https?:\/\/(?:(?!&quot;|&#39;|&lt;|&gt;)[^\s<])+/g, m => {
+    let url = m, tail = '';   // a full stop or bracket after the address is not part of it, unless the address opened that bracket
+    while (/[.,;:!?)\]]$/.test(url)) { const c = url.slice(-1); if (c === ')' && (url.match(/\(/g) || []).length >= (url.match(/\)/g) || []).length) break; tail = c + tail; url = url.slice(0, -1); }
+    return `<a class="link" href="${url}" rel="noopener noreferrer" target="_blank">${url}</a>${tail}`;
+  });
+}
+function openLink(url) {
+  if (T && T.core) rpc('open_link', { url }).then(r => { if (!r.opened) copy(url, 'Could not start a browser; the link is copied'); }).catch(e => toast(e.message));
+  else window.open(url, '_blank', 'noopener,noreferrer');
 }
 const plain = t => String(t).replace(/\*\*([^*\n]+)\*\*/g, '$1').replace(/(^|[\s(])\*([^*\s](?:[^*\n]*[^*\s])?)\*/g, '$1$2').replace(/`([^`\n]+)`/g, '$1');
 function onlyEmoji(t) {
@@ -384,11 +448,11 @@ async function refreshMentions() {
       if (S.mentionSig.get(ch.gid) === ch.unread) continue;
       const list = (await rpc('messages', { gid: ch.gid, limit: ch.unread + 50 })).messages;
       let left = ch.unread, n = 0;
-      for (let i = list.length - 1; i >= 0 && left > 0; i--) { const x = list[i]; if (x.mine || x.deleted || x.kind === 'notice') continue; left--; if (mentionsMe(x.text)) n++; }
+      for (let i = list.length - 1; i >= 0 && left > 0; i--) { const x = list[i]; if (x.mine || x.deleted || quiet(x)) continue; left--; if (mentionsMe(x.text) || repliesToMe(x, list)) n++; }
       S.mentionSig.set(ch.gid, ch.unread);
       if ((S.mention.get(ch.gid) || 0) !== n) { if (n) S.mention.set(ch.gid, n); else S.mention.delete(ch.gid); dirty = true; }
     }
-    if (dirty) renderRail();
+    if (dirty) { renderRail(); mentionNews(); }
   } catch { } finally { refreshMentions.busy = false; }
 }
 
@@ -420,14 +484,15 @@ function openGap(m) {
 // Who this really is, when the name alone cannot say: the same six characters on everyone's screen.
 const nameMarks = x => (x.same_name ? `<span class="tag" title="Someone else here has this name. This is the start of this person's account id.">${esc(x.tag)}</span>` : '') + (x.role === 'owner' || x.role === 'admin' ? `<span class="chip ok">${esc(x.role)}</span>` : '');
 function msgRow(x, cont, m, byId, admin) {
-  const mention = !x.mine && !x.deleted && mentionsMe(x.text);
+  const mention = !x.mine && !x.deleted && (mentionsMe(x.text) || !!(x.reply && byId.get(x.reply.id) && byId.get(x.reply.id).mine));
   const person = S.members.find(p => p.account === x.sender);
   const reacts = x.reactions.length ? `<div class="reacts">${x.reactions.map(r => `<button class="react ${r.mine ? 'mine' : ''}" data-id="${esc(x.id)}" data-e="${esc(r.emoji)}" title="${esc(r.names.join(', '))}" aria-pressed="${r.mine}"><span class="em">${esc(r.emoji)}</span><span class="n">${r.count}</span></button>`).join('')}${x.deleted ? '' : `<button class="react add" data-a="react" data-id="${esc(x.id)}" aria-label="Add a reaction" title="Add a reaction">${icon('smile')}</button>`}</div>` : '';
   let body;
   if (x.deleted) body = `<div class="body gone">message deleted</div>`;
   else if (x.kind === 'file') {
     const img = x.file.mime.startsWith('image/');
-    const meta = `<span class="small">${esc(fmtSize(x.file.size))}${img ? '' : ` · ${esc((x.file.mime.split('/')[1] || 'file').toUpperCase().slice(0, 12))}`}</span>`;
+    const ext = (/\.([a-z0-9]{1,8})$/i.exec(x.file.name) || [])[1];
+    const meta = `<span class="small">${esc(fmtSize(x.file.size))}${img ? '' : ` · ${esc((ext || x.file.mime.split('/')[1] || 'file').toUpperCase().slice(0, 12))}`}</span>`;
     const dl = `<a href="#" class="dl" data-id="${esc(x.id)}" title="Download ${esc(x.file.name)}">${icon('download')}<span>Download</span></a>`;
     body = (img ? `<div class="imgslot" data-id="${esc(x.id)}"></div><div class="file photo" data-file="${esc(x.id)}"><span class="fname">${esc(x.file.name)}</span>${meta}${dl}</div>`
       : `<div class="file" data-file="${esc(x.id)}">${icon('file', 'fi')}<div class="fbody"><div class="fname">${esc(x.file.name)}</div>${meta}</div>${dl}</div>`)
@@ -436,7 +501,7 @@ function msgRow(x, cont, m, byId, admin) {
   const src = x.reply && byId.get(x.reply.id);
   const quote = x.reply ? `<button type="button" class="quote" data-a="goto" data-id="${esc(x.reply.id)}" title="Go to this message">${seal(src ? src.sender : x.reply.name, x.reply.name, 'tiny')}<b>${esc(x.reply.name)}</b><span>${esc(plain(x.reply.text))}</span></button>` : '';
   const state = x.status === 'sending' ? `<span class="state">${icon('clock')}sending…</span>` : '';
-  const acts = x.deleted ? '' : `<div class="actions"><button data-a="reply" data-id="${esc(x.id)}" title="Reply" aria-label="Reply">${icon('reply')}</button><button data-a="react" data-id="${esc(x.id)}" title="React" aria-label="React">${icon('smile')}</button>${x.mine && x.kind === 'text' ? `<button data-a="edit" data-id="${esc(x.id)}" title="Edit" aria-label="Edit">${icon('pencil')}</button>` : ''}${x.mine || admin ? `<button data-a="del" data-id="${esc(x.id)}" title="Delete" aria-label="Delete">${icon('trash')}</button>` : ''}</div>`;
+  const acts = x.deleted || x.tmp ? '' : `<div class="actions"><button data-a="reply" data-id="${esc(x.id)}" title="Reply" aria-label="Reply">${icon('reply')}</button><button data-a="react" data-id="${esc(x.id)}" title="React" aria-label="React">${icon('smile')}</button>${x.mine && x.kind === 'text' ? `<button data-a="edit" data-id="${esc(x.id)}" title="Edit" aria-label="Edit">${icon('pencil')}</button>` : ''}${x.mine || admin ? `<button data-a="del" data-id="${esc(x.id)}" title="Delete" aria-label="Delete">${icon('trash')}</button>` : ''}</div>`;
   const who = cont ? `<div class="who"><span class="sr">${esc(x.name)}</span></div>`
     : `<div class="who"><span class="name">${esc(x.name)}${nameMarks(x)}${person && person.verified ? `<span class="vf" title="Safety number verified">${icon('check')}</span>` : ''}</span>${seal(x.sender, x.name)}</div>`;
   return `<article class="msg ${cont ? 'cont' : ''} ${x.mine ? 'mine' : ''} ${mention ? 'mention' : ''} ${x.deleted ? 'deleted' : ''} ${x.status === 'sending' ? 'sending' : ''}" style="--wax:${wax(x.sender)}" data-id="${esc(x.id)}">${who}<div class="txt">${quote}${body}${reacts}</div><time class="when" title="${esc(fmtFull(x.ts))}">${fmtTime(x.ts)}${state}</time>${acts}</article>`;
@@ -447,7 +512,7 @@ function renderStream() {
   const ch = currentChannel(), c = currentCommunity(), admin = c && (c.role === 'admin' || c.role === 'owner');
   if (S.first && ch && ch.unread > 0) {   // the first unread message, counted the way the core counts it
     let left = ch.unread;
-    for (let i = m.messages.length - 1; i >= 0 && left > 0; i--) { const x = m.messages[i]; if (x.mine || x.deleted || x.kind === 'notice') continue; left--; if (!left) { S.firstNew = x.id; S.newCount = ch.unread; } }
+    for (let i = m.messages.length - 1; i >= 0 && left > 0; i--) { const x = m.messages[i]; if (x.mine || x.deleted || quiet(x)) continue; left--; if (!left) { S.firstNew = x.id; S.newCount = ch.unread; } }
   }
   const byId = new Map(m.messages.map(x => [x.id, x]));
   const rows = m.more ? [{ k: 'e:older', h: `<div class="day"><button type="button" class="linkish" data-a="older">Show earlier messages</button></div>` }] : []; let lastDay = '', prev = null, known = 0;
@@ -455,14 +520,27 @@ function renderStream() {
     if (x.ts && dayKey(x.ts) !== lastDay) { lastDay = dayKey(x.ts); rows.push({ k: 'd' + lastDay, h: `<div class="day"><span>${esc(fmtDay(x.ts))}</span></div>` }); prev = null; }
     if (x.id === S.firstNew) { rows.push({ k: 'new', h: `<div class="newline" role="separator"><span>${S.newCount} new</span></div>` }); prev = null; }
     if (x.kind === 'notice') { rows.push({ k: x.id, h: sysRow(x) }); prev = null; continue; }
+    if (x.kind === 'member') { rows.push({ k: x.id, h: `<div class="joinline" data-sys="${esc(x.id)}"><span>${esc(x.text)}</span><time title="${esc(fmtFull(x.ts))}">${fmtTime(x.ts)}</time></div>` }); prev = null; continue; }
     const cont = prev && prev.sender === x.sender && x.ts - prev.ts < 300 && !x.reply;
     prev = x;
     rows.push({ k: x.id, h: msgRow(x, !!cont, m, byId, admin) });
     if (rowCache.has(x.id)) known++;
   }
+  // What this device just sent, until the core lists it. Matched by text, oldest first.
+  const mineNow = m.messages.filter(x => x.mine && x.kind === 'text');
+  const used = new Set();
+  S.outgoing = S.outgoing.filter(o => { if (o.gid !== S.gid) return true; const x = mineNow.find(y => !used.has(y.id) && !o.known.has(y.id) && y.text === o.text); if (x) used.add(x.id); return !x; });
+  for (const o of S.outgoing.filter(o => o.gid === S.gid)) {
+    const me = S.snap.me, x = { id: o.tmp, tmp: true, sender: me.account, name: me.name, mine: true, ts: o.ts, kind: 'text', text: o.text, reactions: [], status: 'sending', edited: false, deleted: false, reply: o.reply, role: 'member', same_name: false };
+    const cont = prev && prev.sender === x.sender && x.ts - prev.ts < 300 && !x.reply; prev = x;
+    rows.push({ k: o.tmp, h: msgRow(x, !!cont, m, byId, false) });
+  }
   const gap = openGap(m); if (gap) rows.push({ k: gap.key, h: gapRow(gap) });
   if (!rows.length && ch && !ch.joined) rows.push({ k: 'e:keys', h: KEYS_WAIT });
-  if (!rows.length) rows.push({ k: 'e:quiet' + S.members.length, h: emptyState('table', ch ? `Nobody has said anything in ${ch.name}` : 'No messages yet', 'No messages yet. Say hello.', admin && S.members.length === 1 ? '<div class="empty-acts"><button class="btn" data-a="invite">Invite someone</button></div>' : '') });
+  if (!rows.length) {
+    const alone = S.members.length <= 1;
+    rows.push({ k: 'e:quiet' + S.members.length, h: emptyState('table', ch ? `Welcome to ${ch.name}` : 'No messages yet', alone ? 'This is the start of the room. Invite your friends, then say hello.' : 'Messages show up here from the moment this device joined. Earlier ones stay with the people who were already here. Say hello.', admin && alone ? '<div class="empty-acts"><button class="btn" data-a="invite">Invite someone</button></div>' : '') });
+  }
   let added = 0;
   st.setAttribute('aria-busy', S.first);   // a room change should not be read out line by line
   paint(rows, {
@@ -519,7 +597,7 @@ function emojiPop(btn, m) {
   for (const em of QUICK) {
     const b = document.createElement('button'); b.textContent = em; b.setAttribute('aria-label', 'React with ' + em);
     if (m.reactions.find(r => r.emoji === em && r.mine)) b.className = 'on';
-    b.onclick = async e => { e.stopPropagation(); p.remove(); await rpc('react', { gid: S.gid, id: m.id, emoji: em, on: !(m.reactions.find(r => r.emoji === em && r.mine)) }); tick(); };
+    b.onclick = async e => { e.stopPropagation(); p.remove(); await rpc('react', { gid: S.gid, id: m.id, emoji: em, on: !(m.reactions.find(r => r.emoji === em && r.mine)) }); tick(); soon(); };
     p.appendChild(b);
   }
   document.body.appendChild(p);
@@ -543,12 +621,14 @@ $('#stream').addEventListener('click', async e => {
     else if (a === 'goto') { const el = $(`.msg[data-id="${CSS.escape(id)}"]`); if (el) flashTo(el); else toast('That message is not on this device.'); }
     else if (a === 'reply') { S.reply = m; S.edit = null; renderComposer(); $('#input').focus(); }
     else if (a === 'edit') { startEdit(m); }
-    else if (a === 'del') { try { await rpc('delete', { gid: S.gid, id }); tick(); } catch (er) { toast(er.message); } }
+    else if (a === 'del') { try { await rpc('delete', { gid: S.gid, id }); tick(); soon(); } catch (er) { toast(er.message); } }
     else if (a === 'react') emojiPop(b, m);
     return;
   }
+  const ln = t.closest('a.link');
+  if (ln) { e.preventDefault(); openLink(ln.getAttribute('href')); return; }
   const r = t.closest('.react[data-e]');
-  if (r) { const m = byId(r.dataset.id), x = m.reactions.find(y => y.emoji === r.dataset.e); await rpc('react', { gid: S.gid, id: m.id, emoji: r.dataset.e, on: !x.mine }); tick(); return; }
+  if (r) { const m = byId(r.dataset.id), x = m.reactions.find(y => y.emoji === r.dataset.e); await rpc('react', { gid: S.gid, id: m.id, emoji: r.dataset.e, on: !x.mine }); tick(); soon(); return; }
   const dl = t.closest('.dl');
   if (dl) {
     e.preventDefault();
@@ -607,14 +687,26 @@ function renderComposer() {
   const c = $('#cancel'); if (c) c.onclick = cancelCompose;
 }
 function cancelCompose() { if (S.edit) $('#input').value = ''; S.reply = null; S.edit = null; sizeInput(); renderComposer(); }
+let sendSeq = 0;
 async function send() {
   const inp = $('#input'); const text = inp.value; if (!text.trim() || !S.gid) return;
+  const gid = S.gid, edit = S.edit, reply = S.reply;
+  // Clear the box and show the message straight away; the core takes a moment to list it.
+  inp.value = ''; inp.style.height = ''; S.drafts.delete(gid); S.reply = null; S.edit = null; renderComposer(); sizeInput(); mentionClose(); S.pinned = true;
+  const o = edit ? null : { tmp: 'tmp' + (++sendSeq), gid, text, ts: Math.floor(Date.now() / 1000), known: new Set(S.msgs && S.gid === gid ? S.msgs.messages.map(x => x.id) : []), reply: reply ? { id: reply.id, name: reply.name, text: reply.text || (reply.file ? '[file] ' + reply.file.name : '') } : null };
+  if (o) { S.outgoing.push(o); if (S.msgs) renderStream(); const st = $('#stream'); st.scrollTop = st.scrollHeight; }
   try {
-    if (S.edit) await rpc('edit', { gid: S.gid, id: S.edit.id, text });
-    else await rpc('send_text', { gid: S.gid, text, reply: S.reply ? S.reply.id : null });
-    inp.value = ''; inp.style.height = ''; S.drafts.delete(S.gid); S.reply = null; S.edit = null; renderComposer(); sizeInput(); mentionClose(); S.lastMsgs = ''; S.pinned = true; const st = $('#stream'); st.scrollTop = st.scrollHeight; tick();
-  } catch (e) { toast(e.message); }
+    if (edit) await rpc('edit', { gid, id: edit.id, text });
+    else await rpc('send_text', { gid, text, reply: reply ? reply.id : null });
+    S.lastMsgs = ''; tick(); soon();
+  } catch (e) {
+    if (o) { S.outgoing = S.outgoing.filter(x => x !== o); if (S.msgs) renderStream(); }
+    if (S.gid === gid && !inp.value) { inp.value = text; S.reply = reply; S.edit = edit; renderComposer(); sizeInput(); }
+    toast(e.message);
+  }
 }
+// A few quick looks after an action, instead of waiting for the next regular one.
+function soon() { for (const ms of [150, 400, 800, 1400]) setTimeout(() => { S.lastMsgs = ''; tick(); }, ms); }
 $('#send').onclick = send;
 // @ names: a small picker above the composer. Text stays plain, so mentions need nothing from the core.
 const MP = { list: [], at: 0, start: 0 };
@@ -656,7 +748,7 @@ $('#file').onchange = async e => {
   if (f.size > 24 * 1024 * 1024) return toast('Files are limited to 24 MB.');
   const buf = new Uint8Array(await f.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
   toast('Encrypting and uploading…');
-  try { await rpc('send_file', { gid: S.gid, name: f.name, mime: f.type || 'application/octet-stream', data: btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''), caption: '' }); S.lastMsgs = ''; tick(); } catch (er) { toast(er.message); }
+  try { await rpc('send_file', { gid: S.gid, name: f.name, mime: f.type || 'application/octet-stream', data: btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''), caption: '' }); S.lastMsgs = ''; tick(); soon(); } catch (er) { toast(er.message); }
 };
 
 // ---- people drawer ----
@@ -673,7 +765,7 @@ async function renderPeople() {
     `<div class="p-foot">${c.role !== 'owner' ? '<button class="btn ghost" id="leave">Leave community</button>' : ''}${iAmAdmin ? '<button class="btn ghost" id="rename">Rename</button>' : ''}</div>`;
   el.querySelectorAll('button[data-a]').forEach(b => b.onclick = () => personAction(b.dataset, c));
   $('#people-close').onclick = () => $('#btn-people').click();
-  const lv = $('#leave'); if (lv) lv.onclick = async () => { if ((await modal('Leave ' + c.name + '?', '<p>You will stop receiving messages and your keys for this community are discarded after an admin removes you.</p>', [{ label: 'Cancel', primary: false }, { label: 'Leave', danger: true, run: async () => { await rpc('leave', { cid: c.id }); } }])) === 1) { toast('Asked to leave. An admin finishes it.'); tick(); } };
+  const lv = $('#leave'); if (lv) lv.onclick = async () => { if ((await modal('Leave ' + c.name + '?', '<p>You stop getting its messages. What you already received stays readable on this device. To come back later you need a new invite.</p>', [{ label: 'Cancel', primary: false }, { label: 'Leave', danger: true, run: async () => { await rpc('leave', { cid: c.id }); pref.set('left.' + c.id, '1'); } }])) === 1) { toast('Leaving. It is done as soon as an admin has Commons open.'); tick(); } };
   const rn = $('#rename'); if (rn) rn.onclick = () => modal('Rename community', `<input type="text" id="n" value="${esc(c.name)}" aria-label="Community name">`, [{ label: 'Cancel', primary: false }, { label: 'Rename', run: async w => { await rpc('rename_community', { cid: c.id, name: val(w, 'n') }); } }]).then(tick);
 }
 async function personAction(d, c) {
@@ -690,7 +782,7 @@ async function personAction(d, c) {
     const groups = parts.map((g, i) => `<button type="button" class="grp" aria-pressed="false" title="Tick off as you compare"><i>${i + 1}</i>${esc(g)}</button>`).join('');
     const me = S.snap.me;
     const top = `<div class="pair">${seal(me.account, me.name, 'big')}<span class="tie ${s.verified ? 'on' : ''}">${icon(s.verified ? 'check' : 'key')}</span>${seal(d.acct, s.name, 'big')}</div>`;
-    const p = modal('Verify ' + s.name, `<div class="state-line ${s.verified ? 'ok' : ''}">${s.verified ? 'Verified by you' : 'Not verified yet'}</div><p>Compare these numbers with ${esc(s.name)} in person or over a call. If they match, nobody (including the relay) is sitting between you.</p><div class="safety-wrap"><div><div class="safety">${groups}</div><div class="tally" aria-live="polite">Tap each group as you read it out.</div></div><div class="qr">${s.qr}</div></div><p class="muted small">The QR contains the same number; scan it on the other device or compare by eye.</p>`,
+    const p = modal('Verify ' + s.name, `<div class="state-line ${s.verified ? 'ok' : ''}">${s.verified ? 'Verified by you' : 'Not verified yet'}</div><p>Compare these numbers with ${esc(s.name)} in person or over a call. If they match, nobody (including the relay) is sitting between you.</p><div class="safety-wrap"><div><div class="safety">${groups}</div><div class="tally" aria-live="polite">Tap each group as you read it out.</div></div><div class="qr">${s.qr}</div></div><p class="muted small">Read the numbers out to each other, or hold the screens side by side. The square code holds the same number, for later versions that can scan it.</p>`,
       [{ label: 'Close', primary: false }, { label: s.verified ? 'Mark as not verified' : 'They match, mark verified', run: async () => { await rpc('set_verified', { account: d.acct, on: !s.verified }); } }], { cls: 'safety-modal', top });
     const w = $('.safety-modal');
     w.addEventListener('click', e => {
@@ -753,7 +845,7 @@ $('#search').oninput = e => {
     const q = e.target.value.trim(); if (q.length < 2) { pop.hidden = true; return; }
     const r = await rpc('search', { q });
     const mark = t => esc(t).replace(new RegExp(esc(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), x => `<mark>${x}</mark>`);
-    pop.innerHTML = r.length ? r.slice(0, 40).map(x => `<button class="hit" data-c="${esc(x.cid)}" data-g="${esc(x.gid)}" data-id="${esc(x.id)}"><span class="k">${esc(x.community)} / ${esc(x.channel)}</span><span class="t"><b>${esc(x.from)}</b> ${mark(x.text)}</span></button>`).join('') : '<p class="muted">Nothing found. Search only covers messages stored on this device.</p>';
+    pop.innerHTML = r.length ? r.slice(0, 40).map(x => `<button class="hit" data-c="${esc(x.cid)}" data-g="${esc(x.gid)}" data-id="${esc(x.id)}"><span class="k">${esc(x.community)} / ${esc(x.channel)}</span><span class="t"><b>${esc(x.from)}</b> ${mark(plain(x.text))}</span></button>`).join('') : '<p class="muted">Nothing found. Search only covers messages stored on this device.</p>';
     pop.hidden = false;
   }, 220);
 };
@@ -786,11 +878,12 @@ $('#btn-activity').onclick = async () => {
 };
 $('#btn-settings').onclick = () => modal('Settings', `<label for="n">Display name</label><input type="text" id="n" value="${esc(S.snap.me.name)}">
   <label>Theme</label>${seg('th', [['', 'Match system'], ['light', 'Daylight'], ['dark', 'After hours']], pref.get('theme') || '')}
-  <label>Message type</label>${seg('rd', [['', 'Book'], ['plain', 'Plain']], pref.get('read') || '')}
+  <label>Message font</label>${seg('rd', [['', 'Book'], ['plain', 'Plain']], pref.get('read') || '')}
+  <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when Commons is in the background or the message is in another room. The window title shows how many are unread.</p>
   <label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints (the relay can see that a message-sized packet was sent at that moment)</span></label>
   <label>Calls</label><button type="button" class="btn ghost" id="set-gamekeys">Game keys…</button><p class="muted small">Mute yourself in Commons while you talk to your game team.</p>
   <label for="rl">Relay address</label><input type="text" id="rl" value="${esc(S.snap.relay)}" spellcheck="false"><p class="muted small">Change this only if your relay moved. A different relay does not have your communities.<br>Your account id: <span class="mono">${esc(S.snap.me.account.slice(0, 16))}…</span></p>`,
-  [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => { if (val(w, 'rl').trim() !== S.snap.relay) await rpc('set_relay', { relay: val(w, 'rl') }); await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); pref.set('theme', val(w, 'th')); pref.set('read', val(w, 'rd')); applyPrefs(); } }]).then(tick);
+  [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => { if (val(w, 'rl').trim() !== S.snap.relay) await rpc('set_relay', { relay: val(w, 'rl') }); await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); pref.set('theme', val(w, 'th')); pref.set('read', val(w, 'rd')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs(); } }]).then(tick);
 
 // Clicks inside Settings are caught here, so that the dialog above can stay as it is.
 $('#modal-root').addEventListener('click', e => { if (e.target.closest('#set-gamekeys')) gameKeys(); });
@@ -815,7 +908,7 @@ async function gameKeys() {
     <p class="muted small" id="gk-note">${note}</p>
     ${got.permission ? '<button type="button" class="btn ghost" id="gk-allow">Allow Input Monitoring</button>' : ''}
     ${got.portal_possible ? `<label class="check"><input type="checkbox" id="gk-portal" ${portal ? 'checked' : ''}><span>Use system shortcuts (the desktop asks you once). Your game may stop receiving a key bound this way.</span></label>` : ''}`,
-    [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => { const on = $('#gk-portal', w); await rpc('game_keys_set', { rules: [...(any.key ? [any] : []), ...rows.filter(r => r.key)], use_portal: on ? on.checked : false }); toast('Game keys saved'); } }], { cls: 'gk-modal' });
+    [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => { const nokey = rows.find(r => !r.key); if (nokey) throw new Error(`Press “Press to set” next to ${nokey.process} and then its voice key, or remove it with ×.`); const on = $('#gk-portal', w); await rpc('game_keys_set', { rules: [...(any.key ? [any] : []), ...rows.filter(r => r.key)], use_portal: on ? on.checked : false }); toast('Game keys saved'); } }], { cls: 'gk-modal' });
   const w = $('.gk-modal'); paint(w);
   rpc('running_programs').then(l => { programs = l; paint(w); }).catch(() => { });
   $('#gk-addb', w).onclick = () => { const v = $('#gk-add', w).value.trim(); if (!v) return; if (!rows.some(r => r.process.toLowerCase() === v.toLowerCase())) rows.push({ process: v, key: '', mode: 'hold' }); $('#gk-add', w).value = ''; paint(w); };

@@ -40,6 +40,8 @@ To use a relay that moved: Settings, Relay address. On the first screen the same
 ## Good to know
 
 * Keep your link to yourself. It lets people make an account on your friend's server.
-* A new device of yours: on the new one choose "This is a new device for my account", and approve it under Devices on the old one. Old messages stay on the old device.
+* You see messages from the moment you joined. What was said before stays with the people who were already there; that is part of the encryption, not a fault.
+* A new device of yours: on the new one choose "This is a new device for my account", copy the code it shows, and paste it under Devices on the old one. Old messages stay on the old device.
+* The window title shows how many messages are unread, and a soft sound plays for new ones while Commons is in the background. Settings, Sound for new messages: all, only mentions and replies, or off.
 * To compare that you are really talking to someone, open People and press the padlock.
 * This is software made for a small group of friends. Nobody outside has audited it.

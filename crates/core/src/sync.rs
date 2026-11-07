@@ -8,6 +8,11 @@ use commons_proto::*;
 use openmls::prelude::{tls_codec::*, *};
 use std::collections::BTreeMap;
 
+/// Timeline lines for people arriving in and leaving a room. The account id follows the prefix; the name is looked up when
+/// the line is shown, because a newcomer's name usually arrives after they do.
+pub const MEMBER_CAME: &str = "\u{1}came:";
+pub const MEMBER_WENT: &str = "\u{1}went:";
+
 pub const BATCH: usize = 300;
 
 enum Verdict { Ok, Reject(String) }
@@ -357,10 +362,12 @@ impl Client {
         self.add_system_msg(gid, format!("Message #{seq}: {why}."));
     }
 
-    pub(crate) fn add_system_msg(&mut self, gid: &str, text: String) {
+    pub(crate) fn add_system_msg(&mut self, gid: &str, text: String) { self.add_system_msg_at(gid, 0, text) }
+    /// `seq` 0 puts the line after everything delivered (failures, which belong at the end); a log position puts it there.
+    pub(crate) fn add_system_msg_at(&mut self, gid: &str, seq: u64, text: String) {
         let Some(g) = self.st.groups.get(gid) else { return };
         if g.kind != Kind::Channel { return; }
-        let m = Msg { id: rand_hex(16), sender: String::new(), device: String::new(), ts: now_secs(), seq: 0, body: MsgBody::Notice(text), reply: None, edited: false, deleted: false, reactions: Default::default(), status: "system".into() };
+        let m = Msg { id: rand_hex(16), sender: String::new(), device: String::new(), ts: now_secs(), seq, body: MsgBody::Notice(text), reply: None, edited: false, deleted: false, reactions: Default::default(), status: "system".into() };
         self.st.chans.entry(gid.to_string()).or_default().msgs.push(m);
     }
 
@@ -465,10 +472,20 @@ impl Client {
         gs.dev_seq.retain(|d, _| seen.contains(d));
         for d in added { gs.dev_seq.insert(d.clone(), seq); }
         let new_accounts = accounts.difference(&gs.accounts).filter(|a| **a != me).count();
+        // Who came and went, for the room's own timeline. Not on the first merge (seq 0: creating or joining), which only
+        // sets the baseline, and not for a group this device has just been taken out of.
+        let came: Vec<String> = accounts.difference(&gs.accounts).filter(|a| **a != me).cloned().collect();
+        let went: Vec<String> = gs.accounts.difference(&accounts).filter(|a| **a != me).cloned().collect();
+        let had_baseline = !gs.accounts.is_empty();
         gs.accounts = accounts;
         let kind = gs.kind.clone();
         let comm = gs.community.clone();
         if !active { gs.removed = true; }
+        if seq > 0 && had_baseline && active && kind == Kind::Channel {
+            // At the commit's place in the log, so the line sits between the messages around it.
+            for a in came { self.add_system_msg_at(gid, seq, format!("{MEMBER_CAME}{a}")); }
+            for a in went { self.add_system_msg_at(gid, seq, format!("{MEMBER_WENT}{a}")); }
+        }
         let my_dev = self.my_device();
         if kind == Kind::Control {
             let certs = members.iter().filter(|(_, c)| added.contains(&c.device) && c.device != my_dev).map(|(_, c)| c.clone()).collect::<Vec<_>>();

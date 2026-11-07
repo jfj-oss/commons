@@ -64,7 +64,9 @@ try {
   await A.waitFor(`document.querySelectorAll('.room').length>=1`);
   // conversation
   const say = async (P, t) => { await type(P, '#input', t); await click(P, '#send'); };
+  await A.waitFor(`document.body.innerText.includes('Bob joined the room')`, 20000);   // arrivals show in the room
   await say(A, 'Welcome to the club! First pick: *The Dispossessed*.');
+  await A.waitFor(`document.body.innerText.includes('First pick')`, 400);   // your own message shows at once, before the core has it
   await B.waitFor(`document.body.innerText.includes('First pick')`, 20000);
   await say(B, 'Great choice. I can host on Friday.');
   await A.waitFor(`document.body.innerText.includes('host on Friday')`, 20000);
@@ -76,12 +78,15 @@ try {
   await B.waitFor(`document.querySelectorAll('.room').length>=2`, 20000); await sleep(1500);
   await A.ev(`document.querySelectorAll('.room')[1].click()`); await say(A, 'Anyone seen the new Boards of Canada reissue?');
   await B.waitFor(`document.querySelector('.pill')`, 20000);
+  const titled = await B.ev(`(async () => { for (let i = 0; i < 25; i++) { if (/^[(][0-9]+[)] Commons$/.test(document.title)) return 'ok'; await new Promise(r => setTimeout(r, 200)); } return document.title + ' ' + JSON.stringify(S.snap.communities.map(c => c.channels.map(x => x.name + ':' + x.unread))); })()`);
+  if (titled !== 'ok') throw new Error('no unread count in the window title: ' + titled);   // the unread count is in the window title
   await B.shot('04-bob-unread');
   await A.ev(`document.querySelectorAll('.room')[0].click()`);
   await B.ev(`document.querySelectorAll('.room')[0].click()`); await sleep(1200);
   await B.ev(`document.querySelectorAll('.msg')[0].querySelector('[data-a=reply]').click()`);
   await say(B, 'Agreed, it is a great pick.');
   await A.waitFor(`document.body.innerText.includes('great pick')`, 20000);
+  await A.waitFor(`[...document.querySelectorAll('.msg.mention')].some(m => m.innerText.includes('great pick'))`, 5000);   // a reply to you counts as a mention
   await B.ev(`(()=>{const m=document.querySelectorAll('.msg')[2]; m.querySelector('[data-a=react]').click();})()`);
   await B.ev(`document.querySelector('.emojis button').click()`); await sleep(1500);
   await A.shot('05-alice-chat');

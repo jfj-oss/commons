@@ -24,7 +24,7 @@ pub struct App {
     /// Pairing in progress (new device waiting for approval).
     wake: (Mutex<bool>, Condvar),
     stop: Mutex<bool>,
-    /// The last answer to each read-only call. The UI asks every second, and gets this if the client is busy.
+    /// The last answer to each read-only call. The UI asks twice a second, and gets this if the client is busy.
     seen: Mutex<HashMap<String, Value>>,
     files: Mutex<Vec<(String, Arc<Vec<u8>>)>>,
     /// loopback server for "open this call in my browser" (started on first use)
@@ -99,14 +99,14 @@ impl App {
     /// A panic in one call must not take every later call down with it.
     fn lock(&self) -> MutexGuard<'_, Option<Client>> { self.client.lock().unwrap_or_else(|p| p.into_inner()) }
 
-    /// Background sync loop: every second and a half (or immediately after a user action). The client is held
+    /// Background sync loop: every second (or immediately after a user action). The client is held
     /// only to plan a round and to apply its result, never while waiting for the relay.
     pub fn start_background(self: &Arc<Self>) {
         let app = self.clone();
         std::thread::spawn(move || loop {
             {
                 let g = app.wake.0.lock().unwrap();
-                let _ = app.wake.1.wait_timeout_while(g, Duration::from_millis(1500), |w| !*w).unwrap();
+                let _ = app.wake.1.wait_timeout_while(g, Duration::from_millis(1000), |w| !*w).unwrap();
                 *app.wake.0.lock().unwrap() = false;
             }
             if *app.stop.lock().unwrap() { break; }
@@ -342,7 +342,7 @@ impl App {
                 Ok(json!(r.into_iter().map(|(cid, gid, m)| {
                     let cname = c.st.communities.get(&cid).map(|x| x.name.clone()).unwrap_or_default();
                     let chname = c.st.communities.get(&cid).and_then(|x| x.channels.iter().find(|ch| ch.id == gid)).map(|ch| ch.name.clone()).unwrap_or_default();
-                    let text = match &m.body { MsgBody::Text(t) => t.clone(), MsgBody::File { name, .. } => format!("[file] {name}"), MsgBody::Notice(t) => t.clone() };
+                    let text = match &m.body { MsgBody::Text(t) => t.clone(), MsgBody::File { name, .. } => format!("[file] {name}"), MsgBody::Notice(t) => member_line(c, t).unwrap_or_else(|| t.clone()) };
                     json!({"cid": cid, "gid": gid, "id": m.id, "community": cname, "channel": chname, "from": c.display_name(&m.sender), "ts": m.ts, "text": text})
                 }).collect::<Vec<_>>()))
             }),
@@ -385,6 +385,8 @@ impl App {
             }
             "game_mute_clear" => { self.game.user_unmute(); Ok(json!({})) }
             "open_call_in_browser" => self.open_call_in_browser(&s(&a, "gid"), &s(&a, "name"), a["launch"].as_bool().unwrap_or(true)),
+            // A link someone posted, opened in the system browser when clicked. Only plain http(s) addresses.
+            "open_link" => { let u = s(&a, "url"); if !link_ok(&u) { return Err("that is not a web address this app opens".into()); } Ok(json!({"opened": crate::callbridge::open_in_browser(&u)})) }
             // the relay round trip happens with the client free, like file downloads
             "call_token" => {
                 let gid = s(&a, "gid");
@@ -417,6 +419,20 @@ fn snapshot(c: &Client) -> Value {
            "version": c.activity})
 }
 
+/// A web address from a message that may be handed to the system browser: http or https, a host, and only the characters
+/// URLs are made of (so nothing that a browser launcher could read as an option or a second argument).
+pub fn link_ok(u: &str) -> bool {
+    let rest = match u.strip_prefix("https://").or_else(|| u.strip_prefix("http://")) { Some(r) => r, None => return false };
+    u.len() <= 2048 && !rest.is_empty() && !rest.starts_with(['/', '.', '-'])
+        && u.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~:/?#[]@!$&'()*+,;=%".contains(&b))
+}
+
+/// "Carol joined" and "Carol left", from the lines the sync writes when the room's members change.
+fn member_line(c: &Client, t: &str) -> Option<String> {
+    if let Some(a) = t.strip_prefix(crate::sync::MEMBER_CAME) { return Some(format!("{} joined the room", c.display_name(a))); }
+    t.strip_prefix(crate::sync::MEMBER_WENT).map(|a| format!("{} is no longer in this room", c.display_name(a)))
+}
+
 /// The newest `limit` messages of a room, reaching back far enough to include `around` if that is set.
 fn messages(c: &Client, gid: &str, limit: usize, around: &str) -> Value {
     let me = c.my_account();
@@ -429,7 +445,7 @@ fn messages(c: &Client, gid: &str, limit: usize, around: &str) -> Value {
         let (kind, text, file) = match &m.body {
             MsgBody::Text(t) => ("text", t.clone(), Value::Null),
             MsgBody::File { name, mime, size, caption, .. } => ("file", caption.clone(), json!({"name": name, "mime": mime, "size": size})),
-            MsgBody::Notice(t) => ("notice", t.clone(), Value::Null),
+            MsgBody::Notice(t) => match member_line(c, t) { Some(line) => ("member", line, Value::Null), None => ("notice", t.clone(), Value::Null) },
         };
         let reply = m.reply.as_deref().and_then(|id| find.get(id)).map(|r| json!({"id": r.id, "name": c.display_name(&r.sender), "text": match &r.body { MsgBody::Text(t) if !r.deleted => t.chars().take(120).collect::<String>(), MsgBody::File { name, .. } => format!("[file] {name}"), _ => "(deleted)".into() }}));
         let (role, same_name) = who.get(&m.sender).cloned().unwrap_or((Role::Member, false));
@@ -439,4 +455,15 @@ fn messages(c: &Client, gid: &str, limit: usize, around: &str) -> Value {
                "reactions": m.reactions.iter().map(|(e, who)| json!({"emoji": e, "count": who.len(), "mine": who.contains(&me), "names": who.iter().map(|w| c.display_name(w)).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }).collect();
     json!({"messages": out, "more": start > 0, "typing": c.typing_now(gid), "status": c.group_status(gid)})
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::link_ok;
+    #[test]
+    fn only_plain_web_addresses_are_opened() {
+        for good in ["https://example.org", "http://127.0.0.1:8787/x?a=1&b=2#top", "https://en.wikipedia.org/wiki/Catan_(game)", "https://x.com/@alice"] { assert!(link_ok(good), "{good}"); }
+        for bad in ["", "file:///etc/passwd", "javascript:alert(1)", "https://", "https://-x", "https:///x", "https://a b", "https://a\"b", "https://a\nb", "https://ä.example", "ftp://x", "https://a`b", "https://a<b>", "https://a|b", "https://a\\b"] { assert!(!link_ok(bad), "{bad:?}"); }
+        assert!(!link_ok(&format!("https://{}", "a".repeat(2050))));
+    }
 }

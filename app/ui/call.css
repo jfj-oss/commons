@@ -51,3 +51,13 @@
 #call-panel input[type=range], #call-panel input[type=checkbox] { accent-color: var(--accent); }
 #call-panel select { background: var(--page-sunk, var(--card)); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font: inherit; }
 .wrapall { overflow-wrap: anywhere; }
+/* the bar under a shared screen: the name shrinks, the quality picker keeps its own size */
+#call-panel .ctile .bar select { width: auto; flex: none; padding: 2px 6px; background: rgba(255,255,255,.18); color: #fff; border: 0; border-radius: 6px; font-size: 12px; }
+.ctile .bar .grow { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#call-panel details.cnote summary { cursor: pointer; }
+#call-panel details.cnote[open] summary { margin-bottom: 4px; }
+/* the same seal as in the chat, so a friend has one colour everywhere */
+.cp .av.sealed { background: none; }
+.cp .av.sealed .seal { --s: 34px; }
+/* your own share is a small preview, so the buttons stay in view */
+#call-panel .ctile.local { aspect-ratio: auto; height: 150px; }

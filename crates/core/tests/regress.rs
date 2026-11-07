@@ -592,7 +592,11 @@ fn two_admins_racing_leave_no_scar_in_the_room() {
     let t = c.acct();
     a.c.kick(&cid, &t).unwrap();
     settle(&mut [&mut a, &mut b, &mut c]);
-    for p in [&a, &b] { assert!(p.c.messages(&gen).iter().all(|m| !matches!(m.body, MsgBody::Notice(_))), "{}: {:?}", p.name, p.c.messages(&gen)); }
+    // Lines saying who came and went are expected; anything else would be a scar.
+    let scar = |m: &&Msg| matches!(&m.body, MsgBody::Notice(t) if !t.starts_with(commons_core::sync::MEMBER_CAME) && !t.starts_with(commons_core::sync::MEMBER_WENT));
+    for p in [&a, &b] { assert!(!p.c.messages(&gen).iter().any(|m| scar(&m)), "{}: {:?}", p.name, p.c.messages(&gen)); }
+    // and the room says Carol is gone
+    assert!(a.c.messages(&gen).iter().any(|m| matches!(&m.body, MsgBody::Notice(x) if *x == format!("{}{t}", commons_core::sync::MEMBER_WENT))));
 }
 
 #[test]

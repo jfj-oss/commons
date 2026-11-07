@@ -287,7 +287,7 @@ try {
   await ui.ev(`document.querySelector('#c-set').click()`); await sleep(800);
   const badge = await ui.ev(`document.querySelector('.call-enc').innerText`);
   const peersShown = await ui.ev(`document.querySelectorAll('.cp').length`);
-  check('I1 UI: Call button opens the panel, Join voice connects, the badge says Encrypted with a key number', /Encrypted/.test(badge) && peersShown >= 3, `${badge}; ${peersShown} people listed`);
+  check('I1 UI: Call button opens the panel, Join voice connects, the badge says Encrypted', /Encrypted/.test(badge) && peersShown >= 3, `${badge}; ${peersShown} people listed`);
   await ui.send('Page.bringToFront');
   const shotRes = await ui.send('Page.captureScreenshot', { format: 'png' });
   fs.writeFileSync(path.join(out, 'call-panel.png'), Buffer.from(shotRes.result.data, 'base64'));

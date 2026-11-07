@@ -57,7 +57,7 @@
   function encBadge(s) {
     const e = s.encryption;
     if (s.phase === 'idle') return '';
-    if (e.active) return `<span class="call-enc ok" title="Every audio and video frame is encrypted on your device with keys from this room's MLS group before it is sent. Frame cipher: AES-GCM; backend: ${esc(e.backend)}.">${ic('i-lock')}Encrypted · key ${e.epoch ?? '?'}</span>`;
+    if (e.active) return `<span class="call-enc ok" title="Every audio and video frame is encrypted on your device with keys from this room's MLS group before it is sent. Frame cipher: AES-GCM; backend: ${esc(e.backend)}; key epoch ${e.epoch ?? '?'}.">${ic('i-lock')}Encrypted</span>`;
     return `<span class="call-enc bad">NOT encrypted</span>`;
   }
 
@@ -68,7 +68,7 @@
     if (!p.member) tags.push('<span class="w">not in this room: blocked</span>');
     if (p.cantDecrypt) tags.push('<span class="w">cannot decrypt (keys out of sync)</span>');
     return `<div class="cp ${p.speaking ? 'speaking' : ''}" data-id="${esc(p.identity)}">
-      <div class="av" style="background:hsl(${hue(p.account || p.identity)} 50% 38%)">${esc((p.name || '?').slice(0, 1).toUpperCase())}</div>
+      ${typeof seal === 'function' ? `<div class="av sealed">${seal(p.account || p.identity, p.name)}</div>` : `<div class="av" style="background:hsl(${hue(p.account || p.identity)} 50% 38%)">${esc((p.name || '?').slice(0, 1).toUpperCase())}</div>`}
       <div><div class="nm">${esc(p.name)}</div><div class="tags">${tags.join(' · ') || (p.speaking ? 'speaking' : '&nbsp;')}</div></div>
       ${p.me ? '' : `<input type="range" min="0" max="1" step="0.05" value="${p.volume}" aria-label="Volume for ${esc(p.name)}" data-vol="${esc(p.identity)}">`}</div>`;
   }
@@ -128,7 +128,7 @@
         <label class="full"><input type="checkbox" id="c-sa" ${s.prefs.shareAudio ? 'checked' : ''}> Include audio when sharing a screen or window, where the system allows it</label>
         <label for="c-prof">Share as</label><select id="c-prof">${Object.entries(call.shareProfiles()).map(([k, v]) => `<option value="${k}" ${s.prefs.shareProfile === k ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select></div>`;
     }
-    h += `<div class="cnote">Call server sees: your IP address, when you join and leave, how much you send, and who is speaking. It cannot hear or see anything. Keys: ${s.encryption.devices ?? '?'} device keys from the room, epoch ${s.encryption.epoch ?? '?'}, rotated ${s.encryption.rotations} time(s) this call.</div>`;
+    h += `<details class="cnote"><summary>What the call server can see</summary>Your IP address, when you join and leave, how much you send, and who is speaking. It cannot hear or see anything. Keys: ${s.encryption.devices ?? '?'} device keys from the room, epoch ${s.encryption.epoch ?? '?'}, rotated ${s.encryption.rotations} time(s) this call.</details>`;
     panel.classList.toggle('wide', s.shares.length > 0);
     panel.innerHTML = h;
     syncTiles(s);
@@ -145,11 +145,11 @@
         const video = document.createElement('video'); video.autoplay = true; video.playsInline = true; video.muted = true;
         sh.track.attach(video); t = { video, track: sh.track }; tiles.set(sh.key, t);
       }
-      const d = document.createElement('div'); d.className = 'ctile'; d.dataset.key = sh.key;
+      const d = document.createElement('div'); d.className = 'ctile' + (sh.local ? ' local' : ''); d.dataset.key = sh.key;
       d.appendChild(t.video);
       const bar = document.createElement('div'); bar.className = 'bar';
       const label = sh.source === 'camera' ? 'camera' : 'screen';
-      bar.innerHTML = `<span class="grow">${esc(sh.name)} · ${label}</span>` + (sh.local ? '' : `<select data-q="${esc(sh.sid)}" aria-label="Quality"><option value="auto">Auto</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>`) + `<button data-fs="${esc(sh.key)}">Fullscreen</button>`;
+      bar.innerHTML = `<span class="grow">${esc(sh.name)} · ${label}</span>` + (sh.local ? '' : `<select data-q="${esc(sh.sid)}" aria-label="Quality" title="Picture quality"><option value="auto">Quality: auto</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>`) + `<button data-fs="${esc(sh.key)}">Fullscreen</button>`;
       const sel = bar.querySelector('select'); if (sel) sel.value = sh.quality;
       d.appendChild(bar); host.appendChild(d); t.video.play().catch(() => { });
     }
