@@ -38,7 +38,7 @@ if (!fs.existsSync(path.join(pub, 'update/latest.json')) || JSON.parse(fs.readFi
 }
 const good = JSON.parse(fs.readFileSync(path.join(pub, 'update/latest.json')));
 const goodFile = path.join(pub, 'update', path.basename(good.platforms['linux-x86_64'].url));
-check('U0 publish-update.sh wrote a manifest with a relative file address, the notes, and a signature', good.version === N1 && good.platforms['linux-x86_64'].url === `update/Commons_${N1}_x86_64.AppImage` && /^Test release/.test(good.notes) && good.platforms['linux-x86_64'].signature.length > 100 && fs.existsSync(path.join(pub, 'Megatron-linux-x86_64.AppImage')), J(good).slice(0, 200));
+check('U0 publish-update.sh wrote a manifest with a relative file address, the notes, and a signature', good.version === N1 && good.platforms['linux-x86_64'].url === `update/Megatron_${N1}_x86_64.AppImage` && /^Test release/.test(good.notes) && good.platforms['linux-x86_64'].signature.length > 100 && fs.existsSync(path.join(pub, 'Megatron-linux-x86_64.AppImage')), J(good).slice(0, 200));
 
 // ---- the relay (fresh code: /update/ and --min-app-version), and a server that is not the relay
 fs.mkdirSync(site, { recursive: true });
@@ -108,9 +108,9 @@ try {
 
   // U3: the file was tampered with on the server (same length, a few bytes changed)
   const bytes = fs.readFileSync(goodFile); const bad = Buffer.from(bytes); for (let i = 0; i < 64; i++) bad[(bytes.length >> 1) + i] ^= 0x5a;
-  putFile(`Commons_${N1}_tampered.AppImage`, bad);
+  putFile(`Megatron_${N1}_tampered.AppImage`, bad);
   const lin = good.platforms['linux-x86_64'];
-  setManifest({ ...good, platforms: { 'linux-x86_64': { ...lin, url: `update/Commons_${N1}_tampered.AppImage` } } });
+  setManifest({ ...good, platforms: { 'linux-x86_64': { ...lin, url: `update/Megatron_${N1}_tampered.AppImage` } } });
   r = await a.look();
   check('U3a the update is found, with its notes', r.offer && r.offer.version === N1 && /Test release/.test(r.offer.notes || ''), J(r));
   check('U3b the relay\'s minimum version reaches the app: N is told it must update', r.offer && r.offer.required === true && r.offer.minimum === N1 && await a.ev(`const b = document.querySelector('#upd'); return !b.hidden && b.classList.contains('need') && b.textContent.includes(${J(N1)});`));
@@ -148,7 +148,7 @@ try {
   await a.press('Later');
 
   // U6: the manifest on the relay points at another server
-  setManifest({ ...good, platforms: { 'linux-x86_64': { ...lin, url: `http://127.0.0.1:${EVIL_PORT}/update/Commons_${N1}_x86_64.AppImage` } } });
+  setManifest({ ...good, platforms: { 'linux-x86_64': { ...lin, url: `http://127.0.0.1:${EVIL_PORT}/update/Megatron_${N1}_x86_64.AppImage` } } });
   r = await a.look();
   await sleep(6000);
   check('U6 a manifest pointing at another server is REFUSED before anything is fetched', !r.offer && /another server/.test(r.error) && !(await a.dialog()) && evilHits === 0 && sha(APP) === shaN, J(r) + ' hits=' + evilHits);

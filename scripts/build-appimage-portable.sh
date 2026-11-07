@@ -20,7 +20,7 @@ docker run --rm --memory=6g --cpus="${COMMONS_BUILD_JOBS:-4}" -v "$PWD":/src -v 
   rm -f $B/*.AppImage
   cfg=(); [ -z "$COMMONS_TAURI_CONFIG" ] || cfg=(--config "$COMMONS_TAURI_CONFIG")
   cd /src/app/src-tauri && /tmp/tools/node_modules/.bin/tauri build --bundles appimage "${cfg[@]}"
-  set -- $B/Commons_*_amd64.AppImage; [ $# = 1 ] || { echo "expected one AppImage, found: $*" >&2; exit 1; }
+  set -- $B/Megatron_*_amd64.AppImage; [ $# = 1 ] || { echo "expected one AppImage, found: $*" >&2; exit 1; }
   cp "$1" /out/Megatron-linux-x86_64.AppImage
   chown -R "$HOST_UID:$HOST_GID" /out /src/target-docker /src/app/src-tauri/gen
 '

@@ -162,7 +162,7 @@ for p in "${!UP[@]}"; do [ -s "$STAGE/${UP[$p]}" ] || die "missing build output 
 
 # ---- into dist/: versioned update files first, then friends' downloads, the manifest last
 mkdir -p "$DIST/update"
-upname() { case $1 in linux-x86_64) echo "Commons_${NEW}_x86_64.AppImage" ;; windows-x86_64) echo "Commons_${NEW}_x64-setup.exe" ;; darwin-aarch64) echo "Commons_${NEW}_aarch64.app.tar.gz" ;; esac; }
+upname() { case $1 in linux-x86_64) echo "Megatron_${NEW}_x86_64.AppImage" ;; windows-x86_64) echo "Megatron_${NEW}_x64-setup.exe" ;; darwin-aarch64) echo "Megatron_${NEW}_aarch64.app.tar.gz" ;; esac; }
 platforms='{}'
 for p in "${!UP[@]}"; do
   n=$(upname "$p")
@@ -184,8 +184,8 @@ jq -n --arg v "$NEW" --arg n "$NOTES" --arg d "$(date -u +%Y-%m-%dT%H:%M:%SZ)" -
    + (if $m != "" then {minimum_version: $m} elif $o.minimum_version then {minimum_version: $o.minimum_version} else {} end)' > "$DIST/update/.latest.json.tmp"
 mv "$DIST/update/.latest.json.tmp" "$DIST/update/latest.json"
 # Keep this version's update files and the one before (an app may have read the old manifest a moment ago).
-keep=$(ls "$DIST/update" | grep -oE '^Commons_[0-9][^_]*_' | sort -uV | tail -2 | tr '\n' '|')
-for f in "$DIST"/update/Commons_*; do b=$(basename "$f"); [[ "|$keep" == *"|$(grep -oE '^Commons_[0-9][^_]*_' <<<"$b")|"* ]] || rm -f "$f"; done
+keep=$(ls "$DIST/update" | grep -oE '^(Commons|Megatron)_[0-9][^_]*_' | sort -uV | tail -2 | tr '\n' '|')
+for f in "$DIST"/update/{Commons,Megatron}_*; do b=$(basename "$f"); [[ "|$keep" == *"|$(grep -oE '^(Commons|Megatron)_[0-9][^_]*_' <<<"$b")|"* ]] || rm -f "$f"; done
 rm -rf "$STAGE"
 
 say ""

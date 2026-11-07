@@ -9,6 +9,6 @@ export CARGO_BUILD_JOBS=${COMMONS_BUILD_JOBS:-4}
 (cd app/src-tauri && NO_STRIP=1 ../../tools/node_modules/.bin/tauri build --bundles appimage)
 cargo build --release -j "$CARGO_BUILD_JOBS" -p commons-relay
 mkdir -p dist tools/bin
-cp target/release/bundle/appimage/Commons_*_amd64.AppImage dist/Megatron-linux-x86_64.AppImage
+cp target/release/bundle/appimage/Megatron_*_amd64.AppImage dist/Megatron-linux-x86_64.AppImage
 cp target/release/commons-relay tools/bin/commons-relay
 ls -la dist
