@@ -116,7 +116,7 @@
       // Per-sender keys: every device in the group gets its own key, so no two senders ever share a key/nonce space.
       const kp = new LK.BaseKeyProvider({ sharedKey: false, ratchetWindowSize: 0, failureTolerance: -1 });
       this.kp = kp;
-      const worker = new Worker(this.workerUrl);
+      const worker = new Worker(this.workerUrl); this._worker = worker;
       const p = this.prefs;
       const room = new LK.Room({
         adaptiveStream: false, dynacast: true,
@@ -167,6 +167,7 @@
       for (const el of this.audioEls.values()) { try { el.remove(); } catch { } }
       this.audioEls.clear(); this.tracks.clear();
       if (room) { try { room.removeAllListeners(); await room.disconnect(true); } catch { } }
+      if (this._worker) { try { this._worker.terminate(); } catch { } this._worker = null; }   // each join/rejoin makes a new worker; do not leak the old one and its keys
     }
 
     // ------------------------------------------------------------------ keys from the MLS group

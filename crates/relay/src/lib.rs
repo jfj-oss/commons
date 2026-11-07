@@ -367,7 +367,8 @@ fn change_acl(db: &Connection, gid: &str, a: &Authed, r: &AclReq) -> Result<(), 
     if real && !authority { return Err(status(StatusCode::FORBIDDEN, "only an admin can change who is in a group")); }
     for x in &r.add {
         db.execute("INSERT OR IGNORE INTO group_members(gid,account) VALUES(?1,?2)", params![gid, x]).map_err(dberr)?;
-        db.execute("DELETE FROM call_denied WHERE gid=?1 AND account=?2", params![gid, x]).map_err(dberr)?;
+        // only an admin's add lifts a call cut-off (a denied member re-adding their own account is not a "real" change)
+        if authority { db.execute("DELETE FROM call_denied WHERE gid=?1 AND account=?2", params![gid, x]).map_err(dberr)?; }
     }
     for x in &r.call_remove { db.execute("INSERT OR IGNORE INTO call_denied(gid,account) VALUES(?1,?2)", params![gid, x]).map_err(dberr)?; }
     for x in &r.remove { db.execute("DELETE FROM group_members WHERE gid=?1 AND account=?2", params![gid, x]).map_err(dberr)?; }

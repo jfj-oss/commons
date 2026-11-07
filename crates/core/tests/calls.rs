@@ -168,3 +168,22 @@ fn ordinary_member_cannot_cut_others_off_from_calls() {
     assert_eq!(tr.request(Some(&bk), "POST", &format!("/v1/groups/{gid}/acl"), &req, d5).unwrap().status, 403);
     assert!(a.c.call_token(&gid).is_ok(), "owner still gets tokens");
 }
+
+#[test]
+fn cut_off_member_cannot_lift_it_by_re_adding_themselves() {
+    use commons_core::transport::Transport;
+    let net = net_with_calls();
+    let (mut a, mut b) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"));
+    let (_cid, gid) = { let mut r: Vec<&mut Peer> = vec![&mut b]; community_with(&net, &mut a, &mut r) };
+    let ak = ed25519_dalek::SigningKey::from_bytes(&hex::decode(&a.c.st.device_secret).unwrap().try_into().unwrap());
+    let bk = ed25519_dalek::SigningKey::from_bytes(&hex::decode(&b.c.st.device_secret).unwrap().try_into().unwrap());
+    let tr = commons_core::transport::HttpTransport::new(&net.url());
+    let d5 = std::time::Duration::from_secs(5);
+    let url = format!("/v1/groups/{gid}/acl");
+    let req = serde_json::to_vec(&AclReq { call_remove: vec![b.acct()], ..Default::default() }).unwrap();
+    assert_eq!(tr.request(Some(&ak), "POST", &url, &req, d5).unwrap().status, 200);
+    assert!(b.c.call_token(&gid).is_err(), "cut off");
+    let req = serde_json::to_vec(&AclReq { add: vec![b.acct()], ..Default::default() }).unwrap();
+    let _ = tr.request(Some(&bk), "POST", &url, &req, d5).unwrap();
+    assert!(b.c.call_token(&gid).is_err(), "re-adding oneself must not lift the call cut-off");
+}
