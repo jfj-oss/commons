@@ -384,6 +384,8 @@ mark { background: var(--brass-soft); color: inherit; border-radius: 3px; paddin
 .slip { background: var(--card); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: var(--shadow-s); transition: border-color .15s, box-shadow .15s; overflow: hidden; }
 .slip:focus-within { border-color: var(--brass-line); box-shadow: 0 0 0 3px color-mix(in oklab, var(--brass-line) 20%, transparent); }
 #composer.editing .slip { border-color: var(--accent); }
+#composer.dropping .slip { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 28%, transparent); }
+#composer.dropping #input::placeholder { color: var(--accent); }
 .slip .row { display: flex; gap: 4px; align-items: flex-end; padding: 5px 6px 5px 5px; }
 #attach { color: var(--ink-2); padding: 7px; }
 #input { flex: 1; min-width: 0; resize: none; max-height: 220px; padding: 6px 4px; border: 0; background: none; color: var(--ink); font: 400 var(--read-size)/1.5 var(--read); outline: none; }

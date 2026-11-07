@@ -743,13 +743,28 @@ $('#input').onkeydown = e => {
 $('#input').oninput = () => { sizeInput(); mentionOpen(); };
 $('#input').onblur = () => setTimeout(mentionClose, 120);
 $('#attach').onclick = () => $('#file').click();
-$('#file').onchange = async e => {
-  const f = e.target.files[0]; if (!f) return; e.target.value = '';
-  if (f.size > 24 * 1024 * 1024) return toast('Files are limited to 24 MB.');
+async function uploadFile(f) {
+  if (!S.gid) return toast('Open a room first.');
+  if (f.size > 24 * 1024 * 1024) return toast(`${f.name} is over the 24 MB limit.`);
   const buf = new Uint8Array(await f.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+  // A pasted screenshot has no real name, so it gets one with the time.
+  const name = f.name && f.name !== 'image.png' ? f.name : `Pasted image ${(d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}.${String(d.getMinutes()).padStart(2, '0')}.${String(d.getSeconds()).padStart(2, '0')}`)(new Date())}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`;
   toast('Encrypting and uploading…');
-  try { await rpc('send_file', { gid: S.gid, name: f.name, mime: f.type || 'application/octet-stream', data: btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''), caption: '' }); S.lastMsgs = ''; tick(); soon(); } catch (er) { toast(er.message); }
-};
+  try { await rpc('send_file', { gid: S.gid, name, mime: f.type || 'application/octet-stream', data: btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''), caption: '' }); S.lastMsgs = ''; tick(); soon(); } catch (er) { toast(er.message); }
+}
+async function uploadFiles(list) { for (const f of list) await uploadFile(f); }
+$('#file').onchange = async e => { const fs = [...e.target.files]; e.target.value = ''; await uploadFiles(fs); };
+// Drop files anywhere on the chat area, or paste an image into the message box. Dragged text still drops into the box as text.
+const hasFiles = e => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+let dragDepth = 0;
+$('#main').addEventListener('dragenter', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; $('#composer').classList.add('dropping'); });
+$('#main').addEventListener('dragover', e => { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+$('#main').addEventListener('dragleave', e => { if (!hasFiles(e)) return; if (--dragDepth <= 0) { dragDepth = 0; $('#composer').classList.remove('dropping'); } });
+$('#main').addEventListener('drop', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $('#composer').classList.remove('dropping'); uploadFiles([...e.dataTransfer.files]); });
+$('#input').addEventListener('paste', e => {
+  const fs = [...(e.clipboardData ? e.clipboardData.items : [])].filter(it => it.kind === 'file').map(it => it.getAsFile()).filter(Boolean);
+  if (fs.length) { e.preventDefault(); uploadFiles(fs); }
+});
 
 // ---- people drawer ----
 async function renderPeople() {
