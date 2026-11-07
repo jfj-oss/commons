@@ -7,6 +7,7 @@ use crate::api::App;
 use rand::RngCore;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 const FILES: &[(&str, &str, &[u8])] = &[
@@ -27,7 +28,7 @@ const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; style-src 'se
 
 struct Grant { secret: String, gid: String, issued: std::time::Instant }
 impl Default for Grant { fn default() -> Self { Grant { secret: String::new(), gid: String::new(), issued: std::time::Instant::now() } } }
-pub struct CallBridge { pub port: u16, grant: Arc<Mutex<Grant>> }
+pub struct CallBridge { pub port: u16, grant: Arc<Mutex<Grant>>, stopping: Arc<AtomicBool>, thread: Mutex<Option<std::thread::JoinHandle<()>>> }
 
 fn ct_eq(a: &str, b: &str) -> bool {
     a.len() == b.len() && !a.is_empty() && a.bytes().zip(b.bytes()).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
@@ -44,14 +45,28 @@ impl CallBridge {
         let port = listener.local_addr()?.port();
         let grant = Arc::new(Mutex::new(Grant::default()));
         let g2 = grant.clone();
-        std::thread::spawn(move || {
+        let stopping = Arc::new(AtomicBool::new(false));
+        let st2 = stopping.clone();
+        let thread = std::thread::spawn(move || {
             for conn in listener.incoming().flatten() {
+                if st2.load(Ordering::SeqCst) { break; }
                 let (app, g) = (app.clone(), g2.clone());
                 std::thread::spawn(move || handle(conn, app, g, port));
             }
         });
-        Ok(CallBridge { port, grant })
+        Ok(CallBridge { port, grant, stopping, thread: Mutex::new(Some(thread)) })
     }
+    /// Stop accepting and end the listener thread (which holds the app alive). Safe to call twice; the secret stops working too.
+    pub fn stop(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
+        *self.grant.lock().unwrap() = Grant::default();
+        let Some(t) = self.thread.lock().unwrap().take() else { return };
+        // accept() is blocking: one connection to ourselves wakes it so it can see the flag.
+        let _ = TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], self.port)), std::time::Duration::from_secs(2));
+        let _ = t.join();
+    }
+    #[doc(hidden)]
+    pub fn is_stopped(&self) -> bool { self.thread.lock().unwrap().is_none() }
     /// Authorise one room; returns the URL to open in the browser.
     pub fn grant(&self, gid: &str, name: &str) -> String {
         let mut b = [0u8; 32]; rand::rngs::OsRng.fill_bytes(&mut b);
@@ -61,6 +76,7 @@ impl CallBridge {
         format!("http://127.0.0.1:{}/callpage.html#s={}&g={}&n={}", self.port, secret, gid, enc(name))
     }
 }
+impl Drop for CallBridge { fn drop(&mut self) { self.stop(); } }
 
 fn handle(mut s: TcpStream, app: Arc<App>, grant: Arc<Mutex<Grant>>, port: u16) {
     let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(10)));

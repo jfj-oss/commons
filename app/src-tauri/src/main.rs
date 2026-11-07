@@ -32,6 +32,12 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![rpc])
-        .run(tauri::generate_context!())
-        .expect("error while running Commons");
+        .build(tauri::generate_context!())
+        .expect("error while building Commons")
+        .run(|handle, event| {
+            // Stop the sync loop and the browser-call listener (its thread keeps the core alive) when the app quits.
+            if let tauri::RunEvent::Exit = event {
+                if let Some(app) = handle.try_state::<Arc<App>>() { app.shutdown(); }
+            }
+        });
 }

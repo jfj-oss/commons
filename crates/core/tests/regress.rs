@@ -610,3 +610,56 @@ fn a_group_the_relay_lost_is_not_quietly_started_again() {
     assert!(notices(&a).iter().any(|n| n.starts_with("relay:")));
     assert_eq!(a.c.group_status(&gen), "the relay is not letting this account in");
 }
+
+// ---- low: a recorded rejoin request cannot be replayed to churn a device's leaf
+#[test]
+fn a_replayed_rejoin_request_changes_nothing() {
+    use ed25519_dalek::Signer;
+    let net = Net::new();
+    let (mut a, mut b) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"));
+    let (_cid, gen) = owner_and(&net, &mut a, &mut b);
+    settle(&mut [&mut a, &mut b]);
+    let (api, k) = b.c.net_handle().unwrap();
+    let cert = b.c.st.cert.clone().unwrap();
+    let nonce = rand_hex(8);
+    let mut m = b"commons/rejoin/v1".to_vec();
+    m.extend_from_slice(&commons_proto::sha256(&[gen.as_bytes(), nonce.as_bytes()]));
+    let body = serde_json::json!({"cert": cert, "nonce": nonce, "sig": hex::encode(k.sign(&m).to_bytes())});
+    let mut data = vec![2u8]; // TAG_REJOIN
+    data.extend(serde_json::to_vec(&body).unwrap());
+
+    let before = a.c.epoch_fingerprint(&gen);
+    api.post_entry(&k, &gen, &rand_hex(16), &data).unwrap();
+    settle(&mut [&mut a, &mut b]);
+    let after_first = a.c.epoch_fingerprint(&gen);
+    assert_ne!(before, after_first, "the first, genuine request is acted on");
+    assert_eq!(after_first, b.c.epoch_fingerprint(&gen));
+
+    // The same bytes again, as a relay or an eavesdropper replaying a recorded request could send them.
+    api.post_entry(&k, &gen, &rand_hex(16), &data).unwrap();
+    settle(&mut [&mut a, &mut b]);
+    assert_eq!(a.c.epoch_fingerprint(&gen), after_first, "a replayed request must not rotate the device's leaf again");
+    b.c.send_text(&gen, "still fine", None).unwrap();
+    settle(&mut [&mut a, &mut b]);
+    assert!(has_text(&a, &gen, "still fine"));
+}
+
+// ---- low: the recovery key is the whole identity, so showing it needs the passphrase again
+#[test]
+fn recovery_key_needs_the_passphrase() {
+    let net = Net::new();
+    let a = Peer::new(&net, "alice"); // passphrase "pw"
+    assert!(a.c.recovery_key_with_passphrase("not-the-passphrase").is_err());
+    assert!(a.c.recovery_key_with_passphrase("").is_err());
+    assert_eq!(a.c.recovery_key_with_passphrase("pw").unwrap(), a.c.recovery_key().unwrap());
+
+    // the same through the door the UI uses
+    let dir = tempfile::tempdir().unwrap();
+    let app = commons_core::api::App::with_kdf(dir.path().to_path_buf(), &net.url(), KdfParams::TEST);
+    app.call("create_account", serde_json::json!({"name": "A", "passphrase": "correct horse battery", "relay": net.url()})).unwrap();
+    assert!(app.call("recovery_key", serde_json::json!({"passphrase": "wrong"})).is_err());
+    assert!(app.call("recovery_key", serde_json::json!({})).is_err(), "no passphrase at all");
+    let shown = app.call("recovery_key", serde_json::json!({"passphrase": "correct horse battery"})).unwrap();
+    assert!(shown["key"].as_str().is_some_and(|k| decode_recovery(k).is_ok()));
+    app.shutdown();
+}

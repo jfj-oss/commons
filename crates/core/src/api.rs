@@ -86,7 +86,15 @@ impl App {
         let opened = launch && crate::callbridge::open_in_browser(&url);
         Ok(json!({"url": url, "opened": opened}))
     }
-    pub fn shutdown(&self) { *self.stop.lock().unwrap() = true; self.nudge(); }
+    pub fn shutdown(&self) {
+        *self.stop.lock().unwrap() = true;
+        self.nudge();
+        // The browser bridge's listener thread holds the app alive, so it has to be ended here.
+        let bridge = self.bridge.lock().unwrap().take();
+        if let Some(b) = bridge { b.stop(); }
+    }
+    #[doc(hidden)]
+    pub fn bridge_running(&self) -> bool { self.bridge.lock().unwrap().as_ref().is_some_and(|b| !b.is_stopped()) }
     fn nudge(&self) { *self.wake.0.lock().unwrap() = true; self.wake.1.notify_all(); }
     /// A panic in one call must not take every later call down with it.
     fn lock(&self) -> MutexGuard<'_, Option<Client>> { self.client.lock().unwrap_or_else(|p| p.into_inner()) }

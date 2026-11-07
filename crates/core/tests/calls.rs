@@ -219,3 +219,23 @@ fn game_keys_stay_on_this_device() {
     for _ in 0..4 { let _ = app.call("mark_read", serde_json::json!({"gid": "x"})); std::thread::sleep(std::time::Duration::from_millis(150)); }
     assert!(!contains(&relay_bytes(&net), "SecretGameName"), "never sent to the relay");
 }
+
+#[test]
+fn browser_bridge_listener_stops_at_shutdown() {
+    let net = net_with_calls();
+    let dir = tempfile::tempdir().unwrap();
+    let app = commons_core::api::App::with_kdf(dir.path().to_path_buf(), &net.url(), commons_core::vault::KdfParams::TEST);
+    app.call("create_account", serde_json::json!({"name": "A", "passphrase": "correct horse battery", "relay": net.url()})).unwrap();
+    app.call("create_community", serde_json::json!({"name": "club"})).unwrap();
+    let snap = app.call("snapshot", serde_json::json!({})).unwrap();
+    let gid = snap["communities"][0]["channels"][0]["gid"].as_str().unwrap().to_string();
+    let r = app.call("open_call_in_browser", serde_json::json!({"gid": gid, "name": "general", "launch": false})).unwrap();
+    let url = r["url"].as_str().unwrap().to_string();
+    let port: u16 = url.split(':').nth(2).unwrap().split('/').next().unwrap().parse().unwrap();
+    assert!(app.bridge_running());
+    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok(), "listening before shutdown");
+    app.shutdown();
+    assert!(!app.bridge_running(), "the listener thread was joined");
+    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err(), "nothing listens after shutdown");
+    app.shutdown(); // a second call is harmless
+}
