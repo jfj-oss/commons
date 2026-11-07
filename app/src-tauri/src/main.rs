@@ -4,6 +4,7 @@
 use commons_core::api::App;
 use std::sync::Arc;
 use tauri::Manager;
+mod update;
 
 #[tauri::command]
 async fn rpc(app: tauri::State<'_, Arc<App>>, method: String, args: serde_json::Value) -> Result<serde_json::Value, String> {
@@ -12,7 +13,9 @@ async fn rpc(app: tauri::State<'_, Arc<App>>, method: String, args: serde_json::
 }
 
 fn main() {
-    let mut builder = tauri::Builder::default();
+    // The updater's HTTP client (reqwest with rustls) needs a process-wide crypto provider before its first download.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_updater::Builder::new().build()).manage(update::Updates::default());
     // Opening the app twice brings the window forward; two copies on one account would reuse keys. With COMMONS_DATA set,
     // several instances on separate folders are the point, and the core's lock on each folder still guards every case.
     if std::env::var_os("COMMONS_DATA").is_none() {
@@ -31,7 +34,7 @@ fn main() {
             t.manage(app);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![rpc])
+        .invoke_handler(tauri::generate_handler![rpc, update::update_check, update::update_install, update::update_apply, update::update_status])
         .build(tauri::generate_context!())
         .expect("error while building Commons")
         .run(|handle, event| {

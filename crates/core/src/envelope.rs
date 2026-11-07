@@ -74,6 +74,11 @@ pub enum Envelope {
     /// A member's own `Consent` for this community, for an admin to put in the table. Only for members whose table entry
     /// is missing: everyone else's arrived with their join request.
     Consent { ts: u64, sig: String },
+    /// A kind this version does not know, sent by a newer app. Skipped quietly instead of shown as a broken message, so
+    /// that a newer friend's app adding a kind never makes an older app's rooms look damaged (docs/DESIGN.md, compatibility).
+    /// Never sent.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,7 +114,7 @@ impl Envelope {
                 if key.len() != 64 || nonce.len() != 24 || hex::decode(key).is_err() || hex::decode(nonce).is_err() { return bad("bad file key"); }
                 if reply.as_deref().is_some_and(|r| !is_id(r)) { return bad("bad reply"); }
             }
-            Typing | Leave => {}
+            Typing | Leave | Unknown => {}
             Profile { name, .. } => if name.is_empty() || !short(name, 64) { return bad("bad profile"); },
             Revoked { account, device, sig } => if !is_key(account) || !is_key(device) || sig.len() != 128 { return bad("bad revocation"); },
             Consent { sig, .. } => if sig.len() != 128 { return bad("bad consent"); },
@@ -369,5 +374,24 @@ impl RelayLink {
         let l: RelayLink = serde_json::from_slice(&b).map_err(|_| ParseError("bad relay link".into()))?;
         if !short(&l.secret, 256) || !(l.relay.starts_with("http://") || l.relay.starts_with("https://")) { return bad("bad relay link"); }
         Ok(l)
+    }
+}
+
+#[cfg(test)]
+mod compat_tests {
+    use super::*;
+    #[test]
+    fn a_newer_app_can_add_fields_and_kinds() {
+        // a field this version does not know is ignored
+        let e = Envelope::parse(br#"{"t":"Text","id":"0123456789abcdef0123456789abcdef","text":"hi","ts":5,"sticker":"cat"}"#).unwrap();
+        assert!(matches!(e, Envelope::Text { ref text, .. } if text == "hi"));
+        // a kind this version does not know is recognised as such, so it can be skipped quietly
+        assert_eq!(Envelope::parse(br#"{"t":"Poll","question":"pizza?","options":["yes","no"]}"#).unwrap(), Envelope::Unknown);
+        assert_eq!(Envelope::parse(br#"{"t":"Typing"}"#).unwrap(), Envelope::Typing);
+        // but what this version does know is still checked as strictly as before
+        assert!(Envelope::parse(br#"{"t":"Text","id":"x","text":"hi","ts":5}"#).is_err());
+        assert!(Envelope::parse(br#"{"text":"no kind"}"#).is_err());
+        // and the old wire form is unchanged
+        assert_eq!(Envelope::Typing.to_bytes(), br#"{"t":"Typing"}"#);
     }
 }

@@ -23,6 +23,9 @@ pub struct Limits {
     pub livekit: Option<LiveKitCfg>,
     /// When set, `/join` shows friends how to get in, and the files in this folder can be downloaded from `/download/`.
     pub site_dir: Option<PathBuf>,
+    /// Apps older than this are told, each time they start, that they must update (`minimum_version` in the update
+    /// manifest; docs/UPDATES.md). Advisory: nothing is refused because of it.
+    pub min_app_version: Option<String>,
     /// Call tokens one device may fetch per window (reconnects need a few, loops should not).
     pub call_tokens_per_window: u32,
     /// When set, a new account needs this secret to register (a device of an existing account does not).
@@ -62,6 +65,7 @@ impl Default for Limits {
             invite_secret: None,
             livekit: None,
             site_dir: None,
+            min_app_version: None,
             call_tokens_per_window: 60,
             max_accounts: 1000,
             max_devices_per_account: 32,
@@ -260,9 +264,40 @@ fn page(ty: &'static str, body: &'static str) -> Resp {
 }
 /// A plain file name: no path, nothing hidden.
 fn download_name(n: &str) -> bool {
-    !n.is_empty() && n.len() <= 200 && !n.starts_with('.') && n.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_'))
+    !n.is_empty() && n.len() <= 200 && !n.starts_with('.') && n.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_' | b'+'))
 }
-async fn site(dir: &std::path::Path, path: &str) -> Option<Resp> {
+/// `major.minor.patch`, optionally `-pre`: what `--min-app-version` accepts.
+pub fn is_app_version(v: &str) -> bool {
+    let (core, pre) = v.split_once('-').unwrap_or((v, "x"));
+    let parts: Vec<&str> = core.split('.').collect();
+    parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.len() <= 9 && p.bytes().all(|c| c.is_ascii_digit()))
+        && !pre.is_empty() && pre.len() <= 32 && pre.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'.')
+}
+const MAX_MANIFEST: u64 = 256 * 1024;
+/// The update manifest that scripts/publish-update.sh wrote, with this relay's minimum version laid over it.
+async fn update_manifest(dir: &std::path::Path, min: Option<&str>) -> Resp {
+    let p = dir.join("update").join("latest.json");
+    let Ok(md) = tokio::fs::metadata(&p).await else { return status(StatusCode::NOT_FOUND, "no updates published") };
+    if !md.is_file() || md.len() > MAX_MANIFEST { return status(StatusCode::NOT_FOUND, "no updates published"); }
+    let Ok(b) = tokio::fs::read(&p).await else { return status(StatusCode::NOT_FOUND, "no updates published") };
+    let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(&b) else { tracing::warn!("{} is not valid JSON", p.display()); return status(StatusCode::NOT_FOUND, "no updates published") };
+    if let (Some(m), Some(o)) = (min, v.as_object_mut()) { o.insert("minimum_version".into(), serde_json::Value::String(m.into())); }
+    Response::builder().header("content-type", "application/json").header("cache-control", "no-store").header("x-content-type-options", "nosniff")
+        .body(Body::from(serde_json::to_vec(&v).unwrap_or_default())).unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR, "manifest"))
+}
+async fn send_file(dir: &std::path::Path, name: &str) -> Resp {
+    if !download_name(name) { return status(StatusCode::NOT_FOUND, "no such file"); }
+    let Ok(f) = tokio::fs::File::open(dir.join(name)).await else { return status(StatusCode::NOT_FOUND, "no such file") };
+    let Ok(md) = f.metadata().await else { return status(StatusCode::NOT_FOUND, "no such file") };
+    if !md.is_file() { return status(StatusCode::NOT_FOUND, "no such file"); }
+    Response::builder().header("content-type", "application/octet-stream").header("content-length", md.len()).header("content-disposition", format!("attachment; filename=\"{name}\"")).header("x-content-type-options", "nosniff")
+        .body(Body::from_stream(tokio_util::io::ReaderStream::new(f))).unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR, "file"))
+}
+/// `/join`, `/download/` (the files in the site folder, for friends) and `/update/` (its `update` subfolder, for the
+/// apps' updater: docs/UPDATES.md). Files in `update/` are not listed on the download page.
+async fn site(dir: &std::path::Path, path: &str, min: Option<&str>) -> Option<Resp> {
+    if path == "/update/latest.json" { return Some(update_manifest(dir, min).await); }
+    if let Some(name) = path.strip_prefix("/update/") { return Some(send_file(&dir.join("update"), name).await); }
     match path {
         "/join" => return Some(page("text/html; charset=utf-8", include_str!("join.html"))),
         "/join.js" => return Some(page("text/javascript; charset=utf-8", include_str!("join.js"))),
@@ -281,19 +316,14 @@ async fn site(dir: &std::path::Path, path: &str) -> Option<Resp> {
         _ => {}
     }
     let name = path.strip_prefix("/download/")?;
-    if !download_name(name) { return Some(status(StatusCode::NOT_FOUND, "no such file")); }
-    let Ok(f) = tokio::fs::File::open(dir.join(name)).await else { return Some(status(StatusCode::NOT_FOUND, "no such file")) };
-    let Ok(md) = f.metadata().await else { return Some(status(StatusCode::NOT_FOUND, "no such file")) };
-    if !md.is_file() { return Some(status(StatusCode::NOT_FOUND, "no such file")); }
-    Some(Response::builder().header("content-type", "application/octet-stream").header("content-length", md.len()).header("content-disposition", format!("attachment; filename=\"{name}\"")).header("x-content-type-options", "nosniff")
-        .body(Body::from_stream(tokio_util::io::ReaderStream::new(f))).unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR, "file")))
+    Some(send_file(dir, name).await)
 }
 
 async fn handle(State(st): State<Arc<RelayState>>, req: Request<Body>) -> Resp {
     let (parts, body) = req.into_parts();
     let path = parts.uri.path().to_string();
     let m = parts.method.clone();
-    if m == Method::GET { if let Some(dir) = &st.limits.site_dir { if let Some(r) = site(dir, &path).await { return r; } } }
+    if m == Method::GET { if let Some(dir) = &st.limits.site_dir { if let Some(r) = site(dir, &path, st.limits.min_app_version.as_deref()).await { return r; } } }
     let limit = body_limit(&m, &path);
     // A slot for a big body goes only to a registered, unrevoked device (the full signature can only be checked once
     // the body is in), and a body that does not arrive in time gives the slot back.
@@ -744,5 +774,54 @@ async fn sync(st: Arc<RelayState>, headers: &HeaderMap, path: &str, body: &[u8])
             return json(&out);
         }
         let _ = tokio::time::timeout_at(deadline, rx.changed()).await;
+    }
+}
+
+#[cfg(test)]
+mod site_tests {
+    use super::*;
+    async fn body(r: Resp) -> (u16, String) { let c = r.status().as_u16(); (c, String::from_utf8_lossy(&to_bytes(r.into_body(), 1 << 20).await.unwrap()).to_string()) }
+    fn tmp() -> PathBuf { let d = std::env::temp_dir().join(format!("commons-site-{}", rand::thread_rng().gen::<u64>())); std::fs::create_dir_all(d.join("update")).unwrap(); d }
+
+    #[tokio::test]
+    async fn updates_are_served_from_their_own_folder_and_not_listed_for_friends() {
+        let d = tmp();
+        std::fs::write(d.join("Commons-linux-x86_64.AppImage"), b"app").unwrap();
+        std::fs::write(d.join("update/latest.json"), br#"{"version":"0.2.1","platforms":{"linux-x86_64":{"url":"update/Commons_0.2.1_amd64.AppImage","signature":"c2ln"}}}"#).unwrap();
+        std::fs::write(d.join("update/Commons_0.2.1_amd64.AppImage"), b"new app").unwrap();
+        let (c, list) = body(site(&d, "/download/", None).await.unwrap()).await;
+        assert_eq!(c, 200);
+        assert!(list.contains("Commons-linux-x86_64.AppImage") && !list.contains("latest.json") && !list.contains("0.2.1"), "the download page lists only what friends install: {list}");
+        let (c, m) = body(site(&d, "/update/latest.json", None).await.unwrap()).await;
+        assert_eq!(c, 200);
+        let v: serde_json::Value = serde_json::from_str(&m).unwrap();
+        assert_eq!(v["version"], "0.2.1");
+        assert!(v.get("minimum_version").is_none());
+        assert_eq!(body(site(&d, "/update/Commons_0.2.1_amd64.AppImage", None).await.unwrap()).await, (200, "new app".into()));
+        for bad in ["/update/../Commons-linux-x86_64.AppImage", "/update/.hidden", "/update/a/b", "/update/", "/update/missing"] {
+            assert_eq!(body(site(&d, bad, None).await.unwrap()).await.0, 404, "{bad}");
+        }
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[tokio::test]
+    async fn the_relay_can_set_a_minimum_version() {
+        let d = tmp();
+        std::fs::write(d.join("update/latest.json"), br#"{"version":"0.3.0","minimum_version":"0.1.0","platforms":{}}"#).unwrap();
+        let (_, m) = body(site(&d, "/update/latest.json", Some("0.2.0")).await.unwrap()).await;
+        let v: serde_json::Value = serde_json::from_str(&m).unwrap();
+        assert_eq!(v["minimum_version"], "0.2.0", "the relay's setting wins over the published one");
+        assert_eq!(v["version"], "0.3.0");
+        std::fs::write(d.join("update/latest.json"), b"not json").unwrap();
+        assert_eq!(body(site(&d, "/update/latest.json", Some("0.2.0")).await.unwrap()).await.0, 404);
+        std::fs::remove_dir_all(&d).ok();
+        let none = std::env::temp_dir().join("commons-site-none-xyz");
+        assert_eq!(body(site(&none, "/update/latest.json", None).await.unwrap()).await.0, 404, "nothing published: a plain 404, which the app reads as no updates");
+    }
+
+    #[test]
+    fn versions_the_relay_accepts() {
+        for ok in ["0.2.0", "10.20.30", "1.0.0-rc.1"] { assert!(is_app_version(ok), "{ok}"); }
+        for bad in ["", "0.2", "0.2.0.1", "v0.2.0", "0.2.x", "0.2.0-", "0.2.0-a b", "1.2.3-;"] { assert!(!is_app_version(bad), "{bad}"); }
     }
 }

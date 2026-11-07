@@ -10,6 +10,7 @@ A private, end-to-end encrypted group chat for a small group of friends: communi
 * [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md): what is and is not protected, exactly what the relay sees
 * [docs/DEPLOY.md](docs/DEPLOY.md) and `deploy/`: hosting on your own PC through Tailscale Funnel, or on a small rented server, including LiveKit for calls
 * [docs/GAME-KEYS.md](docs/GAME-KEYS.md): per-game push-to-mute, and which modes really work on which system
+* [docs/UPDATES.md](docs/UPDATES.md): signed auto-updates from the relay, publishing a version, backing up the signing key, compatibility between versions
 * [docs/CALLS-PLATFORMS.md](docs/CALLS-PLATFORMS.md): voice rooms and screen share: where they work (the Linux desktop web view cannot) and the browser hand-off
 
 ## Layout
@@ -26,7 +27,10 @@ tools/call-e2e.mjs  end-to-end call tests (local LiveKit + relay + Chrome with f
 tools/ui-check.mjs  headless UI check (Chromium on the GPU via ANGLE/Vulkan, no window)
 tools/hosting-e2e.mjs  the hosted path on loopback: go-online.sh, a TLS terminator standing in for Funnel, media forced through TURN over TLS
 tools/packaged-e2e.mjs the AppImage on a clean Ubuntu in Docker, through to a call
-scripts/               run-local.sh (everything on one PC), try-two-windows.sh, build-apps.sh, build-appimage-portable.sh, build-mac.sh, get-livekit.sh
+tools/update-e2e.mjs   signed updates end to end: the AppImage updating itself from a throwaway relay, and refusing tampered ones
+tools/compat-e2e.mjs   an older and this version in one community, both ways, on the new and the old relay
+scripts/               run-local.sh (everything on one PC), try-two-windows.sh, build-apps.sh, build-appimage-portable.sh, build-mac.sh, get-livekit.sh,
+                       publish-update.sh (one command: version bump, all three builds, signing, into dist/ for the relay)
 ```
 
 ## Build and test
@@ -60,11 +64,13 @@ Port 8787 is taken on the development PC; `COMMONS_TRY_PORT` picks another. Manu
 
 ## Packaging
 
+**Releases:** `scripts/publish-update.sh` does all of the below, signs the update files and publishes them for every installed app to pick up ([docs/UPDATES.md](docs/UPDATES.md)).
+
 The Tauri CLI comes from `tools/` (`cd tools && npm ci`). Unsigned builds, all of them; docs/FRIENDS.md says what friends see.
 
 * **Linux**: `scripts/build-appimage-portable.sh` builds in Ubuntu 22.04 under Docker and writes `dist/Commons-linux-x86_64.AppImage`, which runs on Ubuntu 22.04 and newer. `scripts/build-apps.sh` builds on this machine, but that AppImage needs this machine's glibc (2.44 on Arch), so it is for you only.
 * **macOS** (Apple silicon): on a Mac with Rust and the command line tools, `scripts/build-mac.sh` writes `dist/Commons.app` and `dist/Commons-macos-arm64.dmg`. No Node needed. It runs at background priority with two jobs, for small laptops; `COMMONS_MAC_FULL=1` uses every core.
-* **Windows**: `scripts/build-windows.sh` cross-builds in Docker and writes `dist/Commons-windows-x64.zip`: unzip and run, no installer. **Built, never run on Windows.** For a real installer, `.github/workflows/apps.yml` builds all three on GitHub: push to a **private** GitHub repository, `gh workflow run apps.yml`, then `gh run download`. Or on any Windows PC with Rust, Node and Git Bash: `cd tools && npm ci && cd ../app/src-tauri && ../../tools/node_modules/.bin/tauri build --bundles nsis`.
+* **Windows**: `scripts/build-windows.sh` cross-builds in Docker and writes `dist/Commons-windows-x64-setup.exe`, a per-user NSIS installer, which is also what the updater installs (`COMMONS_WIN_ZIP=1` adds the old unzip-and-run `.zip`, which cannot update itself). **Built, never run on Windows.** For a real installer, `.github/workflows/apps.yml` builds all three on GitHub: push to a **private** GitHub repository, `gh workflow run apps.yml`, then `gh run download`. Or on any Windows PC with Rust, Node and Git Bash: `cd tools && npm ci && cd ../app/src-tauri && ../../tools/node_modules/.bin/tauri build --bundles nsis`.
 
 ## Voice rooms and screen share (stage 2)
 

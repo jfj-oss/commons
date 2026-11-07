@@ -6,7 +6,7 @@ Commons is a private group chat. Messages, files and calls are encrypted on your
 
 1. **Open the link** in your browser. The page has the app for your computer. Download it.
 2. **Start the app.**
-   * **Windows:** unzip it and run `Commons.exe`, keeping the two files together. If a blue "Windows protected your PC" box appears, press **More info**, then **Run anyway**.
+   * **Windows:** run the installer (`Commons-windows-x64-setup.exe`); it needs no administrator rights. If a blue "Windows protected your PC" box appears, press **More info**, then **Run anyway**.
    * **Mac** (Apple silicon): open the `.dmg`, drag Commons to Applications. The first time, right-click Commons and choose **Open**, then **Open** again. If macOS still refuses, open System Settings, Privacy & Security, and press **Open Anyway**.
    * **Linux:** make the file executable (right-click, Properties, Permissions; or `chmod +x Commons-linux-x86_64.AppImage`) and run it. If it complains about FUSE, install `libfuse2`, or run it with `--appimage-extract-and-run`.
 3. **Copy the invite** from the page, and paste it into the first box in the app.
@@ -44,4 +44,5 @@ To use a relay that moved: Settings, Relay address. On the first screen the same
 * A new device of yours: on the new one choose "This is a new device for my account", copy the code it shows, and paste it under Devices on the old one. Old messages stay on the old device.
 * The window title shows how many messages are unread, and a soft sound plays for new ones while Commons is in the background. Settings, Sound for new messages: all, only mentions and replies, or off.
 * To compare that you are really talking to someone, open People and press the padlock.
+* **Updates:** the app checks your friend's server for new versions and asks you first: **Install now** or **Later**. It never updates during a call; it asks again when the call has ended. The update is checked against a signature before it is installed, then the app restarts and asks for your passphrase. Keep the app where you first put it (on a Mac, in Applications), so the update can replace it. If a bar says the server asks everyone to use a newer version, please update.
 * This is software made for a small group of friends. Nobody outside has audited it.

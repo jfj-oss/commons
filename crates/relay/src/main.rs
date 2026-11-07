@@ -4,7 +4,8 @@ const USAGE: &str = "usage: commons-relay [--bind 127.0.0.1:8787] [--data ./rela
   COMMONS_RELAY_INVITE=<secret>  new accounts need this secret to register (set it in the environment, not on the command line)
   --open                         allow a non-loopback bind with no invite secret (anyone who can reach it can register)
   --quota-mb N                   per-account limit for messages and, separately, for files
-  --site DIR                     serve the /join page, and the files in DIR from /download/
+  --site DIR                     serve the /join page, the files in DIR from /download/, and app updates from DIR/update/
+  --min-app-version X.Y.Z        tell apps older than this that they must update (or COMMONS_MIN_APP_VERSION; docs/UPDATES.md)
   --front ADDR                   one port for everything behind a TLS terminator (docs/DEPLOY.md); needs an invite secret
   --front-livekit ADDR           where /rtc goes from --front
   --front-turn ADDR              where TURN goes from --front
@@ -21,6 +22,7 @@ async fn main() {
     let mut lk_key = std::env::var("COMMONS_LIVEKIT_API_KEY").ok().filter(|x| !x.is_empty());
     let mut lk_secret = std::env::var("COMMONS_LIVEKIT_API_SECRET").ok().filter(|x| !x.is_empty());
     let lk_ttl: u64 = std::env::var("COMMONS_LIVEKIT_TOKEN_TTL").ok().and_then(|x| x.parse().ok()).unwrap_or(900);
+    limits.min_app_version = std::env::var("COMMONS_MIN_APP_VERSION").ok().filter(|x| !x.is_empty());
     let mut open = false;
     let (mut front, mut front_lk, mut front_turn, mut turn_port) = (None::<SocketAddr>, None::<SocketAddr>, None::<SocketAddr>, std::env::var("COMMONS_TURN_PUBLIC_PORT").ok().and_then(|x| x.parse::<u16>().ok()));
     let mut a = std::env::args().skip(1);
@@ -30,6 +32,7 @@ async fn main() {
             "--data" => data = a.next().expect("--data dir").into(),
             "--open" => open = true,
             "--site" => limits.site_dir = Some(a.next().expect("--site dir").into()),
+            "--min-app-version" => limits.min_app_version = Some(a.next().expect("--min-app-version X.Y.Z")),
             "--front" => front = Some(a.next().expect("--front addr").parse().expect("addr")),
             "--front-livekit" => front_lk = Some(a.next().expect("--front-livekit addr").parse().expect("addr")),
             "--front-turn" => front_turn = Some(a.next().expect("--front-turn addr").parse().expect("addr")),
@@ -45,6 +48,10 @@ async fn main() {
             "--livekit-secret-file" => lk_secret = Some(std::fs::read_to_string(a.next().expect("--livekit-secret-file path")).expect("read secret file").trim().to_string()),
             _ => { eprintln!("{USAGE}"); std::process::exit(2) }
         }
+    }
+    if let Some(v) = &limits.min_app_version {
+        if !commons_relay::is_app_version(v) { eprintln!("refusing to start: the minimum app version {v:?} is not a version like 0.2.0"); std::process::exit(2) }
+        tracing::info!("apps older than {v} are told to update");
     }
     if !bind.ip().is_loopback() {
         eprintln!("warning: binding to non-loopback address {bind}. Run behind a TLS-terminating proxy; see docs/DEPLOY.md");

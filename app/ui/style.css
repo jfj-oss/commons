@@ -234,6 +234,11 @@ mark { background: var(--brass-soft); color: inherit; border-radius: 3px; paddin
 #banner > span { flex: 1; min-width: 0; }
 #banner .linkish { color: inherit; white-space: nowrap; }
 #banner.calm { background: var(--accent-soft); color: var(--ok); }
+#upd { display: flex; align-items: center; gap: 9px; background: var(--accent-soft); color: var(--ok); padding: 8px var(--pad); font-size: 13.5px; border-bottom: 1px solid var(--line); }
+#upd > span { flex: 1; min-width: 0; }
+#upd.need { background: var(--warn-soft); color: var(--warn); }
+#upd .linkish { color: inherit; white-space: nowrap; }
+.upd-notes { white-space: pre-wrap; max-height: 9em; overflow: auto; margin: 0 0 10px; }
 
 /* ---- seals ---- */
 .seal { --s: 32px; position: relative; display: inline-grid; place-items: center; width: var(--s); height: var(--s); flex: none; }

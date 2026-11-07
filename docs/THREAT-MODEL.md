@@ -87,9 +87,17 @@ What it adds to the above, when the relay runs on your PC and friends reach it o
 * **The relay sees every connection as coming from 127.0.0.1**, so it logs no friend's IP address, and it cannot rate-limit per address (its limits are per account and whole-relay).
 * **The front** (`--front`) routes by first bytes and parses nothing else. Only LiveKit's `/rtc` is reachable through it, never its admin API. Tested: `/twirp/...` gets the relay's 404.
 * **The invite secret is required**: go-online.sh makes one and `--front` refuses to start without it. Anyone holding a link that carries it can make an account. They still cannot read a community they were not let into. It gets a stranger as far as the quotas, so keep the link private, and change it (delete `~/.local/share/commons-host/invite-secret`, go offline and online) if it leaks. Community invite links carry it too, for the same friend-sized trust.
-* **What is public**: `/health`, `/v1/info` (says that a secret is needed), `/join`, `/download/`. The apps served there are unsigned and come from your PC: whoever controls that PC controls what your friends install.
+* **What is public**: `/health`, `/v1/info` (says that a secret is needed), `/join`, `/download/`, `/update/`. The first install comes from your PC unsigned for Windows and macOS: whoever controls that PC controls what your friends first install. Updates after that need the updater key as well (below).
 * **LiveKit's TURN** relays media for call members. It has to be allowed to reach its own SFU on loopback (`allow_restricted_peer_cidrs: 127.0.0.1/32`), so a call member holding a token can also send UDP to other loopback services on the PC through it. Its TCP port ignores `bind_addresses` and also listens on your LAN; it does nothing without a token's credentials. Friends only: this is another reason to keep invites private.
 * **No third-party STUN**: LiveKit hands clients Google and Twilio STUN servers when TURN over UDP is off; the client strips them before any connection exists (test H17).
+
+## Updates (docs/UPDATES.md)
+
+* **Who can push an update:** whoever holds the updater's private key (`~/.config/commons/updater.key` and its password, on the host's PC only). The apps install a file only if its minisign signature checks against the public key built into them, and only if the signature was made for the version announced. The relay, Tailscale, or anyone on the path can therefore not slip in a changed app; with the key, they could.
+* **What the relay (or whoever controls it) can still do:** withhold updates, or keep serving an old manifest. It cannot make an app go back to an older version (only newer versions are offered, and a signature names its version), and it cannot point an app at another server (the manifest and the files must come from the account's own relay; redirects are not followed).
+* **What the update check tells the relay:** that an app asked, when, and which file it downloaded (so which system it runs). The request carries no account and no signature.
+* **Nothing installs by itself:** the person is asked every time, and nothing happens during a call.
+* **Not code-signed for the systems:** Windows SmartScreen and macOS Gatekeeper still see an unknown publisher on the first install. The update signature is Commons' own check, on top.
 
 ## Game keys (docs/GAME-KEYS.md)
 

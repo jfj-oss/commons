@@ -7,7 +7,7 @@ deploy/go-online.sh     # starts relay + LiveKit, opens the public port, prints 
 deploy/go-offline.sh    # closes it again and stops them; accounts and messages stay
 ```
 
-Nothing restarts after a reboot; run it again. The secrets are made once, so old links keep working. Everything lives in `~/.local/share/commons-host`. To fill the download page: `scripts/build-appimage-portable.sh` (Linux), `scripts/build-windows.sh` (Windows), and copy the `.dmg` from the Mac into `dist/`.
+Nothing restarts after a reboot; run it again. The secrets are made once, so old links keep working. Everything lives in `~/.local/share/commons-host`. To fill the download page and publish an update to everyone's app: `scripts/publish-update.sh` (all three systems, signed; [UPDATES.md](UPDATES.md)). To ask apps older than a version to update: `COMMONS_MIN_APP_VERSION=0.2.0 deploy/go-online.sh` (the relay's `--min-app-version`).
 
 ## What was measured on this PC (2026-11-07, nothing changed)
 

@@ -31,8 +31,15 @@ pub struct App {
     bridge: Mutex<Option<crate::callbridge::CallBridge>>,
     /// Per-game push-to-mute. Runs only while a call keeps asking.
     game: commons_gamekeys::Service,
+    /// When a call last asked the core for something (its key poll, token, or game-key heartbeat), from this window or
+    /// from a call handed off to the browser. The updater waits while this is recent: `call_active`.
+    call_seen: Mutex<Option<std::time::Instant>>,
     me: std::sync::Weak<App>,
 }
+
+/// A running call asks the core at least every few seconds (call.js: the key poll every 1.5 s, the game-key heartbeat
+/// at most 4 s apart), so this much silence means no call is running on this device.
+pub const CALL_QUIET: Duration = Duration::from_secs(20);
 
 fn s(v: &Value, k: &str) -> String { v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string() }
 type R = Result<Value, String>;
@@ -73,7 +80,7 @@ pub fn bridge_request_ok(host: Option<&str>, origin: Option<&str>, port: u16) ->
 impl App {
     pub fn new(dir: PathBuf, default_relay: &str) -> Arc<App> { Self::with_kdf(dir, default_relay, KdfParams::STRONG) }
     pub fn with_kdf(dir: PathBuf, default_relay: &str, kdf: KdfParams) -> Arc<App> {
-        Arc::new_cyclic(|me| App { me: me.clone(), bridge: Mutex::new(None), game: commons_gamekeys::Service::new(), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None), wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), files: Mutex::new(vec![]) })
+        Arc::new_cyclic(|me| App { me: me.clone(), call_seen: Mutex::new(None), bridge: Mutex::new(None), game: commons_gamekeys::Service::new(), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None), wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), files: Mutex::new(vec![]) })
     }
     fn open_call_in_browser(&self, gid: &str, name: &str, launch: bool) -> R {
         self.with(|c| c.call_state(gid).map(|_| ()).map_err(e))?;      // only for rooms we are really in
@@ -92,6 +99,11 @@ impl App {
         // The browser bridge's listener thread holds the app alive, so it has to be ended here.
         let bridge = self.bridge.lock().unwrap().take();
         if let Some(b) = bridge { b.stop(); }
+    }
+    fn saw_call(&self) { *self.call_seen.lock().unwrap_or_else(|p| p.into_inner()) = Some(std::time::Instant::now()); }
+    /// True while a call on this device is running (in this window or in the browser): an update must not restart the app now.
+    pub fn call_active(&self) -> bool {
+        self.call_seen.lock().unwrap_or_else(|p| p.into_inner()).is_some_and(|t| t.elapsed() < CALL_QUIET)
     }
     #[doc(hidden)]
     pub fn bridge_running(&self) -> bool { self.bridge.lock().unwrap().as_ref().is_some_and(|b| !b.is_stopped()) }
@@ -122,7 +134,10 @@ impl App {
     }
 
     pub fn call(&self, method: &str, a: Value) -> R {
+        let in_call = matches!(method, "call_state" | "call_token" | "game_mute_wait");
+        if in_call { self.saw_call(); }
         let r = self.dispatch(method, a);
+        if in_call && r.is_ok() { self.saw_call(); }
         if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "pairing_status" | "game_mute_wait") { self.nudge(); }
         r
     }
