@@ -7,3 +7,5 @@ node_modules/
 *.key
 *.pem
 app/src-tauri/gen/
+tools/bin/
+tools/node_modules/

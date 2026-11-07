@@ -6,7 +6,8 @@ A private, end-to-end encrypted group chat for a small group of friends: communi
 
 * [docs/DESIGN.md](docs/DESIGN.md): architecture, the MLS mapping, multi-device, recovery, failure handling, stage 2 seams
 * [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md): what is and is not protected, exactly what the relay sees
-* [docs/DEPLOY.md](docs/DEPLOY.md) and `deploy/`: how it would run on a small rented server with TLS (unused)
+* [docs/DEPLOY.md](docs/DEPLOY.md) and `deploy/`: how it would run on your own PC over Tailscale or on a small rented server, including LiveKit for calls (unused)
+* [docs/CALLS-PLATFORMS.md](docs/CALLS-PLATFORMS.md): voice rooms and screen share: where they work (the Linux desktop web view cannot) and the browser hand-off
 
 ## Layout
 
@@ -16,6 +17,8 @@ crates/relay      relay server (axum + SQLite), binds 127.0.0.1 by default
 crates/core       client library + JSON API + integration tests (crates/core/tests)
 app/src-tauri     Tauri 2 desktop shell (Linux, macOS arm64)
 app/ui            HTML/CSS/JS front end (no build step)
+app/ui/call*.js, vendor/  voice rooms and screen share (LiveKit client, frame encryption keys from MLS)
+tools/call-e2e.mjs  end-to-end call tests (local LiveKit + relay + Chrome with fake devices), tools/webkit-probe.py
 tools/ui-check.mjs  headless UI check (Chromium on the GPU via ANGLE/Vulkan, no window)
 scripts/try-two-windows.sh
 ```
@@ -52,3 +55,15 @@ Manual relay: `cargo run -p commons-relay -- --bind 127.0.0.1:8787 --data ./rela
 ## Packaging
 
 `cargo install tauri-cli --version '^2'` then `cargo tauri build` in `app/src-tauri` (run `cargo tauri icon app/src-tauri/icons/icon.png` first on macOS to produce `.icns`). macOS arm64 builds have been configured but not built or run in this environment (Linux only).
+
+## Voice rooms and screen share (stage 2)
+
+Any room has a **Call** button: voice, screen share, camera, end-to-end encrypted with keys from the room's MLS group (docs/DESIGN.md section 11). Needs a LiveKit server and a relay configured with its key (docs/DEPLOY.md). Local test setup, nothing leaves 127.0.0.1:
+
+```sh
+mkdir -p tools/bin && # download livekit-server 1.13.11 linux amd64 from github.com/livekit/livekit/releases into tools/bin/ (git-ignored)
+cd tools && npm install && cd ..
+cargo build -j2 -p commons-relay && cargo build -j2 -p commons-core --features devbridge --bin dev_bridge
+systemd-run --user --scope -q -p MemoryMax=6G node tools/call-e2e.mjs      # about 8 minutes, one Chrome for Testing, fake media only
+cargo test -j2 -p commons-core --test calls
+```

@@ -240,7 +240,7 @@ impl Client {
         r.welcomes = self.st.welcome_out.clone();
         for j in self.st.acl_jobs.iter().filter(|j| now >= j.after) {
             let cid = self.st.groups.get(&j.gid).map(|g| g.community.clone()).unwrap_or_else(|| j.gid.clone());
-            r.acls.push((j.clone(), AclReq { add: j.add.clone(), remove: j.remove.clone(), demote: j.demote.clone(), promote: j.promote.clone(), transfer: j.transfer.clone(), grant: self.my_grant(&cid), ..Default::default() }));
+            r.acls.push((j.clone(), AclReq { add: j.add.clone(), remove: j.remove.clone(), demote: j.demote.clone(), promote: j.promote.clone(), call_remove: j.call_remove.clone(), transfer: j.transfer.clone(), grant: self.my_grant(&cid), ..Default::default() }));
         }
         self.plan_rejoins(&mut r, &k, now);
         self.dir_wanted.insert(self.my_account());

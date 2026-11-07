@@ -15,3 +15,12 @@
 		}
 	}
 }
+
+# Optional: LiveKit signalling behind the same style of TLS (only with the `calls` profile). Media itself does not pass
+# through Caddy: it goes to the UDP/TCP ports in docs/DEPLOY.md.
+{$COMMONS_LIVEKIT_DOMAIN:livekit.invalid} {
+	log {
+		output discard
+	}
+	reverse_proxy host.docker.internal:7880
+}

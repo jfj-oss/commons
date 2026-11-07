@@ -27,6 +27,9 @@ pub struct App {
     /// The last answer to each read-only call. The UI asks every second, and gets this if the client is busy.
     seen: Mutex<HashMap<String, Value>>,
     files: Mutex<Vec<(String, Arc<Vec<u8>>)>>,
+    /// loopback server for "open this call in my browser" (started on first use)
+    bridge: Mutex<Option<crate::callbridge::CallBridge>>,
+    me: std::sync::Weak<App>,
 }
 
 fn s(v: &Value, k: &str) -> String { v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string() }
@@ -56,7 +59,18 @@ pub fn bridge_request_ok(host: Option<&str>, origin: Option<&str>, port: u16) ->
 impl App {
     pub fn new(dir: PathBuf, default_relay: &str) -> Arc<App> { Self::with_kdf(dir, default_relay, KdfParams::STRONG) }
     pub fn with_kdf(dir: PathBuf, default_relay: &str, kdf: KdfParams) -> Arc<App> {
-        Arc::new(App { dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None), wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), files: Mutex::new(vec![]) })
+        Arc::new_cyclic(|me| App { me: me.clone(), bridge: Mutex::new(None), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None), wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), files: Mutex::new(vec![]) })
+    }
+    fn open_call_in_browser(&self, gid: &str, name: &str, launch: bool) -> R {
+        self.with(|c| c.call_state(gid).map(|_| ()).map_err(e))?;      // only for rooms we are really in
+        let me = self.me.upgrade().ok_or("app is shutting down")?;
+        let url = {
+            let mut g = self.bridge.lock().unwrap();
+            if g.is_none() { *g = Some(crate::callbridge::CallBridge::start(me).map_err(e)?); }
+            g.as_ref().unwrap().grant(gid, name)
+        };
+        let opened = launch && crate::callbridge::open_in_browser(&url);
+        Ok(json!({"url": url, "opened": opened}))
     }
     pub fn shutdown(&self) { *self.stop.lock().unwrap() = true; self.nudge(); }
     fn nudge(&self) { *self.wake.0.lock().unwrap() = true; self.wake.1.notify_all(); }
@@ -309,6 +323,20 @@ impl App {
             }
             "set_typing_enabled" => self.with(|c| { c.st.typing_enabled = a["on"].as_bool().unwrap_or(false); c.save().map_err(e)?; Ok(json!({})) }),
             "notices" => self.read("notices".into(), |c| json!(c.st.notices.iter().rev().take(80).map(|n| json!({"ts": n.ts, "kind": n.kind, "text": n.text})).collect::<Vec<_>>())),
+            "call_state" => self.with(|c| {
+                let st = c.call_state(&s(&a, "gid")).map_err(e)?;
+                let keys: serde_json::Map<String, Value> = st.keys.iter().map(|(d, k)| (d.clone(), json!(b64(k)))).collect();
+                Ok(json!({"epoch": st.epoch, "me": st.my_device, "keys": keys,
+                          "members": st.members.iter().map(|m| json!({"device": m.device, "account": m.account, "name": m.name, "me": m.is_me})).collect::<Vec<_>>()}))
+            }),
+            "open_call_in_browser" => self.open_call_in_browser(&s(&a, "gid"), &s(&a, "name"), a["launch"].as_bool().unwrap_or(true)),
+            // the relay round trip happens with the client free, like file downloads
+            "call_token" => {
+                let gid = s(&a, "gid");
+                self.with(|c| c.call_state(&gid).map(|_| ()).map_err(e))?;
+                let (api, k) = self.with(|c| c.net_handle().map_err(e))?;
+                api.call_token(&k, &gid).map(|t| json!({"url": t.url, "token": t.token, "room": t.room, "identity": t.identity, "expires": t.expires})).map_err(e)
+            }
             _ => Err(format!("unknown method {m}")),
         }
     }

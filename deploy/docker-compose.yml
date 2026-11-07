@@ -11,8 +11,25 @@ services:
       COMMONS_RELAY_INVITE: ${COMMONS_RELAY_INVITE:-}   # set in .env: new accounts then need this secret
     expose:
       - "8787"          # internal only, never published
+    environment:     # leave empty to run without calls; see docs/DEPLOY.md
+      COMMONS_LIVEKIT_URL: ${COMMONS_LIVEKIT_URL:-}
+      COMMONS_LIVEKIT_API_KEY: ${COMMONS_LIVEKIT_API_KEY:-}
+      COMMONS_LIVEKIT_API_SECRET: ${COMMONS_LIVEKIT_API_SECRET:-}
     read_only: true
     tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+  # Voice rooms and screen share (optional). Start with: docker compose --profile calls up -d
+  # Host networking because WebRTC needs real UDP ports; the firewall in docs/DEPLOY.md decides who may reach them.
+  livekit:
+    profiles: ["calls"]
+    image: livekit/livekit-server:v1.13.11
+    restart: unless-stopped
+    network_mode: host
+    command: ["--config", "/etc/livekit.yaml"]
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+      - ./certs:/certs:ro
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
   caddy:
@@ -21,7 +38,9 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    extra_hosts: ["host.docker.internal:host-gateway"]
     environment:
+      COMMONS_LIVEKIT_DOMAIN: ${COMMONS_LIVEKIT_DOMAIN:-livekit.invalid}
       COMMONS_DOMAIN: ${COMMONS_DOMAIN:?set COMMONS_DOMAIN in .env}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro

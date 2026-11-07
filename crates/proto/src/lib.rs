@@ -199,10 +199,18 @@ pub struct AclReq {
     pub demote: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub promote: Vec<String>,
+    /// Accounts to cut off from call tokens at once (their read access keeps its grace period). Needs the same authority as `remove`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub call_remove: Vec<String>,
     /// A step of the ownership chain the relay has not seen yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfer: Option<OwnerStep>,
 }
+/// Reply of `POST /v1/groups/{gid}/call-token`: everything the client needs to join the media room.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CallTokenResp { pub url: String, pub token: String, pub room: String, pub identity: String, pub expires: u64 }
+/// The opaque media-room name for a group: the media server never sees the group id itself.
+pub fn call_room(gid: &str) -> String { hex::encode(sha256(&[b"commons/livekit-room/v1", gid.as_bytes()])) }
 /// One link of the chain of owners: `from` hands the community to `to` as step `seq` (1 = from the founder).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct OwnerStep { pub seq: u64, pub from: String, pub to: String, pub sig: String }

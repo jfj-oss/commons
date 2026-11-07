@@ -18,6 +18,10 @@ use tokio::sync::{watch, Semaphore};
 /// is per account or per device, so one person cannot use up what the others need.
 #[derive(Clone, Debug)]
 pub struct Limits {
+    /// Optional call support: when set, current members can fetch LiveKit join tokens (see `LiveKitCfg`).
+    pub livekit: Option<LiveKitCfg>,
+    /// Call tokens one device may fetch per window (reconnects need a few, loops should not).
+    pub call_tokens_per_window: u32,
     /// When set, a new account needs this secret to register (a device of an existing account does not).
     pub invite_secret: Option<String>,
     pub max_accounts: u64,
@@ -46,6 +50,8 @@ impl Default for Limits {
     fn default() -> Self {
         Limits {
             invite_secret: None,
+            livekit: None,
+            call_tokens_per_window: 60,
             max_accounts: 1000,
             max_devices_per_account: 32,
             max_entry_bytes_per_account: 4 << 30,
@@ -63,6 +69,34 @@ impl Default for Limits {
             welcomes_per_window: 2000,
         }
     }
+}
+
+/// Call support: the relay signs short-lived LiveKit join tokens for current members of a group.
+/// It holds the LiveKit API secret, so it can mint tokens but sees no media and no keys.
+#[derive(Clone)]
+pub struct LiveKitCfg {
+    pub api_key: String,
+    pub api_secret: String,
+    /// The websocket URL clients should connect to (wss://... in production).
+    pub url: String,
+    pub token_ttl_secs: u64,
+}
+impl std::fmt::Debug for LiveKitCfg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "LiveKitCfg {{ url: {:?}, api_key: {:?}, api_secret: <hidden> }}", self.url, self.api_key) }
+}
+
+#[derive(serde::Serialize)]
+struct LkVideoGrant { room: String, #[serde(rename = "roomJoin")] room_join: bool, #[serde(rename = "canPublish")] can_publish: bool, #[serde(rename = "canSubscribe")] can_subscribe: bool, #[serde(rename = "canPublishData")] can_publish_data: bool }
+#[derive(serde::Serialize)]
+struct LkClaims { iss: String, sub: String, jti: String, nbf: u64, exp: u64, video: LkVideoGrant }
+
+/// Mint a LiveKit access token (HS256 JWT, standard `jsonwebtoken` crate). Public so tests can verify the exact claims.
+pub fn mint_livekit_token(cfg: &LiveKitCfg, identity: &str, room: &str, now: u64) -> Result<(String, u64), jsonwebtoken::errors::Error> {
+    let exp = now + cfg.token_ttl_secs;
+    let claims = LkClaims { iss: cfg.api_key.clone(), sub: identity.into(), jti: identity.into(), nbf: now.saturating_sub(30), exp,
+        video: LkVideoGrant { room: room.into(), room_join: true, can_publish: true, can_subscribe: true, can_publish_data: false } };
+    let tok = jsonwebtoken::encode(&jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256), &claims, &jsonwebtoken::EncodingKey::from_secret(cfg.api_secret.as_bytes()))?;
+    Ok((tok, exp))
 }
 
 pub struct RelayState {
@@ -97,6 +131,7 @@ pub fn open_db(path: &str) -> rusqlite::Result<Connection> {
          CREATE INDEX IF NOT EXISTS kp_dev ON keypackages(device);
          CREATE TABLE IF NOT EXISTS group_members(gid TEXT NOT NULL, account TEXT NOT NULL, PRIMARY KEY(gid,account));
          CREATE TABLE IF NOT EXISTS group_auth(gid TEXT PRIMARY KEY, root TEXT NOT NULL, owner TEXT, owner_seq INTEGER NOT NULL DEFAULT 0);
+         CREATE TABLE IF NOT EXISTS call_denied(gid TEXT NOT NULL, account TEXT NOT NULL, PRIMARY KEY(gid,account));
          CREATE TABLE IF NOT EXISTS acl_demoted(root TEXT NOT NULL, account TEXT NOT NULL, PRIMARY KEY(root,account));
          CREATE TABLE IF NOT EXISTS entries(gid TEXT NOT NULL, seq INTEGER NOT NULL, id TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY(gid,seq), UNIQUE(gid,id));
          CREATE TABLE IF NOT EXISTS welcomes(device TEXT NOT NULL, id TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY(device,id));
@@ -283,9 +318,9 @@ fn has_authority(db: &Connection, auth: &GroupAuth, account: &str, grant: Option
 /// Change a group's ACL. The relay cannot read a group's table, so it checks the part of the group's own
 /// authorisation it can be shown: who owns it, and that the requester holds a grant signed by that owner.
 fn change_acl(db: &Connection, gid: &str, a: &Authed, r: &AclReq) -> Result<(), Resp> {
-    let names = r.add.len() + r.remove.len() + r.demote.len() + r.promote.len();
+    let names = r.add.len() + r.remove.len() + r.demote.len() + r.promote.len() + r.call_remove.len();
     if names > MAX_ACL_BATCH { return Err(status(StatusCode::PAYLOAD_TOO_LARGE, "too many accounts in one request")); }
-    if !r.add.iter().chain(&r.remove).chain(&r.demote).chain(&r.promote).all(|x| is_hex(x, 64)) { return Err(status(StatusCode::BAD_REQUEST, "bad account")); }
+    if !r.add.iter().chain(&r.remove).chain(&r.demote).chain(&r.promote).chain(&r.call_remove).all(|x| is_hex(x, 64)) { return Err(status(StatusCode::BAD_REQUEST, "bad account")); }
     let mut auth = group_auth(db, gid)?;
     if auth.is_none() {
         // First claim of this group id. Control group ids are hashes nobody can predict and channel ids are
@@ -323,8 +358,19 @@ fn change_acl(db: &Connection, gid: &str, a: &Authed, r: &AclReq) -> Result<(), 
     let mut real = false;
     for x in &r.add { real |= !is_member(db, gid, x)?; }
     for x in &r.remove { real |= is_member(db, gid, x)?; }
+    // Cutting someone off from calls is a change to who is in the group like any other: owner or granted admin only.
+    for x in &r.call_remove {
+        if x == &auth.owner { return Err(status(StatusCode::FORBIDDEN, "the owner cannot be removed")); }
+        let denied: i64 = db.query_row("SELECT COUNT(*) FROM call_denied WHERE gid=?1 AND account=?2", params![gid, x], |r| r.get(0)).map_err(dberr)?;
+        real |= denied == 0;
+    }
     if real && !authority { return Err(status(StatusCode::FORBIDDEN, "only an admin can change who is in a group")); }
-    for x in &r.add { db.execute("INSERT OR IGNORE INTO group_members(gid,account) VALUES(?1,?2)", params![gid, x]).map_err(dberr)?; }
+    for x in &r.add {
+        db.execute("INSERT OR IGNORE INTO group_members(gid,account) VALUES(?1,?2)", params![gid, x]).map_err(dberr)?;
+        // only an admin's add lifts a call cut-off (a denied member re-adding their own account is not a "real" change)
+        if authority { db.execute("DELETE FROM call_denied WHERE gid=?1 AND account=?2", params![gid, x]).map_err(dberr)?; }
+    }
+    for x in &r.call_remove { db.execute("INSERT OR IGNORE INTO call_denied(gid,account) VALUES(?1,?2)", params![gid, x]).map_err(dberr)?; }
     for x in &r.remove { db.execute("DELETE FROM group_members WHERE gid=?1 AND account=?2", params![gid, x]).map_err(dberr)?; }
     for x in &r.demote { db.execute("INSERT OR IGNORE INTO acl_demoted(root,account) VALUES(?1,?2)", params![auth.root, x]).map_err(dberr)?; }
     for x in &r.promote { db.execute("DELETE FROM acl_demoted WHERE root=?1 AND account=?2", params![auth.root, x]).map_err(dberr)?; }
@@ -457,6 +503,20 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
             let members = s.query_map([gid], |r| r.get::<_, String>(0)).map_err(dberr)?.collect::<Result<Vec<_>, _>>().map_err(dberr)?;
             let (owner, owner_seq) = auth.map(|g| (g.owner, g.seq)).unwrap_or_default();
             Ok(json(&AclResp { owner, owner_seq, members }))
+        }
+        // ---- calls: a short-lived LiveKit join token for a current member. The media server is untrusted and never sees
+        // the group id (the room name is a one-way hash of it); the media key comes from MLS, not from here.
+        (Method::POST, ["v1", "groups", gid, "call-token"]) => {
+            let a = authenticate(&db, headers, ms, path, body, true)?.1.unwrap();
+            let Some(cfg) = lim.livekit.as_ref() else { return Err(status(StatusCode::NOT_FOUND, "this relay has no call server configured")) };
+            if !valid_gid(gid) { return Err(status(StatusCode::BAD_REQUEST, "bad group")); }
+            st.limited(format!("call:{}", a.device), lim.call_tokens_per_window, "too many call tokens, wait a little")?;
+            let member = is_member(&db, gid, &a.account)?;
+            let denied: i64 = db.query_row("SELECT COUNT(*) FROM call_denied WHERE gid=?1 AND account=?2", params![gid, a.account], |r| r.get(0)).map_err(dberr)?;
+            if !member || denied > 0 { return Err(status(StatusCode::FORBIDDEN, "not a current member")); }
+            let room = call_room(gid);
+            let (token, expires) = mint_livekit_token(cfg, &a.device, &room, now_secs()).map_err(|_| status(StatusCode::INTERNAL_SERVER_ERROR, "token"))?;
+            Ok(json(&CallTokenResp { url: cfg.url.clone(), token, room, identity: a.device, expires }))
         }
         (Method::POST, ["v1", "groups", gid, "messages"]) => {
             let a = authenticate(&db, headers, ms, path, body, true)?.1.unwrap();

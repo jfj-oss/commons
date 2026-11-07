@@ -200,6 +200,8 @@ pub struct AclJob {
     #[serde(default)] pub promote: Vec<String>,
     #[serde(default)] pub transfer: Option<commons_proto::OwnerStep>,
     #[serde(default)] pub after: u64,
+    /// accounts cut off from call tokens (sent at once, with the sender's authority like any removal)
+    #[serde(default)] pub call_remove: Vec<String>,
 }
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ParkedWelcome { pub id: String, pub data: String, pub ts: u64 }

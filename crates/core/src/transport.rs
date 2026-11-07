@@ -112,6 +112,16 @@ impl Api {
     pub fn acl(&self, k: &SigningKey, gid: &str, req: &AclReq) -> Result<()> {
         self.post(k, &format!("/v1/groups/{gid}/acl"), req).map(|_| ())
     }
+    /// Ask the relay for a LiveKit join token for this group's call.
+    pub fn call_token(&self, k: &SigningKey, gid: &str) -> Result<CallTokenResp> {
+        let r = self.t.request(Some(k), "POST", &format!("/v1/groups/{gid}/call-token"), b"{}", T)?;
+        match r.status {
+            200 => Ok(serde_json::from_slice(&r.body)?),
+            404 => Err(anyhow!("this relay has no call server configured")),
+            403 => Err(anyhow!("the relay says you are not a current member of this room")),
+            c => Err(anyhow!("call token: relay said {c} {}", String::from_utf8_lossy(&r.body))),
+        }
+    }
     pub fn acl_get(&self, k: &SigningKey, gid: &str) -> Result<AclResp> {
         let r = ok(self.t.request(Some(k), "GET", &format!("/v1/groups/{gid}/acl"), &[], T)?, "acl")?;
         Ok(serde_json::from_slice(&r.body)?)
