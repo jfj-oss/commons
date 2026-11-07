@@ -50,3 +50,4 @@
 #call-panel { max-height: calc(100vh - 88px); bottom: 16px; }
 #call-panel input[type=range], #call-panel input[type=checkbox] { accent-color: var(--accent); }
 #call-panel select { background: var(--page-sunk, var(--card)); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font: inherit; }
+.wrapall { overflow-wrap: anywhere; }

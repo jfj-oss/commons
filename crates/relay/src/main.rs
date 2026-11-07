@@ -22,7 +22,7 @@ async fn main() {
     let mut lk_secret = std::env::var("COMMONS_LIVEKIT_API_SECRET").ok().filter(|x| !x.is_empty());
     let lk_ttl: u64 = std::env::var("COMMONS_LIVEKIT_TOKEN_TTL").ok().and_then(|x| x.parse().ok()).unwrap_or(900);
     let mut open = false;
-    let (mut front, mut front_lk, mut front_turn, mut turn_port) = (None::<SocketAddr>, None::<SocketAddr>, None::<SocketAddr>, None::<u16>);
+    let (mut front, mut front_lk, mut front_turn, mut turn_port) = (None::<SocketAddr>, None::<SocketAddr>, None::<SocketAddr>, std::env::var("COMMONS_TURN_PUBLIC_PORT").ok().and_then(|x| x.parse::<u16>().ok()));
     let mut a = std::env::args().skip(1);
     while let Some(x) = a.next() {
         match x.as_str() {

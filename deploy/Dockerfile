@@ -1,4 +1,4 @@
-# Unused template: build and run the Commons relay.
+# Build and run the Commons relay on a rented server.
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./

@@ -10,3 +10,4 @@ app/src-tauri/gen/
 tools/bin/
 tools/node_modules/
 dist/
+target-docker/

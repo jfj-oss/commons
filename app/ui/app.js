@@ -208,12 +208,12 @@ async function boot() {
     `${invBox}<label for="nm">Display name</label><input type="text" id="nm" autocomplete="off"><label for="pp">Passphrase (protects the keys on this device)</label><input type="password" id="pp">${PP2}`, 'Create account',
     async () => { const pass = $('#pp').value; await rpc('create_account', { name: $('#nm').value, passphrase: pass, relay: $('#relay').value, invite: $('#inv').value }); if (invited && invited.kind === 'community') await rpc('join', { link: invited.link }).catch(e => toast(e.message)); await showRecoveryOnce(pass); el.hidden = true; startApp(); }, links('new')); wire(); };
   const showPair = () => { form('Add this device to your account. You will get a code to approve on a device you already use.',
-    `<label for="pp">Passphrase for this device</label><input type="password" id="pp">${PP2}`, 'Get pairing code', async () => {
+    `${invBox}<label for="pp">Passphrase for this device</label><input type="password" id="pp">${PP2}`, 'Get pairing code', async () => {
       const r = await rpc('start_pairing', { passphrase: $('#pp').value, relay: $('#relay').value });
       pairScreen(r);
     }, links('pair')); wire(); };
   const showRec = () => { form('Recover your account on this device with your recovery key. Old messages are not recoverable (they only live on devices).',
-    `<label for="nm">Display name</label><input type="text" id="nm" autocomplete="off"><label for="rk">Recovery key</label><input type="text" id="rk" class="mono" autocomplete="off" spellcheck="false"><label for="pp">New passphrase for this device</label><input type="password" id="pp">${PP2}`, 'Recover',
+    `${invBox}<label for="nm">Display name</label><input type="text" id="nm" autocomplete="off"><label for="rk">Recovery key</label><input type="text" id="rk" class="mono" autocomplete="off" spellcheck="false"><label for="pp">New passphrase for this device</label><input type="password" id="pp">${PP2}`, 'Recover',
     async () => { await rpc('recover_account', { name: $('#nm').value, recovery_key: $('#rk').value, passphrase: $('#pp').value, relay: $('#relay').value }); el.hidden = true; startApp(); }, links('rec')); wire(); };
   showNew();
 }

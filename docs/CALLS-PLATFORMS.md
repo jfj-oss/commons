@@ -16,7 +16,7 @@ Calls need four browser features: WebRTC (`RTCPeerConnection`), **frame encrypti
 | --- | --- | --- |
 | Linux (WebKitGTK) | **No** (measured above) | Use "Open this call in my browser" (below). |
 | Windows (WebView2 = Chromium) | Should work (**unverified**: no Windows machine here) | The app needs the microphone permission prompt handled by WebView2; first run asks. |
-| macOS (WKWebView) | Possibly (**unverified**) | Safari's engine has WebRTC and `RTCRtpScriptTransform`; the app bundle needs `NSMicrophoneUsageDescription` (and camera/screen-recording strings) in Info.plist, which is not set yet. |
+| macOS (WKWebView) | Possibly (**unverified**) | Safari's engine has WebRTC and `RTCRtpScriptTransform`; the bundle now carries the microphone and camera strings. If it fails in the window, **Open in my browser** in the Call panel is there on every platform. |
 | Browser tab (`dev_bridge` or the call page) in Chrome, Edge, Brave, Chromium, Firefox 117+, Safari 15.4+ | Yes where the engine has the four features | Tested: Chromium family only. |
 
 ## The route that works everywhere: a browser tab, hand-off from the app
@@ -30,7 +30,7 @@ When the web view cannot do calls, the Call panel says so and offers **Open this
 
 What this does not protect: other programs running as you on the same computer can reach the loopback port (they need the secret, which is only in the tab's URL fragment, never sent over HTTP), and a browser extension with access to `127.0.0.1` pages could read the keys. Same class of trust as the browser itself.
 
-If no browser could be launched, the panel shows the link to open by hand.
+The panel always shows the link as well, for when no browser appeared. Inside an AppImage the browser is started without the AppImage's library paths, which would otherwise break it.
 
 ## The other option: ship a Chromium-based shell
 
@@ -40,4 +40,8 @@ Tauri can run on Chromium (CEF runtime) or the app can move to Electron; then ca
 
 * The picker is the browser's own (screen, window or tab). On Linux Wayland the picker comes from the desktop portal (PipeWire); on X11 Chromium shows its own.
 * Audio with the share: Chromium on Windows and ChromeOS can share system/tab audio; on Linux and macOS only tab audio; Firefox shares no audio; Safari none. The app asks for it where possible and reports "no audio came with the share" when the system did not provide it.
+## Reaching the server
+
+Three routes, tried in the browser's usual order: direct UDP, direct TCP, TURN. A friend outside your tailnet on the Funnel setup (docs/DEPLOY.md) has only the last: TURN over TLS on the public port, measured on loopback with the path forced (`tools/hosting-e2e.mjs`, H16). LiveKit always announces that as port 443, so the relay tells clients the real port (`turn_port` in the call token) and `call.js` corrects the address before any connection exists.
+
 * Tested here with synthetic frames from a canvas (never a real screen, per the brief); the browser's own picker and permission UI are therefore **unverified**.

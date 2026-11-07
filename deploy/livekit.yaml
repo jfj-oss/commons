@@ -1,4 +1,4 @@
-# LiveKit media server for Commons voice rooms and screen share. TEMPLATE: nothing here is deployed.
+# LiveKit media server for Commons voice rooms and screen share, for a rented server. On your own PC, go-online.sh writes its own.
 # Replace the key pair (see docs/DEPLOY.md: `openssl rand -hex 32` for the secret) and the domain.
 # The Commons relay holds the same key pair and signs join tokens; clients never see the secret.
 port: 7880                      # HTTP + WebSocket signalling. Put TLS in front (Caddy) for anything but a tailnet/loopback.

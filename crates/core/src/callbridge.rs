@@ -100,7 +100,15 @@ fn handle(mut s: TcpStream, app: Arc<App>, grant: Arc<Mutex<Grant>>, port: u16) 
 
 /// Open a URL in the system's default browser (never in the web view).
 pub fn open_in_browser(url: &str) -> bool {
-    #[cfg(target_os = "linux")] let r = std::process::Command::new("xdg-open").arg(url).spawn();
+    #[cfg(target_os = "linux")] let r = {
+        // Inside an AppImage these point at its own libraries, and a browser started with them can fail to start.
+        let mut c = std::process::Command::new("xdg-open");
+        if let Ok(dir) = std::env::var("APPDIR") {
+            for v in ["LD_LIBRARY_PATH", "GTK_PATH", "GTK_DATA_PREFIX", "GTK_EXE_PREFIX", "GTK_IM_MODULE_FILE", "GTK_THEME", "GDK_PIXBUF_MODULE_FILE", "GIO_MODULE_DIR", "GSETTINGS_SCHEMA_DIR", "GI_TYPELIB_PATH", "APPDIR", "APPIMAGE", "ARGV0", "OWD"] { c.env_remove(v); }
+            if let Ok(d) = std::env::var("XDG_DATA_DIRS") { c.env("XDG_DATA_DIRS", d.split(':').filter(|p| !p.starts_with(&dir)).collect::<Vec<_>>().join(":")); }
+        }
+        c.arg(url).spawn()
+    };
     #[cfg(target_os = "macos")] let r = std::process::Command::new("open").arg(url).spawn();
     #[cfg(target_os = "windows")] let r = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
     r.is_ok()

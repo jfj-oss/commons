@@ -9,6 +9,7 @@
 | Message text, edits, replies, reactions, attachment bytes, file names and types | The relay operator and anyone who breaks into the relay; network observers (add TLS on top, see DEPLOY.md) | MLS application messages (AEAD per sender key), attachments encrypted client-side before upload |
 | Community names, channel names, roles, display names, invite settings | Same | They live only inside MLS group-context extensions and MLS messages |
 | Who may speak or change membership | A malicious member, a malicious relay | Signed MLS commits; every client enforces the same group-local rules and skips commits that break them |
+| Being put in a community without agreeing | Anyone who runs a community, however many devices you have | A device accepts one only if it asked, or the table holds that community's consent signed with your own account key (DESIGN.md 7.2). Test: `two_devices_are_not_a_way_to_pull_someone_into_a_community` |
 | Later messages after someone is removed or a device is revoked | The removed member / lost device | Commit with a path: new epoch secrets they cannot derive. Tested by feeding the removed client the whole relay log |
 | Identity of a friend | A relay or stranger impersonating them | Account key = account id; device certificates signed by it; safety numbers for out-of-band verification |
 | Keys and history on a stolen powered-off laptop | A thief with the disk | Argon2id + XChaCha20-Poly1305 over the whole state; side files sealed with the same key |
@@ -27,7 +28,7 @@ The relay is treated as hostile. This is everything it stores or observes. Verif
 * **Usage**: bytes each account has posted, and the size and uploader of each blob, to enforce quotas.
 * **Log entries**: `(group id, seq, client random id, tag byte, ciphertext)`. The ciphertext size is padded to a multiple of 256 bytes by MLS. The tag tells it: application message, commit (a membership/epoch change), rejoin request, join request.
 * **Welcome inbox**: for each recipient device, MLS Welcome ciphertext, deleted when acknowledged.
-* **Join requests** (the only plaintext JSON it holds): invite id (random), the joiner's certificate (account and device keys), and a signature. So it knows *which account asked to join which group id*. The invite secret is never sent.
+* **Join requests** (the only plaintext JSON it holds): invite id (random), the joiner's certificate (account and device keys), a signature, and the account's consent to that community (a signature and a time). So it knows *which account asked to join which group id*, and when they pressed the button. The community invite's secret key is never sent.
 * **Rejoin requests** (plaintext): the device's certificate, a nonce, a signature. It learns that a device lost state.
 * **Blobs**: ciphertext, exact size, random id. It knows which device uploaded and which devices downloaded each blob, and when, but not which message or channel it belongs to.
 * **Rendezvous** (device pairing): a sealed box it cannot open, for at most 15 minutes, under a random id it only learns from the request itself, with the account that wrote it.
@@ -77,6 +78,18 @@ Two servers are involved. Assume both are run by the same person and both are ho
 **The call page holds the media keys.** A malicious script in the web view could read them; the same page can already read the decrypted messages shown in it, so this adds no new class of exposure, but the web view and its content security policy (`script-src 'self'`) are part of the trust base.
 
 **Platform limits.** Frame encryption needs a browser or web view that provides insertable streams. Where it does not exist the app says so and does not start the call. See `docs/CALLS-PLATFORMS.md`.
+
+## Hosting through Tailscale Funnel (deploy/go-online.sh)
+
+What it adds to the above, when the relay runs on your PC and friends reach it on one public port:
+
+* **Tailscale** runs the public entry point. It sees friends' IP addresses, the host name (TLS SNI), timing and volume. TLS ends on your PC, with a certificate only your PC holds, so it does not see the requests or the media, and those are end-to-end encrypted inside anyway.
+* **The relay sees every connection as coming from 127.0.0.1**, so it logs no friend's IP address, and it cannot rate-limit per address (its limits are per account and whole-relay).
+* **The front** (`--front`) routes by first bytes and parses nothing else. Only LiveKit's `/rtc` is reachable through it, never its admin API. Tested: `/twirp/...` gets the relay's 404.
+* **The invite secret is required**: go-online.sh makes one and `--front` refuses to start without it. Anyone holding a link that carries it can make an account. They still cannot read a community they were not let into. It gets a stranger as far as the quotas, so keep the link private, and change it (delete `~/.local/share/commons-host/invite-secret`, go offline and online) if it leaks. Community invite links carry it too, for the same friend-sized trust.
+* **What is public**: `/health`, `/v1/info` (says that a secret is needed), `/join`, `/download/`. The apps served there are unsigned and come from your PC: whoever controls that PC controls what your friends install.
+* **LiveKit's TURN** relays media for call members. It has to be allowed to reach its own SFU on loopback (`allow_restricted_peer_cidrs: 127.0.0.1/32`), so a call member holding a token can also send UDP to other loopback services on the PC through it. Its TCP port ignores `bind_addresses` and also listens on your LAN; it does nothing without a token's credentials. Friends only: this is another reason to keep invites private.
+* **No third-party STUN**: LiveKit hands clients Google and Twilio STUN servers when TURN over UDP is off; the client strips them before any connection exists (test H17).
 
 ## Other adversaries
 

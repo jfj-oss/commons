@@ -90,16 +90,16 @@
     let h = `<div class="ch"><h3>${esc(inThis || s.phase !== 'idle' ? (s.roomName || 'Call') : (room ? room.name : 'Call'))}</h3>${encBadge(s)}<button class="mini" id="c-close" title="Hide (the call keeps running)">×</button></div>`;
     if (!sup.ok) {
       const why = `<details class="cnote"><summary>Why?</summary>${sup.reasons.map(esc).join('<br>')}</details>`;
-      h += window.__TAURI__
+      h += (s.error ? `<div class="${s.error.kind === 'handoff' ? 'cinfo' : 'cerr'} wrapall">${esc(s.error.msg)}</div>` : '') + (window.__TAURI__
         ? `<div class="cnote"><b>On this computer, calls open in your browser.</b> The app window cannot do encrypted calls here, so the call runs in a browser tab: same room, same end-to-end encryption. Use Chrome, Brave, Edge or Firefox. If you are asked for the microphone, allow it. Close the tab to leave the call.</div>
            ${room ? '<div class="cbar"><button class="btn" id="c-browser">Open this call in my browser</button></div>' : ''}${why}`
-        : `<div class="cerr"><b>Calls are not available in this window.</b><br>${sup.reasons.map(esc).join('<br>')}</div><div class="cnote">Commons will never fall back to an unencrypted call. Try a current Chromium-based browser or Firefox.</div>`;
+        : `<div class="cerr"><b>Calls are not available in this window.</b><br>${sup.reasons.map(esc).join('<br>')}</div><div class="cnote">Commons will never fall back to an unencrypted call. Try a current Chromium-based browser or Firefox.</div>`);
       panel.innerHTML = h; wireBasic(); return;
     }
     if (s.phase === 'idle' || (s.phase === 'error' && !inThis && !s.gid)) {
-      h += `${s.error ? `<div class="cerr">${esc(s.error.msg)}</div>` : ''}
+      h += `${s.error ? `<div class="${s.error.kind === 'handoff' ? 'cinfo' : 'cerr'} wrapall">${esc(s.error.msg)}</div>` : ''}
         <div class="cinfo">${room ? `Join the voice room for <b>${esc(room.name)}</b>. Anyone in this room can join; media is encrypted with keys from the room's group and the call server only forwards ciphertext.` : 'Open a room first.'}</div>
-        <div class="cbar"><button class="btn" id="c-join" ${room ? '' : 'disabled'}>Join voice</button></div>`;
+        <div class="cbar"><button class="btn" id="c-join" ${room ? '' : 'disabled'}>Join voice</button>${window.__TAURI__ && room ? '<button class="btn ghost" id="c-browser" title="If the microphone or screen share does not work in this window">Open in my browser</button>' : ''}</div>`;
       panel.innerHTML = h; wireBasic(); return;
     }
     if (s.error) h += `<div class="cerr">${esc(s.error.msg)}</div>`;
@@ -157,7 +157,7 @@
     const on = (id, fn) => { const el = $q('#' + id, panel); if (el) el.onclick = fn; };
     on('c-close', () => { open = false; render(); });
     on('c-join', async () => { const room = currentRoom(); if (!room) return; try { await call.join(room.gid, room.name); } catch { } render(); });
-    on('c-browser', async () => { const room = currentRoom(); try { const r = await rpc('open_call_in_browser', { gid: room.gid, name: room.name }); if (r.opened) toast('Opened in your browser'); else call.fail('browser', 'Could not start a browser automatically. Open this link in Chrome, Edge, Brave, Chromium or Firefox on this computer: ' + r.url);  } catch (e) { call.fail('browser', e.message); } });
+    on('c-browser', async () => { const room = currentRoom(); try { const r = await rpc('open_call_in_browser', { gid: room.gid, name: room.name }); if (r.opened) toast('Opened in your browser'); call.fail(r.opened ? 'handoff' : 'browser', (r.opened ? 'The call should now be open in your browser. If nothing appeared, open' : 'Could not start a browser automatically. Open') + ' this link in Chrome, Brave, Edge or Firefox on this computer: ' + r.url);  } catch (e) { call.fail('browser', e.message); } });
     on('c-leave', () => call.leave());
     on('c-mute', () => call.setMuted(!call.muted));
     on('c-deaf', () => call.setDeafened(!call.deafened));

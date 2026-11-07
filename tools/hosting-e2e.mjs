@@ -2,10 +2,11 @@
 // terminator on one port, which is all Funnel does here), and two people who only ever use that one port. Media is forced
 // through TURN over TLS, the only route a friend outside the tailnet has. Fake media devices, muted, headless, no Tailscale.
 //   systemd-run --user --scope -q -p MemoryMax=6G node tools/hosting-e2e.mjs [outdir]
-import fs from 'node:fs'; import path from 'node:path'; import tls from 'node:tls'; import net from 'node:net';
+import fs from 'node:fs'; import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { root, run, startChrome, openPage, rpc, sleep, stopAll, FAKE_DISPLAY } from './lib/env.mjs';
 import { toneScript } from './lib/world.mjs';
+import { startHost, forceRelay, relayPath, screenShot } from './lib/host.mjs';
 
 const out = process.argv[2] || '/tmp/commons-hosting-e2e';
 fs.rmSync(out, { recursive: true, force: true }); fs.mkdirSync(out, { recursive: true });
@@ -13,24 +14,12 @@ let failed = 0; const check = (n, ok, d = '') => { if (!ok) failed++; console.lo
 const J = JSON.stringify;
 async function until(fn, ms = 20000, what = 'condition') { const t = Date.now(); for (;;) { try { const v = await fn(); if (v) return v; } catch { } if (Date.now() - t > ms) throw new Error('timeout: ' + what); await sleep(250); } }
 
-const BASE = 26600, FRONT = BASE + 5, PUB = 26443, NAME = 'commons-test.localhost', PASS = 'correct horse battery';
-const env = { ...process.env, COMMONS_HOST_DIR: path.join(out, 'host'), COMMONS_HOST_BASE: String(BASE) };
-const script = (s, ...a) => execFileSync(path.join(root, 'deploy', s), a, { env, encoding: 'utf8', timeout: 60000 });
-const offline = () => { try { script('go-offline.sh', '--local-test'); } catch (e) { console.log(String(e)); } };
-const RELAY = `http://127.0.0.1:${FRONT}`;
+const host = await startHost(out);
+const { BASE, FRONT, PUB, NAME, PASS, RELAY, offline, stopTerminator, tlsIn } = host;
 const bridge = (name, port) => run(path.join(root, 'target/debug/dev_bridge'), [String(port), path.join(root, 'app/ui')], { COMMONS_DATA: path.join(out, name), COMMONS_RELAY: '', COMMONS_FAST_KDF: '1' }, path.join(out, name + '.log'));
 
-// What Funnel does for us: take TLS off, pass the stream on.
-execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', path.join(out, 'k.pem'), '-out', path.join(out, 'c.pem'), '-days', '2', '-subj', '/CN=' + NAME], { stdio: 'ignore' });
-let tlsBytes = 0;
-const terminator = tls.createServer({ key: fs.readFileSync(path.join(out, 'k.pem')), cert: fs.readFileSync(path.join(out, 'c.pem')) }, c => {
-  const u = net.connect(FRONT, '127.0.0.1'); c.on('data', d => { tlsBytes += d.length; }); c.pipe(u); u.pipe(c); c.on('error', () => u.destroy()); u.on('error', () => c.destroy());
-});
-terminator.listen(PUB, '127.0.0.1');
-
 try {
-  const printed = script('go-online.sh', '--local-test', NAME, String(PUB));
-  const web = /https:\/\/\S+\/join#relay\/\S+/.exec(printed)?.[0];
+  const web = host.web;
   check('H1 go-online prints a link and the secret is not on any command line', !!web && !fs.readFileSync(`/proc/${fs.readFileSync(path.join(out, 'host/relay.pid'), 'utf8').trim()}/cmdline`, 'latin1').includes(fs.readFileSync(path.join(out, 'host/invite-secret'), 'utf8').trim()), web && web.slice(0, 60));
   const mode = f => (fs.statSync(path.join(out, 'host', f)).mode & 0o777).toString(8);
   check('H2 secrets are private files', mode('invite-secret') === '600' && mode('lk-secret') === '600' && mode('livekit.yaml') === '600');
@@ -79,7 +68,7 @@ try {
   check('H14 LiveKit admin API is not reachable through the front', admin.status === 404 || admin.status === 401 || admin.status === 405, String(admin.status));
 
   // Calls. Relay-only: if this works, nothing depended on a direct path to the server.
-  const force = `(()=>{const N=window.RTCPeerConnection;const P=function(c,...r){const p=new N({...c,iceTransportPolicy:'relay'},...r);(window.__pcs=window.__pcs||[]).push(p);return p};P.prototype=N.prototype;Object.setPrototypeOf(P,N);window.RTCPeerConnection=P;const sc=N.prototype.setConfiguration;N.prototype.setConfiguration=function(c){return sc.call(this,{...c,iceTransportPolicy:'relay'})}})();`;
+  const force = forceRelay;
   const chrome = await startChrome(out, 'all', 26800, 500, ['--ignore-certificate-errors', ...(process.env.E2E_VLOG ? ['--enable-logging=stderr', '--vmodule=*turn_port*=3'] : [])]);
   const A = await openPage(chrome, 'http://127.0.0.1:26701/', 'alice', { before: toneScript(500) + force }), B = await openPage(chrome, 'http://127.0.0.1:26702/', 'bob', { before: toneScript(700) + force });
   for (const [p, pw] of [[A, 26701], [B, 26702]]) await p.waitFor(`!!window.__commonsCall && !document.querySelector("#app").hidden && !!S.gid`, 30000, 'app ready');
@@ -88,7 +77,7 @@ try {
   await until(async () => (await call(A, `c.room.remoteParticipants.size`)) === 1, 30000, 'call formed');
   const devA = (await rpc(26701, 'snapshot')).me.device, devB = (await rpc(26702, 'snapshot')).me.device;
   check('H15 frame encryption active over the relayed path', (await call(A, `c.room.isE2EEEnabled`)) && (await call(B, `c.room.isE2EEEnabled`)));
-  const path_ = p => p.ev(`(async()=>{const o=[];for(const pc of window.__pcs||[]){if(pc.connectionState!=='connected')continue;const s=await pc.getStats();const m=new Map();s.forEach(x=>m.set(x.id,x));s.forEach(x=>{if(x.type==='transport'&&x.selectedCandidatePairId){const l=m.get(m.get(x.selectedCandidatePairId).localCandidateId);o.push(l.candidateType+'/'+l.relayProtocol)}})}return o})()`);
+  const path_ = relayPath;
   const pa = await until(async () => { const v = await path_(A); return v.length ? v : null; }, 15000, 'stats');
   check('H16 media path is TURN over TLS', pa.every(x => x === 'relay/tls'), pa.join());
   const servers = await A.ev(`JSON.stringify((window.__pcs||[]).map(p=>p.getConfiguration().iceServers))`);
@@ -98,20 +87,14 @@ try {
   check('H19 alice hears bob', await hears(A, devB, 700));
   await A.ev(FAKE_DISPLAY); await A.ev(`window.__shareName = 'alice'`);
   await call(A, `c.startShare({ audio: false, profile: 'text' })`);
-  const shot = await B.ev(`(async()=>{ const c = window.__commonsCall; let t; for (let i = 0; i < 150 && !t; i++) { t = [...c.tracks.values()].find(x => x.identity === ${J(devA)} && x.source === 'screen_share'); if (!t) await new Promise(r => setTimeout(r, 200)); } if (!t) return { present: false };
-    const v = document.createElement('video'); v.muted = true; v.autoplay = true; t.track.attach(v); document.body.appendChild(v); v.style.cssText = 'position:fixed;left:-9999px';
-    const t0 = Date.now(); while (!(v.videoWidth > 0) && Date.now() - t0 < 15000) await new Promise(r => setTimeout(r, 100));
-    await new Promise(r => setTimeout(r, 2500));
-    const cv = document.createElement('canvas'); cv.width = v.videoWidth; cv.height = v.videoHeight; const g = cv.getContext('2d'); g.drawImage(v, 0, 0);
-    const px = (fx, fy) => Array.from(g.getImageData(Math.round(fx * cv.width), Math.round(fy * cv.height), 1, 1).data.slice(0, 3));
-    return { present: true, w: v.videoWidth, red: px(.19, .28), green: px(.51, .28) }; })()`);
+  const shot = await screenShot(B, devA);
   const near = (a, b) => a && a.every((x, i) => Math.abs(x - b[i]) < 60);
   check('H20 screen share arrives and decrypts: the pattern has the right colours (synthetic screen)', shot.present && near(shot.red, [224, 32, 32]) && near(shot.green, [32, 192, 64]), J(shot));
-  check('H21 media really crossed the TLS port', tlsBytes > 100000, tlsBytes + ' bytes in');
+  check('H21 media really crossed the TLS port', tlsIn() > 100000, tlsIn() + ' bytes in');
   await call(A, `c.leave()`).catch(() => { }); await call(B, `c.leave()`).catch(() => { });
 } catch (e) { failed++; console.log('FAIL  stopped early: ' + (e.stack || e)); }
 offline();
-terminator.close();
+stopTerminator();
 await sleep(400);
 const left = execFileSync('ss', ['-ltnH'], { encoding: 'utf8' }).split('\n').filter(l => new RegExp(`:(${[0, 1, 3, 4, 5].map(i => BASE + i).join('|')})\\s`).test(l));
 check('H22 go-offline leaves nothing listening', left.length === 0, left.join(';'));

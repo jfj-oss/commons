@@ -1,6 +1,46 @@
-# Hosting the relay (not done, not required for trying it)
+# Hosting Commons
 
-Nothing has been deployed and nothing listens on a public port. The relay binds `127.0.0.1` by default and warns if you point it elsewhere. This is what hosting it for a few friends would take.
+**The plan: this PC, Tailscale Funnel, one command.** Friends need no Tailscale. A small rented server is the fallback; it is further down.
+
+```sh
+deploy/go-online.sh     # starts relay + LiveKit, opens the public port, prints the link
+deploy/go-offline.sh    # closes it again and stops them; accounts and messages stay
+```
+
+Nothing restarts after a reboot; run it again. The secrets are made once, so old links keep working. Everything lives in `~/.local/share/commons-host`. To fill the download page: `scripts/build-appimage-portable.sh` (Linux), and copy the Mac and Windows builds into `dist/`.
+
+## What was measured on this PC (2026-11-07, nothing changed)
+
+| Question | Answer |
+| --- | --- |
+| Is Funnel allowed for this node? | **Not yet.** HTTPS certificates are on, the Funnel capability is not. The first `tailscale funnel` prints a link to approve it in the admin console, one time; go-online.sh waits for that. No public DNS record for the name exists until then |
+| Which public ports? | Funnel offers only 443, 8443 and 10000, and it opens a whole port. **443 and 8443 already carry tailnet-only services here, Vaultwarden among them on 443, and funnelling them would publish those.** So everything shares 10000 |
+| Does `tailscale` need root? | No, this user is the operator |
+| Can relay + LiveKit signalling + media share one TLS port? | **Yes.** `--front` splits the stream by its first bytes. Tested end to end on loopback with a TLS terminator standing in for Funnel: account, chat, file, call and screen share, with media forced through TURN over TLS (`tools/hosting-e2e.mjs`, 22 checks, three runs in a row) |
+| Media over LiveKit's plain TCP? | **No.** Funnel routes by TLS SNI, and ICE over TCP is not TLS. It cannot get through |
+| Direct UDP from friends? | **Not without changes.** It needs a router port forward (the router does offer UPnP and NAT-PMP), and this PC sends its traffic through a Mullvad exit node, so replies would leave by the wrong way. Not attempted |
+| IPv6 | None on this PC |
+
+**Not measured, because it needs going live:** Funnel itself carrying this (it should: it is a TLS-terminated TCP forward, which is what the loopback test emulates), Funnel with the exit node on, and how much it carries. Tailscale documents an undisclosed bandwidth limit for Funnel. Media here is TCP inside TLS through Tailscale's servers, so expect voice to be fine and screen share to be the first thing to suffer, and expect loss to show up as delay. go-online.sh checks the relay from the public side and says so if that fails. If call quality is not good enough, use the rented server below: chat and files stay as they are.
+
+## How it fits together
+
+```
+friend --TLS--> Funnel :10000 --> tailscaled (takes TLS off) --> 127.0.0.1:17885 relay --front
+                                                                   |- /rtc...     -> LiveKit 127.0.0.1:17880 (signalling)
+                                                                   |- other HTTP  -> relay 127.0.0.1:17884
+                                                                   `- STUN/TURN   -> LiveKit TURN :17883 -> media on 127.0.0.1:17882
+```
+
+What took finding out, all set by go-online.sh: LiveKit's `external_tls` makes TURN speak plain behind a terminator; it announces port 443 whatever you set, so the relay passes the real port to clients (`--turn-public-port`); TURN refuses private peers unless `allow_restricted_peer_cidrs` names the SFU; with `node_ip: 127.0.0.1` the `rtc.ips` filter is required, or LiveKit opens a socket per interface and calls fail at random; and with TURN over UDP off, LiveKit hands clients Google's STUN servers, which the client now strips. Never run `tailscale funnel reset`: it clears the other served ports too.
+
+Other ways in, if you ever want them: **Tailscale device sharing** (friends install Tailscale; section A below) gives direct UDP and the best quality, at the cost of an install for each friend.
+
+---
+
+# The rented server
+
+The fallback. Same software, and better calls: real UDP, no third party in the path.
 
 ## What you need
 
@@ -10,7 +50,7 @@ Nothing has been deployed and nothing listens on a public port. The relay binds 
 * TLS: the relay speaks plain HTTP and expects a reverse proxy to terminate TLS. Request bodies are already end-to-end encrypted and requests are signed, but TLS hides the IP-level metadata from the path and protects the (public) cert/key-package traffic from tampering. Always use it.
 * Docker and Docker Compose, or build the binary yourself (`cargo build --release -p commons-relay`, one static-ish binary, SQLite is bundled).
 
-## The provided files (unused)
+## The provided files
 
 * `deploy/Dockerfile`: multi-stage build of `commons-relay`, runs as an unprivileged user, data in `/data`.
 * `deploy/docker-compose.yml`: the relay (bound to the internal network only) and Caddy (automatic Let's Encrypt certificates) publishing 80/443.
@@ -41,11 +81,11 @@ In the app, set the relay to `https://chat.example.org` when creating an account
 
 ## Voice rooms and screen share (stage 2): LiveKit
 
-Nothing here is deployed either. Calls need one more server process, **LiveKit** (an SFU: it forwards each participant's media to the others). Media is encrypted in the clients with keys from the room's MLS group, so the LiveKit server only ever forwards ciphertext (see THREAT-MODEL.md for what it can still see). The relay signs the short-lived join tokens; clients get them with `POST /v1/groups/{gid}/call-token`.
+Calls need one more server process, **LiveKit** (an SFU: it forwards each participant's media to the others). Media is encrypted in the clients with keys from the room's MLS group, so the LiveKit server only ever forwards ciphertext (see THREAT-MODEL.md for what it can still see). The relay signs the short-lived join tokens; clients get them with `POST /v1/groups/{gid}/call-token`.
 
 ### Two ways to host it (both work, same software)
 
-**A. On your own PC, friends reach it through Tailscale device sharing (the plan).** Nothing is opened on your router and no port is public.
+**A. On your own PC, friends reach it through Tailscale device sharing.** Nothing is opened on your router and no port is public, but every friend has to install Tailscale, and ports 443 and 8443 on this PC are taken, so use others.
 
 1. Install Tailscale on the PC. In the admin console share the PC with each friend (Machines, Share). A shared machine is reachable from the friend's own tailnet at its tailnet name (`pc.your-tailnet.ts.net`) and address (`tailscale ip -4`, a 100.x.y.z). Friends install Tailscale and accept the share.
 2. Run the relay bound to loopback and LiveKit bound to the PC: `deploy/livekit.yaml` with `use_external_ip: false`, `node_ip: <the PC's tailnet IPv4>`, `turn.enabled: false`, `stun_servers: []`.
@@ -64,7 +104,7 @@ Ports (all on the PC, interface `tailscale0` only; allow nothing on your LAN/WAN
 
 Firewall example: `sudo ufw allow in on tailscale0 to any port 443,8443,7881 proto tcp` and `sudo ufw allow in on tailscale0 to any port 7882 proto udp`. Tailscale's sharing ACL also lets you restrict friends to exactly those ports (an `acls` rule with `dst: ["pc:443,8443,7881,7882"]`). The PC must be on while anyone calls or chats; the relay's store-and-forward does not need it, but nobody else can reach it when it is off.
 
-**B. A small rented server later.** Same files, `deploy/docker-compose.yml` (`docker compose --profile calls up -d`), `use_external_ip: true`, the built-in TURN enabled with a real certificate, Caddy in front of the relay and LiveKit signalling. Ports on the server's firewall:
+**B. A small rented server.** Same files, `deploy/docker-compose.yml` (`docker compose --profile calls up -d`), `use_external_ip: true`, the built-in TURN enabled with a real certificate, Caddy in front of the relay and LiveKit signalling. A 2 vCPU / 2 GB VPS with a domain name; about 5-8 EUR a month plus the domain. Steps: copy the repo there, in `deploy/` put `COMMONS_DOMAIN`, `COMMONS_LIVEKIT_DOMAIN`, `COMMONS_RELAY_INVITE` (`openssl rand -hex 24`), `COMMONS_LIVEKIT_URL=wss://<livekit domain>`, `COMMONS_LIVEKIT_API_KEY` and `COMMONS_LIVEKIT_API_SECRET` in `.env`, put the same key pair and the TURN domain in `livekit.yaml`, copy the certificate to `deploy/certs/`, open the ports below, and `docker compose --profile calls up -d --build`. Friends' links then start with your domain; nothing else changes, but accounts do not move across, because a different relay starts empty. Ports on the server's firewall:
 
 | Port | Proto | What |
 | --- | --- | --- |
@@ -72,10 +112,10 @@ Firewall example: `sudo ufw allow in on tailscale0 to any port 443,8443,7881 pro
 | 7881 | TCP | media over TCP |
 | 7882 | UDP | media (single mux port) |
 | 3478 | UDP | TURN/STUN |
-| 5349 | TCP | TURN over TLS (gets through firewalls that only allow 443-like traffic) |
+| 5349 | TCP | TURN over TLS (gets through firewalls that only allow 443-like traffic). LiveKit always announces this as 443, so the relay passes the real port to clients: `COMMONS_TURN_PUBLIC_PORT`, 5349 in the compose file |
 | 50000-50100 | UDP | TURN relay ports (a small range is enough for a few friends) |
 
-Without TURN, people on networks that block UDP can still connect over 7881/TCP; with TURN-TLS on 5349 (or better, TURN on 443 with its own IP/hostname) almost every network works. LiveKit's default configuration points clients at Google's public STUN servers; `deploy/livekit.yaml` replaces that so no third party sees who is calling.
+Without TURN, people on networks that block UDP can still connect over 7881/TCP; with TURN-TLS on 5349 (or better, TURN on 443 with its own IP/hostname) almost every network works. LiveKit's default configuration points clients at Google's and Twilio's public STUN servers whenever TURN over UDP is off; the client strips those, and with `udp_port` set as in `deploy/livekit.yaml` it does not send them at all.
 
 ### Setup steps (either way)
 
