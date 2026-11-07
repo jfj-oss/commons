@@ -97,11 +97,11 @@ What it adds to the above, when the relay runs on your PC and friends reach it o
 * **What the relay (or whoever controls it) can still do:** withhold updates, or keep serving an old manifest. It cannot make an app go back to an older version (only newer versions are offered, and a signature names its version), and it cannot point an app at another server (the manifest and the files must come from the account's own relay; redirects are not followed).
 * **What the update check tells the relay:** that an app asked, when, and which file it downloaded (so which system it runs). The request carries no account and no signature.
 * **Nothing installs by itself:** the person is asked every time, and nothing happens during a call.
-* **Not code-signed for the systems:** Windows SmartScreen and macOS Gatekeeper still see an unknown publisher on the first install. The update signature is Commons' own check, on top.
+* **Not code-signed for the systems:** Windows SmartScreen and macOS Gatekeeper still see an unknown publisher on the first install. The update signature is Megatron' own check, on top.
 
 ## Game keys (docs/GAME-KEYS.md)
 
-Settings live in the encrypted state of one device; which games you play never reaches the relay or another device. The helper reads only the keys you set, only during a call, and sees programs by name only. Through the call bridge the tab learns one thing: a game key is holding the mic, with that program's name (a browser extension with access to the tab could read that). On Linux, joining the `input` group, if you choose to, lets every program of yours read all keys; Commons does not ask for it and keeps only the keys you set.
+Settings live in the encrypted state of one device; which games you play never reaches the relay or another device. The helper reads only the keys you set, only during a call, and sees programs by name only. Through the call bridge the tab learns one thing: a game key is holding the mic, with that program's name (a browser extension with access to the tab could read that). On Linux, joining the `input` group, if you choose to, lets every program of yours read all keys; Megatron does not ask for it and keeps only the keys you set.
 
 ## Other adversaries
 

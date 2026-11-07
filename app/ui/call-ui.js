@@ -98,7 +98,7 @@
       h += (s.error ? `<div class="${s.error.kind === 'handoff' ? 'cinfo' : 'cerr'} wrapall">${esc(s.error.msg)}</div>` : '') + (window.__TAURI__
         ? `<div class="cnote"><b>On this computer, calls open in your browser.</b> The app window cannot do encrypted calls here, so the call runs in a browser tab: same room, same end-to-end encryption. Use Chrome, Brave, Edge or Firefox. If you are asked for the microphone, allow it. Close the tab to leave the call.</div>
            ${room ? '<div class="cbar"><button class="btn" id="c-browser">Open this call in my browser</button></div>' : ''}${why}`
-        : `<div class="cerr"><b>Calls are not available in this window.</b><br>${sup.reasons.map(esc).join('<br>')}</div><div class="cnote">Commons will never fall back to an unencrypted call. Try a current Chromium-based browser or Firefox.</div>`);
+        : `<div class="cerr"><b>Calls are not available in this window.</b><br>${sup.reasons.map(esc).join('<br>')}</div><div class="cnote">Megatron will never fall back to an unencrypted call. Try a current Chromium-based browser or Firefox.</div>`);
       paint(h, ''); return;
     }
     if (s.phase === 'idle' || (s.phase === 'error' && !inThis && !s.gid)) {

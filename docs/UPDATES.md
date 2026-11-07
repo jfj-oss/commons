@@ -18,7 +18,7 @@ in `dist/`:
 
 | In dist/ | Served at | For |
 | --- | --- | --- |
-| `Commons-linux-x86_64.AppImage`, `Commons-windows-x64-setup.exe`, `Commons-macos-arm64.dmg` | `/download/…`, listed on `/join` | friends installing |
+| `Megatron-linux-x86_64.AppImage`, `Megatron-windows-x64-setup.exe`, `Megatron-macos-arm64.dmg` | `/download/…`, listed on `/join` | friends installing |
 | `update/latest.json` | `/update/latest.json` | the apps: version, notes, and per system a file address and its signature |
 | `update/Commons_<version>_…` | `/update/…` | the files the apps install (this version and the one before) |
 
@@ -48,7 +48,7 @@ relay address its account uses, so the same manifest works however friends reach
 tests; the https rule above is enforced by our own code before the plugin is called.
 
 How it installs: Linux replaces the AppImage file in place (keep it where it was first put, writable). Windows runs the
-new installer (per user, no administrator rights) and the app restarts. macOS swaps the `Commons.app` bundle (works when
+new installer (per user, no administrator rights) and the app restarts. macOS swaps the `Megatron.app` bundle (works when
 it was dragged to Applications; not from inside the dmg). The app then restarts, and asks for the passphrase as after any start.
 
 ## The signing key
@@ -71,7 +71,7 @@ cp -p ~/.config/commons/updater.key ~/.config/commons/updater.key.password ~/.co
 sha256sum ~/.config/commons/updater.key* /run/media/$USER/STICK/commons-updater-key/*    # the pairs must match
 ```
 
-In Vaultwarden: a secure note "Commons updater key" with the contents of `updater.key` and `updater.key.password` as two
+In Vaultwarden: a secure note "Megatron updater key" with the contents of `updater.key` and `updater.key.password` as two
 hidden fields (they are short text). To restore: put the files back in `~/.config/commons/`, `chmod 600` the key and the
 password file. `publish-update.sh` refuses to sign with a key whose id is not the one in tauri.conf.json, so a mix-up
 shows at once.
@@ -100,7 +100,7 @@ this, and the rules for changes:
   and needs a new version of the protocol run beside the old one.
 * **Minimum version:** `commons-relay --min-app-version 0.2.0` (or `COMMONS_MIN_APP_VERSION`), or
   `publish-update.sh --min-version`, puts `minimum_version` in the manifest (the relay's setting wins). Apps below it
-  show a bar, "This server asks everyone to use Commons X or newer", and the update offer comes back after an hour
+  show a bar, "This server asks everyone to use Megatron X or newer", and the update offer comes back after an hour
   instead of four. Nothing is refused: it is a request, so a stale setting cannot lock anyone out. Apps from before 0.2.0
   have no updater at all, and cannot be told: they need one manual install from `/join`.
 

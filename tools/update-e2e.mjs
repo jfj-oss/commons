@@ -9,14 +9,14 @@
 //   cargo build -j2 -p commons-relay
 //   systemd-run --user --scope -q -p MemoryMax=6G node tools/update-e2e.mjs <workdir>
 // <workdir> must hold keys/test.key(.pub|.password), keys/wrong.key(.password) (throwaway keys from `tauri signer
-// generate --ci`) and n/Commons-linux-x86_64.AppImage built as version N with keys/test.key.pub (docs/UPDATES.md has the
+// generate --ci`) and n/Megatron-linux-x86_64.AppImage built as version N with keys/test.key.pub (docs/UPDATES.md has the
 // commands). Version N+1 is built and published into <workdir>/published the first time, and reused after that.
 import fs from 'node:fs'; import path from 'node:path'; import http from 'node:http'; import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { root, run, sleep, stopAll } from './lib/env.mjs';
 
 const W = path.resolve(process.argv[2] || '');
-if (!process.argv[2] || !fs.existsSync(path.join(W, 'n/Commons-linux-x86_64.AppImage'))) { console.error('usage: node tools/update-e2e.mjs <workdir> (see the top of this file)'); process.exit(2); }
+if (!process.argv[2] || !fs.existsSync(path.join(W, 'n/Megatron-linux-x86_64.AppImage'))) { console.error('usage: node tools/update-e2e.mjs <workdir> (see the top of this file)'); process.exit(2); }
 const N = '0.1.901', N1 = '0.1.902';
 const out = path.join(W, 'run'); fs.rmSync(out, { recursive: true, force: true }); fs.mkdirSync(out, { recursive: true });
 const site = path.join(out, 'site'), upd = path.join(site, 'update');
@@ -38,7 +38,7 @@ if (!fs.existsSync(path.join(pub, 'update/latest.json')) || JSON.parse(fs.readFi
 }
 const good = JSON.parse(fs.readFileSync(path.join(pub, 'update/latest.json')));
 const goodFile = path.join(pub, 'update', path.basename(good.platforms['linux-x86_64'].url));
-check('U0 publish-update.sh wrote a manifest with a relative file address, the notes, and a signature', good.version === N1 && good.platforms['linux-x86_64'].url === `update/Commons_${N1}_x86_64.AppImage` && /^Test release/.test(good.notes) && good.platforms['linux-x86_64'].signature.length > 100 && fs.existsSync(path.join(pub, 'Commons-linux-x86_64.AppImage')), J(good).slice(0, 200));
+check('U0 publish-update.sh wrote a manifest with a relative file address, the notes, and a signature', good.version === N1 && good.platforms['linux-x86_64'].url === `update/Commons_${N1}_x86_64.AppImage` && /^Test release/.test(good.notes) && good.platforms['linux-x86_64'].signature.length > 100 && fs.existsSync(path.join(pub, 'Megatron-linux-x86_64.AppImage')), J(good).slice(0, 200));
 
 // ---- the relay (fresh code: /update/ and --min-app-version), and a server that is not the relay
 fs.mkdirSync(site, { recursive: true });
@@ -51,8 +51,8 @@ const putFile = (name, bytes) => { fs.mkdirSync(upd, { recursive: true }); fs.wr
 
 // ---- version N, installed where a friend would keep it (writable, so the updater can replace it)
 const inst = path.join(out, 'install'); fs.mkdirSync(inst);
-const APP = path.join(inst, 'Commons.AppImage');
-fs.copyFileSync(path.join(W, 'n/Commons-linux-x86_64.AppImage'), APP); fs.chmodSync(APP, 0o755);
+const APP = path.join(inst, 'Megatron.AppImage');
+fs.copyFileSync(path.join(W, 'n/Megatron-linux-x86_64.AppImage'), APP); fs.chmodSync(APP, 0o755);
 const shaN = sha(APP), shaN1 = sha(goodFile);
 check('U0 versions N and N+1 are different files', shaN !== shaN1);
 
@@ -75,7 +75,7 @@ class App {
   inv(c) { return this.ev(`return await window.__TAURI__.core.invoke(${J(c)});`); }
   async shot(name) { try { fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(await this.wd('GET', `/session/${this.sid}/screenshot`), 'base64')); } catch (e) { console.log('no screenshot: ' + e.message); } }
   // The app's own process (its name, however it was started), and with `all` also the AppImage runtime around it.
-  pids(all = false) { return dsh(`ps -eo pid=,comm=,args=`).trim().split('\n').map(l => l.trim().split(/\s+/)).filter(([, c, ...r]) => c === 'commons-app' || (all && r.join(' ').includes('Commons.AppImage'))).map(([p]) => +p); }
+  pids(all = false) { return dsh(`ps -eo pid=,comm=,args=`).trim().split('\n').map(l => l.trim().split(/\s+/)).filter(([, c, ...r]) => c === 'commons-app' || (all && r.join(' ').includes('Megatron.AppImage'))).map(([p]) => +p); }
   // The update checker, driven by hand instead of waiting hours: look now, and let the offer show (not awaited, it is a dialog).
   async look() { return this.ev(`const U = window.__commonsUpdate; U.later = 0; U.offer = null; await U.check(); setTimeout(() => U.step(), 0); return { offer: U.offer, error: U.error };`); }
   dialog() { return this.ev(`const m = document.querySelector('.modal'); return m ? { title: m.querySelector('h2').textContent, text: m.querySelector('.mbody').innerText, err: m.querySelector('#m-err').textContent } : null;`); }
@@ -116,7 +116,7 @@ try {
   check('U3b the relay\'s minimum version reaches the app: N is told it must update', r.offer && r.offer.required === true && r.offer.minimum === N1 && await a.ev(`const b = document.querySelector('#upd'); return !b.hidden && b.classList.contains('need') && b.textContent.includes(${J(N1)});`));
   await until(() => a.dialog().then(d => d && d.title === 'Update available'), 15000, 'offer dialog');
   const d0 = await a.dialog();
-  check('U3c the offer asks first: version, Install now and Later', /Version 0\.1\.902 of Commons is available \(you have 0\.1\.901\)\. Install now\?/.test(d0.text) && await a.ev(`return [...document.querySelectorAll('.modal .acts button')].map(b => b.textContent).join('|') === 'Later|Install now';`), d0.text.slice(0, 160));
+  check('U3c the offer asks first: version, Install now and Later', /Version 0\.1\.902 of Megatron is available \(you have 0\.1\.901\)\. Install now\?/.test(d0.text) && await a.ev(`return [...document.querySelectorAll('.modal .acts button')].map(b => b.textContent).join('|') === 'Later|Install now';`), d0.text.slice(0, 160));
   await a.shot('u3-offer');
   await a.press('Install now');
   const e3 = await until(() => a.dialog().then(d => d && d.err), 120000, 'install result');

@@ -1,4 +1,4 @@
-// End-to-end call tests: real relay (with call tokens), real LiveKit server, real Commons clients (Rust core),
+// End-to-end call tests: real relay (with call tokens), real LiveKit server, real Megatron clients (Rust core),
 // real call engine in Chrome for Testing with FAKE media devices only. Everything on 127.0.0.1.
 //   systemd-run --user --scope -q -p MemoryMax=8G node tools/call-e2e.mjs [outdir]
 // CALL_E2E_ONLY=video runs only section J (video tiles in the call panel, about a minute).

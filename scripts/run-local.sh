@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Commons with working calls on this one computer: relay + LiveKit + two people. Everything is on 127.0.0.1 and nothing
+# Megatron with working calls on this one computer: relay + LiveKit + two people. Everything is on 127.0.0.1 and nothing
 # can be reached from outside. Calls are end-to-end encrypted exactly as they are between friends; there is no plain mode.
 #   scripts/run-local.sh            two app windows (on Linux a call opens in your browser)
 #   scripts/run-local.sh browser    two browser tabs instead of app windows (:18801 and :18802); the call runs in the tab

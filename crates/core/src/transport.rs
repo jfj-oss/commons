@@ -76,10 +76,10 @@ impl Api {
         ok(self.t.request(Some(k), "POST", path, &body, T)?, path)
     }
     pub fn register(&self, k: &SigningKey, cert: &DeviceCert, invite: Option<String>) -> Result<()> { self.post(k, "/v1/devices", &RegisterReq { cert: cert.clone(), invite }).map(|_| ()) }
-    /// Is this a Commons relay at all?
+    /// Is this a Megatron relay at all?
     pub fn health(&self) -> Result<()> {
         let r = ok(self.t.request(None, "GET", "/health", &[], Duration::from_secs(5))?, "health")?;
-        if r.body == b"ok" { Ok(()) } else { Err(anyhow!("that address answers, but it is not a Commons relay")) }
+        if r.body == b"ok" { Ok(()) } else { Err(anyhow!("that address answers, but it is not a Megatron relay")) }
     }
     /// Does this relay need an invite secret, and (given one) is it the right one?
     pub fn info(&self, invite: Option<&str>) -> Result<InfoResp> {

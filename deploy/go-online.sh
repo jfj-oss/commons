@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Puts Commons on the internet from this PC through Tailscale Funnel, and prints the link to send to friends.
+# Puts Megatron on the internet from this PC through Tailscale Funnel, and prints the link to send to friends.
 # Run it yourself; deploy/go-offline.sh undoes it. Nothing here starts by itself after a reboot.
 #
 # Why port 10000, and one port for everything: Funnel offers 443, 8443 and 10000, and it opens a whole port. On this PC
@@ -119,7 +119,7 @@ fi
 
 payload=$(jq -cn --arg r "https://$HOST:$PUBLIC_PORT" --arg s "$INVITE" '{relay:$r,secret:$s}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
 say ""
-say "Commons is online at https://$HOST:$PUBLIC_PORT"
+say "Megatron is online at https://$HOST:$PUBLIC_PORT"
 say ""
 say "Your link (open the app, paste it, make your account, create a community):"
 say "  https://$HOST:$PUBLIC_PORT/join#relay/$payload"

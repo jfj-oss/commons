@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Commons",
+  "productName": "Megatron",
   "version": "0.2.0",
   "identifier": "app.commons.chat",
   "build": {
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Commons",
+        "title": "Megatron",
         "width": 1100,
         "height": 760,
         "minWidth": 720,

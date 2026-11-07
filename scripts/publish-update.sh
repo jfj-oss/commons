@@ -141,10 +141,10 @@ while kill -0 \$B 2>/dev/null; do
   if [[ "\$src" == *Battery* ]] && [ "\${pct:-0}" -le 40 ]; then echo "battery at \$pct%: stopping the build"; kill -TERM -- -\$B; wait \$B; exit 3; fi
 done
 wait \$B || { tail -40 publish-build.log; exit 4; }
-cd dist && rm -f Commons.app.tar.gz && COPYFILE_DISABLE=1 tar -czf Commons.app.tar.gz Commons.app && ls -la
+cd dist && rm -f Megatron.app.tar.gz && COPYFILE_DISABLE=1 tar -czf Megatron.app.tar.gz Megatron.app && ls -la
 MAC
-  scp -q -i "$MAC_KEY" -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$MAC:commons-build/dist/Commons-macos-arm64.dmg" "$MAC:commons-build/dist/Commons.app.tar.gz" "$STAGE/" || die "could not fetch the macOS build"
-  mv "$STAGE/Commons.app.tar.gz" "$STAGE/Commons-macos-arm64.app.tar.gz"
+  scp -q -i "$MAC_KEY" -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$MAC:commons-build/dist/Megatron-macos-arm64.dmg" "$MAC:commons-build/dist/Megatron.app.tar.gz" "$STAGE/" || die "could not fetch the macOS build"
+  mv "$STAGE/Megatron.app.tar.gz" "$STAGE/Megatron-macos-arm64.app.tar.gz"
 fi
 
 # ---- sign (the password goes through the environment, never the command line)
@@ -154,9 +154,9 @@ sign() {
   [ "$(keyid_sig "$1.sig")" = "$WANT_ID" ] || die "$1 was signed with a key the apps do not trust (key id $(keyid_sig "$1.sig"), apps trust $WANT_ID)"
 }
 declare -A UP=()    # platform -> file in the staging folder
-want linux   && UP[linux-x86_64]=Commons-linux-x86_64.AppImage
-want windows && UP[windows-x86_64]=Commons-windows-x64-setup.exe
-want mac     && UP[darwin-aarch64]=Commons-macos-arm64.app.tar.gz
+want linux   && UP[linux-x86_64]=Megatron-linux-x86_64.AppImage
+want windows && UP[windows-x86_64]=Megatron-windows-x64-setup.exe
+want mac     && UP[darwin-aarch64]=Megatron-macos-arm64.app.tar.gz
 [ ${#UP[@]} -gt 0 ] || die "nothing to publish"
 for p in "${!UP[@]}"; do [ -s "$STAGE/${UP[$p]}" ] || die "missing build output ${UP[$p]}"; sign "$STAGE/${UP[$p]}"; done
 
@@ -170,13 +170,13 @@ for p in "${!UP[@]}"; do
   platforms=$(jq -c --arg p "$p" --arg u "update/$n" --rawfile s "$STAGE/${UP[$p]}.sig" '. + {($p): {url: $u, signature: $s}}' <<<"$platforms")
 done
 mkdir -p "$DIST/.previous"
-for f in Commons-linux-x86_64.AppImage Commons-windows-x64-setup.exe Commons-macos-arm64.dmg; do
+for f in Megatron-linux-x86_64.AppImage Megatron-windows-x64-setup.exe Megatron-macos-arm64.dmg; do
   [ -s "$STAGE/$f" ] || continue
   [ -e "$DIST/$f" ] && cp --reflink=auto -p "$DIST/$f" "$DIST/.previous/$f"
   cp --reflink=auto "$STAGE/$f" "$DIST/.$f.tmp" && chmod 755 "$DIST/.$f.tmp" && mv "$DIST/.$f.tmp" "$DIST/$f"
 done
 # The portable Windows zip cannot update itself: the installer replaces it on the download page.
-if want windows && [ -e "$DIST/Commons-windows-x64.zip" ]; then mv "$DIST/Commons-windows-x64.zip" "$DIST/.previous/"; fi
+if want windows && [ -e "$DIST/Megatron-windows-x64.zip" ]; then mv "$DIST/Megatron-windows-x64.zip" "$DIST/.previous/"; fi
 # Systems published earlier for this same version stay in (--same-version, or a rerun); their notes too, unless new ones are given.
 OLDM='{}'; [ -s "$DIST/update/latest.json" ] && OLDM=$(jq -c --arg v "$NEW" 'if .version == $v then . else {} end' "$DIST/update/latest.json")
 jq -n --arg v "$NEW" --arg n "$NOTES" --arg d "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg m "$MIN" --argjson p "$platforms" --argjson o "$OLDM" \

@@ -176,7 +176,7 @@ mod imp {
     }
     pub fn open(_: &Settings) -> Result<Box<dyn Keys>, String> { Ok(Box::new(Poll)) }
     pub fn info(_: &Settings) -> Info {
-        Info { backend: "key state polling", hold: true, toggle: true, mouse: true, permission: false, note: "Commons only reads whether your chosen keys are down. If a game runs as administrator, Commons may have to as well to see its keys.".into() }
+        Info { backend: "key state polling", hold: true, toggle: true, mouse: true, permission: false, note: "Megatron only reads whether your chosen keys are down. If a game runs as administrator, Megatron may have to as well to see its keys.".into() }
     }
     pub fn request_permission() -> bool { true }
 }
@@ -216,17 +216,17 @@ mod imp {
     struct Poll;
     impl Keys for Poll {
         fn down(&mut self, wanted: &[String]) -> Result<Vec<String>, String> {
-            if !unsafe { CGPreflightListenEventAccess() } { return Err("Input Monitoring is not allowed for Commons".into()); }
+            if !unsafe { CGPreflightListenEventAccess() } { return Err("Input Monitoring is not allowed for Megatron".into()); }
             Ok(wanted.iter().filter(|k| keys::find(k).is_some_and(|x| unsafe { if x.mac & MAC_BUTTON != 0 { CGEventSourceButtonState(HID, (x.mac & !MAC_BUTTON) as u32) } else { CGEventSourceKeyState(HID, x.mac) } })).cloned().collect())
         }
     }
     pub fn open(_: &Settings) -> Result<Box<dyn Keys>, String> {
-        if !unsafe { CGPreflightListenEventAccess() } { return Err("Commons needs the Input Monitoring permission to see your game key. Press Allow in Game keys, then switch Commons on in System Settings, Privacy & Security, Input Monitoring.".into()); }
+        if !unsafe { CGPreflightListenEventAccess() } { return Err("Megatron needs the Input Monitoring permission to see your game key. Press Allow in Game keys, then switch Megatron on in System Settings, Privacy & Security, Input Monitoring.".into()); }
         Ok(Box::new(Poll))
     }
     pub fn info(_: &Settings) -> Info {
         let ok = unsafe { CGPreflightListenEventAccess() };
-        Info { backend: "key state polling", hold: ok, toggle: ok, mouse: ok, permission: !ok, note: if ok { "Commons only reads whether your chosen keys are down.".into() } else { "macOS has to allow this first: Commons asks for Input Monitoring, and only ever looks at the keys you set here.".into() } }
+        Info { backend: "key state polling", hold: ok, toggle: ok, mouse: ok, permission: !ok, note: if ok { "Megatron only reads whether your chosen keys are down.".into() } else { "macOS has to allow this first: Megatron asks for Input Monitoring, and only ever looks at the keys you set here.".into() } }
     }
     /// Shows the system's own prompt once. True if already allowed.
     pub fn request_permission() -> bool { unsafe { CGRequestListenEventAccess() } }

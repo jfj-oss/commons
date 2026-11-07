@@ -1,4 +1,4 @@
-# Commons: design
+# Megatron: design
 
 Private group chat for a handful of friends. Servers and channels like the apps you know, but the relay that carries the messages cannot read them. Reliability is ranked above features: a message that cannot be read must say why, and a client that falls behind must heal or tell you.
 

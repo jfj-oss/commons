@@ -59,7 +59,7 @@ pub fn open(s: &Settings) -> Result<Portal, String> {
         if !keys::known(c) { continue; }
         let id = format!("mute-{}", c.to_lowercase());
         ids.insert(id.clone(), c.clone());
-        let mut o: HashMap<&str, Value> = HashMap::from([("description", Value::from(format!("Mute Commons ({c})")))]);
+        let mut o: HashMap<&str, Value> = HashMap::from([("description", Value::from(format!("Mute Megatron ({c})")))]);
         if let Some(t) = trigger(c) { o.insert("preferred_trigger", Value::from(t)); }
         list.push((id, o));
     }

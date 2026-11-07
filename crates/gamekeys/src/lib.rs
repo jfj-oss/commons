@@ -1,4 +1,4 @@
-//! Per-game push-to-mute. While you hold your game's voice key, your mic in the Commons call goes quiet, so friends do not
+//! Per-game push-to-mute. While you hold your game's voice key, your mic in the Megatron call goes quiet, so friends do not
 //! hear what you say to your game team.
 //!
 //! Three layers. `Engine` is the decision, with no clock and no operating system in it, so every rule can be tested.

@@ -37,7 +37,7 @@
         if (!U.offer || U.offer.version !== r.version) U.later = 0;
         U.offer = r;
       } else U.offer = null;
-      if (r.required && r.minimum) bar(`<span>This server asks everyone to use Commons ${esc(r.minimum)} or newer, and this is ${esc(r.current)}. ${r.available ? 'Please install the update.' : 'No update for this system is published yet: ask whoever runs the server.'}</span>${r.available ? '<button type="button" class="linkish" data-u="offer">Update</button>' : ''}`, 'need');
+      if (r.required && r.minimum) bar(`<span>This server asks everyone to use Megatron ${esc(r.minimum)} or newer, and this is ${esc(r.current)}. ${r.available ? 'Please install the update.' : 'No update for this system is published yet: ask whoever runs the server.'}</span>${r.available ? '<button type="button" class="linkish" data-u="offer">Update</button>' : ''}`, 'need');
       else if (!U.ready) bar('');
     } catch (e) { U.error = e.message; note('check failed: ' + e.message); }
   }
@@ -47,8 +47,8 @@
     const notes = r.notes ? `<div class="upd-notes muted small">${esc(r.notes)}</div>` : '';
     const need = r.required ? `<p>This server asks everyone to use version ${esc(r.minimum)} or newer.</p>` : '';
     let poll = null;
-    const res = await modal('Update available', `<p>Version <b>${esc(r.version)}</b> of Commons is available (you have ${esc(r.current)}). Install now?</p>${need}${notes}
-      <p class="muted small upd-what">Commons checks the update's signature before installing it, then restarts. You will need your passphrase again.</p>`,
+    const res = await modal('Update available', `<p>Version <b>${esc(r.version)}</b> of Megatron is available (you have ${esc(r.current)}). Install now?</p>${need}${notes}
+      <p class="muted small upd-what">Megatron checks the update's signature before installing it, then restarts. You will need your passphrase again.</p>`,
     [{ label: 'Later', primary: false }, {
       label: 'Install now', run: async w => {
         if (await inCall()) { U.later = 0; return 'call'; }
@@ -71,12 +71,12 @@
     U.open = false;
     if (res === 0 || res === -1) { U.later = Date.now() + (r.required ? Math.min(U.snooze, 3600e3) : U.snooze); note('later'); }
     else if (res === 'call') { toast('A call is running. The update waits until it ends.'); }
-    else if (res === 'ready') bar('<span>The update is downloaded. Commons will ask to restart once your call has ended.</span>', '');
+    else if (res === 'ready') bar('<span>The update is downloaded. Megatron will ask to restart once your call has ended.</span>', '');
   }
 
   async function askRestart() {
     U.open = true;
-    const res = await modal('Update ready', `<p>The update to version <b>${esc(U.ready.version)}</b> is downloaded and checked. Restart Commons now to finish it? You will need your passphrase again.</p>`,
+    const res = await modal('Update ready', `<p>The update to version <b>${esc(U.ready.version)}</b> is downloaded and checked. Restart Megatron now to finish it? You will need your passphrase again.</p>`,
       [{ label: 'Later', primary: false }, { label: 'Restart now', run: async () => {
         if (await inCall()) return 'call';
         const x = await inv('update_apply'); note('apply: ' + JSON.stringify(x));

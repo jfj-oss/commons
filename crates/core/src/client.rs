@@ -110,7 +110,7 @@ impl Client {
         let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("lock"))?;
         match f.try_lock() {
             Ok(()) => Ok(f),
-            Err(std::fs::TryLockError::WouldBlock) => bail!("this account is already open in another Commons window or process; close that one first"),
+            Err(std::fs::TryLockError::WouldBlock) => bail!("this account is already open in another Megatron window or process; close that one first"),
             Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
         }
     }

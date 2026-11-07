@@ -1,4 +1,4 @@
-# Hosting Commons
+# Hosting Megatron
 
 **The plan: this PC, Tailscale Funnel, one command.** Friends need no Tailscale. A small rented server is the fallback; it is further down.
 

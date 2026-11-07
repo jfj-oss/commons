@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Takes Commons off the internet and stops what go-online.sh started. Accounts and messages stay on disk.
+# Takes Megatron off the internet and stops what go-online.sh started. Accounts and messages stay on disk.
 # Only port 10000 is closed. Never `tailscale funnel reset`: that would also clear this PC's other served ports.
 set -uo pipefail
 DIR=${COMMONS_HOST_DIR:-$HOME/.local/share/commons-host}
@@ -19,4 +19,4 @@ stop() {
 }
 stop relay commons-relay
 stop livekit livekit-server
-echo "Commons is offline. Your data is still in $DIR."
+echo "Megatron is offline. Your data is still in $DIR."

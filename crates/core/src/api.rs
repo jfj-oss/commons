@@ -59,7 +59,7 @@ pub fn clean_relay_url(u: &str) -> Result<String, String> {
 /// What a person can do about a relay that does not answer. The technical reason stays at the end, for whoever helps them.
 pub fn unreachable_text(relay: &str, why: &str) -> String {
     let w = why.to_ascii_lowercase();
-    let hint = if w.contains("not a commons relay") || w.contains("relay said") { "Something answers at that address, but it is not a Commons relay. Check the address, including the port." }
+    let hint = if w.contains("not a megatron relay") || w.contains("relay said") { "Something answers at that address, but it is not a Megatron relay. Check the address, including the port." }
         else if w.contains("dns") || w.contains("resolve") || w.contains("lookup") || w.contains("name or service") { "That address could not be found. Check it for typos, and check that this computer is online." }
         else if w.contains("certificate") || w.contains("tls") || w.contains("handshake") { "The relay's secure connection could not be checked. Check that this computer's date and time are right; if the address is right too, tell whoever runs it." }
         else if w.contains("refused") { "Nothing is answering there. The relay is probably switched off: ask whoever runs it to start it." }
@@ -218,7 +218,7 @@ impl App {
                 let link = s(&a, "link");
                 if let Ok(l) = InviteLink::decode(&link) { return Ok(json!({"kind": "community", "relay": l.relay, "secret": l.secret, "name": l.name, "link": l.encode()})); }
                 if let Ok(l) = RelayLink::decode(&link) { return Ok(json!({"kind": "relay", "relay": clean_relay_url(&l.relay)?, "secret": l.secret})); }
-                Err("That is not a Commons invite. It should start with https:// or commons://, and the whole link has to be pasted.".into())
+                Err("That is not a Megatron invite. It should start with https:// or commons://, and the whole link has to be pasted.".into())
             }
             "create_account" => {
                 let relay = self.relay_arg(&a)?;

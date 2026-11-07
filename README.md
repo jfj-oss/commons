@@ -1,4 +1,4 @@
-# Commons
+# Megatron
 
 A private, end-to-end encrypted group chat for a small group of friends: communities with rooms, invite links, roles, replies, reactions, files, local search. The relay server stores and forwards ciphertext and cannot read anything. Built on MLS (RFC 9420) via OpenMLS; no cryptography is implemented here.
 

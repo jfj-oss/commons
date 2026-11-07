@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds Commons.app and a .dmg on a Mac (Apple silicon) with only Rust and the Xcode command line tools: no Node, no Tauri CLI.
+# Builds Megatron.app and a .dmg on a Mac (Apple silicon) with only Rust and the Xcode command line tools: no Node, no Tauri CLI.
 # Kept light on purpose, for a small laptop: two jobs, no LTO, background priority (efficiency cores). Output in dist/.
 # COMMONS_MAC_FULL=1 uses every core and the normal release settings.
 set -euo pipefail
@@ -12,7 +12,7 @@ if [ -z "${COMMONS_MAC_FULL:-}" ]; then
 else RUN=(); fi
 # custom-protocol is what puts the UI inside the binary; the Tauri CLI normally adds it.
 "${RUN[@]}" cargo build --release -p commons-app --features tauri/custom-protocol
-A=dist/Commons.app
+A=dist/Megatron.app
 rm -rf "$A"; mkdir -p "$A/Contents/MacOS" "$A/Contents/Resources"
 cp target/release/commons-app "$A/Contents/MacOS/commons-app"
 cp app/src-tauri/icons/icon.icns "$A/Contents/Resources/icon.icns"
@@ -20,7 +20,7 @@ cat > "$A/Contents/Info.plist" <<P
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleName</key><string>Commons</string><key>CFBundleDisplayName</key><string>Commons</string>
+<key>CFBundleName</key><string>Megatron</string><key>CFBundleDisplayName</key><string>Megatron</string>
 <key>CFBundleExecutable</key><string>commons-app</string><key>CFBundleIdentifier</key><string>$ID</string>
 <key>CFBundleVersion</key><string>$VER</string><key>CFBundleShortVersionString</key><string>$VER</string>
 <key>CFBundlePackageType</key><string>APPL</string><key>CFBundleIconFile</key><string>icon</string>
@@ -31,6 +31,6 @@ P
 plutil -lint "$A/Contents/Info.plist"
 codesign --force --deep --sign - "$A"       # ad-hoc: Apple silicon refuses to run anything unsigned
 codesign --verify --strict "$A"
-rm -f dist/Commons-macos-arm64.dmg
-hdiutil create -quiet -volname Commons -srcfolder "$A" -ov -format UDZO dist/Commons-macos-arm64.dmg
+rm -f dist/Megatron-macos-arm64.dmg
+hdiutil create -quiet -volname Megatron -srcfolder "$A" -ov -format UDZO dist/Megatron-macos-arm64.dmg
 ls -la dist

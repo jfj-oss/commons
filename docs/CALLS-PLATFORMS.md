@@ -1,6 +1,6 @@
 # Where calls work (voice rooms and screen share)
 
-Calls need four browser features: WebRTC (`RTCPeerConnection`), **frame encryption** (insertable streams, or `RTCRtpScriptTransform`), `getUserMedia`, and for screen share `getDisplayMedia`. Commons checks for them before every call (`CommonsCall.support()` in `app/ui/call.js`) and **refuses to start a call, and says why, if frame encryption is missing**. There is no unencrypted mode.
+Calls need four browser features: WebRTC (`RTCPeerConnection`), **frame encryption** (insertable streams, or `RTCRtpScriptTransform`), `getUserMedia`, and for screen share `getDisplayMedia`. Megatron checks for them before every call (`CommonsCall.support()` in `app/ui/call.js`) and **refuses to start a call, and says why, if frame encryption is missing**. There is no unencrypted mode.
 
 ## Measured on this machine (Arch Linux, 2026-11-06)
 

@@ -1,4 +1,4 @@
-// The packaged Linux app, as a friend gets it: dist/Commons-linux-x86_64.AppImage on a clean Ubuntu in Docker, against the
+// The packaged Linux app, as a friend gets it: dist/Megatron-linux-x86_64.AppImage on a clean Ubuntu in Docker, against the
 // relay and LiveKit that deploy/go-online.sh starts, driven through WebKit's own WebDriver. The display is an Xvfb inside the
 // container, so nothing can open on the desktop. The app's Call button hands off to a browser; xdg-open is replaced by a stub
 // that records the link, and Chrome for Testing opens it headless with fake media.
@@ -11,7 +11,7 @@ import { startHost, forceRelay, relayPath, screenShot } from './lib/host.mjs';
 
 const out = process.argv[2] || '/tmp/commons-packaged-e2e';
 fs.rmSync(out, { recursive: true, force: true }); fs.mkdirSync(out, { recursive: true });
-const APP = process.env.COMMONS_APPIMAGE || path.join(root, 'dist/Commons-linux-x86_64.AppImage');
+const APP = process.env.COMMONS_APPIMAGE || path.join(root, 'dist/Megatron-linux-x86_64.AppImage');
 let failed = 0; const check = (n, ok, d = '') => { if (!ok) failed++; console.log(`${ok ? 'PASS' : 'FAIL'}  ${n}${d ? '  [' + d + ']' : ''}`); };
 const J = JSON.stringify;
 async function until(fn, ms = 30000, what = 'condition') { const t = Date.now(); for (;;) { try { const v = await fn(); if (v) return v; } catch { } if (Date.now() - t > ms) throw new Error('timeout: ' + what); await sleep(300); } }
@@ -28,11 +28,11 @@ class App {
     run('docker', ['run', '--rm', '--name', this.box, '--network', 'host', '--memory=2g', '--user', `${process.getuid()}:${process.getgid()}`,
       ...e('HOME', '/tmp'), ...e('APPIMAGE_EXTRACT_AND_RUN', '1'), ...e('TAURI_WEBVIEW_AUTOMATION', 'true'), ...e('WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS', '1'), ...e('DISPLAY', ':' + d),
       ...e('COMMONS_DATA', path.join(out, this.name)), ...e('COMMONS_RELAY', ''), ...e('COMMONS_TEST_URLS', this.urls), ...e('PATH', bin + ':/usr/local/bin:/usr/bin:/bin'),
-      '-v', `${out}:${out}`, '-v', `${APP}:/app/Commons.AppImage:ro`, 'commons-e2e-ubuntu',
+      '-v', `${out}:${out}`, '-v', `${APP}:/app/Megatron.AppImage:ro`, 'commons-e2e-ubuntu',
       'sh', '-c', `Xvfb :${d} -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 & sleep 1; exec WebKitWebDriver --port=${this.port} --host=127.0.0.1`], {}, path.join(out, this.name + '-driver.log'));
     this.display = ':' + d;
     await until(() => fetch(`http://127.0.0.1:${this.port}/status`).then(r => r.ok), 20000, 'driver');
-    const r = await this.wd('POST', '/session', { capabilities: { alwaysMatch: { browserName: 'wry', 'webkitgtk:browserOptions': { binary: '/app/Commons.AppImage', args: [] } } } });
+    const r = await this.wd('POST', '/session', { capabilities: { alwaysMatch: { browserName: 'wry', 'webkitgtk:browserOptions': { binary: '/app/Megatron.AppImage', args: [] } } } });
     this.sid = r.sessionId; if (!this.sid) throw new Error('no session: ' + J(r));
   }
   async wd(method, p, body) {

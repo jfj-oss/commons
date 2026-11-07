@@ -1,4 +1,4 @@
-// Shared test environment for the call tests: a local LiveKit server, a relay with call tokens, several Commons clients
+// Shared test environment for the call tests: a local LiveKit server, a relay with call tokens, several Megatron clients
 // (dev bridges) and one headless Chromium per client with FAKE media devices only. Everything is on 127.0.0.1.
 // Chromium runs on the GPU through ANGLE/Vulkan (never SwiftShader). No real microphone, camera, screen or sound is used:
 // the fake devices come from Chromium itself, audio output is muted, and "screen" frames are synthetic (see fakeDisplay).

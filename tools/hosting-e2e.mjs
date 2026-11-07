@@ -60,7 +60,7 @@ try {
 
   const pub = async p => { const r = await fetch(`${RELAY}${p}`); return { s: r.status, t: await r.text(), csp: r.headers.get('content-security-policy') }; };
   const join = await pub('/join');
-  check('H12 join page served, with a strict policy', join.s === 200 && /Join on Commons/.test(join.t) && /default-src 'none'/.test(join.csp || ''));
+  check('H12 join page served, with a strict policy', join.s === 200 && /Join on Megatron/.test(join.t) && /default-src 'none'/.test(join.csp || ''));
   fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
   const list = JSON.parse((await pub('/download/')).t);
   check('H13 download list works and refuses paths', Array.isArray(list) && (await pub('/download/..%2f..%2fetc%2fpasswd')).s === 404 && (await pub('/download/.env')).s === 404, list.map(x => x.name).join());

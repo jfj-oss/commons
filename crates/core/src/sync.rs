@@ -606,7 +606,7 @@ impl Client {
             (Kind::Channel, env @ (Envelope::Text { .. } | Envelope::File { .. } | Envelope::Edit { .. } | Envelope::Delete { .. } | Envelope::React { .. })) => {
                 self.apply_chat(gid, seq, cert, env, false);
             }
-            (_, Envelope::Unknown) => self.notice("newer", "skipped a message of a kind this version of Commons does not know: someone has a newer version. Update Commons to see messages like it"),
+            (_, Envelope::Unknown) => self.notice("newer", "skipped a message of a kind this version of Megatron does not know: someone has a newer version. Update Megatron to see messages like it"),
             (k, e) => self.notice("reject", format!("ignored a {:?} message of the wrong kind for a {:?} group", std::mem::discriminant(&e), k)),
         }
     }
