@@ -1,0 +1,158 @@
+/* Megatron's fresco look for the dark ("After hours") theme: a lamplit lime-plaster wall at the page colour, a dark teal
+   rail with a faded Minoan ceiling and drifting dithered waves that roll on across the wall as a faint amber shimmer, a liquid-glass message box, and a warm glow on the hovered
+   message. The light ("Daylight") theme is untouched. All art is original (procedurally generated / hand-drawn).
+   Keyed like the dark tokens in style.css: the system dark mode unless the user chose Daylight, or After hours. */
+
+/* the lamp layer exists in the page for both themes, but only the dark theme shows it */
+#main > #lamp { display: none; }
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --rail: #052f39; --rail-2: #0e3f4a; --rail-3: #032229; --rail-ink: #eee6d4; --rail-mute: #a6c2c6; --rail-line: rgba(238, 230, 212, .11);
+    --accent: #8ec1e8; --accent-ink: #0b1a28; --accent-soft: #1b3249;
+    --lamp-k: .17; }
+  /* the wall: lime plaster at the page colour, faint mottling and hairline cracks (a seamless 768 px tile) */
+  :root:not([data-theme="light"]) #main { background: #1f1a15 url(fresco/plaster.webp) 0 0 / 768px 768px repeat;
+    background-image: -webkit-image-set(url(fresco/plaster.webp) 1x, url(fresco/plaster@2x.webp) 2x); background-image: image-set(url(fresco/plaster.webp) 1x, url(fresco/plaster@2x.webp) 2x);
+    isolation: isolate; }
+  :root:not([data-theme="light"]) #main::before { content: none; }
+  /* a soft darkening along the wall's left edge, where it meets the rail (behind the content) */
+  :root:not([data-theme="light"]) #main::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 140px; z-index: -1; pointer-events: none;
+    background: linear-gradient(to right, rgba(8, 6, 4, .5), rgba(8, 6, 4, .22) 40%, rgba(8, 6, 4, 0)); }
+  /* lamplight: round, soft, uneven pools of warm light added to the top of the wall (screen blend) */
+  :root:not([data-theme="light"]) #main > #lamp { display: block; position: absolute; left: 0; right: 0; top: 0; height: 46%; z-index: 1; pointer-events: none; mix-blend-mode: screen;
+    background:
+      radial-gradient(42% 70% at 82% -10%, rgba(255, 168, 78, calc(var(--lamp-k) * .80)), rgba(255, 160, 70, calc(var(--lamp-k) * .25)) 38%, rgba(255, 160, 70, 0) 72%),
+      radial-gradient(38% 60% at 28% -14%, rgba(255, 178, 92, calc(var(--lamp-k) * .60)), rgba(255, 170, 80, calc(var(--lamp-k) * .18)) 40%, rgba(255, 170, 80, 0) 74%),
+      radial-gradient(30% 48% at 56% -16%, rgba(255, 186, 100, calc(var(--lamp-k) * .45)), rgba(255, 170, 80, 0) 76%); }
+  /* a whisper of lamp soot at the very top edge, above each pool (behind the header text) */
+  :root:not([data-theme="light"]) #head { background:
+      radial-gradient(30% 34px at 82% 0, rgba(8, 6, 4, .26), rgba(8, 6, 4, 0)),
+      radial-gradient(26% 30px at 28% 0, rgba(8, 6, 4, .2), rgba(8, 6, 4, 0)),
+      radial-gradient(18% 26px at 56% 0, rgba(8, 6, 4, .16), rgba(8, 6, 4, 0)); }
+  /* the header subtitle sits in the brightest light, so it uses --ink-2 (AA there) */
+  :root:not([data-theme="light"]) #chan-sub { color: var(--ink-2); }
+  /* the rail: dark teal, with a faded Minoan ceiling of bold running spirals under a wash of the rail colour, a darkening
+     toward the bottom, and a faint left-edge shade. Isolated, so its z-index:-1 layers sit between its background and content. */
+  :root:not([data-theme="light"]) #rail { isolation: isolate;
+    background: linear-gradient(to top, rgba(3, 14, 16, .42), rgba(3, 14, 16, .14) 18%, rgba(3, 14, 16, 0) 38%), linear-gradient(rgba(5, 47, 57, .84), rgba(5, 47, 57, .84)), url(fresco/rail-art.webp) 0 0 / 1536px 1536px repeat, var(--rail);
+    background-image: linear-gradient(to top, rgba(3, 14, 16, .42), rgba(3, 14, 16, .14) 18%, rgba(3, 14, 16, 0) 38%), linear-gradient(rgba(5, 47, 57, .84), rgba(5, 47, 57, .84)), -webkit-image-set(url(fresco/rail-art.webp) 1x, url(fresco/rail-art@2x.webp) 2x);
+    background-image: linear-gradient(to top, rgba(3, 14, 16, .42), rgba(3, 14, 16, .14) 18%, rgba(3, 14, 16, 0) 38%), linear-gradient(rgba(5, 47, 57, .84), rgba(5, 47, 57, .84)), image-set(url(fresco/rail-art.webp) 1x, url(fresco/rail-art@2x.webp) 2x);
+    background-size: auto, auto, 1536px 1536px; background-repeat: no-repeat, no-repeat, repeat; }
+  :root:not([data-theme="light"]) #rail::before { content: ""; display: block; position: absolute; top: 0; bottom: 0; left: 0; width: 64px; pointer-events: none; z-index: -1;
+    background: linear-gradient(to left, rgba(4, 15, 17, 0), rgba(4, 15, 17, .3)); }
+  /* the drifting dither drawn by fresco-rail-dither.js */
+  :root:not([data-theme="light"]) #rail > canvas.rail-dither { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; image-rendering: pixelated; }
+  /* ...and its faint amber continuation on the wall, under the content, the lamp and the edge darkening */
+  :root:not([data-theme="light"]) #main > canvas.wall-dither { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; image-rendering: pixelated; }
+  /* the selected room's tab joins the wall, so it carries the wall's edge darkening; its inverted corners take the
+     darkest colour of that strip */
+  :root:not([data-theme="light"]) .room.active { background: linear-gradient(to right, rgba(8, 6, 4, 0) 30%, rgba(8, 6, 4, .22) 75%, rgba(8, 6, 4, .5)), var(--page); }
+  :root:not([data-theme="light"]) .room.active::before { background: radial-gradient(circle at 0 0, transparent 11.5px, #14100d 12px); }
+  :root:not([data-theme="light"]) .room.active::after { background: radial-gradient(circle at 0 100%, transparent 11.5px, #14100d 12px); }
+  /* the message box as liquid glass: see-through and blurred, a bright rim on top, a soft inner glow, a curved sheen */
+  /* the hover glow reaches a little past each row; keep it from adding a sideways scrollbar */
+  :root:not([data-theme="light"]) #stream { overflow-x: hidden; }
+  :root:not([data-theme="light"]) .slip { position: relative; border-radius: 18px;
+    background: linear-gradient(180deg, rgba(255, 244, 225, .065), rgba(255, 244, 225, .02) 55%, rgba(14, 11, 8, .26)), rgba(14, 11, 8, .2);
+    -webkit-backdrop-filter: blur(14px) saturate(1.5) brightness(.93); backdrop-filter: blur(14px) saturate(1.5) brightness(.93);
+    border: 1px solid rgba(255, 240, 215, .135);
+    box-shadow: inset 0 1px 0 rgba(255, 248, 235, .24), inset 0 -1px 0 rgba(0, 0, 0, .29), inset 0 0 18px rgba(255, 236, 205, .04),
+                0 10px 28px rgba(0, 0, 0, .38), 0 2px 6px rgba(0, 0, 0, .25); }
+  :root:not([data-theme="light"]) .slip::before { content: ""; position: absolute; inset: 0 0 45% 0; border-radius: inherit; pointer-events: none;
+    background: radial-gradient(120% 140% at 30% -40%, rgba(255, 250, 240, .09), rgba(255, 250, 240, 0) 60%); }
+  :root:not([data-theme="light"]) .slip > * { position: relative; }
+  :root:not([data-theme="light"]) .slip:focus-within { border-color: rgba(255, 228, 180, .32);
+    box-shadow: inset 0 1px 0 rgba(255, 248, 235, .38), inset 0 -1px 0 rgba(0, 0, 0, .28), inset 0 0 22px rgba(255, 220, 170, .08),
+                0 0 0 3px rgba(228, 187, 104, .14), 0 10px 28px rgba(0, 0, 0, .38); }
+  :root:not([data-theme="light"]) .slip textarea { background: transparent; }
+  /* a lamp held over a message: a soft warm bloom behind the hovered (or keyboard-focused) row; the row's small grey
+     text steps up to --ink-2 while lit so it stays AA. Hover only on devices that can hover; touch keeps its tap. */
+  :root:not([data-theme="light"]) .msg::after { content: ""; position: absolute; inset: -16px -48px; z-index: -1; pointer-events: none; border-radius: 50%;
+    background: radial-gradient(closest-side, rgba(255, 152, 72, .16), rgba(255, 152, 72, .085) 55%, rgba(255, 152, 72, 0));
+    opacity: 0; transition: opacity .3s ease-out; }
+  :root:not([data-theme="light"]) .msg:has(:focus-visible)::after { opacity: 1; transition: opacity .17s ease-out; }
+  :root:not([data-theme="light"]) .msg:has(:focus-visible) .when, :root:not([data-theme="light"]) .msg:has(:focus-visible) .quote { color: var(--ink-2); }
+  @media (hover: hover) {
+    :root:not([data-theme="light"]) .msg:not(.mention):hover { background: transparent; }
+    :root:not([data-theme="light"]) .msg:hover::after { opacity: 1; transition: opacity .17s ease-out; }
+    :root:not([data-theme="light"]) .msg:hover .when, :root:not([data-theme="light"]) .msg:hover .quote { color: var(--ink-2); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :root:not([data-theme="light"]) .msg::after { transition: none; }
+  }
+}
+
+/* ---- the same rules when "After hours" is chosen explicitly ---- */
+:root[data-theme="dark"] { --rail: #052f39; --rail-2: #0e3f4a; --rail-3: #032229; --rail-ink: #eee6d4; --rail-mute: #a6c2c6; --rail-line: rgba(238, 230, 212, .11);
+  --accent: #8ec1e8; --accent-ink: #0b1a28; --accent-soft: #1b3249;
+  --lamp-k: .17; }
+/* the wall: lime plaster at the page colour, faint mottling and hairline cracks (a seamless 768 px tile) */
+:root[data-theme="dark"] #main { background: #1f1a15 url(fresco/plaster.webp) 0 0 / 768px 768px repeat;
+  background-image: -webkit-image-set(url(fresco/plaster.webp) 1x, url(fresco/plaster@2x.webp) 2x); background-image: image-set(url(fresco/plaster.webp) 1x, url(fresco/plaster@2x.webp) 2x);
+  isolation: isolate; }
+:root[data-theme="dark"] #main::before { content: none; }
+/* a soft darkening along the wall's left edge, where it meets the rail (behind the content) */
+:root[data-theme="dark"] #main::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 140px; z-index: -1; pointer-events: none;
+  background: linear-gradient(to right, rgba(8, 6, 4, .5), rgba(8, 6, 4, .22) 40%, rgba(8, 6, 4, 0)); }
+/* lamplight: round, soft, uneven pools of warm light added to the top of the wall (screen blend) */
+:root[data-theme="dark"] #main > #lamp { display: block; position: absolute; left: 0; right: 0; top: 0; height: 46%; z-index: 1; pointer-events: none; mix-blend-mode: screen;
+  background:
+    radial-gradient(42% 70% at 82% -10%, rgba(255, 168, 78, calc(var(--lamp-k) * .80)), rgba(255, 160, 70, calc(var(--lamp-k) * .25)) 38%, rgba(255, 160, 70, 0) 72%),
+    radial-gradient(38% 60% at 28% -14%, rgba(255, 178, 92, calc(var(--lamp-k) * .60)), rgba(255, 170, 80, calc(var(--lamp-k) * .18)) 40%, rgba(255, 170, 80, 0) 74%),
+    radial-gradient(30% 48% at 56% -16%, rgba(255, 186, 100, calc(var(--lamp-k) * .45)), rgba(255, 170, 80, 0) 76%); }
+/* a whisper of lamp soot at the very top edge, above each pool (behind the header text) */
+:root[data-theme="dark"] #head { background:
+    radial-gradient(30% 34px at 82% 0, rgba(8, 6, 4, .26), rgba(8, 6, 4, 0)),
+    radial-gradient(26% 30px at 28% 0, rgba(8, 6, 4, .2), rgba(8, 6, 4, 0)),
+    radial-gradient(18% 26px at 56% 0, rgba(8, 6, 4, .16), rgba(8, 6, 4, 0)); }
+/* the header subtitle sits in the brightest light, so it uses --ink-2 (AA there) */
+:root[data-theme="dark"] #chan-sub { color: var(--ink-2); }
+/* the rail: dark teal, with a faded Minoan ceiling of bold running spirals under a wash of the rail colour, a darkening
+   toward the bottom, and a faint left-edge shade. Isolated, so its z-index:-1 layers sit between its background and content. */
+:root[data-theme="dark"] #rail { isolation: isolate;
+  background: linear-gradient(to top, rgba(3, 14, 16, .42), rgba(3, 14, 16, .14) 18%, rgba(3, 14, 16, 0) 38%), linear-gradient(rgba(5, 47, 57, .84), rgba(5, 47, 57, .84)), url(fresco/rail-art.webp) 0 0 / 1536px 1536px repeat, var(--rail);
+  background-image: linear-gradient(to top, rgba(3, 14, 16, .42), rgba(3, 14, 16, .14) 18%, rgba(3, 14, 16, 0) 38%), linear-gradient(rgba(5, 47, 57, .84), rgba(5, 47, 57, .84)), -webkit-image-set(url(fresco/rail-art.webp) 1x, url(fresco/rail-art@2x.webp) 2x);
+  background-image: linear-gradient(to top, rgba(3, 14, 16, .42), rgba(3, 14, 16, .14) 18%, rgba(3, 14, 16, 0) 38%), linear-gradient(rgba(5, 47, 57, .84), rgba(5, 47, 57, .84)), image-set(url(fresco/rail-art.webp) 1x, url(fresco/rail-art@2x.webp) 2x);
+  background-size: auto, auto, 1536px 1536px; background-repeat: no-repeat, no-repeat, repeat; }
+:root[data-theme="dark"] #rail::before { content: ""; display: block; position: absolute; top: 0; bottom: 0; left: 0; width: 64px; pointer-events: none; z-index: -1;
+  background: linear-gradient(to left, rgba(4, 15, 17, 0), rgba(4, 15, 17, .3)); }
+/* the drifting dither drawn by fresco-rail-dither.js */
+:root[data-theme="dark"] #rail > canvas.rail-dither { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; image-rendering: pixelated; }
+/* ...and its faint amber continuation on the wall, under the content, the lamp and the edge darkening */
+:root[data-theme="dark"] #main > canvas.wall-dither { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; image-rendering: pixelated; }
+/* the selected room's tab joins the wall, so it carries the wall's edge darkening; its inverted corners take the
+   darkest colour of that strip */
+:root[data-theme="dark"] .room.active { background: linear-gradient(to right, rgba(8, 6, 4, 0) 30%, rgba(8, 6, 4, .22) 75%, rgba(8, 6, 4, .5)), var(--page); }
+:root[data-theme="dark"] .room.active::before { background: radial-gradient(circle at 0 0, transparent 11.5px, #14100d 12px); }
+:root[data-theme="dark"] .room.active::after { background: radial-gradient(circle at 0 100%, transparent 11.5px, #14100d 12px); }
+/* the message box as liquid glass: see-through and blurred, a bright rim on top, a soft inner glow, a curved sheen */
+/* the hover glow reaches a little past each row; keep it from adding a sideways scrollbar */
+:root[data-theme="dark"] #stream { overflow-x: hidden; }
+:root[data-theme="dark"] .slip { position: relative; border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 244, 225, .065), rgba(255, 244, 225, .02) 55%, rgba(14, 11, 8, .26)), rgba(14, 11, 8, .2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.5) brightness(.93); backdrop-filter: blur(14px) saturate(1.5) brightness(.93);
+  border: 1px solid rgba(255, 240, 215, .135);
+  box-shadow: inset 0 1px 0 rgba(255, 248, 235, .24), inset 0 -1px 0 rgba(0, 0, 0, .29), inset 0 0 18px rgba(255, 236, 205, .04),
+              0 10px 28px rgba(0, 0, 0, .38), 0 2px 6px rgba(0, 0, 0, .25); }
+:root[data-theme="dark"] .slip::before { content: ""; position: absolute; inset: 0 0 45% 0; border-radius: inherit; pointer-events: none;
+  background: radial-gradient(120% 140% at 30% -40%, rgba(255, 250, 240, .09), rgba(255, 250, 240, 0) 60%); }
+:root[data-theme="dark"] .slip > * { position: relative; }
+:root[data-theme="dark"] .slip:focus-within { border-color: rgba(255, 228, 180, .32);
+  box-shadow: inset 0 1px 0 rgba(255, 248, 235, .38), inset 0 -1px 0 rgba(0, 0, 0, .28), inset 0 0 22px rgba(255, 220, 170, .08),
+              0 0 0 3px rgba(228, 187, 104, .14), 0 10px 28px rgba(0, 0, 0, .38); }
+:root[data-theme="dark"] .slip textarea { background: transparent; }
+/* a lamp held over a message: a soft warm bloom behind the hovered (or keyboard-focused) row; the row's small grey
+   text steps up to --ink-2 while lit so it stays AA. Hover only on devices that can hover; touch keeps its tap. */
+:root[data-theme="dark"] .msg::after { content: ""; position: absolute; inset: -16px -48px; z-index: -1; pointer-events: none; border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255, 152, 72, .16), rgba(255, 152, 72, .085) 55%, rgba(255, 152, 72, 0));
+  opacity: 0; transition: opacity .3s ease-out; }
+:root[data-theme="dark"] .msg:has(:focus-visible)::after { opacity: 1; transition: opacity .17s ease-out; }
+:root[data-theme="dark"] .msg:has(:focus-visible) .when, :root[data-theme="dark"] .msg:has(:focus-visible) .quote { color: var(--ink-2); }
+@media (hover: hover) {
+  :root[data-theme="dark"] .msg:not(.mention):hover { background: transparent; }
+  :root[data-theme="dark"] .msg:hover::after { opacity: 1; transition: opacity .17s ease-out; }
+  :root[data-theme="dark"] .msg:hover .when, :root[data-theme="dark"] .msg:hover .quote { color: var(--ink-2); }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme="dark"] .msg::after { transition: none; }
+}

@@ -1,0 +1,132 @@
+/* Dithered waves, after rune's "Dither" ambient: broad soft swells roll slowly down the sidebar and are
+   ordered-dithered with a blue-noise threshold map into two tones of dark dots (2 CSS px per dot), over the rail art.
+   The same wave field continues across the wall as a barely-there shimmer of warm amber dots on the swell crests,
+   kept out of the header and the message column so the small grey text keeps WCAG AA. One clock and one coordinate
+   system (window x and y, in units of the rail's width), so the swells run on across the seam in lockstep.
+   About 20 fps, paused while the window is hidden, one still frame under reduced motion.
+   Dark ("After hours") theme only: it starts and stops when the theme changes. */
+(function () {
+  const root = document.documentElement;
+  const sysDark = matchMedia('(prefers-color-scheme: dark)');
+  const isDark = () => root.dataset.theme === 'dark' || (root.dataset.theme !== 'light' && sysDark.matches);
+  const DOT = 2;                  // CSS px per dot
+  const FPS = 20;
+  // rail tones: [r, g, b, alpha 0..255], darker than the rail, so they can only raise text contrast
+  const MID = [0, 16, 20, 120];   // swell bodies
+  const LIGHT = [0, 6, 8, 185];   // swell cores, darkest
+  const MASK = { light: 0.30, mid: 0.70 };
+  const TONE = { lo: 0.38, hi: 0.9 };
+  const BASE = 0.24;              // share of rail dots dithered even between waves
+  // the leading edge of each crest catches a few lighter dots on the rail
+  const GLOW = [70, 150, 160, 60];
+  const GLOW_MAX = 0.32;
+  // the wall: sparse, faint warm amber dots on the swells only (no base layer)
+  const AMBER = [228, 170, 90, 30];
+  const WALL_MAX = 0.20;          // at most this share of dots lit on a crest
+  // waves: wavelength in rail widths and downward speed for the two swell layers
+  const WK1 = 2 * Math.PI / 0.95, WS1 = WK1 * 0.06, WK2 = 2 * Math.PI / 1.6, WS2 = WK2 * 0.045;
+  const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+
+  // the wave field at (x, y) in rail widths from the window's top-left, time t in seconds
+  function field(px, py, t) {
+    const ph1 = py * WK1 - t * WS1 + 0.9 * Math.sin(px * 4.1 + t * 0.21) + 0.45 * Math.sin(px * 9.3 - t * 0.13 + 1.7);
+    const ph2 = py * WK2 - t * WS2 + 1.1 * Math.sin(px * 3.2 - t * 0.17 + 2.4);
+    const s1 = 0.5 + 0.5 * Math.sin(ph1), s2 = 0.5 + 0.5 * Math.sin(ph2);
+    return { f: 1.15 * ss(0.32, 0.95, 0.62 * s1 + 0.38 * s2), edge: Math.max(0, Math.cos(ph1)) * (0.5 + 0.5 * s2) };
+  }
+
+  let stop = null;
+  function start() {
+    const rail = document.getElementById('rail'), main = document.getElementById('main'); if (!rail || !main) return;
+    const mk = (cls, parent) => { const c = document.createElement('canvas'); c.className = cls; c.setAttribute('aria-hidden', 'true'); parent.prepend(c); return c; };
+    const rc = mk('rail-dither', rail), wc = mk('wall-dither', main);
+    const rx = rc.getContext('2d'), wx = wc.getContext('2d');
+    let alive = true, noise = null;
+    const R = { W: 0, H: 0, img: null, x0: 0 }, M = { W: 0, H: 0, img: null, x0: 0, y0: 0, c0: 0, c1: 0, top: 0 };
+    let U = 268;                    // the rail's width in CSS px: the unit of the shared field
+    const nimg = new Image();
+    nimg.onload = () => {
+      const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d');
+      x.drawImage(nimg, 0, 0); const d = x.getImageData(0, 0, 64, 64).data;
+      noise = new Float32Array(64 * 64); for (let i = 0; i < noise.length; i++) noise[i] = (d[i * 4] + 0.5) / 256;
+      size(); frame(performance.now()); if (!still) loop();
+    };
+    nimg.src = 'fresco/bluenoise64.png';
+
+    function size() {
+      const r = rail.getBoundingClientRect(), m = main.getBoundingClientRect();
+      U = r.width > 40 ? r.width : 268;
+      R.W = Math.max(1, Math.ceil(r.width / DOT)); R.H = Math.max(1, Math.ceil(r.height / DOT)); R.x0 = r.left; R.y0 = r.top;
+      rc.width = R.W; rc.height = R.H; R.img = rx.createImageData(R.W, R.H);
+      M.W = Math.max(1, Math.ceil(m.width / DOT)); M.H = Math.max(1, Math.ceil(m.height / DOT)); M.x0 = m.left; M.y0 = m.top;
+      wc.width = M.W; wc.height = M.H; M.img = wx.createImageData(M.W, M.H);
+      // keep the wall's dots out of the message column and the header (soft 40 px edges)
+      // the column is the stream's content box narrowed to --col and centred (as style.css lays out #stream > *)
+      const stream = document.getElementById('stream');
+      let c0 = 0, c1 = m.width;
+      if (stream) {
+        const probe = document.createElement('div');
+        probe.style.cssText = 'position:absolute;visibility:hidden;height:0;width:var(--col)';
+        stream.appendChild(probe); const colW = probe.offsetWidth; probe.remove();
+        const sr = stream.getBoundingClientRect(), cs = getComputedStyle(stream);
+        const l = sr.left + parseFloat(cs.paddingLeft), r = sr.right - parseFloat(cs.paddingRight);
+        const w = Math.min(colW || (r - l), r - l);
+        c0 = (l + r) / 2 - w / 2 - m.left; c1 = (l + r) / 2 + w / 2 - m.left;
+      }
+      const head = document.getElementById('head');
+      M.c0 = c0; M.c1 = c1; M.top = head ? head.getBoundingClientRect().bottom - m.top : 64;
+    }
+    function frame(ms) {
+      if (!noise || !R.img || !M.img) return;
+      const t = ms / 1000;
+      // the rail
+      let d = R.img.data;
+      for (let j = 0; j < R.H; j++) {
+        const py = (R.y0 + (j + 0.5) * DOT) / U;
+        for (let i = 0; i < R.W; i++) {
+          const px = (R.x0 + (i + 0.5) * DOT) / U;
+          const { f, edge } = field(px, py, t);
+          const tau = ss(TONE.lo, TONE.hi, f);
+          const dL = Math.pow(tau, 1.6) * MASK.light, dM = Math.min(1 - dL, BASE + (1 - BASE) * Math.pow(tau, 0.6) * MASK.mid);
+          const th = noise[(j & 63) * 64 + (i & 63)];
+          const k = (j * R.W + i) * 4;
+          let col = th < dL ? LIGHT : th < dL + dM ? MID : null;
+          if (!col && 1 - th < ss(0.55, 0.98, edge) * GLOW_MAX) col = GLOW;
+          if (col) { d[k] = col[0]; d[k + 1] = col[1]; d[k + 2] = col[2]; d[k + 3] = col[3]; } else d[k + 3] = 0;
+        }
+      }
+      rx.putImageData(R.img, 0, 0);
+      // the wall: only crests, only outside the column and below the header; most dots are skipped early
+      d = M.img.data; d.fill(0);
+      for (let j = 0; j < M.H; j++) {
+        const y = (j + 0.5) * DOT; const vy = ss(M.top, M.top + 40, y); if (vy <= 0) continue;
+        const py = (M.y0 + y) / U;
+        for (let i = 0; i < M.W; i++) {
+          const x = (i + 0.5) * DOT;
+          const vx = Math.max(ss(M.c0, M.c0 - 40, x), ss(M.c1, M.c1 + 40, x)); if (vx <= 0) continue;
+          const th = noise[(j & 63) * 64 + (i & 63)];
+          if (th > WALL_MAX) continue;                          // can never light: skip the field
+          const { f } = field((M.x0 + x) / U, py, t);
+          if (th < ss(0.55, 1.05, f) * WALL_MAX * vx * vy) {
+            const k = (j * M.W + i) * 4; d[k] = AMBER[0]; d[k + 1] = AMBER[1]; d[k + 2] = AMBER[2]; d[k + 3] = AMBER[3];
+          }
+        }
+      }
+      wx.putImageData(M.img, 0, 0);
+    }
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let last = 0, raf = 0;
+    function loop() { if (!alive) return; raf = requestAnimationFrame(ms => { if (ms - last >= 1000 / FPS) { last = ms; frame(ms); } loop(); }); }
+    const onVis = () => { cancelAnimationFrame(raf); if (!document.hidden && !still && noise) loop(); };
+    document.addEventListener('visibilitychange', onVis);
+    const ro = new ResizeObserver(() => { size(); frame(performance.now()); }); ro.observe(rail); ro.observe(main);
+    stop = () => { alive = false; cancelAnimationFrame(raf); document.removeEventListener('visibilitychange', onVis); ro.disconnect(); rc.remove(); wc.remove(); stop = null; };
+  }
+  function sync() { if (isDark()) { if (!stop) start(); } else if (stop) stop(); }
+  function init() {
+    sync();
+    sysDark.addEventListener('change', sync);
+    new MutationObserver(sync).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+})();
