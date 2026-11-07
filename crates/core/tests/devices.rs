@@ -117,3 +117,172 @@ fn leave_and_rename() {
     assert_eq!(carol.c.st.communities[&cid].name, "club two");
     assert!(carol.c.rename_community(&cid, "x").is_err());
 }
+
+/// A second device of `p`, approved from `p`. Everything else has to be settled by the caller.
+fn pair(net: &Net, p: &mut Peer, others: &mut [&mut Peer], name: &str) -> Peer {
+    let dir = tempfile::tempdir().unwrap();
+    let (t, faults) = transport(&net.url());
+    let (c, code) = Client::create_for_pairing(dir.path(), "pw2", &net.url(), "", KdfParams::TEST, t).unwrap();
+    let mut new = peer_from(c, dir, faults, name);
+    impatient(&mut new.c);
+    p.c.pairing_approve(&code).unwrap();
+    let mut all: Vec<&mut Peer> = vec![&mut *p, &mut new];
+    for o in others.iter_mut() { all.push(&mut **o); }
+    settle(&mut all);
+    assert!(new.c.has_identity());
+    new
+}
+
+#[test]
+fn two_devices_are_not_a_way_to_pull_someone_into_a_community() {
+    let net = Net::new();
+    let mut m = Peer::new(&net, "mallory");
+    let mut bob = Peer::new(&net, "bob");
+    let mut bob2 = pair(&net, &mut bob, &mut [&mut m], "bob2");
+    let cid = m.c.create_community("evil").unwrap();
+    let room = m.c.channels_of(&cid)[0].gid.clone();
+    settle(&mut [&mut m, &mut bob, &mut bob2]);
+    // Whoever runs a community can put every device of an account in one commit, so each one sees the other in the group.
+    m.c.debug_add_account_devices(&cid, &bob.acct()).unwrap();
+    m.c.debug_add_account_devices(&room, &bob.acct()).unwrap();
+    assert_eq!(m.c.group_devices(&cid).len(), 3, "the attack really happened: {:?}", notices(&m));
+    settle(&mut [&mut m, &mut bob, &mut bob2]);
+    for p in [&bob, &bob2] {
+        assert!(p.c.st.communities.is_empty() && p.c.st.groups.is_empty(), "{} was pulled in: {:?}", p.name, notices(p));
+        assert!(notices(p).iter().any(|n| n.contains("unsolicited")), "{:?}", notices(p));
+    }
+}
+
+#[test]
+fn a_consent_counts_for_one_account_in_one_community() {
+    use commons_core::envelope::*;
+    let k = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+    let (a, b) = ("ab".repeat(32), "cd".repeat(32));
+    let c = sign_consent(&k, &a, 5);
+    assert!(verify_consent(&a, &c).is_ok());
+    assert!(verify_consent(&b, &c).is_err(), "another community");
+    assert!(verify_consent(&a, &Consent { ts: 6, ..c.clone() }).is_err(), "another time");
+    assert!(verify_consent(&a, &Consent { account: hex::encode(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng).verifying_key().to_bytes()), ..c.clone() }).is_err(), "another account");
+    let mut list = vec![];
+    assert!(merge_consent(&mut list, c.clone()) && !merge_consent(&mut list, c.clone()));
+    assert!(merge_consent(&mut list, sign_consent(&k, &a, 7)) && list.len() == 1 && list[0].ts == 7);
+    assert!(!merge_consent(&mut list, sign_consent(&k, &a, 6)), "an older one does not win");
+}
+
+#[test]
+fn a_community_left_cannot_take_a_person_back_with_the_old_consent() {
+    let net = Net::new();
+    let mut alice = Peer::new(&net, "alice");
+    let mut bob = Peer::new(&net, "bob");
+    let (cid, gen) = community_with(&net, &mut alice, &mut [&mut bob]);
+    let mut bob2 = pair(&net, &mut bob, &mut [&mut alice], "bob2");
+    settle(&mut [&mut alice, &mut bob, &mut bob2]);
+    assert_eq!(alice.c.group_devices(&cid).len(), 3);
+    let old = alice.c.debug_consents(&cid).into_iter().find(|c| c.account == bob.acct()).expect("the table holds bob's consent");
+    bob.c.leave(&cid).unwrap();
+    settle(&mut [&mut alice, &mut bob, &mut bob2]);
+    assert!(bob.c.st.communities[&cid].removed && bob2.c.st.communities[&cid].removed);
+    assert!(!alice.c.debug_consents(&cid).iter().any(|c| c.account == bob.acct()), "an honest owner drops it");
+
+    // Now the owner turns hostile: the signature is genuine, and this is the right community.
+    alice.c.debug_plant_consent(&cid, old.clone()).unwrap();
+    alice.c.debug_add_account_devices(&cid, &bob.acct()).unwrap();
+    settle(&mut [&mut alice, &mut bob, &mut bob2]);
+    assert!(bob.c.st.communities[&cid].removed && bob2.c.st.communities[&cid].removed, "{:?}", notices(&bob));
+
+    // A device paired after the leaving was told, so it refuses too.
+    let mut bob3 = pair(&net, &mut bob, &mut [&mut alice], "bob3");
+    settle(&mut [&mut alice, &mut bob, &mut bob3]);
+    assert!(alice.c.group_devices(&cid).contains(&bob3.c.my_device()), "the owner, seeing bob in the group, added it: {:?}", notices(&alice));
+    assert!(bob3.c.st.communities.is_empty(), "{:?}", notices(&bob3));
+
+    // Coming back on purpose works, and takes the other devices along: that consent is a new one.
+    let mut alice2 = Peer::new(&net, "alice-fresh");
+    let cid2 = alice2.c.create_community("fresh").unwrap();
+    let gen2 = alice2.c.channels_of(&cid2)[0].gid.clone();
+    let link = alice2.c.create_invite(&cid2, Some(1), 3600).unwrap();
+    bob.c.join_with_link(&link).unwrap();
+    settle(&mut [&mut alice2, &mut bob, &mut bob2, &mut bob3]);
+    for p in [&bob, &bob2, &bob3] { assert!(p.c.st.communities.get(&cid2).is_some_and(|c| !c.removed), "{}: {:?}", p.name, notices(p)); }
+    assert_eq!(alice2.c.group_devices(&gen2).len(), 4);
+    let _ = gen;
+}
+
+#[test]
+fn the_same_community_can_be_rejoined_after_leaving() {
+    let net = Net::new();
+    let mut alice = Peer::new(&net, "alice");
+    let mut bob = Peer::new(&net, "bob");
+    let (cid, gen) = community_with(&net, &mut alice, &mut [&mut bob]);
+    let mut bob2 = pair(&net, &mut bob, &mut [&mut alice], "bob2");
+    bob.c.leave(&cid).unwrap();
+    settle(&mut [&mut alice, &mut bob, &mut bob2]);
+    assert!(bob2.c.st.communities[&cid].removed);
+    let link = alice.c.create_invite(&cid, Some(1), 3600).unwrap();
+    bob.c.join_with_link(&link).unwrap();
+    settle(&mut [&mut alice, &mut bob, &mut bob2]);
+    assert!(!bob.c.st.communities[&cid].removed && !bob2.c.st.communities[&cid].removed, "{:?}", notices(&bob2));
+    alice.c.send_text(&gen, "welcome back", None).unwrap();
+    settle(&mut [&mut alice, &mut bob, &mut bob2]);
+    assert!(has_text(&bob, &gen, "welcome back") && has_text(&bob2, &gen, "welcome back"));
+}
+
+#[test]
+fn a_cancelled_join_stays_cancelled() {
+    let net = Net::new();
+    let mut alice = Peer::new(&net, "alice");
+    let mut bob = Peer::new(&net, "bob");
+    let cid = alice.c.create_community("club").unwrap();
+    let link = alice.c.create_invite(&cid, None, 3600).unwrap();
+    settle(&mut [&mut alice, &mut bob]);
+    bob.c.join_with_link(&link).unwrap();
+    bob.tick(); // the request, with the consent in it, is on its way
+    bob.c.cancel_join(&cid).unwrap();
+    settle(&mut [&mut alice, &mut bob]);
+    assert!(!bob.c.st.communities.get(&cid).is_some_and(|c| !c.removed), "{:?}", notices(&bob));
+}
+
+#[test]
+fn the_owner_and_a_member_each_bring_a_new_device_in() {
+    let net = Net::new();
+    let mut alice = Peer::new(&net, "alice");
+    let mut bob = Peer::new(&net, "bob");
+    let (cid, gen) = community_with(&net, &mut alice, &mut [&mut bob]);
+    let mut alice2 = pair(&net, &mut alice, &mut [&mut bob], "alice2");
+    assert!(alice2.c.st.communities.get(&cid).is_some_and(|c| !c.removed), "{:?}", notices(&alice2));
+    alice2.c.send_text(&gen, "from the owner's new device", None).unwrap();
+    settle(&mut [&mut alice, &mut alice2, &mut bob]);
+    assert!(has_text(&bob, &gen, "from the owner's new device"));
+}
+
+#[test]
+fn a_table_from_before_consents_heals_and_then_lets_a_device_in() {
+    let net = Net::new();
+    let mut alice = Peer::new(&net, "alice");
+    let mut bob = Peer::new(&net, "bob");
+    let (cid, gen) = community_with(&net, &mut alice, &mut [&mut bob]);
+    assert_eq!(alice.c.debug_consents(&cid).len(), 2);
+    alice.c.debug_clear_consents(&cid).unwrap();
+    settle(&mut [&mut alice, &mut bob]);
+    assert_eq!(alice.c.debug_consents(&cid).len(), 2, "both offered theirs again: {:?}", notices(&alice));
+    let mut bob2 = pair(&net, &mut bob, &mut [&mut alice], "bob2");
+    assert!(bob2.c.group_devices(&gen).contains(&bob2.c.my_device()), "{:?}", notices(&bob2));
+}
+
+#[test]
+fn a_member_cannot_offer_consent_for_someone_else_or_edit_the_table() {
+    let net = Net::new();
+    let mut alice = Peer::new(&net, "alice");
+    let mut bob = Peer::new(&net, "bob");
+    let mut carol = Peer::new(&net, "carol");
+    let (cid, _) = community_with(&net, &mut alice, &mut [&mut bob, &mut carol]);
+    let carols = alice.c.debug_consents(&cid).into_iter().find(|c| c.account == carol.acct()).unwrap();
+    // Passed on by bob, carol's signature does not check out against bob as the sender.
+    use commons_core::envelope::Envelope;
+    bob.c.debug_send_envelope(&cid, Envelope::Consent { ts: carols.ts + 1, sig: carols.sig.clone() }).unwrap();
+    settle(&mut [&mut alice, &mut bob, &mut carol]);
+    assert!(notices(&alice).iter().any(|n| n.contains("consent with a bad signature")), "{:?}", notices(&alice));
+    assert_eq!(alice.c.debug_consents(&cid).len(), 3);
+    let before = alice.c.epoch_fingerprint(&cid);
+    assert!(bob.c.debug_clear_consents(&cid).is_err() || { settle(&mut [&mut alice, &mut bob, &mut carol]); alice.c.debug_consents(&cid).len() == 3 && alice.c.epoch_fingerprint(&cid) == before });
+}

@@ -176,6 +176,7 @@ impl Client {
     /// The join is over: stop waiting and keep the reason where the person will see it.
     pub(crate) fn refuse_join(&mut self, community: &str, reason: &str) {
         let Some(l) = self.st.joining.remove(community) else { return };
+        if let Some(c) = self.st.join_consent.remove(community) { self.withdraw_consent(c.sig); }
         self.st.join_sent.remove(community);
         self.st.join_asked.remove(community);
         self.st.join_retry.remove(community);
@@ -237,20 +238,21 @@ impl Client {
         let sender = staged.welcome_sender().map_err(|_| anyhow!("no welcome sender"))?;
         let sender_cert = mls::cert_of(sender.credential(), sender.signature_key().as_slice()).ok_or_else(|| anyhow!("welcome sender has an invalid certificate"))?;
         let me = self.my_account();
-        let my_dev = self.my_device();
-        // A community we never asked for is only accepted when another device of ours is already in it
-        // (that is what an authentic 'second device' or 'recovered device' welcome looks like).
-        let other_device_of_mine = staged.members().any(|m| mls::cert_of(&m.credential, &m.signature_key).is_some_and(|c| c.account == me && c.device != my_dev));
         let existing_broken = self.st.groups.get(&gid).is_some_and(|g| g.broken);
         if self.st.groups.get(&gid).is_some_and(|g| !g.broken && !g.removed) { return Ok(true); } // duplicate welcome
         let (kind, community) = match &ext {
-            GroupExt::Control { owner: founder, .. } => {
+            GroupExt::Control { owner: founder, consents, .. } => {
                 let (owner, admins) = ext.verify_control(&gid).map_err(|e| anyhow!("control table rejected: {e}"))?;
                 let sender_ok = sender_cert.account == owner || admins.contains(&sender_cert.account) || sender_cert.account == me;
                 if !sender_ok { bail!("welcome to a community from someone who is not its owner or admin"); }
                 let live = self.st.communities.get(&gid).is_some_and(|c| !c.removed);
-                let expected = self.st.joining.get(&gid).is_some_and(|l| &l.owner == founder) || live || other_device_of_mine;
-                if !expected { bail!("unsolicited community invitation (no invite link of ours matches it)"); }
+                // Somebody else's word that we belong here means nothing, and neither does a device of ours being in the
+                // group, because whoever runs a community can add every device of an account. So: we asked on this device,
+                // or we are in it already, or the table holds this account's own signature for this community. That is
+                // what a second or recovered device has to go on, and only a device of ours can have made it.
+                let consented = consents.iter().find(|c| c.account == me).is_some_and(|c| verify_consent(&gid, c).is_ok() && !self.st.withdrawn.contains(&c.sig));
+                let expected = self.st.joining.get(&gid).is_some_and(|l| &l.owner == founder) || live || consented;
+                if !expected { bail!("unsolicited community invitation (no invite link of ours matches it, and this account never agreed to it)"); }
                 (Kind::Control, gid.clone())
             }
             GroupExt::Channel { community, .. } => {
@@ -275,6 +277,7 @@ impl Client {
             let c = self.st.communities.entry(gid.clone()).or_insert_with(|| Community { id: gid.clone(), ..Default::default() });
             c.removed = false; c.removed_reason.clear(); c.leaving.clear(); c.kick_queue.clear();
             self.st.joining.remove(&gid);
+            self.st.join_consent.remove(&gid);
             self.st.join_sent.remove(&gid);
             self.st.join_asked.remove(&gid);
             self.st.join_retry.remove(&gid);
@@ -475,19 +478,26 @@ impl Client {
         if kind == Kind::Control {
             if let Some(ext) = mls::group_ext(group.extensions()) {
                 if let Ok((owner, admins)) = ext.verify_control(gid) {
-                    if let GroupExt::Control { name, nonce, channels, invites, banned, transfers, .. } = ext {
+                    if let GroupExt::Control { name, nonce, channels, invites, banned, transfers, consents, .. } = ext {
                         let c = self.st.communities.entry(gid.to_string()).or_insert_with(|| Community { id: gid.into(), ..Default::default() });
                         c.name = name; c.owner = owner; c.admins = admins; c.nonce = nonce; c.channels = channels; c.invites = invites; c.banned = banned; c.transfers = transfers;
+                        // The removal itself may take our entry out of the table: what we knew before it is what gets withdrawn.
+                        if let Some(mine) = consents.iter().find(|x| x.account == me && verify_consent(gid, x).is_ok()) { c.my_consent = Some(mine.clone()); }
+                        else if active { c.my_consent = None; }
+                        c.consent_queue.retain(|a, q| !consents.iter().any(|x| &x.account == a && x.ts >= q.ts));
                         let leaving: Vec<String> = c.leaving.iter().cloned().collect();
                         let acct_set = self.st.groups[gid].accounts.clone();
                         let c = self.st.communities.get_mut(gid).unwrap();
                         for a in leaving { if !acct_set.contains(&a) { c.leaving.remove(&a); } }
                         c.kick_queue.retain(|a| acct_set.contains(a));
+                        c.consent_queue.retain(|a, _| acct_set.contains(a));
                     }
                 }
             }
             if !active {
-                if let Some(c) = self.st.communities.get_mut(&comm) { c.removed = true; c.removed_reason = "You were removed from this community.".into(); }
+                let mut taken_back = None;
+                if let Some(c) = self.st.communities.get_mut(&comm) { c.removed = true; c.removed_reason = "You were removed from this community.".into(); taken_back = c.my_consent.take(); }
+                if let Some(c) = taken_back { self.withdraw_consent(c.sig); }
                 let chans: Vec<String> = self.st.groups.values().filter(|g| g.community == comm).map(|g| g.gid.clone()).collect();
                 for g in chans { if let Some(x) = self.st.groups.get_mut(&g) { x.removed = true; } }
             }
@@ -568,6 +578,12 @@ impl Client {
                     if device == self.my_device() { self.revoked_here(); }
                     self.st.revoked.insert(device, sig);
                 } else { self.notice("reject", "ignored a device revocation with a bad signature".to_string()); }
+            }
+            (Kind::Control, Envelope::Consent { ts, sig }) => {
+                // Only for one's own account, and it has to carry that account's signature, whoever passes it on.
+                let con = Consent { account: acct.clone(), ts, sig };
+                if verify_consent(gid, &con).is_err() { self.notice("reject", "ignored a consent with a bad signature".to_string()); }
+                else if let Some(c) = self.st.communities.get_mut(&comm) { c.consent_queue.insert(acct, con); }
             }
             (Kind::Channel, Envelope::Typing) => { self.typing.insert(format!("{gid}|{acct}"), now_secs()); }
             (Kind::Channel, env @ (Envelope::Text { .. } | Envelope::File { .. } | Envelope::Edit { .. } | Envelope::Delete { .. } | Envelope::React { .. })) => {
@@ -672,14 +688,15 @@ pub(crate) fn join_signature_ok(inv: &InviteMeta, community: &str, jr: &JoinRequ
 /// in a group whose table has not caught up. Nothing else about a table can be changed that way.
 pub fn ext_change_allowed(gid: &str, old: &GroupExt, new: &GroupExt, sender: Role, sender_account: &str) -> std::result::Result<(), String> {
     match (old, new) {
-        (GroupExt::Control { owner: o1, nonce: n1, admins: a1, name: nm1, channels: c1, invites: i1, banned: b1, transfers: t1 }, GroupExt::Control { owner: o2, nonce: n2, admins: a2, name: nm2, channels: c2, invites: i2, banned: b2, transfers: t2 }) => {
+        (GroupExt::Control { owner: o1, nonce: n1, admins: a1, name: nm1, channels: c1, invites: i1, banned: b1, transfers: t1, consents: s1 }, GroupExt::Control { owner: o2, nonce: n2, admins: a2, name: nm2, channels: c2, invites: i2, banned: b2, transfers: t2, consents: s2 }) => {
             if o1 != o2 || n1 != n2 { return Err("the founder cannot change".into()); }
             let (new_owner, _) = new.verify_control(gid).map_err(|e| e.to_string())?;
             if !t2.starts_with(t1) { return Err("the chain of owners cannot be rewritten".into()); }
             let owner = sender == Role::Owner || new_owner == sender_account;
             if t1 != t2 && !owner { return Err("only the owner can hand over a community".into()); }
             if a1 != a2 && !owner { return Err("only the owner can change admins".into()); }
-            if (nm1 != nm2 || c1 != c2 || i1 != i2 || b1 != b2) && sender < Role::Admin { return Err("only admins can change channels, invites or the name".into()); }
+            if (nm1 != nm2 || c1 != c2 || i1 != i2 || b1 != b2 || s1 != s2) && sender < Role::Admin { return Err("only admins can change channels, invites or the name".into()); }
+            if s2.iter().filter(|c| !s1.contains(c)).any(|c| verify_consent(gid, c).is_err()) { return Err("a consent in the table is not signed by its account".into()); }
             Ok(())
         }
         (GroupExt::Channel { community: c1, owner: o1, nonce: n1, admins: a1, name: nm1, transfers: t1 }, GroupExt::Channel { community: c2, owner: o2, nonce: n2, admins: a2, name: nm2, transfers: t2 }) => {

@@ -11,6 +11,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// How many taken-back consents a device remembers, and how many fit in a pairing payload (the mailbox holds 8 KB).
+pub(crate) const MAX_WITHDRAWN: usize = 256;
+const PAIR_WITHDRAWN: usize = 40;
+
 pub fn rand_hex(n: usize) -> String { let mut b = vec![0u8; n]; rand::rngs::OsRng.fill_bytes(&mut b); hex::encode(b) }
 pub(crate) fn hex32(s: &str) -> Result<[u8; 32]> { Ok(unhex32(s)?) }
 
@@ -48,6 +52,8 @@ pub struct Client {
     pub(crate) sync_cap: u64,
     pub(crate) pair_ack: Option<(String, String)>,
     pub net: NetStatus,
+    /// When we last offered our consent to a community whose table has none from us.
+    pub(crate) consent_offered: HashMap<String, u64>,
 }
 
 /// How the connection to the relay looks from here, for the UI.
@@ -111,7 +117,7 @@ impl Client {
     fn assemble(dir: &Path, vault: Vault, st: State, prov: Prov, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
         Client { dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new(),
             lock: Some(lock), dir_ttl_secs: 30, acl_check_secs: 60, dir_cache: HashMap::new(), dir_wanted: BTreeSet::new(), kp_cache: HashMap::new(), kp_wanted: BTreeMap::new(), kp_refill: false, seen_welcomes: HashSet::new(), last_parked_try: 0,
-            more: false, sync_cap: SYNC_MAX_BYTES, pair_ack: None, net: NetStatus::default() }
+            more: false, sync_cap: SYNC_MAX_BYTES, pair_ack: None, net: NetStatus::default(), consent_offered: HashMap::new() }
     }
     fn blank(dir: &Path, vault: Vault, relay: &str, name: &str, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
         let mut st = State::default();
@@ -225,6 +231,12 @@ impl Client {
     pub fn my_account(&self) -> String { self.st.cert.as_ref().map(|c| c.account.clone()).unwrap_or_default() }
     pub fn my_device(&self) -> String { self.st.cert.as_ref().map(|c| c.device.clone()).unwrap_or_default() }
     pub(crate) fn dev_key(&self) -> Result<SigningKey> { Ok(SigningKey::from_bytes(&hex32(&self.st.device_secret).map_err(|_| anyhow!("no identity yet"))?)) }
+    /// A consent stops counting here, whatever a community's table goes on saying.
+    pub(crate) fn withdraw_consent(&mut self, sig: String) {
+        if self.st.withdrawn.contains(&sig) { return; }
+        self.st.withdrawn.push_back(sig);
+        while self.st.withdrawn.len() > MAX_WITHDRAWN { self.st.withdrawn.pop_front(); }
+    }
     pub(crate) fn acct_key(&self) -> Result<SigningKey> { Ok(SigningKey::from_bytes(&hex32(&self.st.account_secret).map_err(|_| anyhow!("no identity yet"))?)) }
     pub(crate) fn signer(&self) -> Result<openmls_basic_credential::SignatureKeyPair> {
         let k = self.dev_key()?;
@@ -308,13 +320,14 @@ impl Client {
     pub(crate) fn pairing_apply(&mut self, sealed: &[u8]) -> Result<bool> {
         let Some(p) = self.st.pairing.clone() else { return Ok(self.has_identity()) };
         let sk = crypto_box::SecretKey::from_bytes(hex32(&p.secret)?.into());
-        #[derive(serde::Deserialize)] struct P { account_secret: String, name: String }
+        #[derive(serde::Deserialize)] struct P { account_secret: String, name: String, #[serde(default)] withdrawn: Vec<String> }
         let Some(pl) = sk.unseal(sealed).ok().and_then(|plain| serde_json::from_slice::<P>(&plain).ok()) else {
             self.notice("pair", "ignored something at the pairing address that was not sealed for this device");
             return Ok(false);
         };
         let acct = SigningKey::from_bytes(&hex32(&pl.account_secret)?);
         self.install_identity(&acct)?;
+        self.st.withdrawn = pl.withdrawn.into_iter().take(MAX_WITHDRAWN).collect();
         if self.st.name.is_empty() { self.st.name = if check_name("name", pl.name.trim()).is_ok() { pl.name.trim().into() } else { "me".into() }; }
         self.st.pairing = None;
         self.st.registered = false;
@@ -341,7 +354,9 @@ impl Client {
     pub fn pairing_seal(&self, code: &str) -> Result<(String, Vec<u8>, String)> {
         let (rid, pk) = self.parse_pair_code(code)?;
         let pkb = crypto_box::PublicKey::from(hex32(&pk)?);
-        let payload = serde_json::to_vec(&serde_json::json!({"account_secret": self.st.account_secret, "name": self.st.name}))?;
+        // What the account took back goes along, or the new device would believe a community this account left.
+        let withdrawn: Vec<&String> = self.st.withdrawn.iter().rev().take(PAIR_WITHDRAWN).collect();
+        let payload = serde_json::to_vec(&serde_json::json!({"account_secret": self.st.account_secret, "name": self.st.name, "withdrawn": withdrawn}))?;
         let sealed = pkb.seal(&mut rand::rngs::OsRng, &payload).map_err(|_| anyhow!("seal failed"))?;
         Ok((rid, sealed, pairing_check(&pk)))
     }

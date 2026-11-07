@@ -28,7 +28,7 @@ fn parsers_never_panic() {
         Envelope::React { target: id.clone(), emoji: "👍".into(), on: true }.to_bytes(),
         Envelope::Revoked { account: "a".repeat(64), device: "b".repeat(64), sig: "c".repeat(128) }.to_bytes(),
         GroupExt::Channel { community: "abcdef0123".into(), name: "x".into(), owner: "a".repeat(64), nonce: id.clone(), admins: vec![AdminGrant { account: "b".repeat(64), sig: "c".repeat(128) }], transfers: vec![] }.to_bytes(),
-        GroupExt::Control { name: "n".into(), owner: "a".repeat(64), nonce: id.clone(), admins: vec![], channels: vec![ChanMeta { id: "abcdef0123".into(), name: "c".into() }], invites: vec![], banned: vec![], transfers: vec![OwnerStep { seq: 1, from: "a".repeat(64), to: "b".repeat(64), sig: "c".repeat(128) }] }.to_bytes(),
+        GroupExt::Control { name: "n".into(), owner: "a".repeat(64), nonce: id.clone(), admins: vec![], channels: vec![ChanMeta { id: "abcdef0123".into(), name: "c".into() }], invites: vec![], banned: vec![], transfers: vec![OwnerStep { seq: 1, from: "a".repeat(64), to: "b".repeat(64), sig: "c".repeat(128) }], consents: vec![Consent { account: "a".repeat(64), ts: 1, sig: "c".repeat(128) }] }.to_bytes(),
         JoinReply { community: "abcdef0123".into(), reason: JOIN_BANNED.into(), cert: DeviceCert { account: "a".repeat(64), device: "b".repeat(64), created: 1, sig: "c".repeat(128) }, sig: "d".repeat(128), grant: None, transfers: vec![] }.cert.to_bytes(),
         br#"{"t":"Text","id":"x","text":"\u0000","ts":-1}"#.to_vec(),
         InviteLink { owner: "a".repeat(64), relay: "http://127.0.0.1:1".into(), community: "abcdef0123".into(), invite: id.clone(), sk: "b".repeat(64), name: "n".into() }.encode().into_bytes(),

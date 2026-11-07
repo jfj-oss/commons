@@ -27,6 +27,9 @@ pub(crate) struct Plan {
 impl Plan {
     fn empty(desc: &str) -> Plan { Plan { adds: vec![], removes: vec![], gce: None, desc: desc.into(), acl_remove: vec![], acl_demote: vec![], force_update: false, handled: vec![] } }
 }
+/// How long before a member whose consent is missing from the table offers it again.
+const CONSENT_RETRY_SECS: u64 = 600;
+
 #[derive(Debug, PartialEq)]
 pub enum Outcome { Applied, Pending, Lost }
 
@@ -58,7 +61,8 @@ impl Client {
         let owner = self.my_account();
         let nonce = rand_hex(16);
         let cid = community_id(&owner, &nonce);
-        let ext = GroupExt::Control { name: name.into(), owner: owner.clone(), nonce: nonce.clone(), admins: vec![], channels: vec![], invites: vec![], banned: vec![], transfers: vec![] };
+        let consents = vec![sign_consent(&self.acct_key()?, &cid, now_secs())];
+        let ext = GroupExt::Control { name: name.into(), owner: owner.clone(), nonce: nonce.clone(), admins: vec![], channels: vec![], invites: vec![], banned: vec![], transfers: vec![], consents };
         let signer = self.signer()?;
         let cfg = mls::create_cfg(&ext)?;
         let mut group = MlsGroup::new_with_group_id(&self.prov, &signer, &cfg, GroupId::from_slice(&hex::decode(&cid)?), mls::cred_with_key(&self.cert()?)?)?;
@@ -184,12 +188,16 @@ impl Client {
         self.st.join_retry.remove(&l.community);
         self.st.joining.insert(l.community.clone(), l.clone());
         self.st.join_sent.remove(&l.community);
+        // Fresh each time: after leaving, an old one is withdrawn on purpose.
+        let consent = sign_consent(&self.acct_key()?, &l.community, now_secs());
+        self.st.join_consent.insert(l.community.clone(), consent);
         self.save()?;
         Ok(l.community)
     }
 
     /// Stop waiting for a join, or put away the news that one was refused.
     pub fn cancel_join(&mut self, cid: &str) -> Result<()> {
+        if let Some(c) = self.st.join_consent.remove(cid) { self.withdraw_consent(c.sig); }
         self.st.joining.remove(cid);
         self.st.join_sent.remove(cid);
         self.st.join_asked.remove(cid);
@@ -203,7 +211,7 @@ impl Client {
         let isk = SigningKey::from_bytes(&hex32(&l.sk)?);
         let cert = self.cert()?;
         let sig = isk.sign(&join_msg(&l.community, &cert.device, &l.invite));
-        let jr = JoinRequest { invite: l.invite.clone(), cert, sig: hex::encode(sig.to_bytes()) };
+        let jr = JoinRequest { invite: l.invite.clone(), cert, sig: hex::encode(sig.to_bytes()), consent: self.st.join_consent.get(&l.community).cloned() };
         let mut data = vec![TAG_JOIN_REQUEST]; data.extend(serde_json::to_vec(&jr)?);
         Ok(data)
     }
@@ -546,6 +554,17 @@ impl Client {
         let role = self.my_role(cid);
         let Some(ctl) = self.st.groups.get(cid).cloned() else { return Ok(()) };
         if ctl.removed || ctl.broken || !self.synced.contains(cid) { return Ok(()); }
+        // A table from before consents existed, or one that lost ours: offer it again, or our next device could not come in.
+        if c.my_consent.is_none() {
+            let now = now_secs();
+            if self.consent_offered.get(cid).is_none_or(|t| now >= t + CONSENT_RETRY_SECS) {
+                self.consent_offered.insert(cid.to_string(), now);
+                let con = sign_consent(&self.acct_key()?, cid, now);
+                if role >= Role::Admin { self.st.communities.get_mut(cid).unwrap().consent_queue.insert(me.clone(), con); }
+                else { self.queue_env(cid, Envelope::Consent { ts: con.ts, sig: con.sig }); }
+            }
+        }
+        let c = self.st.communities[cid].clone();
         // admins turn valid join requests into joiners
         let mut joiners: Vec<Joiner> = vec![];
         if role >= Role::Admin {
@@ -555,7 +574,7 @@ impl Client {
             let reqs = ctl.requests.clone();
             for r in reqs.iter().filter(|r| r.tag == TAG_JOIN_REQUEST) {
                 match self.check_join(&c, r) {
-                    JoinCheck::Accept(cert, invite) => {
+                    JoinCheck::Accept(cert, invite, consent) => {
                         if joiners.iter().any(|j| j.cert.device == cert.device) { self.drop_request(cid, r.seq); continue; }
                         let uses = c.invites.iter().find(|i| i.id == invite).and_then(|i| i.uses_left);
                         if let Some(n) = uses {
@@ -563,7 +582,7 @@ impl Client {
                             if *l == 0 { continue; }
                             *l -= 1;
                         }
-                        joiners.push(Joiner { cert, invite, seq: r.seq });
+                        joiners.push(Joiner { cert, invite, seq: r.seq, consent });
                     }
                     JoinCheck::Stale => self.drop_request(cid, r.seq),
                     JoinCheck::Junk(why) => { self.notice("join", format!("ignored a join request: {why}")); self.drop_request(cid, r.seq); }
@@ -608,7 +627,9 @@ impl Client {
         if !crate::sync::join_signature_ok(inv, &c.id, &jr) { return JoinCheck::Junk("bad invite signature".into()); }
         if c.banned.contains(&jr.cert.account) { return JoinCheck::Refuse(jr.cert.device, JOIN_BANNED); }
         if inv.expires < now_secs() || inv.uses_left == Some(0) { return JoinCheck::Refuse(jr.cert.device, JOIN_INVITE_GONE); }
-        JoinCheck::Accept(jr.cert, jr.invite)
+        // A consent that does not check out is left out, and the joiner offers one again once in.
+        let consent = jr.consent.filter(|x| x.account == jr.cert.account && verify_consent(&c.id, x).is_ok());
+        JoinCheck::Accept(jr.cert, jr.invite, consent)
     }
 
     /// The joiner is in no group yet, so the answer goes to their inbox, the one place an outsider can be reached.
@@ -708,14 +729,19 @@ impl Client {
         // control table: consume invites, record bans, keep the admin list true to the roster
         if is_ctl && role >= Role::Admin {
             let mut t = self.ctl_ext(&c.id)?;
-            let GroupExt::Control { admins, invites, banned, .. } = &mut t else { bail!("bad table") };
+            let GroupExt::Control { admins, invites, banned, consents, .. } = &mut t else { bail!("bad table") };
             let mut changed = false;
             for j in joiners {
                 if plan.adds.iter().any(|(c2, _)| c2.device == j.cert.device) {
                     if let Some(i) = invites.iter_mut().find(|i| i.id == j.invite) { if let Some(n) = i.uses_left.as_mut() { *n = n.saturating_sub(1); changed = true; } }
+                    if let Some(con) = &j.consent { changed |= merge_consent(consents, con.clone()); }
                     plan.handled.push(j.seq);
                 }
             }
+            for (a, con) in &c.consent_queue { if desired.contains(a) { changed |= merge_consent(consents, con.clone()); } }
+            let before = consents.len();
+            consents.retain(|x| desired.contains(&x.account));
+            if consents.len() != before { changed = true; }
             let before = invites.len();
             invites.retain(|i| i.uses_left != Some(0));
             if invites.len() != before { changed = true; }
@@ -885,6 +911,31 @@ impl Client {
         for (cert, rev) in dir { if rev { continue; } if let Some(b) = self.api.take_kp(&k, &cert.device)? { let (kp, c) = mls::parse_kp(&self.prov, &b)?; plan.adds.push((c, kp)); } }
         self.run_commit(gid, plan).map(|_| ())
     }
+    /// A table as a client from before consents would have left it (test builds only).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_clear_consents(&mut self, cid: &str) -> Result<()> {
+        let mut t = self.ctl_ext(cid)?;
+        if let GroupExt::Control { consents, .. } = &mut t { consents.clear(); }
+        let mut plan = Plan::empty("clear consents");
+        plan.gce = Some(t);
+        self.run_commit(cid, plan).map(|_| ())
+    }
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_consents(&self, cid: &str) -> Vec<Consent> {
+        match self.ctl_ext(cid) { Ok(GroupExt::Control { consents, .. }) => consents, _ => vec![] }
+    }
+    /// Put a consent in this community's table, as a hostile owner would (test builds only).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_plant_consent(&mut self, cid: &str, con: Consent) -> Result<()> {
+        let mut t = self.ctl_ext(cid)?;
+        if let GroupExt::Control { consents, .. } = &mut t { consents.push(con); }
+        let mut plan = Plan::empty("plant consent");
+        plan.gce = Some(t);
+        self.run_commit(cid, plan).map(|_| ())
+    }
     /// Send any envelope as this device, as a hostile member would (test builds only).
     #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
@@ -926,8 +977,8 @@ impl InFile {
     }
 }
 
-struct Joiner { cert: DeviceCert, invite: String, seq: u64 }
-enum JoinCheck { Accept(DeviceCert, String), Stale, Junk(String), Refuse(String, &'static str) }
+struct Joiner { cert: DeviceCert, invite: String, seq: u64, consent: Option<Consent> }
+enum JoinCheck { Accept(DeviceCert, String, Option<Consent>), Stale, Junk(String), Refuse(String, &'static str) }
 
 /// Six characters of the account id: enough to tell two people apart, and the same on every screen.
 pub fn account_tag(a: &str) -> String { a.chars().take(6).collect() }

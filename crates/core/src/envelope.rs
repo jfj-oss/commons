@@ -71,6 +71,9 @@ pub enum Envelope {
     Leave,
     /// Account-signed device revocation, so members can drop the leaf even if the relay hides it.
     Revoked { account: String, device: String, sig: String },
+    /// A member's own `Consent` for this community, for an admin to put in the table. Only for members whose table entry
+    /// is missing: everyone else's arrived with their join request.
+    Consent { ts: u64, sig: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,6 +112,7 @@ impl Envelope {
             Typing | Leave => {}
             Profile { name, .. } => if name.is_empty() || !short(name, 64) { return bad("bad profile"); },
             Revoked { account, device, sig } => if !is_key(account) || !is_key(device) || sig.len() != 128 { return bad("bad revocation"); },
+            Consent { sig, .. } => if sig.len() != 128 { return bad("bad consent"); },
         }
         Ok(())
     }
@@ -134,6 +138,43 @@ pub fn sign_grant(owner_key: &ed25519_dalek::SigningKey, community: &str, accoun
     use ed25519_dalek::Signer;
     AdminGrant { account: account.into(), sig: hex::encode(owner_key.sign(&grant_msg(community, account)).to_bytes()) }
 }
+/// Most consents one table holds. Past this a community still works; its newest members just cannot add a device
+/// without a fresh invite link.
+pub const MAX_CONSENTS: usize = 300;
+/// "This account agreed to be in this community", signed with the account key, which never leaves the person's own
+/// devices. It is what lets a device with no history of its own (a second device, or one made from the recovery key)
+/// accept a Welcome: nothing an admin of some other community can produce. See DESIGN.md, "Who may put you in a community".
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Consent { pub account: String, pub ts: u64, pub sig: String }
+pub fn consent_msg(community: &str, account: &str, ts: u64) -> Vec<u8> {
+    let mut m = b"commons/consent/v1".to_vec();
+    m.extend_from_slice(&commons_proto::sha256(&[community.as_bytes(), account.as_bytes(), &ts.to_be_bytes()]));
+    m
+}
+pub fn sign_consent(account_key: &ed25519_dalek::SigningKey, community: &str, ts: u64) -> Consent {
+    use ed25519_dalek::Signer;
+    let account = hex::encode(account_key.verifying_key().to_bytes());
+    let sig = hex::encode(account_key.sign(&consent_msg(community, &account, ts)).to_bytes());
+    Consent { account, ts, sig }
+}
+pub fn verify_consent(community: &str, c: &Consent) -> Result<(), ParseError> {
+    use ed25519_dalek::Verifier;
+    let vk = commons_proto::unhex32(&c.account).ok().and_then(|a| ed25519_dalek::VerifyingKey::from_bytes(&a).ok()).ok_or(ParseError("bad account key".into()))?;
+    let sig = hex::decode(&c.sig).ok().and_then(|s| ed25519_dalek::Signature::from_slice(&s).ok()).ok_or(ParseError("bad signature".into()))?;
+    vk.verify(&consent_msg(community, &c.account, c.ts), &sig).map_err(|_| ParseError("consent not signed by that account".into()))
+}
+/// Put a consent in a list: one per account, the newest wins. True if the list changed.
+pub fn merge_consent(list: &mut Vec<Consent>, c: Consent) -> bool {
+    if let Some(old) = list.iter_mut().find(|x| x.account == c.account) {
+        if old.ts >= c.ts { return false; }
+        *old = c;
+        return true;
+    }
+    if list.len() >= MAX_CONSENTS { return false; }
+    list.push(c);
+    true
+}
+
 /// Every key that has owned the community, founder first, each step checked. The last one is the owner now.
 /// The founder stays pinned in the community id; a transfer is a signed step away from it.
 pub fn owner_chain(founder: &str, community: &str, transfers: &[OwnerStep]) -> Result<Vec<String>, ParseError> {
@@ -184,7 +225,7 @@ pub struct ChanMeta { pub id: String, pub name: String }
 pub enum GroupExt {
     /// The community control group: roster = its members; this is the roles/channels/invites table.
     /// `owner` is the founder, pinned in the community id. `transfers` is the signed chain from there to today's owner.
-    Control { name: String, owner: String, nonce: String, admins: Vec<AdminGrant>, channels: Vec<ChanMeta>, invites: Vec<InviteMeta>, #[serde(default)] banned: Vec<String>, #[serde(default, skip_serializing_if = "Vec::is_empty")] transfers: Vec<OwnerStep> },
+    Control { name: String, owner: String, nonce: String, admins: Vec<AdminGrant>, channels: Vec<ChanMeta>, invites: Vec<InviteMeta>, #[serde(default)] banned: Vec<String>, #[serde(default, skip_serializing_if = "Vec::is_empty")] transfers: Vec<OwnerStep>, #[serde(default, skip_serializing_if = "Vec::is_empty")] consents: Vec<Consent> },
     /// A channel group. `community` is the control group id; `name` is only a hint, the control table is authoritative.
     Channel { community: String, name: String, owner: String, nonce: String, admins: Vec<AdminGrant>, #[serde(default, skip_serializing_if = "Vec::is_empty")] transfers: Vec<OwnerStep> },
 }
@@ -192,11 +233,12 @@ pub enum GroupExt {
 impl GroupExt {
     pub fn to_bytes(&self) -> Vec<u8> { serde_json::to_vec(self).unwrap_or_default() }
     pub fn parse(b: &[u8]) -> Result<GroupExt, ParseError> {
-        if b.len() > 64 * 1024 { return bad("group ext too large"); }
+        if b.len() > 128 * 1024 { return bad("group ext too large"); }
         let g: GroupExt = serde_json::from_slice(b).map_err(|e| ParseError(format!("bad group ext: {e}")))?;
         match &g {
-            GroupExt::Control { name, owner, nonce, admins, channels, invites, banned, transfers } => {
+            GroupExt::Control { name, owner, nonce, admins, channels, invites, banned, transfers, consents } => {
                 if banned.len() > 2000 || transfers.len() > 200 { return bad("too many bans or transfers"); }
+                if consents.len() > MAX_CONSENTS || consents.iter().any(|c| !is_key(&c.account) || c.sig.len() != 128) { return bad("bad consents"); }
                 if name.is_empty() || !short(name, 64) || !is_key(owner) || nonce.len() != 32 || admins.len() > 512 || channels.len() > 500 || invites.len() > 200 { return bad("bad control ext"); }
                 // A channel id goes into URLs and into markup: hex only, whoever wrote this table.
                 for c in channels { if !is_gid(&c.id) || !short(&c.name, 64) || c.name.is_empty() { return bad("bad channel"); } }
@@ -266,6 +308,9 @@ pub struct JoinRequest {
     pub invite: String,
     pub cert: commons_proto::DeviceCert,
     pub sig: String, // by the invite secret key over join_msg()
+    /// The joiner's account agrees to be in this community. An admin copies it into the table.
+    #[serde(default)]
+    pub consent: Option<Consent>,
 }
 pub fn join_msg(community: &str, device: &str, invite: &str) -> Vec<u8> {
     let mut m = b"commons/join/v1".to_vec();

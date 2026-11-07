@@ -52,6 +52,11 @@ pub struct State {
     pub self_revoked: bool,
     /// Devices of our own account we have seen, so that a new one can be pointed out.
     pub known_devices: BTreeSet<String>,
+    /// The consent sent with each join still open (community id -> consent).
+    pub join_consent: BTreeMap<String, Consent>,
+    /// Signatures of consents this account took back, by leaving, being removed or cancelling a join. A community's
+    /// table can go on holding one, so one of these never gets a Welcome accepted. Newest last.
+    pub withdrawn: VecDeque<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -82,6 +87,12 @@ pub struct Community {
     /// The signed chain of owners after the founder.
     #[serde(default)]
     pub transfers: Vec<commons_proto::OwnerStep>,
+    /// Our own entry in the table, as last seen.
+    #[serde(default)]
+    pub my_consent: Option<Consent>,
+    /// Consents waiting for an admin (us, if we are one) to put them in the table.
+    #[serde(default)]
+    pub consent_queue: BTreeMap<String, Consent>,
 }
 impl Community {
     pub fn role_of(&self, acct: &str) -> Option<Role> {
