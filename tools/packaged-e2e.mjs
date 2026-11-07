@@ -30,6 +30,7 @@ class App {
       ...e('COMMONS_DATA', path.join(out, this.name)), ...e('COMMONS_RELAY', ''), ...e('COMMONS_TEST_URLS', this.urls), ...e('PATH', bin + ':/usr/local/bin:/usr/bin:/bin'),
       '-v', `${out}:${out}`, '-v', `${APP}:/app/Commons.AppImage:ro`, 'commons-e2e-ubuntu',
       'sh', '-c', `Xvfb :${d} -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 & sleep 1; exec WebKitWebDriver --port=${this.port} --host=127.0.0.1`], {}, path.join(out, this.name + '-driver.log'));
+    this.display = ':' + d;
     await until(() => fetch(`http://127.0.0.1:${this.port}/status`).then(r => r.ok), 20000, 'driver');
     const r = await this.wd('POST', '/session', { capabilities: { alwaysMatch: { browserName: 'wry', 'webkitgtk:browserOptions': { binary: '/app/Commons.AppImage', args: [] } } } });
     this.sid = r.sessionId; if (!this.sid) throw new Error('no session: ' + J(r));
@@ -54,6 +55,8 @@ class App {
     // the recovery key is shown once and has to be acknowledged
     await until(() => this.ev(`const m = [...document.querySelectorAll('.modal button, dialog button, .acts button')].pop(); if (document.querySelector('.key-code') && m) { m.click(); } return !document.querySelector('#app').hidden && !document.querySelector('.key-code');`), 40000, this.name + ' past recovery key');
   }
+  // Runs inside this person's container, on their virtual display.
+  sh(cmd) { return execFileSync('docker', ['exec', '-e', 'DISPLAY=' + this.display, this.box, 'sh', '-c', cmd], { encoding: 'utf8', timeout: 20000 }); }
   async shot(name) { try { fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(await this.wd('GET', `/session/${this.sid}/screenshot`), 'base64')); } catch (e) { console.log('no screenshot: ' + e.message); } }
   async stop() { try { await this.wd('DELETE', `/session/${this.sid}`); } catch { } try { execFileSync('docker', ['rm', '-f', this.box], { stdio: 'ignore' }); } catch { } }
 }
@@ -118,6 +121,75 @@ try {
   await call(A, `c.startShare({ audio: false, profile: 'text' })`);
   const shot = await screenShot(B, devA); const near = (a, b) => a && a.every((x, i) => Math.abs(x - b[i]) < 60);
   check('P13 screen share decrypts to the right picture (synthetic screen)', shot.present && near(shot.red, [224, 32, 32]) && near(shot.green, [32, 192, 64]), J(shot));
+
+  // ---- game keys, through the real path: a program runs, X sees the key, the app tells the tab over the loopback bridge
+  await call(A, `c.stopShare()`).catch(() => { });
+  const tone = async () => { const r = await call(B, `c.probeTone(${J(devA)}, 500, 900, 'microphone')`).catch(() => null); return !!(r && r.present && r.toneShare > 0.15); };
+  const heardAgain = async ms => { const t = Date.now(); for (;;) { if (await tone()) return true; if (Date.now() - t > ms) return false; } };
+  const silent = async ms => { const t = Date.now(); for (;;) { if (!(await tone())) return true; if (Date.now() - t > ms) return false; await sleep(200); } };
+  const gameMuted = () => call(A, `c.gameMuted`);
+  const peerSees = () => call(B, `(() => { const p = c.room.remoteParticipants.get(${J(devA)}); return !!p && !p.isMicrophoneEnabled; })()`);
+  alice.sh(`cp /bin/sleep /tmp/mygame; (nohup /tmp/mygame 600 >/dev/null 2>&1 &) ; true`);
+  await sleep(500);
+  const programs = await alice.rpc('running_programs');
+  check('G1 the picker lists the running program', programs.includes('mygame'), programs.length + ' programs');
+  const info = await alice.rpc('game_keys_get');
+  check('G2 the app says how it sees keys here', info.backend === 'X11' && info.hold === true, info.backend);
+  await alice.ev(`document.querySelector('#btn-settings').click(); await new Promise(r => setTimeout(r, 300)); document.querySelector('#set-gamekeys').click(); await new Promise(r => setTimeout(r, 900));`);
+  await alice.ev(`const a = document.querySelector('#gk-add'); a.value = 'mygame'; document.querySelector('#gk-addb').click(); await new Promise(r => setTimeout(r, 200));
+    const b = document.querySelectorAll('.gk-key')[1]; b.click(); await new Promise(r => setTimeout(r, 100)); document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyV', bubbles: true, cancelable: true })); await new Promise(r => setTimeout(r, 200));`);
+  await alice.shot('game-keys');
+  await alice.ev(`[...document.querySelectorAll('.gk-modal .acts button')].pop().click(); await new Promise(r => setTimeout(r, 500)); document.querySelector('.modal .acts button')?.click(); await new Promise(r => setTimeout(r, 300));`);
+  const saved = await alice.rpc('game_keys_get');
+  check('G3 settings page saves a game, a key and hold mode', saved.settings.rules.length === 1 && saved.settings.rules[0].process === 'mygame' && saved.settings.rules[0].key === 'KeyV' && saved.settings.rules[0].mode === 'hold', J(saved.settings));
+  await until(() => A.ev(`(async()=>{const r=await rpc('game_mute_wait',{gid:GID,since:-1});return r.running})()`), 15000, 'helper running').catch(() => { });
+  check('G4 before the key, alice is heard', await heardAgain(6000));
+  await sleep(2500); // the process scan
+  const t0 = Date.now();
+  alice.sh('xdotool keydown v');
+  await until(gameMuted, 3000, 'muted by key');
+  check('G5 holding the key mutes her', true, (Date.now() - t0) + ' ms including docker exec');
+  check('G6 friends hear nothing', await silent(3000));
+  check('G7 friends just see a normal mute', await peerSees());
+  check('G8 the call says so', /Muted by game key/.test(await A.ev(`document.querySelector('#call-panel').innerText`)));
+  const up = Date.now();
+  alice.sh('xdotool keyup v');
+  await until(async () => !(await gameMuted()), 3000, 'released');
+  const held = Date.now() - up;
+  check('G9 letting go comes back, not before the delay', held >= 150, held + ' ms');
+  check('G10 and she is heard again', await heardAgain(6000));
+
+  await call(A, `c.setMuted(true)`);
+  alice.sh('xdotool keydown v'); await until(gameMuted, 3000, 'muted by key'); alice.sh('xdotool keyup v');
+  await until(async () => !(await gameMuted()), 3000, 'released'); await sleep(500);
+  check('G11 a manual mute wins over the key letting go', (await call(A, `c.muted`)) && (await peerSees()));
+  await call(A, `c.setMuted(false)`);
+  check('G12 and unmuting by hand brings her back', await heardAgain(6000));
+
+  // Press to toggle: the key flips it, and pressing Unmute beats it.
+  await alice.rpc('game_keys_set', { rules: [{ process: 'mygame', key: 'KeyV', mode: 'toggle' }] });
+  await sleep(4500); await sleep(2500);
+  alice.sh('xdotool key --delay 40 v'); await until(gameMuted, 4000, 'toggled on'); await sleep(600);
+  check('G12a toggle: one press mutes and it stays', await gameMuted());
+  alice.sh('xdotool key --delay 40 v'); await until(async () => !(await gameMuted()), 3000, 'toggled off');
+  alice.sh('xdotool key --delay 40 v'); await until(gameMuted, 3000, 'toggled on again');
+  await A.ev(`document.querySelector('#c-mute').click()`);
+  await until(async () => !(await gameMuted()), 3000, 'unmute beats the toggle');
+  check('G12b pressing Unmute beats a toggled key', !(await call(A, `c.muted`)));
+  await alice.rpc('game_keys_set', { rules: [{ process: 'mygame', key: 'KeyV', mode: 'hold' }] });
+  await sleep(4500); await sleep(2500);
+
+  alice.sh('xdotool keydown v'); await until(gameMuted, 3000, 'muted by key');
+  alice.sh('for p in $(ps -eo pid,comm | awk \'$2=="mygame"{print $1}\'); do kill $p; done');
+  await until(async () => !(await gameMuted()), 6000, 'game closed');
+  check('G13 the game closing while the key is held gives the mic back', await heardAgain(6000));
+  alice.sh('xdotool keyup v');
+  alice.sh(`(nohup /tmp/mygame 600 >/dev/null 2>&1 &) ; true`); await sleep(2800);
+  alice.sh('xdotool keydown v'); await until(gameMuted, 3000, 'muted by key');
+  // The helper's other half: the whole app dies with the key down. The tab is on its own, and lets go.
+  execFileSync('docker', ['rm', '-f', alice.box], { stdio: 'ignore' });
+  await until(async () => !(await gameMuted()), 12000, 'app gone');
+  check('G14 the app dying gives the mic back in the tab', await heardAgain(6000));
   await call(A, `c.leave()`).catch(() => { }); await call(B, `c.leave()`).catch(() => { });
 } catch (e) { failed++; console.log('FAIL  stopped early: ' + (e.stack || e)); }
 await alice.stop(); await bob.stop();

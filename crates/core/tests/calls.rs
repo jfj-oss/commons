@@ -142,6 +142,15 @@ fn browser_bridge_is_one_room_one_secret_loopback_only() {
     assert!(http(&h, &secret, r#"{"method":"send_text","args":{"gid":"x","text":"hi"}}"#).contains("403"));
     let other = format!(r#"{{"method":"call_state","args":{{"gid":"{}"}}}}"#, "ab".repeat(16));
     assert!(http(&h, &secret, &other).contains("403"), "another room is not exposed");
+    // game keys drive the tab over the same door, under the same rules, and the settings themselves are not behind it
+    let wait = format!(r#"{{"method":"game_mute_wait","args":{{"gid":"{gid}","since":99}}}}"#);
+    assert!(http(&h, &secret, &wait).contains("200 OK"), "the tab can ask");
+    assert!(http(&h, "wrong", &wait).contains("403"));
+    assert!(http("evil.example:80", &secret, &wait).contains("400"));
+    assert!(http(&h, &secret, &format!(r#"{{"method":"game_mute_wait","args":{{"gid":"{}","since":99}}}}"#, "ab".repeat(16))).contains("403"), "only for its own room");
+    for m in ["game_keys_get", "game_keys_set", "running_programs", "game_keys_allow"] {
+        assert!(http(&h, &secret, &format!(r#"{{"method":"{m}","args":{{"gid":"{gid}"}}}}"#)).contains("403"), "{m} stays inside the app");
+    }
     // re-opening revokes the old secret
     let r2 = app.call("open_call_in_browser", serde_json::json!({"gid": gid, "launch": false})).unwrap();
     assert_ne!(r2["url"], r["url"]);
@@ -186,4 +195,27 @@ fn cut_off_member_cannot_lift_it_by_re_adding_themselves() {
     let req = serde_json::to_vec(&AclReq { add: vec![b.acct()], ..Default::default() }).unwrap();
     let _ = tr.request(Some(&bk), "POST", &url, &req, d5).unwrap();
     assert!(b.c.call_token(&gid).is_err(), "re-adding oneself must not lift the call cut-off");
+}
+
+#[test]
+fn game_keys_stay_on_this_device() {
+    let net = net_with_calls();
+    let dir = tempfile::tempdir().unwrap();
+    let app = commons_core::api::App::with_kdf(dir.path().to_path_buf(), &net.url(), commons_core::vault::KdfParams::TEST);
+    app.call("create_account", serde_json::json!({"name": "A", "passphrase": "correct horse battery", "relay": net.url()})).unwrap();
+    app.call("create_community", serde_json::json!({"name": "club"})).unwrap();
+    let rules = serde_json::json!({"rules": [{"process": "SecretGameName.exe", "key": "KeyV", "mode": "toggle"}, {"key": "F13"}]});
+    app.call("game_keys_set", rules).unwrap();
+    let got = app.call("game_keys_get", serde_json::json!({})).unwrap();
+    assert_eq!(got["settings"]["rules"][0]["mode"], "toggle");
+    assert_eq!(got["settings"]["rules"][1]["mode"], "hold", "hold is the default");
+    assert!(app.call("game_keys_set", serde_json::json!({"rules": [{"process": "x", "key": "Nonsense"}]})).is_err());
+    // the settings survive a restart, inside the encrypted state
+    app.call("lock", serde_json::json!({})).unwrap();
+    app.call("unlock", serde_json::json!({"passphrase": "correct horse battery"})).unwrap();
+    assert_eq!(app.call("game_keys_get", serde_json::json!({})).unwrap()["settings"]["rules"][0]["process"], "SecretGameName.exe");
+    let on_disk = std::fs::read(dir.path().join("state.cmns")).unwrap();
+    assert!(!contains(&on_disk, "SecretGameName"), "encrypted at rest");
+    for _ in 0..4 { let _ = app.call("mark_read", serde_json::json!({"gid": "x"})); std::thread::sleep(std::time::Duration::from_millis(150)); }
+    assert!(!contains(&relay_bytes(&net), "SecretGameName"), "never sent to the relay");
 }

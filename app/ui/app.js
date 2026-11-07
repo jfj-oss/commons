@@ -788,7 +788,51 @@ $('#btn-settings').onclick = () => modal('Settings', `<label for="n">Display nam
   <label>Theme</label>${seg('th', [['', 'Match system'], ['light', 'Daylight'], ['dark', 'After hours']], pref.get('theme') || '')}
   <label>Message type</label>${seg('rd', [['', 'Book'], ['plain', 'Plain']], pref.get('read') || '')}
   <label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints (the relay can see that a message-sized packet was sent at that moment)</span></label>
+  <label>Calls</label><button type="button" class="btn ghost" id="set-gamekeys">Game keys…</button><p class="muted small">Mute yourself in Commons while you talk to your game team.</p>
   <label for="rl">Relay address</label><input type="text" id="rl" value="${esc(S.snap.relay)}" spellcheck="false"><p class="muted small">Change this only if your relay moved. A different relay does not have your communities.<br>Your account id: <span class="mono">${esc(S.snap.me.account.slice(0, 16))}…</span></p>`,
   [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => { if (val(w, 'rl').trim() !== S.snap.relay) await rpc('set_relay', { relay: val(w, 'rl') }); await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); pref.set('theme', val(w, 'th')); pref.set('read', val(w, 'rd')); applyPrefs(); } }]).then(tick);
+
+// Clicks inside Settings are caught here, so that the dialog above can stay as it is.
+$('#modal-root').addEventListener('click', e => { if (e.target.closest('#set-gamekeys')) gameKeys(); });
+const keyName = c => !c ? 'Press to set' : c.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Mouse(\d)/, 'Mouse button $1').replace(/(Left|Right)$/, ' $1');
+async function gameKeys() {
+  const got = await rpc('game_keys_get').catch(e => { toast(e.message); return null; }); if (!got) return;
+  let rows = (got.settings.rules || []).filter(r => r.process).map(r => ({ ...r }));
+  const any = (got.settings.rules || []).find(r => !r.process) || { process: null, key: '', mode: 'hold' };
+  let portal = !!got.settings.use_portal, programs = [];
+  const row = (r, i) => `<div class="gk-row" data-i="${i}"><span class="gk-name" title="${esc(r.process || '')}">${r.process ? esc(r.process) : 'Any app'}</span><button type="button" class="btn ghost gk-key" data-i="${i}">${esc(keyName(r.key))}</button>
+    <select class="gk-mode" data-i="${i}" aria-label="Mode"><option value="hold" ${r.mode !== 'toggle' ? 'selected' : ''}>Hold to mute</option><option value="toggle" ${r.mode === 'toggle' ? 'selected' : ''}>Press to toggle</option></select>
+    ${r.process ? `<button type="button" class="mini gk-del" data-i="${i}" aria-label="Remove ${esc(r.process)}">×</button>` : '<span></span>'}</div>`;
+  const list = i => i < 0 ? any : rows[i];
+  const paint = w => {
+    $('#gk-list', w).innerHTML = row(any, -1) + rows.map(row).join('');
+    $('#gk-pick', w).innerHTML = programs.map(p => `<option value="${esc(p)}"></option>`).join('');
+  };
+  const note = esc(got.note) + (got.hold ? '' : ' Holding a key cannot be seen here.') + (got.error ? `<br>Last problem: ${esc(got.error)}` : '');
+  const p = modal('Game keys', `<p class="muted small">While the game runs and you hold its key, your mic is off in the Commons call, so friends do not hear what you say to your team. Set the game's own voice key here too. These settings stay on this device.</p>
+    <div id="gk-list"></div>
+    <label for="gk-add">Add a game (a running program)</label><div class="gk-add"><input type="text" id="gk-add" list="gk-pick" autocomplete="off" spellcheck="false" placeholder="Start typing, or pick one"><datalist id="gk-pick"></datalist><button type="button" class="btn ghost" id="gk-addb">Add</button></div>
+    <p class="muted small" id="gk-note">${note}</p>
+    ${got.permission ? '<button type="button" class="btn ghost" id="gk-allow">Allow Input Monitoring</button>' : ''}
+    ${got.portal_possible ? `<label class="check"><input type="checkbox" id="gk-portal" ${portal ? 'checked' : ''}><span>Use system shortcuts (the desktop asks you once). Your game may stop receiving a key bound this way.</span></label>` : ''}`,
+    [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => { const on = $('#gk-portal', w); await rpc('game_keys_set', { rules: [...(any.key ? [any] : []), ...rows.filter(r => r.key)], use_portal: on ? on.checked : false }); toast('Game keys saved'); } }], { cls: 'gk-modal' });
+  const w = $('.gk-modal'); paint(w);
+  rpc('running_programs').then(l => { programs = l; paint(w); }).catch(() => { });
+  $('#gk-addb', w).onclick = () => { const v = $('#gk-add', w).value.trim(); if (!v) return; if (!rows.some(r => r.process.toLowerCase() === v.toLowerCase())) rows.push({ process: v, key: '', mode: 'hold' }); $('#gk-add', w).value = ''; paint(w); };
+  w.addEventListener('change', e => { const m = e.target.closest('.gk-mode'); if (m) list(+m.dataset.i).mode = m.value; });
+  w.addEventListener('click', e => {
+    const d = e.target.closest('.gk-del'); if (d) { rows.splice(+d.dataset.i, 1); paint(w); return; }
+    const k = e.target.closest('.gk-key'); if (!k) return;
+    if ($('#gk-allow', w) && e.target.id === 'gk-allow') return;
+    k.textContent = 'Press a key…';
+    // Taken in the capture phase so this key does nothing else; Escape leaves things as they were.
+    const done = code => { document.removeEventListener('keydown', onK, true); document.removeEventListener('mousedown', onM, true); if (code) list(+k.dataset.i).key = code; paint(w); };
+    const onK = ev => { ev.preventDefault(); ev.stopPropagation(); done(ev.code === 'Escape' ? null : ev.code); };
+    const onM = ev => { if (ev.button === 3 || ev.button === 4) { ev.preventDefault(); ev.stopPropagation(); done('Mouse' + (ev.button + 1)); } else done(null); };
+    setTimeout(() => { document.addEventListener('keydown', onK, true); document.addEventListener('mousedown', onM, true); }, 0);
+  });
+  const allow = $('#gk-allow', w); if (allow) allow.onclick = () => rpc('game_keys_allow').then(() => toast('If macOS asked, switch Commons on, then restart Commons.')).catch(e => toast(e.message));
+  return p;
+}
 
 boot();

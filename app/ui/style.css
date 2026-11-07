@@ -617,3 +617,8 @@ label.check input { accent-color: var(--accent); margin: 3px 0 0; flex: none; }
   .log-row { grid-template-columns: minmax(0, 1fr) auto; }
   .log-row .v { grid-column: 1 / -1; grid-row: 2; }
 }
+.gk-modal { width: min(620px, calc(100vw - 32px)); }
+.gk-row { display: grid; grid-template-columns: minmax(0, 1fr) 132px 150px 24px; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.gk-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gk-add { display: flex; gap: 8px; align-items: center; } .gk-add input { flex: 1; min-width: 0; }
+@media (max-width: 520px) { .gk-row { grid-template-columns: minmax(0, 1fr) 24px; } .gk-key, .gk-mode { grid-column: 1 / -1; } }

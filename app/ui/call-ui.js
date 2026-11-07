@@ -106,11 +106,13 @@
     if (s.phase === 'connecting') h += '<div class="cinfo">Connecting…</div>';
     if (s.phase === 'reconnecting') h += `<div class="cinfo">Connection lost${s.attempt ? ' (attempt ' + s.attempt + ')' : ''}. Reconnecting; your place in the call is kept if it comes back quickly.</div>`;
     if (s.blocked.length) h += `<div class="cerr">Blocked ${s.blocked.length} stream(s) that are not from a current member or not encrypted. They are not played.</div>`;
+    if (s.gameMuted) h += `<div class="cinfo" id="c-gamekey">Muted by game key${s.gameName ? ' (' + esc(s.gameName) + ')' : ''}. Friends see you as muted.</div>`;
+    else if (s.gameError) h += `<div class="cinfo wrapall">Game keys are not working: ${esc(s.gameError)}</div>`;
     h += `<div class="cshares" id="c-shares"></div>`;
     h += `<div class="cpeople">${s.peers.map(peerRow).join('')}</div>`;
     const ptt = s.ptt;
     h += `<div class="cbar">
-      <button class="btn ${s.muted ? 'on' : 'ghost'}" id="c-mute">${ic(s.muted ? 'ci-micoff' : 'ci-mic')}${s.muted ? 'Unmute' : 'Mute'}</button>
+      <button class="btn ${s.muted || s.gameMuted ? 'on' : 'ghost'}" id="c-mute">${ic(s.muted || s.gameMuted ? 'ci-micoff' : 'ci-mic')}${s.muted ? 'Unmute' : s.gameMuted ? 'Muted by game key' : 'Mute'}</button>
       <button class="btn ${s.deafened ? 'on' : 'ghost'}" id="c-deaf">${ic('ci-phones')}${s.deafened ? 'Undeafen' : 'Deafen'}</button>
       ${ptt ? `<button class="btn ${s.pttHeld ? '' : 'ghost'}" id="c-ptt">Hold to talk</button>` : ''}
       <button class="btn ${s.sharing ? 'on' : 'ghost'}" id="c-share" ${sup.canShareScreen ? '' : 'disabled title="This browser or webview cannot share a screen"'}>${ic('ci-screen')}${s.sharing ? 'Stop sharing' : 'Share screen'}</button>
@@ -159,7 +161,7 @@
     on('c-join', async () => { const room = currentRoom(); if (!room) return; try { await call.join(room.gid, room.name); } catch { } render(); });
     on('c-browser', async () => { const room = currentRoom(); try { const r = await rpc('open_call_in_browser', { gid: room.gid, name: room.name }); if (r.opened) toast('Opened in your browser'); call.fail(r.opened ? 'handoff' : 'browser', (r.opened ? 'The call should now be open in your browser. If nothing appeared, open' : 'Could not start a browser automatically. Open') + ' this link in Chrome, Brave, Edge or Firefox on this computer: ' + r.url);  } catch (e) { call.fail('browser', e.message); } });
     on('c-leave', () => call.leave());
-    on('c-mute', () => call.setMuted(!call.muted));
+    on('c-mute', () => { if (call.gameMuted && !call.muted) call.clearGameKey(); else { const m = !call.muted; call.setMuted(m); if (!m) call.clearGameKey(); } });
     on('c-deaf', () => call.setDeafened(!call.deafened));
     on('c-share', async () => { try { call.sharing ? await call.stopShare() : await call.startShare(); } catch { } });
     on('c-cam', () => call.setCamera(!call.camera));

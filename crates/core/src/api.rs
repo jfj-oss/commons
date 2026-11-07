@@ -29,6 +29,8 @@ pub struct App {
     files: Mutex<Vec<(String, Arc<Vec<u8>>)>>,
     /// loopback server for "open this call in my browser" (started on first use)
     bridge: Mutex<Option<crate::callbridge::CallBridge>>,
+    /// Per-game push-to-mute. Runs only while a call keeps asking.
+    game: commons_gamekeys::Service,
     me: std::sync::Weak<App>,
 }
 
@@ -71,7 +73,7 @@ pub fn bridge_request_ok(host: Option<&str>, origin: Option<&str>, port: u16) ->
 impl App {
     pub fn new(dir: PathBuf, default_relay: &str) -> Arc<App> { Self::with_kdf(dir, default_relay, KdfParams::STRONG) }
     pub fn with_kdf(dir: PathBuf, default_relay: &str, kdf: KdfParams) -> Arc<App> {
-        Arc::new_cyclic(|me| App { me: me.clone(), bridge: Mutex::new(None), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None), wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), files: Mutex::new(vec![]) })
+        Arc::new_cyclic(|me| App { me: me.clone(), bridge: Mutex::new(None), game: commons_gamekeys::Service::new(), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None), wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), files: Mutex::new(vec![]) })
     }
     fn open_call_in_browser(&self, gid: &str, name: &str, launch: bool) -> R {
         self.with(|c| c.call_state(gid).map(|_| ()).map_err(e))?;      // only for rooms we are really in
@@ -113,7 +115,7 @@ impl App {
 
     pub fn call(&self, method: &str, a: Value) -> R {
         let r = self.dispatch(method, a);
-        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "pairing_status") { self.nudge(); }
+        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "pairing_status" | "game_mute_wait") { self.nudge(); }
         r
     }
 
@@ -351,6 +353,29 @@ impl App {
                 Ok(json!({"epoch": st.epoch, "me": st.my_device, "keys": keys,
                           "members": st.members.iter().map(|m| json!({"device": m.device, "account": m.account, "name": m.name, "me": m.is_me})).collect::<Vec<_>>()}))
             }),
+            "game_keys_get" => {
+                let settings = self.with(|c| Ok(c.st.game_keys.clone()))?;
+                let i = commons_gamekeys::backend::info(&settings);
+                Ok(json!({"settings": serde_json::to_value(&settings).map_err(e)?, "backend": i.backend, "hold": i.hold, "toggle": i.toggle, "mouse": i.mouse, "note": i.note, "permission": i.permission, "portal_possible": cfg!(target_os = "linux"), "error": self.game.status().error}))
+            }
+            "game_keys_set" => {
+                let settings: commons_gamekeys::Settings = serde_json::from_value(a.clone()).map_err(|_| "Those settings could not be read.".to_string())?;
+                settings.check()?;
+                self.with(|c| { c.st.game_keys = settings.clone(); c.save().map_err(e) })?;
+                self.game.set_settings(settings);
+                Ok(json!({}))
+            }
+            // Names only, for the picker. It goes no further than this device's own settings page.
+            "running_programs" => Ok(json!(commons_gamekeys::backend::processes())),
+            "game_keys_allow" => Ok(json!({"allowed": commons_gamekeys::backend::request_permission()})),
+            // A call's heartbeat and its news. It waits outside the client lock: this must not hold anything up, or be held up.
+            "game_mute_wait" => {
+                if let Ok(g) = self.client.try_lock() { self.game.set_settings(g.as_ref().map(|c| c.st.game_keys.clone()).unwrap_or_default()); }
+                let since = a.get("since").and_then(|x| x.as_u64()).unwrap_or(0);
+                let st = self.game.wait(since, Duration::from_secs(4));
+                Ok(json!({"seq": st.seq, "muted": st.muted, "game": st.game, "running": st.running, "error": st.error}))
+            }
+            "game_mute_clear" => { self.game.user_unmute(); Ok(json!({})) }
             "open_call_in_browser" => self.open_call_in_browser(&s(&a, "gid"), &s(&a, "name"), a["launch"].as_bool().unwrap_or(true)),
             // the relay round trip happens with the client free, like file downloads
             "call_token" => {

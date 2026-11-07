@@ -71,6 +71,7 @@
     constructor(opts) {
       super();
       this.rpc = opts.rpc;
+      this.gate = new window.CommonsMicGate(on => this._publishMic(on));
       this.workerUrl = opts.workerUrl || 'vendor/livekit-client.e2ee.worker.js';
       this.LK = opts.LK || window.LivekitClient;
       this.audioHost = null;
@@ -83,7 +84,7 @@
     reset() {
       this.room = null; this.kp = null; this.gid = null; this.roomName = ''; this.phase = 'idle'; this.error = null;
       this.keyState = null; this.appliedEpoch = null; this._keyed = new Set(); this.members = new Map(); this.byAccount = new Map();
-      this.muted = false; this.deafened = false; this.pttHeld = false; this.sharing = false; this.camera = false;
+      this.muted = false; this.gameMuted = false; this.gameName = null; this.gameError = ''; this.deafened = false; this.pttHeld = false; this.sharing = false; this.camera = false;
       this.blocked = new Map(); this.decryptFail = new Map(); this.tracks = new Map(); this.audioEls = new Map(); this.speaking = new Set();
       this.viewQuality = new Map(); this.attempt = 0; this.rotations = 0; this.lastRotation = 0; this.events = [];
       this._leaving = false; this._token = null;
@@ -112,7 +113,36 @@
       }
       document.addEventListener('keydown', this._keydown); document.addEventListener('keyup', this._keyup);
       this._startPoll();
+      this._watchGameKeys();
     }
+
+    // Asks the app about game keys for as long as the call lasts. The app answers at once when something changes, and every few
+    // seconds regardless, so silence means the app is gone, and then the keys hold nothing. An app without the feature just says
+    // so, and is left alone.
+    async _watchGameKeys() {
+      const mine = this._gameWatch = {};
+      const wait = ms => new Promise(r => setTimeout(r, ms));
+      let seq = 0;
+      while (this._gameWatch === mine) {
+        try {
+          const st = await Promise.race([this.rpc('game_mute_wait', { gid: this.gid, since: seq }), wait(9000).then(() => { throw new Error('the app stopped answering'); })]);
+          if (this._gameWatch !== mine) return;
+          seq = st.seq;
+          this.gameName = st.game || null; this.gameError = st.error || '';
+          if (st.muted !== this.gameMuted) { this.gameMuted = !!st.muted; this.log(st.muted ? 'muted by game key' : 'game key let go'); await this.gate.setGame(st.muted).catch(e => this.log('mic: ' + e.message)); }
+          this.changed();
+        } catch (e) {
+          if (this._gameWatch !== mine) return;
+          if (this.gameMuted) this.log('game keys lost: ' + (e.message || e));
+          this.gameMuted = false; this.gameName = null;
+          await this.gate.lost().catch(() => { });
+          this.changed();
+          await wait(/unknown method|not allowed/i.test(String(e.message || e)) ? 30000 : 1000);
+        }
+      }
+    }
+    // Unmute pressed while a game key has the mic: a toggled key gives way, a held one goes on until it is let go.
+    async clearGameKey() { try { await this.rpc('game_mute_clear', { gid: this.gid }); } catch { } }
 
     _explain(e) {
       const m = (e && e.message) || String(e);
@@ -164,8 +194,9 @@
       this.phase = 'connected'; this.log('connected, epoch ' + st.epoch);
       // microphone: join muted when push-to-talk is on
       this.muted = p.ptt ? true : this.muted;
-      try { await this._publishMic(!this.muted); }
-      catch (e) { this.log('microphone unavailable: ' + (e.message || e)); const ce = this._explain(e); this.muted = true; this.fail(ce.kind === 'other' ? 'mic' : ce.kind, ce.message + ' You are in the call muted and can still listen.'); }
+      this.gate.manual = this.muted; this.gate.game = this.gameMuted;
+      try { await this.gate.open(); }
+      catch (e) { this.log('microphone unavailable: ' + (e.message || e)); const ce = this._explain(e); this.muted = true; this.gate.manual = true; this.fail(ce.kind === 'other' ? 'mic' : ce.kind, ce.message + ' You are in the call muted and can still listen.'); }
       room.remoteParticipants.forEach(rp => this._reviewParticipant(rp));
       this.changed();
     }
@@ -178,6 +209,7 @@
 
     async leave() {
       this._leaving = true;
+      this._gameWatch = null;
       clearInterval(this._poll); clearTimeout(this._rejoinTimer);
       document.removeEventListener('keydown', this._keydown); document.removeEventListener('keyup', this._keyup);
       await this._teardown();
@@ -185,6 +217,7 @@
     }
 
     async _teardown() {
+      this.gate.close();
       const room = this.room; this.room = null;
       for (const el of this.audioEls.values()) { try { el.remove(); } catch { } }
       this.audioEls.clear(); this.tracks.clear();
@@ -368,7 +401,7 @@
     // ------------------------------------------------------------------ controls
     async setMuted(m) {
       this.muted = m;
-      try { if (this.room) await this._publishMic(!m); } catch (e) { this.muted = true; const ce = this._explain(e); this.fail(ce.kind, ce.message); }
+      try { await this.gate.setManual(m); } catch (e) { this.muted = true; this.gate.manual = true; const ce = this._explain(e); this.fail(ce.kind, ce.message); }
       this.changed();
     }
     async setDeafened(d) {
@@ -472,8 +505,8 @@
         const fail = this.decryptFail.get(identity);
         peers.push({
           identity, me, name: m ? m.name : 'Unknown device ' + identity.slice(0, 8), account: m ? m.account : null, member: !!m,
-          speaking: me ? this.speaking.has(identity) && !this.muted : this.speaking.has(identity),
-          muted: me ? this.muted : (p ? !p.isMicrophoneEnabled : true), volume: me ? 1 : this.volumeOf(identity),
+          speaking: me ? this.speaking.has(identity) && !this.muted && !this.gameMuted : this.speaking.has(identity),
+          muted: me ? this.muted || this.gameMuted : (p ? !p.isMicrophoneEnabled : true), volume: me ? 1 : this.volumeOf(identity),
           cantDecrypt: !!(fail && now - fail.last < 6000), decryptMsg: fail ? fail.msg : '',
           quality: p && !me ? p.connectionQuality : undefined,
         });
@@ -489,7 +522,7 @@
         for (const src of [LK.Track.Source.ScreenShare, LK.Track.Source.Camera]) { const pub = lp.getTrackPublication(src); if (pub && pub.track) shares.push({ key: 'me/' + pub.trackSid, sid: pub.trackSid, identity: this.me, name: 'You', source: src, track: pub.track, quality: 'auto', local: true }); }
       }
       return {
-        phase: this.phase, error: this.error, gid: this.gid, roomName: this.roomName, muted: this.muted, deafened: this.deafened, ptt: this.prefs.ptt, pttKey: this.prefs.pttKey, pttHeld: this.pttHeld,
+        phase: this.phase, error: this.error, gid: this.gid, roomName: this.roomName, muted: this.muted, gameMuted: this.gameMuted, gameName: this.gameName, gameError: this.gameError, deafened: this.deafened, ptt: this.prefs.ptt, pttKey: this.prefs.pttKey, pttHeld: this.pttHeld,
         sharing: this.sharing, camera: this.camera, peers, shares, prefs: this.prefs, attempt: this.attempt,
         encryption: { active: !!(this.room && this.room.isE2EEEnabled), backend: describeSupport().e2ee, epoch: this.keyState && this.keyState.epoch, keyIndex: this.keyState && this.keyState.index, rotations: this.rotations, lastRotation: this.lastRotation, devices: this.keyState && this.keyState.devices },
         blocked: [...this.blocked.values()], events: this.events.slice(-12),

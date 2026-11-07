@@ -91,6 +91,10 @@ What it adds to the above, when the relay runs on your PC and friends reach it o
 * **LiveKit's TURN** relays media for call members. It has to be allowed to reach its own SFU on loopback (`allow_restricted_peer_cidrs: 127.0.0.1/32`), so a call member holding a token can also send UDP to other loopback services on the PC through it. Its TCP port ignores `bind_addresses` and also listens on your LAN; it does nothing without a token's credentials. Friends only: this is another reason to keep invites private.
 * **No third-party STUN**: LiveKit hands clients Google and Twilio STUN servers when TURN over UDP is off; the client strips them before any connection exists (test H17).
 
+## Game keys (docs/GAME-KEYS.md)
+
+Settings live in the encrypted state of one device; which games you play never reaches the relay or another device. The helper reads only the keys you set, only during a call, and sees programs by name only. Through the call bridge the tab learns one thing: a game key is holding the mic, with that program's name (a browser extension with access to the tab could read that). On Linux, joining the `input` group, if you choose to, lets every program of yours read all keys; Commons does not ask for it and keeps only the keys you set.
+
 ## Other adversaries
 
 * **A malicious or compromised member**: can read everything in the groups they are in, share it, and can spam, up to the relay's per-account quota. Cannot change membership or roles without the right role (all honest clients skip the commit), and cannot change a group's relay ACL at all. An admin can remove and add people, also at the relay, including other admins there (the relay cannot tell admins apart; the owner's client puts them back); the owner is irremovable. Two members can show the same name with a modified client; everyone then sees a short account tag next to it. A removed member keeps what they already received.

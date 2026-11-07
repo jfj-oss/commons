@@ -57,6 +57,8 @@ pub struct State {
     /// Signatures of consents this account took back, by leaving, being removed or cancelling a join. A community's
     /// table can go on holding one, so one of these never gets a Welcome accepted. Newest last.
     pub withdrawn: VecDeque<String>,
+    /// Game keys of this device. They stay in this file: the relay never sees them, and pairing does not pass them on.
+    pub game_keys: commons_gamekeys::Settings,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

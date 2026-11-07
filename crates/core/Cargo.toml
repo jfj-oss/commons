@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 commons-proto = { path = "../proto" }
+commons-gamekeys = { path = "../gamekeys" }
 openmls = "0.9"
 openmls_rust_crypto = "0.6"
 openmls_basic_credential = "0.6"

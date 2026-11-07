@@ -9,6 +9,7 @@ A private, end-to-end encrypted group chat for a small group of friends: communi
 * [docs/DESIGN.md](docs/DESIGN.md): architecture, the MLS mapping, multi-device, recovery, failure handling, stage 2 seams
 * [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md): what is and is not protected, exactly what the relay sees
 * [docs/DEPLOY.md](docs/DEPLOY.md) and `deploy/`: hosting on your own PC through Tailscale Funnel, or on a small rented server, including LiveKit for calls
+* [docs/GAME-KEYS.md](docs/GAME-KEYS.md): per-game push-to-mute, and which modes really work on which system
 * [docs/CALLS-PLATFORMS.md](docs/CALLS-PLATFORMS.md): voice rooms and screen share: where they work (the Linux desktop web view cannot) and the browser hand-off
 
 ## Layout
@@ -17,6 +18,7 @@ A private, end-to-end encrypted group chat for a small group of friends: communi
 crates/proto      wire types, request signing, device certificates
 crates/relay      relay server (axum + SQLite), binds 127.0.0.1 by default
 crates/core       client library + JSON API + integration tests (crates/core/tests)
+crates/gamekeys   per-game push-to-mute: the decision logic, and passive key and process watching for each system
 app/src-tauri     Tauri 2 desktop shell (Linux, macOS arm64)
 app/ui            HTML/CSS/JS front end (no build step)
 app/ui/call*.js, vendor/  voice rooms and screen share (LiveKit client, frame encryption keys from MLS)
@@ -62,7 +64,7 @@ The Tauri CLI comes from `tools/` (`cd tools && npm ci`). Unsigned builds, all o
 
 * **Linux**: `scripts/build-appimage-portable.sh` builds in Ubuntu 22.04 under Docker and writes `dist/Commons-linux-x86_64.AppImage`, which runs on Ubuntu 22.04 and newer. `scripts/build-apps.sh` builds on this machine, but that AppImage needs this machine's glibc (2.44 on Arch), so it is for you only.
 * **macOS** (Apple silicon): on a Mac with Rust and the command line tools, `scripts/build-mac.sh` writes `dist/Commons.app` and `dist/Commons-macos-arm64.dmg`. No Node needed. It runs at background priority with two jobs, for small laptops; `COMMONS_MAC_FULL=1` uses every core.
-* **Windows**: never built yet, because no Windows machine was on hand and cross-building a WebView2 app from Linux was not tried. Two ways. `.github/workflows/apps.yml` builds all three on GitHub: push to a **private** GitHub repository, `gh workflow run apps.yml`, then `gh run download`. Or on any Windows PC with Rust, Node and Git Bash: `cd tools && npm ci && cd ../app/src-tauri && ../../tools/node_modules/.bin/tauri build --bundles nsis`, and the installer is in `target/release/bundle/nsis/`. Copy it into `dist/` as `Commons-windows-x64-setup.exe`.
+* **Windows**: `scripts/build-windows.sh` cross-builds in Docker and writes `dist/Commons-windows-x64.zip`: unzip and run, no installer. **Built, never run on Windows.** For a real installer, `.github/workflows/apps.yml` builds all three on GitHub: push to a **private** GitHub repository, `gh workflow run apps.yml`, then `gh run download`. Or on any Windows PC with Rust, Node and Git Bash: `cd tools && npm ci && cd ../app/src-tauri && ../../tools/node_modules/.bin/tauri build --bundles nsis`.
 
 ## Voice rooms and screen share (stage 2)
 
@@ -83,5 +85,6 @@ systemd-run --user --scope -q -p MemoryMax=6G node tools/call-e2e.mjs      # abo
 cargo test -j2 -p commons-core --test calls
 systemd-run --user --scope -q -p MemoryMax=6G node tools/hosting-e2e.mjs    # the hosted path, 2 minutes
 docker build -t commons-e2e-ubuntu -f tools/e2e.Dockerfile tools
-systemd-run --user --scope -q -p MemoryMax=6G node tools/packaged-e2e.mjs   # the AppImage, 2 minutes
+systemd-run --user --scope -q -p MemoryMax=6G node tools/packaged-e2e.mjs   # the AppImage, game keys included, 3 minutes
+node --test tools/mic-gate.test.mjs                                         # who decides about the mic
 ```

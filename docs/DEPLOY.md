@@ -7,7 +7,7 @@ deploy/go-online.sh     # starts relay + LiveKit, opens the public port, prints 
 deploy/go-offline.sh    # closes it again and stops them; accounts and messages stay
 ```
 
-Nothing restarts after a reboot; run it again. The secrets are made once, so old links keep working. Everything lives in `~/.local/share/commons-host`. To fill the download page: `scripts/build-appimage-portable.sh` (Linux), and copy the Mac and Windows builds into `dist/`.
+Nothing restarts after a reboot; run it again. The secrets are made once, so old links keep working. Everything lives in `~/.local/share/commons-host`. To fill the download page: `scripts/build-appimage-portable.sh` (Linux), `scripts/build-windows.sh` (Windows), and copy the `.dmg` from the Mac into `dist/`.
 
 ## What was measured on this PC (2026-11-07, nothing changed)
 
