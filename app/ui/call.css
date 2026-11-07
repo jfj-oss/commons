@@ -61,3 +61,6 @@
 .cp .av.sealed .seal { --s: 34px; }
 /* your own share is a small preview, so the buttons stay in view */
 #call-panel .ctile.local { aspect-ratio: auto; height: 150px; }
+/* the panel's two re-rendered parts lay out as if their children were the panel's own; the video tile host between them is never re-rendered */
+#call-panel > .cpart { display: contents; }
+#call-panel .cshares[hidden] { display: none; }

@@ -324,6 +324,7 @@
         this.changed();
       });
       room.on(E.TrackUnsubscribed, (track, pub, rp) => { this.tracks.delete(rp.identity + '/' + pub.trackSid); if (track.kind === 'audio') this._dropAudio(rp.identity, pub.trackSid); this.changed(); });
+      room.on(E.TrackUnpublished, (pub, rp) => { const k = rp.identity + '/' + pub.trackSid; this.tracks.delete(k); this.blocked.delete(k); this.viewQuality.delete(pub.trackSid); this._dropAudio(rp.identity, pub.trackSid); this.changed(); });
       room.on(E.TrackMuted, () => this.changed()); room.on(E.TrackUnmuted, () => this.changed());
       room.on(E.ActiveSpeakersChanged, sp => { this.speaking = new Set(sp.map(s => s.identity)); this.changed(); });
       room.on(E.Reconnecting, () => { this.phase = 'reconnecting'; this.log('connection lost; reconnecting'); this.changed(); });
@@ -517,9 +518,10 @@
       }
       const shares = [];
       if (this.room) {
-        for (const t of this.tracks.values()) if (t.track.kind === 'video') shares.push({ key: t.identity + '/' + t.pub.trackSid, sid: t.pub.trackSid, identity: t.identity, name: (this.members.get(t.identity) || {}).name || t.identity.slice(0, 8), source: t.source, track: t.track, quality: this.qualityOf(t.pub.trackSid), local: false });
+        // A muted video (a camera switched off is muted, not unpublished) has no tile: it would only be a black box.
+        for (const t of this.tracks.values()) if (t.track.kind === 'video' && !t.pub.isMuted) shares.push({ key: t.identity + '/' + t.pub.trackSid, sid: t.pub.trackSid, identity: t.identity, name: (this.members.get(t.identity) || {}).name || t.identity.slice(0, 8), source: t.source, track: t.track, quality: this.qualityOf(t.pub.trackSid), local: false });
         const lp = this.room.localParticipant;
-        for (const src of [LK.Track.Source.ScreenShare, LK.Track.Source.Camera]) { const pub = lp.getTrackPublication(src); if (pub && pub.track) shares.push({ key: 'me/' + pub.trackSid, sid: pub.trackSid, identity: this.me, name: 'You', source: src, track: pub.track, quality: 'auto', local: true }); }
+        for (const src of [LK.Track.Source.ScreenShare, LK.Track.Source.Camera]) { const pub = lp.getTrackPublication(src); if (pub && pub.track && !pub.isMuted) shares.push({ key: 'me/' + pub.trackSid, sid: pub.trackSid, identity: this.me, name: 'You', source: src, track: pub.track, quality: 'auto', local: true }); }
       }
       return {
         phase: this.phase, error: this.error, gid: this.gid, roomName: this.roomName, muted: this.muted, gameMuted: this.gameMuted, gameName: this.gameName, gameError: this.gameError, deafened: this.deafened, ptt: this.prefs.ptt, pttKey: this.prefs.pttKey, pttHeld: this.pttHeld,

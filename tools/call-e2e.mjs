@@ -1,6 +1,7 @@
 // End-to-end call tests: real relay (with call tokens), real LiveKit server, real Commons clients (Rust core),
 // real call engine in Chrome for Testing with FAKE media devices only. Everything on 127.0.0.1.
 //   systemd-run --user --scope -q -p MemoryMax=8G node tools/call-e2e.mjs [outdir]
+// CALL_E2E_ONLY=video runs only section J (video tiles in the call panel, about a minute).
 import fs from 'node:fs';
 import path from 'node:path';
 import { startServers, startBridge, startChrome, openPage, rpc, sleep, stopAll, lkAdmin, operatorToken, FAKE_DISPLAY, RELAY_PORT, LK_PORT } from './lib/env.mjs';
@@ -35,6 +36,63 @@ try {
   const notHeard = async (l, s) => { const r = await hear(l, s, 1500); return { present: r.present, toneShare: r.toneShare, ok: !!r.present && r.toneShare < TONE_MAX }; };
   const room = await rpc(P('alice').port, 'call_token', { gid: world.gid });
   const roomName = room.room;
+
+  // ---------------------------------------------------------------- J. video tiles in the real call panel (runs first, on a fresh call)
+  // Bugs from real use: (1) with camera or screen share on, the videos flickered: every state update rebuilt the panel and moved
+  // the <video> elements into new tiles; (2) a camera switched off left a black box (the SDK mutes a camera, it does not unpublish it).
+  // The panel is watched from inside the page: DOM removals/additions of tiles and videos, media events, and a 50 ms sampler that
+  // counts moments where a shown video is not playing.
+  const WATCH = `(() => {
+    const panel = document.querySelector('#call-panel'); const st = window.__vt = { added: 0, removed: 0, events: {}, samples: 0, blank: 0, n: 0 };
+    const count = (nodes, k) => { for (const n of nodes) if (n.nodeType === 1) st[k] += (n.matches('.ctile, video') ? 1 : 0) + n.querySelectorAll('.ctile, video').length; };
+    new MutationObserver(ms => { for (const m of ms) { count(m.addedNodes, 'added'); count(m.removedNodes, 'removed'); } }).observe(panel, { childList: true, subtree: true });
+    for (const ev of ['emptied', 'loadstart', 'pause', 'abort']) panel.addEventListener(ev, e => { if (e.target.tagName === 'VIDEO') st.events[ev] = (st.events[ev] || 0) + 1; }, true);
+    setInterval(() => { for (const v of panel.querySelectorAll('.ctile video')) { st.samples++; if (!(v.isConnected && v.readyState >= 2 && !v.paused && v.videoWidth > 0)) st.blank++; } }, 50);
+    window.__vtReset = () => { st.added = st.removed = st.samples = st.blank = 0; st.events = {}; };
+    return true; })()`;
+  const tilesOf = n => page(n).ev(`[...document.querySelectorAll('#call-panel .ctile')].map(d => { const v = d.querySelector('video'); if (v && !v.__vid) v.__vid = ++window.__vt.n; return { key: d.dataset.key, label: (d.querySelector('.bar .grow') || d).innerText, id: v ? v.__vid : 0, w: v ? v.videoWidth : 0, playing: !!v && !v.paused && v.readyState >= 2 }; })`);
+  const isCam = t => /camera/.test(t.label), isScreen = t => /screen/.test(t.label);
+  {
+    for (const n of ['alice', 'bob']) { await page(n).ev(FAKE_DISPLAY); await page(n).ev(`window.__shareName = ${J(n)}`); }
+    await call('alice', `c.join(S.gid, 'general')`); await call('bob', `c.join(S.gid, 'general')`);
+    for (const n of ['alice', 'bob']) { await page(n).ev(`(window.__callUI.open(), true)`); await page(n).ev(WATCH); }
+    await until(async () => (await call('bob', `c.room.remoteParticipants.size`)) === 1, 15000, 'J: bob sees alice');
+    await call('alice', `c.setCamera(true)`); await call('alice', `c.startShare({ audio: false, profile: 'motion' })`);
+    const ready = async () => { const b = await tilesOf('bob'), a = await tilesOf('alice'); return b.length === 2 && b.every(t => t.w > 0 && t.playing) && a.length === 2 && a.every(t => t.w > 0) ? { a, b } : null; };
+    const t0 = await until(ready, 30000, 'J: both tiles show on both sides').catch(async () => ({ a: await tilesOf('alice'), b: await tilesOf('bob'), bad: true }));
+    check('J1 camera and screen share each get their own tile, on both sides', !t0.bad && t0.b.filter(isCam).length === 1 && t0.b.filter(isScreen).length === 1 && new Set(t0.b.map(t => t.id)).size === 2, J(t0));
+    await sleep(1500);
+    for (const n of ['alice', 'bob']) await page(n).ev(`(window.__vtReset(), true)`);
+    // unrelated state updates while both videos run: mute and deafen, a volume change, plain change events (speaking, polls)
+    for (let i = 0; i < 4; i++) {
+      await call('bob', `c.setMuted(true)`); await call('alice', `c.setDeafened(true)`); await sleep(400);
+      await call('bob', `c.setMuted(false)`); await call('alice', `c.setDeafened(false)`); await call('alice', `c.setMuted(false)`);
+      await call('bob', `c.setVolume(${J(dev('alice'))}, ${0.5 + i / 10})`); await call('bob', `(c.changed(), true)`); await sleep(600);
+    }
+    await sleep(2500);
+    const steady = {}; for (const n of ['alice', 'bob']) steady[n] = { vt: await page(n).ev(`({ ...window.__vt, ratio: window.__vt.blank / (window.__vt.samples || 1) })`), tiles: await tilesOf(n) };
+    const calm = n => { const s = steady[n]; const before = n === 'bob' ? t0.b : t0.a; return s.vt.added === 0 && s.vt.removed === 0 && !Object.keys(s.vt.events).length && s.vt.ratio < 0.02 && s.vt.samples > 100 && J(s.tiles.map(t => t.id).sort()) === J(before.map(t => t.id).sort()); };
+    check('J2 no flicker: state updates leave the video tiles and elements in place, and they keep playing (viewer)', calm('bob'), J(steady.bob.vt));
+    check('J3 no flicker on the sender\'s own previews either', calm('alice'), J(steady.alice.vt));
+    // camera off: the SDK only mutes it; the tile must go away on both sides, and the screen share must not be touched
+    const screenId = { a: t0.a.find(isScreen)?.id, b: t0.b.find(isScreen)?.id };
+    await call('alice', `c.setCamera(false)`);
+    const camGone = n => until(async () => { const t = await tilesOf(n); return t.length === 1 && isScreen(t[0]) ? t : null; }, 8000, n + ' camera tile gone').catch(async () => tilesOf(n));
+    const offB = await camGone('bob'), offA = await camGone('alice');
+    check('J4 camera off: its tile goes away for the viewer (no black box)', offB.length === 1 && isScreen(offB[0]), J(offB));
+    check('J5 camera off: your own camera preview goes away too', offA.length === 1 && isScreen(offA[0]), J(offA));
+    check('J6 the screen share tile stays the same element while the camera goes', offB[0]?.id === screenId.b && offA[0]?.id === screenId.a && offB[0]?.playing, J({ screenId, offB, offA }));
+    await call('alice', `c.setCamera(true)`);
+    const back = await until(async () => { const t = await tilesOf('bob'); return t.length === 2 && t.every(x => x.w > 0 && x.playing) ? t : null; }, 20000, 'camera back').catch(async () => tilesOf('bob'));
+    check('J7 camera on again: the tile comes back with pictures', back.length === 2 && back.filter(isCam).length === 1 && back.every(x => x.w > 0 && x.playing), J(back));
+    await call('alice', `c.stopShare()`);
+    const noShare = await until(async () => { const t = await tilesOf('bob'); return t.length === 1 && isCam(t[0]) ? t : null; }, 8000, 'share gone').catch(async () => tilesOf('bob'));
+    check('J8 stopping the share removes only the screen tile', noShare.length === 1 && isCam(noShare[0]) && noShare[0].id === back.find(isCam)?.id, J(noShare));
+    await call('alice', `c.setCamera(false)`);
+    for (const n of ['alice', 'bob']) { await call(n, `c.leave()`); await page(n).ev(`(document.querySelector('#c-close')?.click(), true)`); }
+    await sleep(1000);
+  }
+  if (process.env.CALL_E2E_ONLY === 'video') throw Object.assign(new Error('CALL_E2E_ONLY=video: the other sections are skipped'), { only: true });
 
   // ---------------------------------------------------------------- 0. what the relay says about call support
   const sup = await page('alice').ev(`CommonsCall.support()`);
@@ -292,7 +350,7 @@ try {
   const shotRes = await ui.send('Page.captureScreenshot', { format: 'png' });
   fs.writeFileSync(path.join(out, 'call-panel.png'), Buffer.from(shotRes.result.data, 'base64'));
   await ui.ev(`document.querySelector('#c-leave')?.click()`);
-} catch (e) { console.error('TEST RUN ABORTED:', e); failed++; results.push({ name: 'run', ok: false, detail: String(e.stack || e) }); }
+} catch (e) { if (e.only) console.log(e.message); else { console.error('TEST RUN ABORTED:', e); failed++; results.push({ name: 'run', ok: false, detail: String(e.stack || e) }); } }
 finally {
   fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify(results, null, 1));
   if (world) for (const n of Object.keys(world.people)) { const p = world.people[n]; if (p.page && p.page.console.length) fs.writeFileSync(path.join(out, `console-${n}.txt`), p.page.console.join('\n')); }

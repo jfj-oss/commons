@@ -22,6 +22,9 @@
   const $q = (s, r = document) => r.querySelector(s);
   const hue = s => { let h = 0; for (const c of s || 'x') h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
   let panel = null, open = false, showSettings = false, devices = null;
+  // Video tiles live in their own host that no render ever rewrites. Each tile (one per video track: a camera and a screen
+  // share of the same person are two tiles) is created once, updated in place, and removed when its track is muted or gone.
+  // Moving or re-creating a <video> on every state update made the pictures flicker.
   const tiles = new Map();
 
   function currentRoom() {
@@ -51,6 +54,7 @@
   function ensurePanel() {
     if (panel) return;
     panel = document.createElement('div'); panel.id = 'call-panel'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'Voice room'); panel.hidden = true;
+    panel.innerHTML = '<div class="cpart" id="c-top"></div><div class="cshares" id="c-shares" hidden></div><div class="cpart" id="c-bottom"></div>';
     document.body.appendChild(panel);
   }
 
@@ -86,6 +90,7 @@
     const sup = CommonsCall.support();
     const room = currentRoom();
     const inThis = room && s.gid === room.gid && s.phase !== 'idle';
+    syncTiles(s.shares);   // before the guard below, so a focused quality picker never keeps a stopped video on screen
     if (panel.contains(document.activeElement) && document.activeElement.matches('input[type=range],select')) return;   // do not fight a drag in progress
     let h = `<div class="ch"><h3>${esc(inThis || s.phase !== 'idle' ? (s.roomName || 'Call') : (room ? room.name : 'Call'))}</h3>${encBadge(s)}<button class="mini" id="c-close" title="Hide (the call keeps running)">×</button></div>`;
     if (!sup.ok) {
@@ -94,13 +99,13 @@
         ? `<div class="cnote"><b>On this computer, calls open in your browser.</b> The app window cannot do encrypted calls here, so the call runs in a browser tab: same room, same end-to-end encryption. Use Chrome, Brave, Edge or Firefox. If you are asked for the microphone, allow it. Close the tab to leave the call.</div>
            ${room ? '<div class="cbar"><button class="btn" id="c-browser">Open this call in my browser</button></div>' : ''}${why}`
         : `<div class="cerr"><b>Calls are not available in this window.</b><br>${sup.reasons.map(esc).join('<br>')}</div><div class="cnote">Commons will never fall back to an unencrypted call. Try a current Chromium-based browser or Firefox.</div>`);
-      panel.innerHTML = h; wireBasic(); return;
+      paint(h, ''); return;
     }
     if (s.phase === 'idle' || (s.phase === 'error' && !inThis && !s.gid)) {
       h += `${s.error ? `<div class="${s.error.kind === 'handoff' ? 'cinfo' : 'cerr'} wrapall">${esc(s.error.msg)}</div>` : ''}
         <div class="cinfo">${room ? `Join the voice room for <b>${esc(room.name)}</b>. Anyone in this room can join; media is encrypted with keys from the room's group and the call server only forwards ciphertext.` : 'Open a room first.'}</div>
         <div class="cbar"><button class="btn" id="c-join" ${room ? '' : 'disabled'}>Join voice</button>${window.__TAURI__ && room ? '<button class="btn ghost" id="c-browser" title="If the microphone or screen share does not work in this window">Open in my browser</button>' : ''}</div>`;
-      panel.innerHTML = h; wireBasic(); return;
+      paint(h, ''); return;
     }
     if (s.error) h += `<div class="cerr">${esc(s.error.msg)}</div>`;
     if (s.phase === 'connecting') h += '<div class="cinfo">Connecting…</div>';
@@ -108,7 +113,7 @@
     if (s.blocked.length) h += `<div class="cerr">Blocked ${s.blocked.length} stream(s) that are not from a current member or not encrypted. They are not played.</div>`;
     if (s.gameMuted) h += `<div class="cinfo" id="c-gamekey">Muted by game key${s.gameName ? ' (' + esc(s.gameName) + ')' : ''}. Friends see you as muted.</div>`;
     else if (s.gameError) h += `<div class="cinfo wrapall">Game keys are not working: ${esc(s.gameError)}</div>`;
-    h += `<div class="cshares" id="c-shares"></div>`;
+    const top = h; h = '';
     h += `<div class="cpeople">${s.peers.map(peerRow).join('')}</div>`;
     const ptt = s.ptt;
     h += `<div class="cbar">
@@ -129,33 +134,48 @@
         <label for="c-prof">Share as</label><select id="c-prof">${Object.entries(call.shareProfiles()).map(([k, v]) => `<option value="${k}" ${s.prefs.shareProfile === k ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select></div>`;
     }
     h += `<details class="cnote"><summary>What the call server can see</summary>Your IP address, when you join and leave, how much you send, and who is speaking. It cannot hear or see anything. Keys: ${s.encryption.devices ?? '?'} device keys from the room, epoch ${s.encryption.epoch ?? '?'}, rotated ${s.encryption.rotations} time(s) this call.</details>`;
-    panel.classList.toggle('wide', s.shares.length > 0);
-    panel.innerHTML = h;
-    syncTiles(s);
-    wireBasic(s);
+    paint(top, h);
   }
 
-  function syncTiles(s) {
-    const host = $q('#c-shares'); if (!host) return;
-    const want = new Set(s.shares.map(x => x.key));
-    for (const [k, t] of [...tiles]) if (!want.has(k)) { try { t.track.detach(t.video); } catch { } tiles.delete(k); }
-    for (const sh of s.shares) {
+  // Writes the two text parts of the panel, each only when its markup changed; the tile host between them is never touched.
+  function paint(top, bottom) {
+    for (const [id, html] of [['c-top', top], ['c-bottom', bottom]]) { const el = $q('#' + id, panel); if (el.__html !== html) { el.innerHTML = html; el.__html = html; } }
+    wireBasic();
+  }
+
+  function syncTiles(shares) {
+    const host = $q('#c-shares', panel); if (!host) return;
+    const want = new Set(shares.map(x => x.key));
+    for (const [k, t] of [...tiles]) if (!want.has(k)) { try { t.track.detach(t.video); } catch { } t.el.remove(); tiles.delete(k); }
+    shares.forEach((sh, i) => {
       let t = tiles.get(sh.key);
-      if (!t) {
-        const video = document.createElement('video'); video.autoplay = true; video.playsInline = true; video.muted = true;
-        sh.track.attach(video); t = { video, track: sh.track }; tiles.set(sh.key, t);
-      }
-      const d = document.createElement('div'); d.className = 'ctile' + (sh.local ? ' local' : ''); d.dataset.key = sh.key;
-      d.appendChild(t.video);
-      const bar = document.createElement('div'); bar.className = 'bar';
-      const label = sh.source === 'camera' ? 'camera' : 'screen';
-      bar.innerHTML = `<span class="grow">${esc(sh.name)} · ${label}</span>` + (sh.local ? '' : `<select data-q="${esc(sh.sid)}" aria-label="Quality" title="Picture quality"><option value="auto">Quality: auto</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>`) + `<button data-fs="${esc(sh.key)}">Fullscreen</button>`;
-      const sel = bar.querySelector('select'); if (sel) sel.value = sh.quality;
-      d.appendChild(bar); host.appendChild(d); t.video.play().catch(() => { });
-    }
+      if (!t) t = makeTile(sh);
+      else if (t.track !== sh.track) { try { t.track.detach(t.video); } catch { } sh.track.attach(t.video); t.track = sh.track; t.video.play().catch(() => { }); }
+      const label = `${sh.name} · ${sh.source === 'camera' ? 'camera' : 'screen'}`;
+      if (t.label.textContent !== label) t.label.textContent = label;
+      if (t.sel && document.activeElement !== t.sel && t.sel.value !== sh.quality) t.sel.value = sh.quality;
+      if (host.children[i] !== t.el) host.insertBefore(t.el, host.children[i] || null);   // only new or reordered tiles move
+    });
+    host.hidden = shares.length === 0;
+    panel.classList.toggle('wide', shares.length > 0);
   }
 
-  function wireBasic(s) {
+  function makeTile(sh) {
+    const el = document.createElement('div'); el.className = 'ctile' + (sh.local ? ' local' : ''); el.dataset.key = sh.key; el.dataset.source = sh.source;
+    const video = document.createElement('video'); video.autoplay = true; video.playsInline = true; video.muted = true;
+    sh.track.attach(video);
+    const bar = document.createElement('div'); bar.className = 'bar';
+    bar.innerHTML = '<span class="grow"></span>' + (sh.local ? '' : '<select aria-label="Quality" title="Picture quality"><option value="auto">Quality: auto</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>') + '<button>Fullscreen</button>';
+    const sel = bar.querySelector('select'); if (sel) { sel.value = sh.quality; sel.onchange = () => call.setViewQuality(sh.sid, sel.value); }
+    bar.querySelector('button').onclick = () => (video.requestFullscreen || video.webkitRequestFullscreen).call(video);
+    el.append(video, bar);
+    const t = { el, video, track: sh.track, label: bar.querySelector('.grow'), sel };
+    tiles.set(sh.key, t);
+    video.play().catch(() => { });
+    return t;
+  }
+
+  function wireBasic() {
     const on = (id, fn) => { const el = $q('#' + id, panel); if (el) el.onclick = fn; };
     on('c-close', () => { open = false; render(); });
     on('c-join', async () => { const room = currentRoom(); if (!room) return; try { await call.join(room.gid, room.name); } catch { } render(); });
@@ -168,15 +188,13 @@
     on('c-set', async () => { showSettings = !showSettings; if (showSettings) devices = await call.listDevices(); render(); });
     const p = $q('#c-ptt', panel); if (p) { p.onmousedown = () => call.pttButton(true); p.onmouseup = p.onmouseleave = () => call.pttButton(false); }
     panel.querySelectorAll('[data-vol]').forEach(r => r.oninput = () => call.setVolume(r.dataset.vol, Number(r.value)));
-    panel.querySelectorAll('[data-q]').forEach(sel => sel.onchange = () => call.setViewQuality(sel.dataset.q, sel.value));
-    panel.querySelectorAll('[data-fs]').forEach(b => b.onclick = () => { const t = tiles.get(b.dataset.fs); if (t) (t.video.requestFullscreen || t.video.webkitRequestFullscreen).call(t.video); });
     const sel = (id, kind) => { const el = $q('#' + id, panel); if (el) el.onchange = () => call.pickDevice(kind, el.value); };
     sel('c-mic', 'audioinput'); sel('c-out', 'audiooutput'); sel('c-camsel', 'videoinput');
     const ns = $q('#c-ns', panel); if (ns) ns.onchange = () => call.setNoiseSuppression(ns.checked);
     const pc = $q('#c-pttc', panel); if (pc) pc.onchange = () => call.setPtt(pc.checked);
     const sa = $q('#c-sa', panel); if (sa) sa.onchange = () => { call.prefs.shareAudio = sa.checked; call.savePrefs(); };
     const pr = $q('#c-prof', panel); if (pr) pr.onchange = () => { call.prefs.shareProfile = pr.value; call.savePrefs(); };
-    const pk = $q('#c-pttkey', panel); if (pk) pk.onclick = () => { pk.textContent = 'Press a key…'; const h = e => { e.preventDefault(); document.removeEventListener('keydown', h, true); call.setPttKey(e.code); }; document.addEventListener('keydown', h, true); };
+    const pk = $q('#c-pttkey', panel); if (pk) pk.onclick = () => { pk.textContent = 'Press a key…'; const h = e => { e.preventDefault(); document.removeEventListener('keydown', h, true); pk.textContent = 'Change key'; call.setPttKey(e.code); }; document.addEventListener('keydown', h, true); };
   }
 
   call.addEventListener('change', () => { if (call.phase === 'connected' || call.phase === 'error' || call.phase === 'idle' || call.phase === 'reconnecting' || call.phase === 'connecting') render(); });
