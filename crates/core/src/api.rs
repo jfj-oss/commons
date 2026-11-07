@@ -304,7 +304,7 @@ impl App {
                 api.rv_put(&k, &rid, "a", &sealed).map_err(e)?;
                 self.with(|c| { c.notice("pair", "pairing data sent; the new device will appear in your device list once it registers"); Ok(json!({"check": chk})) })
             }
-            "recovery_key" => self.with(|c| c.recovery_key().map(|k| json!({"key": k})).map_err(e)),
+            "recovery_key" => self.with(|c| c.recovery_key_with_passphrase(&s(&a, "passphrase")).map(|k| json!({"key": k})).map_err(e)),
             "search" => self.with(|c| {
                 let r = c.search(&s(&a, "q"));
                 Ok(json!(r.into_iter().map(|(cid, gid, m)| {

@@ -49,6 +49,7 @@ The relay is treated as hostile. This is everything it stores or observes. Verif
 | Serve a wrong key package / invent a device | Rejected: credential must be a valid certificate for the expected account and device. |
 | Hide a device revocation | Possible (relay is the directory). Mitigated by also broadcasting the revocation inside every community. A device that never sees either could still be added by a stale admin. |
 | Block a person from joining or being added | Possible (omit their key packages or requests). Visible as "waiting". |
+| Lift a call cut-off, or cut someone off from calls | The relay keeps a `call_denied` list (accounts an admin cut off from a group's calls, kept apart from membership). The relay can add or drop entries, so it can deny a call to a member or let a cut-off member back into the room's token service; it still cannot decrypt the call, and members' clients stop trusting a removed device's media keys at the next epoch. |
 | Make a client believe it was removed | Possible ("denied"); the client labels it as unconfirmed and keeps its local state. |
 | Lie in `group_members` ACL | Gives it nothing to gain beyond what it already has; it can only cause denial of service. ACL rules protect against members, not against the relay itself. |
 | Tell a client it has caught up when it has not (omit `more`) | The same as withholding entries. |

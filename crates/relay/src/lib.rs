@@ -45,6 +45,13 @@ pub struct Limits {
     pub kp_takes_per_window: u32,
     /// Welcomes one account may post.
     pub welcomes_per_window: u32,
+    /// Unauthenticated device revocations, whole relay.
+    pub revokes_per_window: u32,
+    /// How long a request body may take to arrive (ordinary requests, and blob uploads).
+    pub body_timeout: Duration,
+    pub big_body_timeout: Duration,
+    /// Invite-secret checks (POST /v1/info), whole relay. Kept apart from registrations so probing cannot lock out sign-ups.
+    pub info_checks_per_window: u32,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -67,6 +74,10 @@ impl Default for Limits {
             kp_takes_per_target_per_window: 200,
             kp_takes_per_window: 2000,
             welcomes_per_window: 2000,
+            revokes_per_window: 120,
+            body_timeout: Duration::from_secs(15),
+            big_body_timeout: Duration::from_secs(120),
+            info_checks_per_window: 120,
         }
     }
 }
@@ -118,8 +129,10 @@ fn json<T: serde::Serialize>(v: &T) -> Resp {
     Response::builder().status(200).header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(v).unwrap())).unwrap()
 }
-fn is_hex(s: &str, n: usize) -> bool { s.len() == n && s.bytes().all(|c| c.is_ascii_hexdigit()) }
-fn valid_gid(s: &str) -> bool { s.len() >= 8 && s.len() <= 128 && s.bytes().all(|c| c.is_ascii_hexdigit()) }
+// Lower-case only: one key has exactly one spelling, so ids cannot be aliased by changing case.
+fn is_hex_byte(c: u8) -> bool { c.is_ascii_digit() || (b'a'..=b'f').contains(&c) }
+fn is_hex(s: &str, n: usize) -> bool { s.len() == n && s.bytes().all(is_hex_byte) }
+fn valid_gid(s: &str) -> bool { s.len() >= 8 && s.len() <= 128 && s.bytes().all(is_hex_byte) }
 
 pub fn open_db(path: &str) -> rusqlite::Result<Connection> {
     let c = Connection::open(path)?;
@@ -238,8 +251,23 @@ async fn handle(State(st): State<Arc<RelayState>>, req: Request<Body>) -> Resp {
     let path = parts.uri.path().to_string();
     let m = parts.method.clone();
     let limit = body_limit(&m, &path);
-    let _permit = if limit > 4 * 1024 * 1024 { st.big_bodies.clone().acquire_owned().await.ok() } else { None };
-    let body = match to_bytes(body, limit).await { Ok(b) => b, Err(_) => return status(StatusCode::PAYLOAD_TOO_LARGE, "too large") };
+    // A slot for a big body goes only to a registered, unrevoked device (the full signature can only be checked once
+    // the body is in), and a body that does not arrive in time gives the slot back.
+    let _permit = if limit > 4 * 1024 * 1024 {
+        let known = {
+            let db = st.db.lock().unwrap();
+            parts.headers.get(AUTH_HEADER).and_then(|v| v.to_str().ok()).and_then(|h| h.split('.').next()).is_some_and(|d| is_hex(d, 64)
+                && matches!(db.query_row("SELECT revoked_sig FROM devices WHERE device=?1", [d], |r| r.get::<_, Option<String>>(0)).optional(), Ok(Some(None))))
+        };
+        if !known { return status(StatusCode::UNAUTHORIZED, "bad auth"); }
+        st.big_bodies.clone().acquire_owned().await.ok()
+    } else { None };
+    let wait = if limit > 4 * 1024 * 1024 { st.limits.big_body_timeout } else { st.limits.body_timeout };
+    let body = match tokio::time::timeout(wait, to_bytes(body, limit)).await {
+        Ok(Ok(b)) => b,
+        Ok(Err(_)) => return status(StatusCode::PAYLOAD_TOO_LARGE, "too large"),
+        Err(_) => return status(StatusCode::REQUEST_TIMEOUT, "request body too slow"),
+    };
     // The long-poll endpoint must not hold the DB lock while waiting.
     if m == Method::POST && path == "/v1/sync" {
         return sync(st, &parts.headers, &path, &body).await;
@@ -395,7 +423,7 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
         (Method::POST, ["v1", "info"]) => {
             let r: InfoReq = parse(body)?;
             let Some(secret) = &lim.invite_secret else { return Ok(json(&InfoResp { gated: false, ok: true })) };
-            st.limited("register".into(), lim.registrations_per_window, "too many attempts, try again later")?;
+            st.limited("info".into(), lim.info_checks_per_window, "too many attempts, try again later")?;
             Ok(json(&InfoResp { gated: true, ok: same_secret(secret, &r.invite) }))
         }
         // ---- device registry ----
@@ -424,10 +452,15 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
         }
         (Method::POST, ["v1", "devices", "revoke"]) => {
             let r: RevokeReq = parse(body)?;
+            st.limited("revoke".into(), lim.revokes_per_window, "too many revocations, try again later")?;
             verify_revocation(&r.account, &r.device, &r.sig).map_err(|_| status(StatusCode::BAD_REQUEST, "bad sig"))?;
-            db.execute("UPDATE devices SET revoked_sig=?1 WHERE device=?2 AND account=?3", params![r.sig, r.device, r.account]).map_err(dberr)?;
-            db.execute("DELETE FROM keypackages WHERE device=?1", [&r.device]).map_err(dberr)?;
-            db.execute("DELETE FROM welcomes WHERE device=?1", [&r.device]).map_err(dberr)?;
+            // Only a real, not-yet-revoked device of that account loses its key packages and Welcomes; a signature
+            // over some other key must not wipe anything.
+            let changed = db.execute("UPDATE devices SET revoked_sig=?1 WHERE device=?2 AND account=?3 AND revoked_sig IS NULL", params![r.sig, r.device, r.account]).map_err(dberr)?;
+            if changed > 0 {
+                db.execute("DELETE FROM keypackages WHERE device=?1", [&r.device]).map_err(dberr)?;
+                db.execute("DELETE FROM welcomes WHERE device=?1", [&r.device]).map_err(dberr)?;
+            }
             Ok(status(StatusCode::OK, "ok"))
         }
         (Method::GET, ["v1", "accounts", acc, "devices"]) => {

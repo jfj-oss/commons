@@ -8,13 +8,15 @@ services:
     volumes:
       - relay-data:/data
     environment:
-      COMMONS_RELAY_INVITE: ${COMMONS_RELAY_INVITE:-}   # set in .env: new accounts then need this secret
-    expose:
-      - "8787"          # internal only, never published
-    environment:     # leave empty to run without calls; see docs/DEPLOY.md
+      # Set in .env: new accounts then need this secret. Left empty, the relay refuses to start on a non-loopback
+      # address (it would be open to everyone); add `--open` to the command only for a deliberately public relay.
+      COMMONS_RELAY_INVITE: ${COMMONS_RELAY_INVITE:-}
+      # Leave the LiveKit values empty to run without calls; see docs/DEPLOY.md
       COMMONS_LIVEKIT_URL: ${COMMONS_LIVEKIT_URL:-}
       COMMONS_LIVEKIT_API_KEY: ${COMMONS_LIVEKIT_API_KEY:-}
       COMMONS_LIVEKIT_API_SECRET: ${COMMONS_LIVEKIT_API_SECRET:-}
+    expose:
+      - "8787"          # internal only, never published
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]

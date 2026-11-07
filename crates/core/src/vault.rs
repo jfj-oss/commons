@@ -90,6 +90,8 @@ impl Vault {
             Err(b) => Err(if matches!(e.downcast_ref::<VaultError>(), Some(VaultError::WrongPassphrase)) { e } else { b }),
         }
     }
+    /// True when `pass` opens the current state file. Touches nothing on disk (unlike `open`, which may set a damaged file aside).
+    pub fn check_passphrase(path: &Path, pass: &str) -> bool { try_open(path, pass).is_ok() }
     /// Delete every generation of the state file.
     pub fn remove(path: &Path) -> Result<()> {
         for ext in ["cmns", "bak", "tmp", "damaged"] {

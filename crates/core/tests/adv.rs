@@ -181,3 +181,21 @@ fn the_rendezvous_needs_an_account_and_keeps_its_first_writer() {
     assert_eq!(t(&net).request(Some(&k2), "PUT", &path, b"evil", D).unwrap().status, 409);
     assert_eq!(t(&net).request(None, "GET", &path, &[], D).unwrap().body, b"sealed");
 }
+
+#[test]
+fn a_member_cannot_revoke_someone_elses_device() {
+    // Review H1: a revocation signed by the SENDER's account over a stranger's device was accepted by every member.
+    use commons_core::envelope::Envelope;
+    let net = Net::new();
+    let (mut a, mut b, mut m) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"), Peer::new(&net, "mallory"));
+    a.tick(); b.tick(); m.tick();
+    let (cid, _gen) = community_with(&net, &mut a, &mut [&mut b, &mut m]);
+    let bob_dev = b.c.my_device();
+    let sig = m.c.revocation_sig(&bob_dev).unwrap(); // mallory's account key over bob's device
+    m.c.debug_send_envelope(&cid, Envelope::Revoked { account: m.acct(), device: bob_dev.clone(), sig }).unwrap();
+    settle(&mut [&mut a, &mut b, &mut m]);
+    assert!(!a.c.st.revoked.contains_key(&bob_dev), "alice must not treat bob's device as revoked: {:?}", notices(&a));
+    assert!(!b.c.st.self_revoked, "bob must not be told his own device is revoked");
+    a.c.send_text(&a.c.channels_of(&cid)[0].gid.clone(), "still here", None).unwrap();
+    settle(&mut [&mut a, &mut b, &mut m]);
+}

@@ -243,6 +243,11 @@ impl Client {
         self.activity += 1;
     }
 
+    /// The recovery key is the whole identity: showing it needs the passphrase again, so an unlocked, unattended window gives it up less easily.
+    pub fn recovery_key_with_passphrase(&self, pass: &str) -> Result<String> {
+        if !Vault::check_passphrase(&Self::state_path(&self.dir), pass) { bail!("wrong passphrase"); }
+        self.recovery_key()
+    }
     pub fn recovery_key(&self) -> Result<String> { Ok(encode_recovery(&self.acct_key()?.to_bytes())) }
 
     // ------------------------------------------------------------------ registration and key packages

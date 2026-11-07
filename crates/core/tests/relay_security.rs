@@ -110,3 +110,76 @@ fn vault_is_encrypted_atomic_and_falls_back_to_backup() {
     std::fs::write(&p, flipped).unwrap(); std::fs::remove_file(p.with_extension("bak")).unwrap();
     assert!(Vault::open(&p, "hunter2hunter2").is_err());
 }
+
+#[test]
+fn an_unauthenticated_revocation_of_someone_elses_device_wipes_nothing() {
+    // Review H2: a signature by ANY key over a device id deleted that device's key packages and Welcomes.
+    let net = Net::new();
+    let (_va, vdev, vcert) = register(&net);
+    let kp = serde_json::to_vec(&PublishKpReq { packages: vec![b64(&[1, 2, 3])], last_resort: Some(b64(&[4, 5, 6])) }).unwrap();
+    assert_eq!(t(&net).request(Some(&vdev), "POST", "/v1/keypackages", &kp, D).unwrap().status, 200);
+    let count = || -> i64 {
+        let c = rusqlite::Connection::open_with_flags(net.db_path(), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        c.query_row("SELECT COUNT(*) FROM keypackages WHERE device=?1", [&vcert.device], |r| r.get(0)).unwrap()
+    };
+    assert_eq!(count(), 2);
+    let attacker = SigningKey::generate(&mut rand::rngs::OsRng);
+    let dev_bytes = unhex32(&vcert.device).unwrap();
+    let req = RevokeReq { account: hex::encode(attacker.verifying_key().to_bytes()), device: vcert.device.clone(), sig: sign_revocation(&attacker, &dev_bytes) };
+    let r = t(&net).request(None, "POST", "/v1/devices/revoke", &serde_json::to_vec(&req).unwrap(), D).unwrap();
+    assert_eq!(r.status, 200);
+    assert_eq!(count(), 2, "the victim's key packages must survive a revocation that does not match the device's account");
+    assert_eq!(post(&net, &vdev, "00000000000000000000000000000001", &[1]), 403, "victim still authenticates (403 = not a member, not 'revoked')");
+}
+
+#[test]
+fn unauthenticated_revocations_are_rate_limited() {
+    let net = Net::with_limits(commons_relay::Limits { revokes_per_window: 3, ..Default::default() });
+    let attacker = SigningKey::generate(&mut rand::rngs::OsRng);
+    let req = RevokeReq { account: hex::encode(attacker.verifying_key().to_bytes()), device: "ab".repeat(32), sig: sign_revocation(&attacker, &[0xab; 32]) };
+    let body = serde_json::to_vec(&req).unwrap();
+    let codes: Vec<u16> = (0..5).map(|_| t(&net).request(None, "POST", "/v1/devices/revoke", &body, D).unwrap().status).collect();
+    assert_eq!(codes, vec![200, 200, 200, 429, 429]);
+}
+
+#[test]
+fn idle_unauthenticated_uploads_do_not_hold_the_upload_slots() {
+    // Review M3: four sockets that announce a big body and then say nothing used up every upload slot.
+    use std::io::Write;
+    let net = Net::new();
+    let (_a, dev, _c) = register(&net);
+    let mut idle = vec![];
+    for _ in 0..8 {
+        let mut s = std::net::TcpStream::connect(net.addr).unwrap();
+        s.write_all(b"PUT /v1/blobs/00000000000000000000000000000001 HTTP/1.1\r\nHost: x\r\nContent-Length: 20000000\r\n\r\n").unwrap();
+        idle.push(s);
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let id = hex::encode(rand::random::<[u8; 16]>());
+    let r = t(&net).request(Some(&dev), "PUT", &format!("/v1/blobs/{id}"), b"hello blob", Duration::from_secs(5)).expect("upload must not wait behind idle sockets");
+    assert_eq!(r.status, 200);
+    drop(idle);
+}
+
+#[test]
+fn an_upload_body_that_never_arrives_gives_the_slot_back() {
+    use std::io::{Read, Write};
+    let net = Net::with_limits(commons_relay::Limits { big_body_timeout: Duration::from_millis(500), ..Default::default() });
+    let (_a, dev, _c) = register(&net);
+    let hdr = sign_request(&dev, "PUT", "/v1/blobs/00000000000000000000000000000001", b"");
+    let mut s = std::net::TcpStream::connect(net.addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write!(s, "PUT /v1/blobs/00000000000000000000000000000001 HTTP/1.1\r\nHost: x\r\n{}: {}\r\nContent-Length: 20000000\r\n\r\n", AUTH_HEADER, hdr).unwrap();
+    let mut out = String::new();
+    let mut buf = [0u8; 512];
+    let n = s.read(&mut buf).expect("the relay must answer instead of waiting forever");
+    out.push_str(&String::from_utf8_lossy(&buf[..n]));
+    assert!(out.starts_with("HTTP/1.1 408"), "{out}");
+}
+
+#[test]
+fn hex_keys_have_one_spelling() {
+    let k = "ab".repeat(32);
+    assert!(unhex32(&k).is_ok());
+    assert!(unhex32(&k.to_uppercase()).is_err());
+}

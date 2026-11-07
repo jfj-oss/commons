@@ -194,7 +194,7 @@ async function boot() {
   const wire = () => { for (const [k, f] of [['new', showNew], ['pair', showPair], ['rec', showRec]]) { const b = $('#l-' + k); if (b) b.onclick = f; } };
   const showNew = () => { form('Create your account on this device. Your keys are made here and never leave it.',
     `<label for="nm">Display name</label><input type="text" id="nm" autocomplete="off"><label for="pp">Passphrase (protects the keys on this device)</label><input type="password" id="pp">${PP2}`, 'Create account',
-    async () => { await rpc('create_account', { name: $('#nm').value, passphrase: $('#pp').value, relay: $('#relay').value, invite: $('#inv').value }); await showRecoveryOnce(); el.hidden = true; startApp(); }, links('new')); wire(); };
+    async () => { const pass = $('#pp').value; await rpc('create_account', { name: $('#nm').value, passphrase: pass, relay: $('#relay').value, invite: $('#inv').value }); await showRecoveryOnce(pass); el.hidden = true; startApp(); }, links('new')); wire(); };
   const showPair = () => { form('Add this device to your account. You will get a code to approve on a device you already use.',
     `<label for="pp">Passphrase for this device</label><input type="password" id="pp">${PP2}`, 'Get pairing code', async () => {
       const r = await rpc('start_pairing', { passphrase: $('#pp').value, relay: $('#relay').value });
@@ -221,8 +221,8 @@ function ppStrength(p) {
   const score = p.length + kinds * 2 + (words >= 4 ? 8 : 0);
   return score < 16 ? 'Weak. Someone with this disk could guess it. Four or more random words work well.' : score < 24 ? 'Fair. A little longer would be better.' : 'Strong.';
 }
-async function showRecoveryOnce() {
-  const k = (await rpc('recovery_key')).key;
+async function showRecoveryOnce(pass) {
+  const k = (await rpc('recovery_key', { passphrase: pass })).key;
   await modal('Save your recovery key', `<p>If you lose every device, this key restores <b>your identity</b> (so friends can add a new device of yours). It does <b>not</b> restore old messages.</p><div class="code key-code">${esc(k)}</div><button type="button" class="linkish copy-line" id="cp">${icon('copy')}Copy</button><p class="muted small">Write it down or store it in a password manager. Anyone who has it can act as you.</p>`, [{ label: 'I saved it', primary: true }]);
 }
 document.addEventListener('click', e => { if (e.target.closest('#cp')) copy($('.modal .code').textContent); });
@@ -763,7 +763,7 @@ $('#btn-devices').onclick = async () => {
   const p = modal('Devices and recovery', `<div id="mb"></div><label for="code">Add a device</label><input type="text" id="code" placeholder="Paste the code shown on the new device (commons-pair:…)" spellcheck="false"><div class="muted small" id="chk"></div>
     <label>Recovery key</label><button class="btn ghost slim" id="showkey">Show my recovery key</button><div id="key"></div>`,
     [{ label: 'Close', primary: false }, { label: 'Approve new device', run: async w => { const r = await rpc('approve_pairing', { code: val(w, 'code') }); $('#chk', w).textContent = 'Approved. The new device will join your rooms within a few seconds. Check code: ' + r.check; return false; } }]);
-  setTimeout(() => { const w = document.querySelector('.modal'); if (!w) return; render(w); $('#code', w).oninput = async e => { try { const r = await rpc('pairing_preview', { code: e.target.value }); $('#chk', w).textContent = `Check code ${r.check}. It must match the new device before you approve.`; } catch (er) { $('#chk', w).textContent = ''; } }; $('#showkey', w).onclick = async () => { $('#key', w).innerHTML = `<div class="code key-code">${esc((await rpc('recovery_key')).key)}</div>`; }; }, 30);
+  setTimeout(() => { const w = document.querySelector('.modal'); if (!w) return; render(w); $('#code', w).oninput = async e => { try { const r = await rpc('pairing_preview', { code: e.target.value }); $('#chk', w).textContent = `Check code ${r.check}. It must match the new device before you approve.`; } catch (er) { $('#chk', w).textContent = ''; } }; $('#showkey', w).onclick = () => { $('#key', w).innerHTML = `<label for="keypp">Your passphrase</label><input type="password" id="keypp" autocomplete="current-password"><button class="btn ghost slim" id="keygo">Show</button><div class="muted small" id="keyerr" role="alert"></div>`; $('#keygo', w).onclick = async () => { try { $('#key', w).innerHTML = `<div class="code key-code">${esc((await rpc('recovery_key', { passphrase: $('#keypp', w).value })).key)}</div>`; } catch (er) { $('#keyerr', w).textContent = 'Wrong passphrase.'; } }; }; }, 30);
   await p;
 };
 $('#btn-activity').onclick = async () => {

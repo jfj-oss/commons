@@ -656,9 +656,13 @@ impl Client {
                 .zip(hex::decode(sig).ok().and_then(|s| ed25519_dalek::Signature::from_slice(&s).ok())).is_some_and(|(vk, s)| vk.verify(&m, &s).is_ok());
             if !ok || !may(&cert.account) || !desired.contains(&cert.account) { handled_reqs.push(r.seq); continue; }
             match gs.dev_seq.get(&cert.device) { Some(&s) if s >= r.seq => { handled_reqs.push(r.seq); continue } _ => {} }
+            // Each request carries a fresh nonce: one that was already acted on is a replay.
+            let used = format!("{}|{}", cert.device, nonce);
+            if gs.rejoin_used.contains(&used) { handled_reqs.push(r.seq); continue; }
             // Remove and re-add are one commit, or the person drops off the roster and every room follows. So the old
             // leaf only goes once the key package for the new one is in hand; the request waits until then.
             if self.kp_cache.get(&cert.device).is_none_or(|v| v.is_empty()) { *self.kp_wanted.entry(cert.device.clone()).or_insert(0) += 1; continue; }
+            if let Some(g) = self.st.groups.get_mut(gid) { g.rejoin_used.push(used); if g.rejoin_used.len() > 256 { g.rejoin_used.remove(0); } }
             rejoin_devices.push(cert); handled_reqs.push(r.seq);
         }
         if is_ctl { for j in joiners { desired.insert(j.cert.account.clone()); } }
@@ -881,6 +885,10 @@ impl Client {
         for (cert, rev) in dir { if rev { continue; } if let Some(b) = self.api.take_kp(&k, &cert.device)? { let (kp, c) = mls::parse_kp(&self.prov, &b)?; plan.adds.push((c, kp)); } }
         self.run_commit(gid, plan).map(|_| ())
     }
+    /// Send any envelope as this device, as a hostile member would (test builds only).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_send_envelope(&mut self, gid: &str, env: Envelope) -> Result<()> { self.queue_env(gid, env); self.save() }
     #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
     pub fn debug_my_grant(&self, cid: &str) -> Option<String> { self.my_grant(cid) }

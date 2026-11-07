@@ -48,6 +48,8 @@ pub fn unb64(s: &str) -> Result<Vec<u8>, ProtoError> {
     B64.decode(s).map_err(|e| ProtoError::Encoding(e.to_string()))
 }
 pub fn unhex32(s: &str) -> Result<[u8; 32], ProtoError> {
+    // Lower-case only: a key has exactly one spelling, so it cannot be told apart from itself by case.
+    if s.bytes().any(|c| c.is_ascii_uppercase()) { return Err(ProtoError::Encoding("hex must be lower-case".into())); }
     let v = hex::decode(s).map_err(|e| ProtoError::Encoding(e.to_string()))?;
     v.try_into().map_err(|_| ProtoError::Length)
 }

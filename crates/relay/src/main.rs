@@ -1,7 +1,8 @@
 use std::net::SocketAddr;
 
-const USAGE: &str = "usage: commons-relay [--bind 127.0.0.1:8787] [--data ./relay-data] [--max-accounts N] [--quota-mb N]
+const USAGE: &str = "usage: commons-relay [--bind 127.0.0.1:8787] [--data ./relay-data] [--max-accounts N] [--quota-mb N] [--open]
   COMMONS_RELAY_INVITE=<secret>  new accounts need this secret to register (set it in the environment, not on the command line)
+  --open                         allow a non-loopback bind with no invite secret (anyone who can reach it can register)
   --quota-mb N                   per-account limit for messages and, separately, for files\n  calls (optional): --livekit-url wss://host --livekit-key K --livekit-secret-file F  (or COMMONS_LIVEKIT_URL / _API_KEY / _API_SECRET)";
 
 #[tokio::main]
@@ -15,11 +16,13 @@ async fn main() {
     let mut lk_key = std::env::var("COMMONS_LIVEKIT_API_KEY").ok().filter(|x| !x.is_empty());
     let mut lk_secret = std::env::var("COMMONS_LIVEKIT_API_SECRET").ok().filter(|x| !x.is_empty());
     let lk_ttl: u64 = std::env::var("COMMONS_LIVEKIT_TOKEN_TTL").ok().and_then(|x| x.parse().ok()).unwrap_or(900);
+    let mut open = false;
     let mut a = std::env::args().skip(1);
     while let Some(x) = a.next() {
         match x.as_str() {
             "--bind" => bind = a.next().expect("--bind addr").parse().expect("addr"),
             "--data" => data = a.next().expect("--data dir").into(),
+            "--open" => open = true,
             "--max-accounts" => limits.max_accounts = a.next().expect("--max-accounts N").parse().expect("number"),
             "--quota-mb" => {
                 let mb: u64 = a.next().expect("--quota-mb N").parse().expect("number");
@@ -34,10 +37,14 @@ async fn main() {
     }
     if !bind.ip().is_loopback() {
         eprintln!("warning: binding to non-loopback address {bind}. Run behind a TLS-terminating proxy; see docs/DEPLOY.md");
-        if limits.invite_secret.is_none() { eprintln!("warning: anyone who can reach this address can register. Set COMMONS_RELAY_INVITE; see docs/DEPLOY.md"); }
+        if limits.invite_secret.is_none() {
+            if !open { eprintln!("refusing to start: {bind} is not loopback and COMMONS_RELAY_INVITE is not set, so anyone who can reach it could register. Set the secret (docs/DEPLOY.md), or pass --open to run an open relay on purpose"); std::process::exit(2) }
+            eprintln!("warning: --open: anyone who can reach this address can register");
+        }
     }
     limits.livekit = match (lk_url, lk_key, lk_secret) {
         (Some(url), Some(api_key), Some(api_secret)) => {
+            if api_secret.starts_with("REPLACE") { eprintln!("refusing to start: the LiveKit API secret is still the REPLACE placeholder from the template"); std::process::exit(2) }
             if api_secret.len() < 32 { eprintln!("refusing to start: the LiveKit API secret must be at least 32 characters"); std::process::exit(2) }
             tracing::info!("call tokens enabled for {url}");
             Some(commons_relay::LiveKitCfg { api_key, api_secret, url, token_ttl_secs: lk_ttl })

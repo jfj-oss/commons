@@ -559,7 +559,12 @@ impl Client {
                 }
             }
             (Kind::Control, Envelope::Revoked { account, device, sig }) => {
-                if verify_revocation(&account, &device, &sig).is_ok() {
+                // Only the account that owns the device may revoke it, and the device must be one of that account's
+                // leaves in this group: otherwise any member could have the rest of the community drop a stranger's device.
+                let target_ok = account == cert.account
+                    && self.load_group(gid).is_some_and(|g| mls::members_of(&g).iter().any(|(_, c)| c.device == device && c.account == account));
+                if !target_ok { self.notice("reject", "ignored a device revocation that is not from the device's own account".to_string()); }
+                else if verify_revocation(&account, &device, &sig).is_ok() {
                     if device == self.my_device() { self.revoked_here(); }
                     self.st.revoked.insert(device, sig);
                 } else { self.notice("reject", "ignored a device revocation with a bad signature".to_string()); }

@@ -140,11 +140,14 @@ pub struct GroupState {
     pub accounts: BTreeSet<String>,
     pub requests: Vec<ReqItem>,
     pub gaps: u64,
+    /// Rejoin requests already acted on (device + nonce), so a recorded request cannot be replayed to churn a device's leaf.
+    #[serde(default)]
+    pub rejoin_used: Vec<String>,
 }
 impl GroupState {
     pub fn new(gid: &str, community: &str, kind: Kind) -> Self {
         GroupState { gid: gid.into(), community: community.into(), kind, cursor: 0, pending: None, tainted: false, broken: false, broken_from: 0, join_epoch: 0, broken_count: 0,
-            rejoin_sent: false, rejoin_ts: 0, denied: false, removed: false, dev_seq: BTreeMap::new(), accounts: BTreeSet::new(), requests: vec![], gaps: 0 }
+            rejoin_sent: false, rejoin_ts: 0, denied: false, removed: false, dev_seq: BTreeMap::new(), accounts: BTreeSet::new(), requests: vec![], gaps: 0, rejoin_used: vec![] }
     }
 }
 

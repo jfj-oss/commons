@@ -19,8 +19,13 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("/vendor/livekit-client.e2ee.worker.js", "text/javascript", include_bytes!("../../../app/ui/vendor/livekit-client.e2ee.worker.js")),
 ];
 
-#[derive(Default)]
-struct Grant { secret: String, gid: String }
+/// A secret stops working after this long (a call that runs longer is re-opened from the app).
+const SECRET_TTL: std::time::Duration = std::time::Duration::from_secs(12 * 3600);
+/// The page loads only its own files and may talk to the relay's call server; nothing inline, nothing framed.
+const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws: wss: https:; worker-src 'self' blob:; media-src 'self' blob: mediastream:; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'";
+
+struct Grant { secret: String, gid: String, issued: std::time::Instant }
+impl Default for Grant { fn default() -> Self { Grant { secret: String::new(), gid: String::new(), issued: std::time::Instant::now() } } }
 pub struct CallBridge { pub port: u16, grant: Arc<Mutex<Grant>> }
 
 fn ct_eq(a: &str, b: &str) -> bool {
@@ -28,7 +33,7 @@ fn ct_eq(a: &str, b: &str) -> bool {
 }
 fn reply(s: &mut TcpStream, code: u16, ct: &str, body: &[u8]) {
     let reason = match code { 200 => "OK", 400 => "Bad Request", 403 => "Forbidden", 404 => "Not Found", _ => "Error" };
-    let head = format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\n\r\n", body.len());
+    let head = format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: {CSP}\r\n\r\n", body.len());
     let _ = s.write_all(head.as_bytes()).and_then(|_| s.write_all(body));
 }
 
@@ -50,7 +55,7 @@ impl CallBridge {
     pub fn grant(&self, gid: &str, name: &str) -> String {
         let mut b = [0u8; 32]; rand::rngs::OsRng.fill_bytes(&mut b);
         let secret = hex::encode(b);
-        *self.grant.lock().unwrap() = Grant { secret: secret.clone(), gid: gid.into() };
+        *self.grant.lock().unwrap() = Grant { secret: secret.clone(), gid: gid.into(), issued: std::time::Instant::now() };
         let enc = |s: &str| s.bytes().map(|c| if c.is_ascii_alphanumeric() { (c as char).to_string() } else { format!("%{c:02X}") }).collect::<String>();
         format!("http://127.0.0.1:{}/callpage.html#s={}&g={}&n={}", self.port, secret, gid, enc(name))
     }
@@ -77,7 +82,7 @@ fn handle(mut s: TcpStream, app: Arc<App>, grant: Arc<Mutex<Grant>>, port: u16) 
         if len > 4096 { return reply(&mut s, 400, "text/plain", b"too big"); }
         let mut body = vec![0u8; len];
         if r.read_exact(&mut body).is_err() { return reply(&mut s, 400, "text/plain", b"bad body"); }
-        let want = { let g = grant.lock().unwrap(); (g.secret.clone(), g.gid.clone()) };
+        let want = { let g = grant.lock().unwrap(); if g.issued.elapsed() > SECRET_TTL { (String::new(), String::new()) } else { (g.secret.clone(), g.gid.clone()) } };
         if !ct_eq(&secret, &want.0) { return reply(&mut s, 403, "text/plain", b"bad secret"); }
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
         let m = v["method"].as_str().unwrap_or("");
