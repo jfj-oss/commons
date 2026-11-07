@@ -7,12 +7,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 MODE=${1:-tauri}
 DATA=${COMMONS_TRY_DIR:-$HOME/.local/share/commons-try}
-RELAY=http://127.0.0.1:8787
+PORT=${COMMONS_TRY_PORT:-18787}
+RELAY=http://127.0.0.1:$PORT
 mkdir -p "$DATA"
 cargo build -j 6 -p commons-relay
 pids=()
 trap 'kill ${pids[@]} 2>/dev/null || true' EXIT
-./target/debug/commons-relay --bind 127.0.0.1:8787 --data "$DATA/relay" & pids+=($!)
+./target/debug/commons-relay --bind 127.0.0.1:$PORT --data "$DATA/relay" & pids+=($!)
 sleep 1
 if [ "$MODE" = browser ]; then
   cargo build -j 6 -p commons-core --features devbridge --bin dev_bridge

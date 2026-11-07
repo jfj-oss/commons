@@ -24,7 +24,8 @@ fn main() {
         .setup(|t| {
             // COMMONS_DATA lets you run several independent instances ("two windows") on one machine.
             let dir = std::env::var("COMMONS_DATA").map(std::path::PathBuf::from).unwrap_or_else(|_| t.path().app_data_dir().expect("app data dir"));
-            let relay = std::env::var("COMMONS_RELAY").unwrap_or_else(|_| "http://127.0.0.1:8787".into());
+            // No default: a relay is something a friend's invite brings along.
+            let relay = std::env::var("COMMONS_RELAY").unwrap_or_default();
             let app = App::new(dir, &relay);
             app.start_background();
             t.manage(app);

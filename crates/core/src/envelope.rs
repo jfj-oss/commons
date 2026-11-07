@@ -328,16 +328,46 @@ impl JoinRequest {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct InviteLink { pub owner: String, pub relay: String, pub community: String, pub invite: String, pub sk: String, pub name: String }
+pub struct InviteLink {
+    pub owner: String, pub relay: String, pub community: String, pub invite: String, pub sk: String, pub name: String,
+    /// The relay's invite secret, so that a friend who has no account yet needs this one link and nothing else.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub secret: String,
+}
+/// A web address of the relay's /join page carries the link in its fragment, which browsers keep to themselves.
+fn link_of(s: &str) -> String {
+    let s = s.trim();
+    match s.split_once("/join#") { Some((base, frag)) if base.starts_with("http") => format!("commons://{frag}"), _ => s.to_string() }
+}
 impl InviteLink {
     pub fn encode(&self) -> String { format!("commons://join/{}", commons_proto::b64(&serde_json::to_vec(self).unwrap_or_default())) }
+    /// The same link as a page a friend can open before they have the app. Only over https: the link is a secret.
+    pub fn web(&self) -> Option<String> {
+        self.relay.starts_with("https://").then(|| format!("{}/join#join/{}", self.relay.trim_end_matches('/'), commons_proto::b64(&serde_json::to_vec(self).unwrap_or_default())))
+    }
     pub fn decode(s: &str) -> Result<Self, ParseError> {
-        let s = s.trim().strip_prefix("commons://join/").ok_or(ParseError("not a commons invite link".into()))?;
+        let s = link_of(s);
+        let s = s.strip_prefix("commons://join/").ok_or(ParseError("not a commons invite link".into()))?;
         let b = commons_proto::unb64(s).map_err(|_| ParseError("bad invite link".into()))?;
         if b.len() > 4096 { return bad("invite too large"); }
         let l: InviteLink = serde_json::from_slice(&b).map_err(|_| ParseError("bad invite link".into()))?;
         // These go into URLs and keys: a link is pasted from outside, so nothing about it is trusted.
-        if !is_id(&l.invite) || !is_key(&l.sk) || !is_key(&l.owner) || !is_gid(&l.community) || !short(&l.name, 64) || !(l.relay.starts_with("http://") || l.relay.starts_with("https://")) { return bad("bad invite link"); }
+        if !is_id(&l.invite) || !is_key(&l.sk) || !is_key(&l.owner) || !is_gid(&l.community) || !short(&l.name, 64) || !short(&l.secret, 256) || !(l.relay.starts_with("http://") || l.relay.starts_with("https://")) { return bad("bad invite link"); }
+        Ok(l)
+    }
+}
+
+/// What `deploy/go-online.sh` prints: where the relay is and how to get an account on it, with no community attached.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RelayLink { pub relay: String, #[serde(default)] pub secret: String }
+impl RelayLink {
+    pub fn decode(s: &str) -> Result<Self, ParseError> {
+        let s = link_of(s);
+        let s = s.strip_prefix("commons://relay/").ok_or(ParseError("not a relay link".into()))?;
+        let b = commons_proto::unb64(s).map_err(|_| ParseError("bad relay link".into()))?;
+        if b.len() > 1024 { return bad("relay link too large"); }
+        let l: RelayLink = serde_json::from_slice(&b).map_err(|_| ParseError("bad relay link".into()))?;
+        if !short(&l.secret, 256) || !(l.relay.starts_with("http://") || l.relay.starts_with("https://")) { return bad("bad relay link"); }
         Ok(l)
     }
 }

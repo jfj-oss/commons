@@ -518,6 +518,7 @@ label.check input { accent-color: var(--accent); margin: 3px 0 0; flex: none; }
 .boot-card h1 { font-size: 30px; margin-bottom: 3px; }
 .boot-card .tag { font: 400 15px/1.5 var(--read); color: var(--ink-2); margin-bottom: 12px; }
 .boot-card input[type=text], .boot-card input[type=password] { background: var(--page); }
+.lnk-note { margin-top: 4px; min-height: 1.2em; color: var(--ink-3); }
 .relay-box { margin-top: 12px; font-size: 13px; color: var(--ink-3); }
 .relay-box summary { cursor: pointer; }
 .relay-box input { margin-top: 6px; }

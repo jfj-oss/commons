@@ -31,7 +31,7 @@ fn parsers_never_panic() {
         GroupExt::Control { name: "n".into(), owner: "a".repeat(64), nonce: id.clone(), admins: vec![], channels: vec![ChanMeta { id: "abcdef0123".into(), name: "c".into() }], invites: vec![], banned: vec![], transfers: vec![OwnerStep { seq: 1, from: "a".repeat(64), to: "b".repeat(64), sig: "c".repeat(128) }], consents: vec![Consent { account: "a".repeat(64), ts: 1, sig: "c".repeat(128) }] }.to_bytes(),
         JoinReply { community: "abcdef0123".into(), reason: JOIN_BANNED.into(), cert: DeviceCert { account: "a".repeat(64), device: "b".repeat(64), created: 1, sig: "c".repeat(128) }, sig: "d".repeat(128), grant: None, transfers: vec![] }.cert.to_bytes(),
         br#"{"t":"Text","id":"x","text":"\u0000","ts":-1}"#.to_vec(),
-        InviteLink { owner: "a".repeat(64), relay: "http://127.0.0.1:1".into(), community: "abcdef0123".into(), invite: id.clone(), sk: "b".repeat(64), name: "n".into() }.encode().into_bytes(),
+        InviteLink { owner: "a".repeat(64), relay: "http://127.0.0.1:1".into(), community: "abcdef0123".into(), invite: id.clone(), sk: "b".repeat(64), name: "n".into(), secret: String::new() }.encode().into_bytes(),
     ];
     let mut ok = 0u64;
     for i in 0..iters {
@@ -45,6 +45,7 @@ fn parsers_never_panic() {
         let _ = InviteLink::decode(&s);
         let _ = (valid_mime(&s), clean_mime(&s), name_key(&s), safe_file_name(&s), cut_name(&s, 200));
         let _ = commons_core::api::clean_relay_url(&s);
+        let _ = RelayLink::decode(&s);
         let _ = verify_request(&s, "POST", "/v1/sync", &data);
         let _ = unb64(&s);
         let _ = unhex32(&s);

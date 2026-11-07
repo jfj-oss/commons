@@ -23,6 +23,27 @@
 
   class CallError extends Error { constructor(kind, msg) { super(msg); this.kind = kind; } }
 
+  // LiveKit gives every client Google's and Twilio's STUN servers unless TURN over UDP is on, which would tell them who is
+  // calling, and it always says TURN over TLS is on port 443. Both are put right here, before any connection exists.
+  // Only addresses change: frame encryption does not depend on the path the media takes.
+  let turnPort = null;
+  const fixIce = cfg => {
+    if (!cfg || !cfg.iceServers) return cfg;
+    const servers = cfg.iceServers.map(s => ({ ...s, urls: [].concat(s.urls || s.url || []).filter(u => !/^stuns?:.*(google|twilio)\.com/i.test(u)).map(u => turnPort ? u.replace(/^(turns:[^:?]+):443\b/i, `$1:${turnPort}`) : u) })).filter(s => s.urls.length);
+    return { ...cfg, iceServers: servers };
+  };
+  function useOurIceServers(port) {
+    turnPort = port || null;
+    if (window.__commonsIce) return;
+    window.__commonsIce = true;
+    const Native = window.RTCPeerConnection;
+    const Ours = function (cfg, ...rest) { return new Native(fixIce(cfg), ...rest); };
+    Ours.prototype = Native.prototype; Object.setPrototypeOf(Ours, Native);
+    window.RTCPeerConnection = Ours;
+    const set = Native.prototype.setConfiguration;
+    Native.prototype.setConfiguration = function (cfg) { return set.call(this, fixIce(cfg)); };
+  }
+
   function describeSupport() {
     const w = window;
     const insertable = !!(w.RTCRtpSender && w.RTCRtpSender.prototype && typeof w.RTCRtpSender.prototype.createEncodedStreams === 'function');
@@ -118,6 +139,7 @@
       this.kp = kp;
       const worker = new Worker(this.workerUrl); this._worker = worker;
       const p = this.prefs;
+      useOurIceServers(tok.turn_port);
       const room = new LK.Room({
         adaptiveStream: false, dynacast: true,
         e2ee: { keyProvider: kp, worker },

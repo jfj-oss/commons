@@ -181,20 +181,32 @@ async function boot() {
     $('#go').onclick = go; $('#pp').onkeydown = e => { if (e.key === 'Enter') go(); };
     return;
   }
-  const relay = esc(st.default_relay || 'http://127.0.0.1:8787');
+  const relay = esc(st.default_relay || '');
+  let invited = null; // what a pasted invite said
+  const invBox = `<label for="lnk">Invite link</label><input type="text" id="lnk" autocomplete="off" spellcheck="false" placeholder="Paste what your friend sent you"><div class="lnk-note small muted" id="lnk-note" role="status"></div>`;
+  const readLink = async () => {
+    const box = $('#lnk'); if (!box) return; const v = box.value.trim(); invited = null; $('#lnk-note').textContent = '';
+    if (!v) return;
+    try {
+      invited = await rpc('parse_link', { link: v });
+      $('#relay').value = invited.relay; $('#inv').value = invited.secret;
+      $('#lnk-note').textContent = invited.kind === 'community' ? `You are joining “${invited.name}” on ${invited.relay.replace(/^https?:\/\//, '')}.` : `This puts you on the relay at ${invited.relay.replace(/^https?:\/\//, '')}.`;
+    } catch (e) { invited = null; $('#lnk-note').textContent = e.message; throw e; }
+  };
   const form = (title, extra, btn, run, links) => {
     el.innerHTML = `<div class="boot-card">${BRAND}<h1>Commons</h1><div class="tag">${title}</div>${extra}
-      <details class="relay-box"><summary>Relay server</summary><input type="text" id="relay" value="${relay}" aria-label="Relay server"><label for="inv">Invite secret (only if this relay asks for one)</label><input type="password" id="inv" autocomplete="off"></details>
+      <details class="relay-box"><summary>Relay server</summary><input type="text" id="relay" value="${relay}" aria-label="Relay server" spellcheck="false" placeholder="https://chat.example.org"><label for="inv">Invite secret (only if this relay asks for one)</label><input type="password" id="inv" autocomplete="off"></details>
       <div class="err" id="e" role="alert"></div><div class="boot-go"><button class="btn" id="go">${btn}</button></div><div class="boot-links">${links}</div></div>`;
     const pp = $('#pp'); if (pp && $('#pp2')) pp.oninput = () => { $('#pph').textContent = ppStrength(pp.value); };
-    $('#go').onclick = async () => { $('#go').disabled = true; try { if ($('#pp2') && $('#pp').value !== $('#pp2').value) throw new Error('The two passphrases are different.'); await run(); } catch (e) { $('#e').textContent = e.message; $('#go').disabled = false; if (/relay/i.test(e.message)) $('.relay-box').open = true; } };
+    if ($('#lnk')) $('#lnk').oninput = () => readLink().catch(() => { });
+    $('#go').onclick = async () => { $('#go').disabled = true; try { await readLink(); if ($('#pp2') && $('#pp').value !== $('#pp2').value) throw new Error('The two passphrases are different.'); await run(); } catch (e) { $('#e').textContent = e.message; $('#go').disabled = false; if (/relay/i.test(e.message)) $('.relay-box').open = true; } };
     $$('input', el).forEach(i => i.onkeydown = e => { if (e.key === 'Enter') $('#go').click(); });
   };
   const links = which => [['new', 'Create an account'], ['pair', 'This is a new device for my account'], ['rec', 'I only have a recovery key']].filter(([k]) => k !== which).map(([k, l]) => `<button type="button" class="linkish" id="l-${k}">${l}</button>`).join('');
   const wire = () => { for (const [k, f] of [['new', showNew], ['pair', showPair], ['rec', showRec]]) { const b = $('#l-' + k); if (b) b.onclick = f; } };
   const showNew = () => { form('Create your account on this device. Your keys are made here and never leave it.',
-    `<label for="nm">Display name</label><input type="text" id="nm" autocomplete="off"><label for="pp">Passphrase (protects the keys on this device)</label><input type="password" id="pp">${PP2}`, 'Create account',
-    async () => { const pass = $('#pp').value; await rpc('create_account', { name: $('#nm').value, passphrase: pass, relay: $('#relay').value, invite: $('#inv').value }); await showRecoveryOnce(pass); el.hidden = true; startApp(); }, links('new')); wire(); };
+    `${invBox}<label for="nm">Display name</label><input type="text" id="nm" autocomplete="off"><label for="pp">Passphrase (protects the keys on this device)</label><input type="password" id="pp">${PP2}`, 'Create account',
+    async () => { const pass = $('#pp').value; await rpc('create_account', { name: $('#nm').value, passphrase: pass, relay: $('#relay').value, invite: $('#inv').value }); if (invited && invited.kind === 'community') await rpc('join', { link: invited.link }).catch(e => toast(e.message)); await showRecoveryOnce(pass); el.hidden = true; startApp(); }, links('new')); wire(); };
   const showPair = () => { form('Add this device to your account. You will get a code to approve on a device you already use.',
     `<label for="pp">Passphrase for this device</label><input type="password" id="pp">${PP2}`, 'Get pairing code', async () => {
       const r = await rpc('start_pairing', { passphrase: $('#pp').value, relay: $('#relay').value });
@@ -300,7 +312,7 @@ function renderRail() {
   else if (!ch.joined && !S.msgs) paint([{ k: 'e:keys', h: KEYS_WAIT }]);
   const st = $('#sync-status');
   const unsent = sn.outbox ? `${sn.outbox} unsent · ` : '';
-  const link = sn.net === 'online' ? '' : sn.net === 'connecting' ? 'connecting… · ' : (/clock/.test(sn.net_detail) ? sn.net_detail : 'offline, retrying') + ' · ';
+  const link = sn.net === 'online' ? '' : sn.net === 'connecting' ? 'connecting… · ' : (/clock/.test(sn.net_detail) ? sn.net_detail : 'cannot reach the relay, retrying') + ' · ';
   st.textContent = link + unsent + 'relay ' + sn.relay.replace(/^https?:\/\//, ''); st.className = 'sync' + (sn.outbox || sn.net === 'offline' ? ' bad' : ''); st.title = sn.net_detail || '';
   const b = $('#banner');
   const log = '<button type="button" class="linkish" data-a="log">Open the activity log</button>';

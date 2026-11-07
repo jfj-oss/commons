@@ -1,7 +1,7 @@
 //! JSON dispatch used by both the Tauri shell and the local dev bridge: the UI talks to the Rust core only
 //! through `App::call(method, args)`. Keys and plaintext never leave this process.
 use crate::client::*;
-use crate::envelope::{check_name, safe_file_name};
+use crate::envelope::{check_name, safe_file_name, InviteLink, RelayLink};
 use crate::state::*;
 use crate::transport::{Api, HttpTransport};
 use crate::vault::KdfParams;
@@ -45,6 +45,18 @@ pub fn clean_relay_url(u: &str) -> Result<String, String> {
     let name = host.rsplit_once(':').filter(|(_, p)| p.parse::<u16>().is_ok()).map(|(h, _)| h).unwrap_or(host);
     let ok = !name.is_empty() && !name.contains(':') && name.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_')) && !rest.contains(['?', '#', '@', ' ', '\\']);
     if ok { Ok(u.to_string()) } else { Err(bad()) }
+}
+
+/// What a person can do about a relay that does not answer. The technical reason stays at the end, for whoever helps them.
+pub fn unreachable_text(relay: &str, why: &str) -> String {
+    let w = why.to_ascii_lowercase();
+    let hint = if w.contains("not a commons relay") || w.contains("relay said") { "Something answers at that address, but it is not a Commons relay. Check the address, including the port." }
+        else if w.contains("dns") || w.contains("resolve") || w.contains("lookup") || w.contains("name or service") { "That address could not be found. Check it for typos, and check that this computer is online." }
+        else if w.contains("certificate") || w.contains("tls") || w.contains("handshake") { "The relay's secure connection could not be checked. Check that this computer's date and time are right; if the address is right too, tell whoever runs it." }
+        else if w.contains("refused") { "Nothing is answering there. The relay is probably switched off: ask whoever runs it to start it." }
+        else if w.contains("timed out") || w.contains("timeout") { "It did not answer in time. The relay may be switched off, or this network may be blocking it." }
+        else { "The relay may be switched off, or the address may be wrong." };
+    format!("Could not reach the relay at {relay}. {hint} ({why})")
 }
 
 /// The dev bridge has no password, so nothing but a page it served itself may reach it. Host stops DNS rebinding,
@@ -129,7 +141,7 @@ impl App {
     /// Before anything is created for a relay: is it there, and will it have us?
     fn probe(&self, relay: &str, invite: Option<&str>) -> Result<(), String> {
         let api = Api { t: HttpTransport::new(relay).into_arc() };
-        api.health().map_err(|x| format!("Could not reach a Commons relay at {relay}: {x:#}"))?;
+        api.health().map_err(|x| unreachable_text(relay, &format!("{x:#}")))?;
         let Some(invite) = invite else { return Ok(()) };
         let Ok(info) = api.info(None) else { return Ok(()) };
         if !info.gated { return Ok(()); }
@@ -139,7 +151,9 @@ impl App {
     }
 
     fn relay_arg(&self, a: &Value) -> Result<String, String> {
-        clean_relay_url(&if s(a, "relay").is_empty() { self.default_relay.clone() } else { s(a, "relay") })
+        let r = if s(a, "relay").trim().is_empty() { self.default_relay.clone() } else { s(a, "relay") };
+        if r.trim().is_empty() { return Err("Paste the invite link you were sent into the first box. No link? Enter the relay's address under Relay server.".into()); }
+        clean_relay_url(&r)
     }
 
     fn open_with(&self, f: impl FnOnce(Arc<dyn crate::transport::Transport>) -> anyhow::Result<Client>, relay: &str) -> R {
@@ -173,6 +187,13 @@ impl App {
                     None => Ok(json!({"locked": true, "exists": Client::exists(&self.dir), "default_relay": self.default_relay})),
                     Some(c) => Ok(json!({"locked": false, "has_identity": c.has_identity(), "relay": c.st.relay})),
                 }
+            }
+            // What a pasted invite says, before anything is created. Never needs an account.
+            "parse_link" => {
+                let link = s(&a, "link");
+                if let Ok(l) = InviteLink::decode(&link) { return Ok(json!({"kind": "community", "relay": l.relay, "secret": l.secret, "name": l.name, "link": l.encode()})); }
+                if let Ok(l) = RelayLink::decode(&link) { return Ok(json!({"kind": "relay", "relay": clean_relay_url(&l.relay)?, "secret": l.secret})); }
+                Err("That is not a Commons invite. It should start with https:// or commons://, and the whole link has to be pasted.".into())
             }
             "create_account" => {
                 let relay = self.relay_arg(&a)?;
@@ -267,7 +288,8 @@ impl App {
                 let uses = a.get("uses").and_then(|x| x.as_u64()).map(|x| x as u32);
                 let ttl = a.get("ttl").and_then(|x| x.as_u64()).unwrap_or(7 * 86400);
                 let link = c.create_invite(&s(&a, "cid"), uses, ttl).map_err(e)?;
-                Ok(json!({"link": link, "qr": Client::qr_svg(&link)}))
+                let web = InviteLink::decode(&link).ok().and_then(|l| l.web());
+                Ok(json!({"link": web.as_deref().unwrap_or(&link), "qr": Client::qr_svg(web.as_deref().unwrap_or(&link))}))
             }),
             "join" => self.with(|c| c.join_with_link(&s(&a, "link")).map(|id| json!({"id": id})).map_err(e)),
             "cancel_join" => self.with(|c| c.cancel_join(&s(&a, "id")).map(|_| json!({})).map_err(e)),
@@ -335,7 +357,7 @@ impl App {
                 let gid = s(&a, "gid");
                 self.with(|c| c.call_state(&gid).map(|_| ()).map_err(e))?;
                 let (api, k) = self.with(|c| c.net_handle().map_err(e))?;
-                api.call_token(&k, &gid).map(|t| json!({"url": t.url, "token": t.token, "room": t.room, "identity": t.identity, "expires": t.expires})).map_err(e)
+                api.call_token(&k, &gid).map(|t| json!({"url": t.url, "token": t.token, "room": t.room, "identity": t.identity, "expires": t.expires, "turn_port": t.turn_port})).map_err(e)
             }
             _ => Err(format!("unknown method {m}")),
         }

@@ -89,9 +89,11 @@
     if (panel.contains(document.activeElement) && document.activeElement.matches('input[type=range],select')) return;   // do not fight a drag in progress
     let h = `<div class="ch"><h3>${esc(inThis || s.phase !== 'idle' ? (s.roomName || 'Call') : (room ? room.name : 'Call'))}</h3>${encBadge(s)}<button class="mini" id="c-close" title="Hide (the call keeps running)">×</button></div>`;
     if (!sup.ok) {
-      h += `<div class="cerr"><b>Calls are not available in this window.</b><br>${sup.reasons.map(esc).join('<br>')}</div>
-        <div class="cnote">Commons will never fall back to an unencrypted call. ${window.__TAURI__ ? 'The desktop app\'s web view lacks what calls need on this system. <b>Open the call in your browser</b> instead: the same end-to-end encryption, with the keys handed to the browser tab over a one-time link on this computer only.' : 'Try a current Chromium-based browser or Firefox.'}</div>
-        ${window.__TAURI__ && room ? '<div class="cbar"><button class="btn" id="c-browser">Open this call in my browser</button></div>' : ''}`;
+      const why = `<details class="cnote"><summary>Why?</summary>${sup.reasons.map(esc).join('<br>')}</details>`;
+      h += window.__TAURI__
+        ? `<div class="cnote"><b>On this computer, calls open in your browser.</b> The app window cannot do encrypted calls here, so the call runs in a browser tab: same room, same end-to-end encryption. Use Chrome, Brave, Edge or Firefox. If you are asked for the microphone, allow it. Close the tab to leave the call.</div>
+           ${room ? '<div class="cbar"><button class="btn" id="c-browser">Open this call in my browser</button></div>' : ''}${why}`
+        : `<div class="cerr"><b>Calls are not available in this window.</b><br>${sup.reasons.map(esc).join('<br>')}</div><div class="cnote">Commons will never fall back to an unencrypted call. Try a current Chromium-based browser or Firefox.</div>`;
       panel.innerHTML = h; wireBasic(); return;
     }
     if (s.phase === 'idle' || (s.phase === 'error' && !inThis && !s.gid)) {

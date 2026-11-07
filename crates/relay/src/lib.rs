@@ -2,6 +2,7 @@
 //! a welcome inbox, an encrypted blob store and a tiny rendezvous mailbox for device pairing.
 //! It assumes it is hostile: it holds no key that decrypts anything. See docs/THREAT-MODEL.md
 //! for the exact list of what it can observe.
+pub mod front;
 use axum::{
     body::{to_bytes, Body},
     extract::State,
@@ -20,6 +21,8 @@ use tokio::sync::{watch, Semaphore};
 pub struct Limits {
     /// Optional call support: when set, current members can fetch LiveKit join tokens (see `LiveKitCfg`).
     pub livekit: Option<LiveKitCfg>,
+    /// When set, `/join` shows friends how to get in, and the files in this folder can be downloaded from `/download/`.
+    pub site_dir: Option<PathBuf>,
     /// Call tokens one device may fetch per window (reconnects need a few, loops should not).
     pub call_tokens_per_window: u32,
     /// When set, a new account needs this secret to register (a device of an existing account does not).
@@ -58,6 +61,7 @@ impl Default for Limits {
         Limits {
             invite_secret: None,
             livekit: None,
+            site_dir: None,
             call_tokens_per_window: 60,
             max_accounts: 1000,
             max_devices_per_account: 32,
@@ -91,6 +95,8 @@ pub struct LiveKitCfg {
     /// The websocket URL clients should connect to (wss://... in production).
     pub url: String,
     pub token_ttl_secs: u64,
+    /// LiveKit always tells clients TURN over TLS is on port 443. When it is somewhere else, clients are told here.
+    pub turn_port: Option<u16>,
 }
 impl std::fmt::Debug for LiveKitCfg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "LiveKitCfg {{ url: {:?}, api_key: {:?}, api_secret: <hidden> }}", self.url, self.api_key) }
@@ -246,10 +252,48 @@ fn body_limit(m: &Method, path: &str) -> usize {
     if *m == Method::PUT && path.starts_with("/v1/blobs/") { MAX_BLOB_BYTES + 1024 } else { 4 * 1024 * 1024 }
 }
 
+/// The pages a friend sees before they have the app. Fixed files plus one flat folder: nothing here touches accounts.
+const JOIN_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'";
+fn page(ty: &'static str, body: &'static str) -> Resp {
+    Response::builder().header("content-type", ty).header("content-security-policy", JOIN_CSP).header("x-content-type-options", "nosniff").header("referrer-policy", "no-referrer")
+        .body(Body::from(body)).unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR, "page"))
+}
+/// A plain file name: no path, nothing hidden.
+fn download_name(n: &str) -> bool {
+    !n.is_empty() && n.len() <= 200 && !n.starts_with('.') && n.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_'))
+}
+async fn site(dir: &std::path::Path, path: &str) -> Option<Resp> {
+    match path {
+        "/join" => return Some(page("text/html; charset=utf-8", include_str!("join.html"))),
+        "/join.js" => return Some(page("text/javascript; charset=utf-8", include_str!("join.js"))),
+        "/download/" => {
+            let mut list = vec![];
+            if let Ok(mut rd) = tokio::fs::read_dir(dir).await {
+                while let Ok(Some(e)) = rd.next_entry().await {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    let Ok(md) = tokio::fs::metadata(e.path()).await else { continue };
+                    if md.is_file() && download_name(&name) { list.push(serde_json::json!({"name": name, "size": md.len()})); }
+                }
+            }
+            list.sort_by_key(|f| f["name"].as_str().unwrap_or("").to_string());
+            return Some(json(&list));
+        }
+        _ => {}
+    }
+    let name = path.strip_prefix("/download/")?;
+    if !download_name(name) { return Some(status(StatusCode::NOT_FOUND, "no such file")); }
+    let Ok(f) = tokio::fs::File::open(dir.join(name)).await else { return Some(status(StatusCode::NOT_FOUND, "no such file")) };
+    let Ok(md) = f.metadata().await else { return Some(status(StatusCode::NOT_FOUND, "no such file")) };
+    if !md.is_file() { return Some(status(StatusCode::NOT_FOUND, "no such file")); }
+    Some(Response::builder().header("content-type", "application/octet-stream").header("content-length", md.len()).header("content-disposition", format!("attachment; filename=\"{name}\"")).header("x-content-type-options", "nosniff")
+        .body(Body::from_stream(tokio_util::io::ReaderStream::new(f))).unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR, "file")))
+}
+
 async fn handle(State(st): State<Arc<RelayState>>, req: Request<Body>) -> Resp {
     let (parts, body) = req.into_parts();
     let path = parts.uri.path().to_string();
     let m = parts.method.clone();
+    if m == Method::GET { if let Some(dir) = &st.limits.site_dir { if let Some(r) = site(dir, &path).await { return r; } } }
     let limit = body_limit(&m, &path);
     // A slot for a big body goes only to a registered, unrevoked device (the full signature can only be checked once
     // the body is in), and a body that does not arrive in time gives the slot back.
@@ -549,7 +593,7 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
             if !member || denied > 0 { return Err(status(StatusCode::FORBIDDEN, "not a current member")); }
             let room = call_room(gid);
             let (token, expires) = mint_livekit_token(cfg, &a.device, &room, now_secs()).map_err(|_| status(StatusCode::INTERNAL_SERVER_ERROR, "token"))?;
-            Ok(json(&CallTokenResp { url: cfg.url.clone(), token, room, identity: a.device, expires }))
+            Ok(json(&CallTokenResp { url: cfg.url.clone(), token, room, identity: a.device, expires, turn_port: cfg.turn_port }))
         }
         (Method::POST, ["v1", "groups", gid, "messages"]) => {
             let a = authenticate(&db, headers, ms, path, body, true)?.1.unwrap();

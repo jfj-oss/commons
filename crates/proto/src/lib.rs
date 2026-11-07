@@ -210,7 +210,12 @@ pub struct AclReq {
 }
 /// Reply of `POST /v1/groups/{gid}/call-token`: everything the client needs to join the media room.
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct CallTokenResp { pub url: String, pub token: String, pub room: String, pub identity: String, pub expires: u64 }
+pub struct CallTokenResp {
+    pub url: String, pub token: String, pub room: String, pub identity: String, pub expires: u64,
+    /// Where TURN over TLS really is, when that is not the port 443 LiveKit tells everyone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_port: Option<u16>,
+}
 /// The opaque media-room name for a group: the media server never sees the group id itself.
 pub fn call_room(gid: &str) -> String { hex::encode(sha256(&[b"commons/livekit-room/v1", gid.as_bytes()])) }
 /// One link of the chain of owners: `from` hands the community to `to` as step `seq` (1 = from the founder).

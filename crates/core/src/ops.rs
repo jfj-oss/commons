@@ -163,7 +163,7 @@ impl Client {
         let mut plan = Plan::empty("create invite");
         plan.gce = Some(t);
         if self.run_commit(cid, plan)? == Outcome::Lost { bail!("another admin changed the community at the same time; try again"); }
-        let link = InviteLink { owner: founder, relay: self.st.relay.clone(), community: cid.into(), invite: id.clone(), sk: hex::encode(sk.to_bytes()), name: cname };
+        let link = InviteLink { owner: founder, relay: self.st.relay.clone(), community: cid.into(), invite: id.clone(), sk: hex::encode(sk.to_bytes()), name: cname, secret: self.st.relay_invite.clone() };
         self.st.communities.get_mut(cid).unwrap().invite_sks.insert(id, link.sk.clone());
         self.save()?;
         Ok(link.encode())

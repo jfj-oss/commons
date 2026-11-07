@@ -1,1 +1,1 @@
-{ "name": "commons-tools", "private": true, "type": "module", "dependencies": { "livekit-client": "2.23.0" } }
+{"name":"commons-tools","private":true,"type":"module","dependencies":{"livekit-client":"2.23.0"},"devDependencies":{"@tauri-apps/cli":"^2.12.4"}}
