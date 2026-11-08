@@ -132,7 +132,7 @@ fn history_of(c: &Client, gid: &str, limit: usize) -> Vec<Line> {
     // "/reset" draws a line: nothing before it (and not the bot's own "memory wiped" reply) is context any more
     let name = c.st.name.clone();
     if let Some(i) = out.iter().rposition(|l| is_reset(&l.text, &name)) { out.drain(..=i); }
-    out.retain(|l| !(l.mine && l.text == RESET_REPLY));
+    out.retain(|l| !(l.mine && (l.text == RESET_REPLY || l.text == safety::REFUSAL)));
     let start = out.len().saturating_sub(limit);
     out.split_off(start)
 }
@@ -728,8 +728,9 @@ impl Bot {
         // A length the person named ("a 2 minute song") wins over the one the model picked or forgot.
         if let Some(l) = studio::length_from_words(req.kind, &job.text) { req.length = l; }
         // The hard block. Both the person's own request and the model-written prompt (and lyrics) are read.
-        for (source, text) in [("request", job.text.as_str()), ("prompt", req.prompt.as_str()), ("lyrics", req.lyrics.as_str())] {
-            if let Some(why) = safety::reason(text) {
+        let asked = safety::without_mention(&job.text, &self.cfg.name);
+        for (source, why) in [("request", safety::reason(&asked)), ("prompt", safety::reason(&req.prompt)), ("lyrics", safety::reason_lyrics(&req.lyrics))] {
+            if let Some(why) = why {
                 eprintln!("[bot] hard block: {why:?}, in the {source}");   // the rule and the place, never the text
                 return self.studio_notice(
                     c, job, safety::REFUSAL,

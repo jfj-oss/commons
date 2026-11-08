@@ -23,12 +23,39 @@ pub enum Why {
 pub fn blocked(text: &str) -> bool { reason(text).is_some() }
 
 /// The rule that refuses `text`, if any.
-pub fn reason(text: &str) -> Option<Why> {
+pub fn reason(text: &str) -> Option<Why> { reason_with(text, true) }
+
+/// [`reason`] for song lyrics. Every rule applies except "two capitalised words look like a full name": lyrics capitalise
+/// every line and carry [Verse]/[Chorus] tags, so that rule would call almost any verse a person. Known names, "my
+/// friend" and @mentions are still refused here, and the request and prompt still get the capitalised-name rule.
+pub fn reason_lyrics(text: &str) -> Option<Why> { reason_with(text, false) }
+
+fn reason_with(text: &str, capitals: bool) -> Option<Why> {
     let leet = leet_words(text);
     if !is_sexual(&leet) { return None; }
     if is_youthful(&leet) || has_age_under_18(&words(text)) { return Some(Why::Minor); }
-    if is_real_person(text, &leet) { return Some(Why::RealPerson); }
+    if is_real_person(text, &leet, capitals) { return Some(Why::RealPerson); }
     None
+}
+
+/// The request without the mention of the bot itself: "@Oracle" is how a request starts, not a person being named.
+/// Any other @mention stays, and is still refused beside something sexual.
+pub fn without_mention(text: &str, name: &str) -> String {
+    let want: Vec<char> = name.to_lowercase().chars().collect();
+    let chars: Vec<char> = text.chars().collect();
+    let free = |c: Option<&char>| c.is_none_or(|c| !(c.is_alphanumeric() || *c == '_' || *c == '-'));
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let end = i + 1 + want.len();
+        let is_bot = chars[i] == '@' && !want.is_empty() && end <= chars.len()
+            && chars[i + 1..end].iter().zip(&want).all(|(c, w)| c.to_lowercase().next() == Some(*w))
+            && free(chars.get(end));
+        if is_bot { i = end; continue; }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
 }
 
 /// The short line posted when the hard block refuses something. It never repeats or describes the request.
@@ -357,11 +384,11 @@ const INTRODUCERS: &[&str] = &[
     "and", "is", "was", "about",
 ];
 
-fn is_real_person(original: &str, leet: &[String]) -> bool {
+fn is_real_person(original: &str, leet: &[String], capitals: bool) -> bool {
     if has_at_mention(original) { return true; }
     if PERSON_PHRASES.iter().any(|p| has_phrase(leet, p)) { return true; }
     if has_word(leet, PERSON_WORDS) { return true; }
-    capitalised_name(original)
+    capitals && capitalised_name(original)
 }
 
 fn has_at_mention(text: &str) -> bool {
@@ -420,6 +447,27 @@ fn capitalised_name(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn asking_the_bot_is_not_naming_a_person() {
+        let asked = without_mention("@Oracle make a song about ass shaking", "Oracle");
+        assert_eq!(super::reason(&asked), None);
+        assert_eq!(super::reason(&without_mention("@oracle's ass song", "Oracle")), None);
+        // Someone else is still a person, and the youth rule still applies.
+        assert_eq!(super::reason(&without_mention("@Oracle a nude picture of @sam", "Oracle")), Some(super::Why::RealPerson));
+        assert_eq!(super::reason(&without_mention("@Oracle a nude teen", "Oracle")), Some(super::Why::Minor));
+        assert_eq!(without_mention("@Oracleman hi", "Oracle"), "@Oracleman hi");
+    }
+
+    #[test]
+    fn lyric_tags_and_capitals_are_not_a_name_but_real_rules_still_hold() {
+        let verse = "[Verse]\nShake that ass all night\n\n[Chorus]\nBoom boom\nKingston Nights";
+        assert_eq!(super::reason_lyrics(verse), None);
+        assert_eq!(super::reason_lyrics("Shake that ass for Taylor Swift"), Some(super::Why::RealPerson));
+        assert_eq!(super::reason_lyrics("[Verse]\nNaked with my friend"), Some(super::Why::RealPerson));
+        assert_eq!(super::reason_lyrics("[Verse]\nNaked schoolgirl"), Some(super::Why::Minor));
+        assert_eq!(super::reason_lyrics("[Verse]\nNaked, 15 years old"), Some(super::Why::Minor));
+    }
+
     use super::*;
 
     fn allowed(text: &str) {
