@@ -1,6 +1,9 @@
 'use strict';
-// Voice room panel. Depends on app.js globals (S, rpc, esc, toast) and call.js. Adds a "Call" button to the room header
-// and one floating panel; nothing else in the page is touched.
+// Calls in the app: while you are in one, a compact dock sits at the bottom of the sidebar (a slim bar at the bottom of
+// the chat on a phone), with the status, a lock that explains what the call server can see, and one row of icon buttons.
+// The people are the ones under the room in the rail already. Screen shares, cameras and played videos still open large
+// in the main area. The device settings and "play into the call" pickers keep their dialogs.
+// Depends on app.js globals (S, rpc, esc, toast) and call.js.
 (function () {
   if (!window.CommonsCall) return;
   const call = new CommonsCall({ rpc });
@@ -16,6 +19,7 @@
       <symbol id="ci-gear" viewBox="0 0 20 20"><path d="M3 6h7.5M15.5 6H17M3 14h1.5M9.5 14H17"/><circle cx="13" cy="6" r="2.3"/><circle cx="7" cy="14" r="2.3"/></symbol>
       <symbol id="ci-wave" viewBox="0 0 20 20"><path d="M3 10v0M6 7v6M9 4.5v11M12 7v6M15 8.5v3M18 10v0"/></symbol>
       <symbol id="ci-film" viewBox="0 0 20 20"><rect x="2.5" y="4" width="15" height="12" rx="1.6"/><path d="M2.5 8h15M6.5 4v4M10 4v4M13.5 4v4"/></symbol>
+      <symbol id="ci-lock" viewBox="0 0 20 20"><rect x="4.5" y="9" width="11" height="8" rx="2"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/></symbol>
       <symbol id="ci-note" viewBox="0 0 20 20"><path d="M7.5 15.5V5l8-1.8v10.3"/><circle cx="5.2" cy="15.5" r="2.3"/><circle cx="13.2" cy="13.5" r="2.3"/></symbol>
       <symbol id="ci-play" viewBox="0 0 20 20"><path d="M7 4.5l8 5.5-8 5.5z"/></symbol>
       <symbol id="ci-pause" viewBox="0 0 20 20"><path d="M7 4.5v11M13 4.5v11"/></symbol>
@@ -30,16 +34,17 @@
   const desktopApp = () => !!window.__TAURI__ && window.__commonsPlatform !== 'mobile';
   window.__commonsCall = call;               // used by the headless tests
   const $q = (s, r = document) => r.querySelector(s);
-  const hue = s => { let h = 0; for (const c of s || 'x') h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
-  let panel = null, open = false, showSettings = false, devices = null;
+  let devices = null, showSettings = false;
   let playDlg = null, playItems = null, playBusy = false;
   let runeItems = null, runeBusy = false;
   let qcSession = null;   // Jellyfin Quick Connect while a code is on screen: { secret, code, busy, error, timer }
+  let dock = null, stage = null, settingsDlg = null, pop = null;
   const fmtTime = s => { s = Math.max(0, Math.floor(Number(s) || 0)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(x).padStart(2, '0'); };
   // Video tiles live in their own host that no render ever rewrites. Each tile (one per video track: a camera and a screen
   // share of the same person are two tiles) is created once, updated in place, and removed when its track is muted or gone.
   // Moving or re-creating a <video> on every state update made the pictures flicker.
   const tiles = new Map();
+  const isPhone = () => window.matchMedia && window.matchMedia('(max-width: 760px)').matches;
 
   function currentRoom() {
     try {
@@ -49,11 +54,17 @@
     } catch { return null; }
   }
 
+  // ---- the room header's Call button: it joins this room's call (there is no panel to open any more) ----
   function ensureButton() {
     const bar = $q('.head-actions');
     if (!bar || $q('#btn-call')) return;
     const b = document.createElement('button'); b.id = 'btn-call'; b.className = 'btn ghost'; b.innerHTML = ic('ci-wave') + '<span class="lbl">Call</span>'; b.title = 'Voice and screen share in this room (end-to-end encrypted)';
-    b.onclick = () => { open = !open; if (open) ensurePanel(); render(); };
+    b.onclick = async () => {
+      const room = currentRoom(); if (!room) return;
+      if (call.gid === room.gid && call.phase !== 'idle' && call.phase !== 'error') return;   // already here; the dock is up
+      try { await call.join(room.gid, room.name); } catch { }
+      render();
+    };
     bar.insertBefore(b, $q('#btn-invite', bar) || bar.firstChild);
   }
   function updateButton() {
@@ -65,38 +76,183 @@
     b.innerHTML = ic('ci-wave') + '<span class="lbl">' + (live ? (call.gid === (room && room.gid) ? 'In call' : 'In call elsewhere') : 'Call') + '</span>';
   }
 
-  function ensurePanel() {
-    if (panel) return;
-    panel = document.createElement('div'); panel.id = 'call-panel'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'Voice room'); panel.hidden = true;
-    panel.innerHTML = '<div class="cpart" id="c-top"></div><div class="cshares" id="c-shares" hidden></div><div class="cpart" id="c-bottom"></div>';
-    document.body.appendChild(panel);
+  // ---------------------------------------------------------------- the dock, in the rail (or the chat on a phone)
+  function ensureDock() {
+    if (dock) return dock;
+    dock = document.getElementById('call-dock');
+    if (!dock) {
+      dock = document.createElement('div'); dock.id = 'call-dock'; dock.hidden = true;
+      (document.getElementById('rail') || document.body).appendChild(dock);
+    }
+    placeDock();
+    wireDock();
+    return dock;
+  }
+  // The rail is a drawer on a phone, so the same dock lives in the chat there: always reachable, no drawer needed.
+  function placeDock() {
+    if (!dock) return;
+    const rail = document.getElementById('rail'), main = document.getElementById('main');
+    if (isPhone() && main) {
+      if (dock.parentElement !== main) main.insertBefore(dock, document.getElementById('composer') || null);
+      dock.classList.remove('standalone');
+    } else if (rail) {
+      if (dock.parentElement !== rail) rail.insertBefore(dock, document.getElementById('sync-status') || null);
+      dock.classList.remove('standalone');
+    } else {
+      if (dock.parentElement !== document.body) document.body.appendChild(dock);
+      dock.classList.add('standalone');   // the stand-alone browser call page has no rail or chat
+    }
+  }
+  // A phone has a whole row of controls beside the words, so say the shorter thing there.
+  const statusWords = s => s.phase === 'connecting' ? 'Connecting…' : s.phase === 'reconnecting' ? 'Reconnecting…' : s.phase === 'error' ? 'Call ended' : isPhone() ? 'Connected' : 'Voice connected';
+  function dockButtons(s, sup) {
+    const muted = s.muted || s.gameMuted;
+    const btn = (id, icon, label, on, extra = '') => `<button type="button" class="cd-b${on ? ' on' : ''}" id="${id}" title="${esc(label)}" aria-label="${esc(label)}" aria-pressed="${on ? 'true' : 'false'}"${extra}>${ic(icon)}</button>`;
+    const shareLabel = s.sharing ? 'Stop sharing your screen' : sup.canShareScreen ? 'Share your screen' : 'This browser or webview cannot share a screen';
+    const playLabel = s.playback ? 'A video is already playing; stop it first' : s.sharing ? 'Stop sharing your screen first' : 'Play a video into the call';
+    return `<div class="cd-acts">
+      ${btn('c-mute', muted ? 'ci-micoff' : 'ci-mic', muted ? (s.gameMuted && !s.muted ? 'Muted by game key: unmute' : 'Unmute') : 'Mute', muted)}
+      ${btn('c-deaf', 'ci-phones', s.deafened ? 'Undeafen' : 'Deafen', s.deafened)}
+      ${btn('c-share', 'ci-screen', shareLabel, s.sharing, sup.canShareScreen ? '' : ' disabled')}
+      ${btn('c-playopen', 'ci-film', playLabel, false, s.playback || s.sharing ? ' disabled' : '')}
+      ${btn('c-cam', 'ci-cam', s.camera ? 'Turn the camera off' : 'Turn the camera on', s.camera)}
+      ${btn('c-set', 'ci-gear', 'Call settings', showSettings)}
+      ${s.ptt ? `<button type="button" class="cd-b${s.pttHeld ? ' on' : ''}" id="c-ptt" title="Hold to talk (or hold your push-to-talk key)" aria-label="Hold to talk">${ic('ci-mic')}</button>` : ''}
+      <button type="button" class="cd-b leave" id="c-leave" title="Leave the call" aria-label="Leave the call">${ic('ci-leave')}</button>
+    </div>`;
+  }
+  function dockHtml(s, sup) {
+    const room = currentRoom();
+    const name = s.roomName || (room && room.name) || 'Call';
+    const dot = s.phase === 'connected' ? 'ok' : s.phase === 'error' ? 'bad' : 'wait';
+    let notes = '';
+    if (s.error) notes += `<div class="cd-err" role="status">${esc(s.error.msg)}</div>`;
+    else if (!sup.ok) notes += `<div class="cd-err">Calls are not available in this window.</div>`;
+    if (!sup.ok && desktopApp() && room) notes += `<div class="cd-row"><button type="button" class="btn ghost" id="c-browser">Open this call in my browser</button></div>`;
+    if (s.gameMuted) notes += `<div class="cd-note">Muted by game key${s.gameName ? ' (' + esc(s.gameName) + ')' : ''}. Friends see you as muted.</div>`;
+    else if (s.gameError) notes += `<div class="cd-note">Game keys are not working: ${esc(s.gameError)}</div>`;
+    if (s.blocked.length) notes += `<div class="cd-note bad">Blocked ${s.blocked.length} stream(s) that are not from a current member or not encrypted.</div>`;
+    return `<div class="cd-top"><span class="cd-dot ${dot}"></span><span class="cd-phase">${esc(statusWords(s))}</span><span class="cd-dot-sep">·</span><span class="cd-room" title="${esc(name)}">${esc(name)}</span>${encBadge(s)}</div>${notes}${dockButtons(s, sup)}`;
+  }
+  function renderDock(s, sup) {
+    ensureDock();
+    placeDock();
+    const inCall = s.phase !== 'idle';
+    dock.hidden = !inCall;
+    if (!inCall) { closePop(); if (showSettings) { showSettings = false; renderSettings(s); } return; }
+    const html = dockHtml(s, sup);
+    if (dock.__html !== html) { dock.innerHTML = html; dock.__html = html; }
+  }
+  let dockWired = false, swallowClick = false;
+  function wireDock() {
+    if (dockWired) return; dockWired = true;
+    dock.addEventListener('click', e => {
+      const b = e.target.closest('button'); if (!b || !dock.contains(b)) return;
+      switch (b.id) {
+        case 'c-mute':
+          if (call.gameMuted && !call.muted) call.clearGameKey();
+          else { const m = !call.muted; call.setMuted(m); if (!m) call.clearGameKey(); }
+          break;
+        case 'c-deaf': call.setDeafened(!call.deafened); break;
+        case 'c-share': call.sharing ? call.stopShare().catch(() => { }) : call.startShare().catch(() => { }); break;
+        case 'c-playopen': openPlayDialog(); break;
+        case 'c-cam': call.setCamera(!call.camera); break;
+        case 'c-set':
+          showSettings = !showSettings;
+          if (showSettings) {
+            ensureSettings();
+            call.listDevices().then(d => { devices = d; render(); }).catch(() => render());
+          }
+          render();
+          break;
+        case 'c-leave': leaveRoom(); break;
+        case 'c-enc': openExplainer(b); break;
+        case 'c-browser': openInBrowser(); break;
+      }
+    });
+    // Push to talk: hold the button (the keyboard key works the same way).
+    dock.addEventListener('pointerdown', e => { const p = e.target.closest('#c-ptt'); if (p) { e.preventDefault(); call.pttButton(true); } });
+    for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) dock.addEventListener(ev, () => call.pttButton(false));
+  }
+  function leaveRoom() {
+    closePlayDialog(); cancelQuickConnect(); closePop();
+    showSettings = false;
+    call.leave();
+    render();
+  }
+  async function openInBrowser() {
+    const room = currentRoom(); if (!room) return;
+    try {
+      const r = await rpc('open_call_in_browser', { gid: room.gid, name: room.name });
+      if (r.opened) toast('Opened in your browser');
+      call.fail(r.opened ? 'handoff' : 'browser', (r.opened ? 'The call should now be open in your browser. If nothing appeared, open' : 'Could not start a browser automatically. Open') + ' this link in Chrome, Brave, Edge or Firefox on this computer: ' + r.url);
+    } catch (e) { call.fail('browser', e.message); }
   }
 
   function encBadge(s) {
     const e = s.encryption;
     if (s.phase === 'idle') return '';
-    if (e.active) return `<span class="call-enc ok" title="Every audio and video frame is encrypted on your device with keys from this room's MLS group before it is sent. Frame cipher: AES-GCM; backend: ${esc(e.backend)}; key epoch ${e.epoch ?? '?'}.">${ic('i-lock')}Encrypted</span>`;
-    return `<span class="call-enc bad">NOT encrypted</span>`;
+    if (e.active) return `<button type="button" class="call-enc ok" id="c-enc" title="Encrypted. What the call server can see" aria-label="Encrypted. What the call server can see">${ic('ci-lock')}<span class="sr">Encrypted</span></button>`;
+    return `<span class="call-enc bad" title="This call's media is not encrypted">NOT encrypted</span>`;
   }
 
-  function peerRow(p) {
-    const tags = [];
-    if (p.me) tags.push('you');
-    if (p.deafened) tags.push('deafened'); else if (p.muted) tags.push('muted');
-    if (!p.member) tags.push('<span class="w">not in this room: blocked</span>');
-    if (p.cantDecrypt) tags.push('<span class="w">cannot decrypt (keys out of sync)</span>');
-    return `<div class="cp ${p.speaking ? 'speaking' : ''}${p.deafened ? ' deafened' : p.muted ? ' muted' : ''}" data-id="${esc(p.identity)}">
-      ${typeof seal === 'function' ? `<div class="av sealed">${seal(p.account || p.identity, p.name)}</div>` : `<div class="av" style="background:hsl(${hue(p.account || p.identity)} 50% 38%)">${esc((p.name || '?').slice(0, 1).toUpperCase())}</div>`}
-      <div><div class="nm">${esc(p.name)}</div><div class="tags">${tags.join(' · ') || (p.speaking ? 'speaking' : '&nbsp;')}</div></div>
-      ${p.me ? '' : `<input type="range" min="0" max="1" step="0.05" value="${p.volume}" aria-label="Volume for ${esc(p.name)}" data-vol="${esc(p.identity)}">`}</div>`;
+  // ---------------------------------------------------------------- the big picture, in the main area
+  function ensureStage() {
+    if (stage) return stage;
+    stage = document.getElementById('call-stage');
+    if (!stage) {
+      stage = document.createElement('div'); stage.id = 'call-stage'; stage.hidden = true;
+      const main = document.getElementById('main');
+      if (main) main.insertBefore(stage, document.getElementById('stream-wrap') || null);
+      else document.body.appendChild(stage);
+    }
+    stage.innerHTML = '<div id="c-shares" hidden></div><div id="c-play" hidden></div>';
+    if (!document.getElementById('main')) stage.classList.add('standalone');
+    wireStage();
+    return stage;
   }
-
-  function devSelect(id, list, sel, label) {
-    return `<label for="${id}">${label}</label><select id="${id}"><option value="">System default</option>${list.map(d => `<option value="${esc(d.deviceId)}" ${d.deviceId === sel ? 'selected' : ''}>${esc(d.label || 'Device')}</option>`).join('')}</select>`;
+  function renderStage(s) {
+    ensureStage();
+    const show = s.phase !== 'idle' && (s.shares.length > 0 || !!s.playback);
+    stage.classList.toggle('standalone', !document.getElementById('main'));
+    stage.hidden = !show;
+    if (!show) {
+      if (tiles.size) syncTiles([]);
+      const pl = $q('#c-play', stage);
+      if (pl) { pl.hidden = true; if (pl.__html) { pl.innerHTML = ''; pl.__html = ''; } }
+      return;
+    }
+    syncTiles(s.shares);   // first: a focused quality picker must never keep a stopped video on screen
+    renderPlay(s.playback);
   }
-
-  // The sender's controls for a movie playing into the call. Viewers get the picture and sound as a normal share tile; only
-  // the sender controls it, as asked.
+  function renderPlay(p) {
+    const el = $q('#c-play', stage); if (!el) return;
+    if (!p) { el.hidden = true; if (el.__html) { el.innerHTML = ''; el.__html = ''; } return; }
+    el.hidden = false;
+    if (el.contains(document.activeElement) && document.activeElement.matches('input')) return;   // do not fight a drag
+    const html = playBar(p);
+    if (el.__html !== html) { el.innerHTML = html; el.__html = html; }
+  }
+  let stageWired = false;
+  function wireStage() {
+    if (stageWired) return; stageWired = true;
+    const on = (id, fn) => { const el = $q('#' + id, stage); if (el) el.onclick = fn; };
+    stage.addEventListener('click', e => {
+      const b = e.target.closest('button'); if (!b || !stage.contains(b)) return;
+      if (b.id === 'c-playtoggle') call.togglePlayback();
+      else if (b.id === 'c-playstop') call.stopPlayback();
+      else if (b.id === 'c-prev') call.runePrev();
+      else if (b.id === 'c-next') call.runeNext();
+    });
+    stage.addEventListener('input', e => {
+      const t = e.target;
+      if (t.id === 'c-pvol') call.setPlaybackVolume(Number(t.value));
+    });
+    stage.addEventListener('change', e => {
+      const t = e.target;
+      if (t.id === 'c-seek') call.seekPlayback(Number(t.value));
+    });
+  }
   function playBar(p) {
     const dur = Math.max(1, Math.round(p.duration || 0));
     const music = p.kind === 'rune';
@@ -109,7 +265,180 @@
       <span class="time small muted">${fmtTime(p.position)} / ${fmtTime(p.duration)}</span></div>
       <div class="row"><span class="small muted">Volume</span><input type="range" id="c-pvol" min="0" max="1" step="0.05" value="${p.volume}" aria-label="${music ? 'Music' : 'Movie'} volume">${queue}<span class="grow" style="flex:1"></span><button class="btn danger" id="c-playstop">${ic('ci-stop')}Stop</button></div></div>`;
   }
+  function syncTiles(shares) {
+    const host = stage && $q('#c-shares', stage); if (!host) return;
+    const want = new Set(shares.map(x => x.key));
+    for (const [k, t] of [...tiles]) if (!want.has(k)) { try { t.track.detach(t.video); } catch { } t.el.remove(); tiles.delete(k); }
+    shares.forEach((sh, i) => {
+      let t = tiles.get(sh.key);
+      if (!t) t = makeTile(sh);
+      else if (t.track !== sh.track) { try { t.track.detach(t.video); } catch { } sh.track.attach(t.video); t.track = sh.track; t.video.play().catch(() => { }); }
+      const label = `${sh.name} · ${sh.movie ? 'movie' : sh.music ? 'music' : sh.source === 'camera' ? 'camera' : 'screen'}`;
+      if (t.label.textContent !== label) t.label.textContent = label;
+      if (t.sel && document.activeElement !== t.sel && t.sel.value !== sh.quality) t.sel.value = sh.quality;
+      if (host.children[i] !== t.el) host.insertBefore(t.el, host.children[i] || null);   // only new or reordered tiles move
+    });
+    host.hidden = shares.length === 0;
+  }
+  function makeTile(sh) {
+    const el = document.createElement('div'); el.className = 'ctile' + (sh.local ? ' local' : ''); el.dataset.key = sh.key; el.dataset.source = sh.source;
+    const video = document.createElement('video'); video.autoplay = true; video.playsInline = true; video.muted = true;
+    sh.track.attach(video);
+    const bar = document.createElement('div'); bar.className = 'bar';
+    bar.innerHTML = '<span class="grow"></span>' + (sh.local ? '' : '<select aria-label="Quality" title="Picture quality"><option value="auto">Quality: auto</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>') + '<button>Fullscreen</button>';
+    const sel = bar.querySelector('select'); if (sel) { sel.value = sh.quality; sel.onchange = () => call.setViewQuality(sh.sid, sel.value); }
+    bar.querySelector('button').onclick = () => (video.requestFullscreen || video.webkitRequestFullscreen).call(video);
+    el.append(video, bar);
+    const t = { el, video, track: sh.track, label: bar.querySelector('.grow'), sel };
+    tiles.set(sh.key, t);
+    video.play().catch(() => { });
+    return t;
+  }
 
+  // ---------------------------------------------------------------- call settings, as a dialog
+  function ensureSettings() {
+    if (settingsDlg) return settingsDlg;
+    settingsDlg = document.createElement('div'); settingsDlg.id = 'call-settings'; settingsDlg.hidden = true;
+    settingsDlg.innerHTML = `<div class="cs" role="dialog" aria-label="Call settings"><div class="ch"><h3>Call settings</h3><button type="button" class="mini" id="cs-close" title="Close" aria-label="Close">×</button></div><div class="cs-body" id="c-set-body"></div></div>`;
+    document.body.appendChild(settingsDlg);
+    settingsDlg.addEventListener('click', e => {
+      if (e.target === settingsDlg || e.target.closest('#cs-close')) { showSettings = false; render(); }
+    });
+    return settingsDlg;
+  }
+  function renderSettings(s) {
+    ensureSettings();
+    settingsDlg.hidden = !showSettings;
+    if (!showSettings) return;
+    const body = $q('#c-set-body', settingsDlg);
+    if (settingsDlg.contains(document.activeElement) && document.activeElement.matches('input,select,textarea')) return;   // do not fight typing
+    const html = settingsBody(s);
+    if (body.__html !== html) { body.innerHTML = html; body.__html = html; wireSettings(); }
+  }
+  function settingsBody(s) {
+    const sup = CommonsCall.support();
+    const d = devices || { mic: [], out: [], cam: [] };
+    return `<div class="cset">${devSelect('c-mic', d.mic, s.prefs.micId, 'Microphone')}${sup.outputSelect ? devSelect('c-out', d.out, s.prefs.outId, 'Speakers') : '<span class="full muted small">This web view cannot pick an output device; the system default is used.</span>'}${devSelect('c-camsel', d.cam, s.prefs.camId, 'Camera')}
+      <label class="full"><input type="checkbox" id="c-ns" ${s.prefs.noiseSuppression ? 'checked' : ''}> Noise suppression and echo cancellation (the browser's own)</label>
+      <label class="full"><input type="checkbox" id="c-pttc" ${s.prefs.ptt ? 'checked' : ''}> Push to talk (hold <b>${esc(s.pttKey.replace('Key', '').replace('Backquote', '` (backtick)'))}</b> while this window is focused) <button type="button" class="mini" id="c-pttkey">Change key</button></label>
+      <label class="full"><input type="checkbox" id="c-sa" ${s.prefs.shareAudio ? 'checked' : ''}> Include audio when sharing a screen or window, where the system allows it</label>
+      <label for="c-prof">Share as</label><select id="c-prof">${Object.entries(call.shareProfiles()).map(([k, v]) => `<option value="${k}" ${s.prefs.shareProfile === k ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select>
+      ${window.__commonsGameKeys ? '<span></span><button type="button" class="btn ghost" id="c-gamekeys">Game keys…</button>' : ''}
+      <div class="full jfset"><b>Jellyfin library</b> <span class="muted small">(for playing films and episodes into the call)</span></div>
+      <label for="c-jf-url">Address</label><input type="text" id="c-jf-url" placeholder="http://192.168.1.10:8096" spellcheck="false" value="${esc(call.jellyfinConfig().url)}">
+      <span></span><button type="button" class="btn ghost" id="c-jfsave">Save address</button>
+      ${jellyfinAuthMarkup()}
+      <div class="full muted small">Kept on this device only: never synced and never sent to the relay. The address and sign-in go straight to your Jellyfin server from this page. Jellyfin must allow this page's origin (CORS).</div>
+      <div class="full jfset"><b>rune music</b> <span class="muted small">(for playing your own local music into the call)</span></div>
+      <label for="c-rune-url">Address</label><input type="text" id="c-rune-url" placeholder="http://127.0.0.1:4545" spellcheck="false" value="${esc(call.runeConfig().url)}">
+      <span></span><button type="button" class="btn ghost" id="c-runesave">Save rune address</button>
+      <div class="full muted small">rune sends only your local library, never Spotify. Its <code>corsOrigins</code> must list this page's origin, and for another device the address must be reachable from it.</div></div>`;
+  }
+  function devSelect(id, list, sel, label) {
+    return `<label for="${id}">${label}</label><select id="${id}"><option value="">System default</option>${list.map(d => `<option value="${esc(d.deviceId)}" ${d.deviceId === sel ? 'selected' : ''}>${esc(d.label || 'Device')}</option>`).join('')}</select>`;
+  }
+  function wireSettings() {
+    const root = $q('#c-set-body', settingsDlg); if (!root) return;
+    const $ = s => root.querySelector(s);
+    const on = (id, fn) => { const el = $('#' + id); if (el) el.onclick = fn; };
+    const sel = (id, kind) => { const el = $('#' + id); if (el) el.onchange = () => call.pickDevice(kind, el.value); };
+    sel('c-mic', 'audioinput'); sel('c-out', 'audiooutput'); sel('c-camsel', 'videoinput');
+    const ns = $('#c-ns'); if (ns) ns.onchange = () => call.setNoiseSuppression(ns.checked);
+    const pc = $('#c-pttc'); if (pc) pc.onchange = () => call.setPtt(pc.checked);
+    const sa = $('#c-sa'); if (sa) sa.onchange = () => { call.prefs.shareAudio = sa.checked; call.savePrefs(); };
+    const pr = $('#c-prof'); if (pr) pr.onchange = () => { call.prefs.shareProfile = pr.value; call.savePrefs(); };
+    const gk = $('#c-gamekeys'); if (gk) gk.onclick = () => { if (window.__commonsGameKeys) window.__commonsGameKeys(); };
+    const jfs = $('#c-jfsave');
+    if (jfs) jfs.onclick = () => { call.saveJellyfinUrl($('#c-jf-url').value); toast('Jellyfin address saved on this device'); render(); };
+    const jfqc = $('#c-jfqc'); if (jfqc) jfqc.onclick = () => startQuickConnect();
+    const jfcancel = $('#c-jfcancel'); if (jfcancel) jfcancel.onclick = () => cancelQuickConnect('Quick Connect cancelled');
+    const jfso = $('#c-jfsignout'); if (jfso) jfso.onclick = () => { call.jellyfinSignOut(); toast('Signed out of Jellyfin on this device'); render(); };
+    const jfkey = $('#c-jfsavekey');
+    if (jfkey) jfkey.onclick = () => {
+      const k = $('#c-jf-key').value;
+      call.saveJellyfinConfig($('#c-jf-url').value, k);
+      toast(k ? 'API key saved on this device' : 'API key cleared');
+      render();
+    };
+    const runes = $('#c-runesave');
+    if (runes) runes.onclick = () => { call.saveRuneConfig($('#c-rune-url').value); toast('rune address saved on this device'); render(); };
+    const pk = $('#c-pttkey'); if (pk) pk.onclick = () => { pk.textContent = 'Press a key…'; const h = e => { e.preventDefault(); document.removeEventListener('keydown', h, true); pk.textContent = 'Change key'; call.setPttKey(e.code); }; document.addEventListener('keydown', h, true); };
+  }
+
+  // ---------------------------------------------------------------- small popovers: per-person volume, the explainer
+  function showPop(anchor, html, kind) {
+    closePop();
+    pop = document.createElement('div'); pop.id = 'call-pop'; pop.className = 'call-pop ' + kind; pop.dataset.kind = kind; pop.setAttribute('role', 'dialog'); pop.innerHTML = html;
+    document.body.appendChild(pop);
+    const r = anchor.getBoundingClientRect(), pr = pop.getBoundingClientRect();
+    let left = Math.min(Math.max(8, r.left + r.width / 2 - pr.width / 2), Math.max(8, window.innerWidth - pr.width - 8));
+    let top = r.top - pr.height - 8;
+    if (top < 8) top = Math.min(r.bottom + 8, Math.max(8, window.innerHeight - pr.height - 8));
+    pop.style.left = left + 'px'; pop.style.top = top + 'px';
+    return pop;
+  }
+  function closePop() { if (pop) { pop.remove(); pop = null; } }
+  document.addEventListener('pointerdown', e => { if (pop && !pop.contains(e.target) && !(e.target.closest && e.target.closest('#c-enc'))) closePop(); }, true);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && pop) closePop(); });
+  // Right-click or long-press a person under a room: their volume, and a way to silence them on this device only.
+  function openVolumePop(row) {
+    const account = row.dataset.account || '';
+    const name = row.dataset.name || (row.querySelector('.live-n') || {}).textContent || 'This person';
+    const s = call.snapshot();
+    const peer = s.peers.find(p => p.account === account);
+    const id = peer && peer.identity;
+    const vol = id ? call.volumeOf(id) : 1;
+    const p = showPop(row, `<div class="cp-name">${esc(name)}</div>
+      <label class="cp-vol"><span>Volume</span><input type="range" min="0" max="1" step="0.05" value="${vol}" aria-label="Volume for ${esc(name)}" ${id ? '' : 'disabled'}></label>
+      <button type="button" class="btn ghost" id="cp-mute" ${id ? '' : 'disabled'}>${vol === 0 ? 'Unmute for me' : 'Mute for me'}</button>
+      ${id ? '' : '<p class="small muted">Join the call to change how they sound.</p>'}`, 'vol');
+    const r = p.querySelector('input'), b = p.querySelector('#cp-mute');
+    r.oninput = () => { const v = Number(r.value); call.setVolume(id, v); b.textContent = v === 0 ? 'Unmute for me' : 'Mute for me'; };
+    b.onclick = () => { const to = Number(r.value) === 0 ? 1 : 0; r.value = String(to); call.setVolume(id, to); b.textContent = to === 0 ? 'Unmute for me' : 'Mute for me'; };
+  }
+  function explainHtml(s) {
+    const e = s.encryption;
+    return `<b>What the call server can see</b>
+      ${e.active ? `<p>Every audio and video frame is encrypted on this device before it is sent. Frame cipher: AES-GCM; backend: ${esc(e.backend)}; key epoch ${e.epoch ?? '?'}.</p>` : '<p class="bad">This call\'s media is NOT encrypted.</p>'}
+      <p>Your IP address, when you join and leave, how much you send, and who is speaking. It cannot hear or see anything.</p>
+      <p class="muted small">Keys: ${e.devices ?? '?'} device keys from the room, epoch ${e.epoch ?? '?'}, rotated ${e.rotations} time(s) this call.</p>`;
+  }
+  function openExplainer(anchor) {
+    const was = pop && pop.dataset.kind === 'explain';
+    closePop();
+    if (was) return;
+    showPop(anchor, explainHtml(call.snapshot()), 'explain');
+  }
+  // The rail is re-rendered by app.js; this one listener stays on the container.
+  function wireRail() {
+    const rooms = document.getElementById('rooms');
+    if (!rooms || rooms.__callPopWired) return;
+    rooms.__callPopWired = true;
+    rooms.addEventListener('contextmenu', e => {
+      const row = e.target.closest('.live-p[data-account]'); if (!row) return;
+      e.preventDefault();
+      openVolumePop(row);
+    });
+    let timer = null, held = false, sx = 0, sy = 0;
+    const stop = () => { if (timer) { clearTimeout(timer); timer = null; } };
+    rooms.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
+      const row = e.target.closest('.live-p[data-account]'); if (!row) return;
+      sx = e.clientX; sy = e.clientY; stop();
+      timer = setTimeout(() => { timer = null; held = true; openVolumePop(row); setTimeout(() => { held = false; }, 800); }, 500);
+    });
+    rooms.addEventListener('pointerup', stop);
+    rooms.addEventListener('pointercancel', stop);
+    rooms.addEventListener('pointerleave', stop);
+    rooms.addEventListener('pointermove', e => { if (timer && (Math.abs(e.clientX - sx) > 10 || Math.abs(e.clientY - sy) > 10)) stop(); }, true);
+    // A long press must not also join the call: the rail's own click handler is stopped before it runs.
+    rooms.addEventListener('click', e => {
+      if (!held) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+    }, true);
+  }
+
+  // ---------------------------------------------------------------- play into the call: the picker dialog
   function ensurePlayDialog() {
     if (playDlg) return playDlg;
     playDlg = document.createElement('div'); playDlg.id = 'play-dialog'; playDlg.hidden = true;
@@ -155,7 +484,7 @@
     ensurePlayDialog();
     playDlg.hidden = false;
     const jf = call.jellyfinConfig(), note = playDlg.querySelector('#pd-jfnote');
-    if (!jf.url || !call.jellyfinCredential()) { note.innerHTML = 'Jellyfin is not set up on this device. Add its address and sign in under <b>Settings</b> in the call panel.'; playDlg.querySelector('#pd-results').innerHTML = ''; }
+    if (!jf.url || !call.jellyfinCredential()) { note.innerHTML = 'Jellyfin is not set up on this device. Add its address and sign in under <b>Settings</b> in the call\'s settings.'; playDlg.querySelector('#pd-results').innerHTML = ''; }
     else if (!playItems) searchJellyfin();
     const rnote = playDlg.querySelector('#pd-rnote');
     if (rnote && !rnote.textContent) rnote.textContent = 'rune at ' + call.runeConfig().url + ' — search tracks, albums and playlists from your own library.';
@@ -210,117 +539,7 @@
     finally { playBusy = false; if (playDlg) $('#pd-go').disabled = false; }
   }
 
-  function render() {
-    updateButton();
-    if (!panel) return;
-    panel.hidden = !open;
-    if (!open) return;
-    const s = call.snapshot();
-    const sup = CommonsCall.support();
-    const room = currentRoom();
-    const inThis = room && s.gid === room.gid && s.phase !== 'idle';
-    syncTiles(s.shares);   // before the guard below, so a focused quality picker never keeps a stopped video on screen
-    if (panel.contains(document.activeElement) && document.activeElement.matches('input,select,textarea')) return;   // do not fight a drag or typing in progress
-    let h = `<div class="ch"><h3>${esc(inThis || s.phase !== 'idle' ? (s.roomName || 'Call') : (room ? room.name : 'Call'))}</h3>${encBadge(s)}<button class="mini" id="c-close" title="Hide (the call keeps running)">×</button></div>`;
-    if (!sup.ok) {
-      const why = `<details class="cnote"><summary>Why?</summary>${sup.reasons.map(esc).join('<br>')}</details>`;
-      h += (s.error ? `<div class="${s.error.kind === 'handoff' ? 'cinfo' : 'cerr'} wrapall">${esc(s.error.msg)}</div>` : '') + (desktopApp()
-        ? `<div class="cnote"><b>On this computer, calls open in your browser.</b> The app window cannot do encrypted calls here, so the call runs in a browser tab: same room, same end-to-end encryption. Use Chrome, Brave, Edge or Firefox. If you are asked for the microphone, allow it. Close the tab to leave the call.</div>
-           ${room ? '<div class="cbar"><button class="btn" id="c-browser">Open this call in my browser</button></div>' : ''}${why}`
-        : window.__commonsPlatform === 'mobile'
-        ? `<div class="cerr"><b>Calls are not available in this app.</b><br>${sup.reasons.map(esc).join('<br>')}</div><div class="cnote">Megatron will never fall back to an unencrypted call.</div>`
-        : `<div class="cerr"><b>Calls are not available in this window.</b><br>${sup.reasons.map(esc).join('<br>')}</div><div class="cnote">Megatron will never fall back to an unencrypted call. Try a current Chromium-based browser or Firefox.</div>`);
-      paint(h, ''); return;
-    }
-    if (s.phase === 'idle' || (s.phase === 'error' && !inThis && !s.gid)) {
-      h += `${s.error ? `<div class="${s.error.kind === 'handoff' ? 'cinfo' : 'cerr'} wrapall">${esc(s.error.msg)}</div>` : ''}
-        <div class="cinfo">${room ? `Join the voice room for <b>${esc(room.name)}</b>. Anyone in this room can join; media is encrypted with keys from the room's group and the call server only forwards ciphertext.` : 'Open a room first.'}</div>
-        <div class="cbar"><button class="btn" id="c-join" ${room ? '' : 'disabled'}>Join voice</button>${desktopApp() && room ? '<button class="btn ghost" id="c-browser" title="If the microphone or screen share does not work in this window">Open in my browser</button>' : ''}</div>`;
-      paint(h, ''); return;
-    }
-    if (s.error) h += `<div class="cerr">${esc(s.error.msg)}</div>`;
-    if (s.phase === 'connecting') h += '<div class="cinfo">Connecting…</div>';
-    if (s.phase === 'reconnecting') h += `<div class="cinfo">Connection lost${s.attempt ? ' (attempt ' + s.attempt + ')' : ''}. Reconnecting; your place in the call is kept if it comes back quickly.</div>`;
-    if (s.blocked.length) h += `<div class="cerr">Blocked ${s.blocked.length} stream(s) that are not from a current member or not encrypted. They are not played.</div>`;
-    if (s.gameMuted) h += `<div class="cinfo" id="c-gamekey">Muted by game key${s.gameName ? ' (' + esc(s.gameName) + ')' : ''}. Friends see you as muted.</div>`;
-    else if (s.gameError) h += `<div class="cinfo wrapall">Game keys are not working: ${esc(s.gameError)}</div>`;
-    const top = h; h = '';
-    h += `<div class="cpeople">${s.peers.map(peerRow).join('')}</div>`;
-    if (s.playback) h += playBar(s.playback);
-    const ptt = s.ptt;
-    h += `<div class="cbar">
-      <button class="btn ${s.muted || s.gameMuted ? 'on' : 'ghost'}" id="c-mute">${ic(s.muted || s.gameMuted ? 'ci-micoff' : 'ci-mic')}${s.muted ? 'Unmute' : s.gameMuted ? 'Muted by game key' : 'Mute'}</button>
-      <button class="btn ${s.deafened ? 'on' : 'ghost'}" id="c-deaf">${ic('ci-phones')}${s.deafened ? 'Undeafen' : 'Deafen'}</button>
-      ${ptt ? `<button class="btn ${s.pttHeld ? '' : 'ghost'}" id="c-ptt">Hold to talk</button>` : ''}
-      <button class="btn ${s.sharing ? 'on' : 'ghost'}" id="c-share" ${sup.canShareScreen ? '' : 'disabled title="This browser or webview cannot share a screen"'}>${ic('ci-screen')}${s.sharing ? 'Stop sharing' : 'Share screen'}</button>
-      ${s.playback ? '' : `<button class="btn ghost" id="c-playopen" ${s.sharing ? 'disabled title="Stop sharing your screen first"' : ''}>${ic('ci-film')}Play video</button>`}
-      <button class="btn ${s.camera ? 'on' : 'ghost'}" id="c-cam">${ic('ci-cam')}${s.camera ? 'Camera off' : 'Camera'}</button>
-      <button class="btn ghost" id="c-set">${ic('ci-gear')}Settings</button>
-      <span class="grow" style="flex:1"></span>
-      <button class="btn danger" id="c-leave">${ic('ci-leave')}Leave</button></div>`;
-    if (showSettings) {
-      const d = devices || { mic: [], out: [], cam: [] };
-      h += `<div class="cset">${devSelect('c-mic', d.mic, s.prefs.micId, 'Microphone')}${sup.outputSelect ? devSelect('c-out', d.out, s.prefs.outId, 'Speakers') : '<span class="full muted small">This web view cannot pick an output device; the system default is used.</span>'}${devSelect('c-camsel', d.cam, s.prefs.camId, 'Camera')}
-        <label class="full"><input type="checkbox" id="c-ns" ${s.prefs.noiseSuppression ? 'checked' : ''}> Noise suppression and echo cancellation (the browser's own)</label>
-        <label class="full"><input type="checkbox" id="c-pttc" ${s.prefs.ptt ? 'checked' : ''}> Push to talk (hold <b>${esc(s.pttKey.replace('Key', '').replace('Backquote', '` (backtick)'))}</b> while this window is focused) <button class="mini" id="c-pttkey">Change key</button></label>
-        <label class="full"><input type="checkbox" id="c-sa" ${s.prefs.shareAudio ? 'checked' : ''}> Include audio when sharing a screen or window, where the system allows it</label>
-        <label for="c-prof">Share as</label><select id="c-prof">${Object.entries(call.shareProfiles()).map(([k, v]) => `<option value="${k}" ${s.prefs.shareProfile === k ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select>
-        <div class="full jfset"><b>Jellyfin library</b> <span class="muted small">(for playing films and episodes into the call)</span></div>
-        <label for="c-jf-url">Address</label><input type="text" id="c-jf-url" placeholder="http://192.168.1.10:8096" spellcheck="false" value="${esc(call.jellyfinConfig().url)}">
-        <span></span><button type="button" class="btn ghost" id="c-jfsave">Save address</button>
-        ${jellyfinAuthMarkup()}
-        <div class="full muted small">Kept on this device only: never synced and never sent to the relay. The address and sign-in go straight to your Jellyfin server from this page. Jellyfin must allow this page's origin (CORS).</div>
-        <div class="full jfset"><b>rune music</b> <span class="muted small">(for playing your own local music into the call)</span></div>
-        <label for="c-rune-url">Address</label><input type="text" id="c-rune-url" placeholder="http://127.0.0.1:4545" spellcheck="false" value="${esc(call.runeConfig().url)}">
-        <span></span><button type="button" class="btn ghost" id="c-runesave">Save rune address</button>
-        <div class="full muted small">rune sends only your local library, never Spotify. Its <code>corsOrigins</code> must list this page's origin, and for another device the address must be reachable from it.</div></div>`;
-    }
-    h += `<details class="cnote"><summary>What the call server can see</summary>Your IP address, when you join and leave, how much you send, and who is speaking. It cannot hear or see anything. Keys: ${s.encryption.devices ?? '?'} device keys from the room, epoch ${s.encryption.epoch ?? '?'}, rotated ${s.encryption.rotations} time(s) this call.</details>`;
-    paint(top, h);
-  }
-
-  // Writes the two text parts of the panel, each only when its markup changed; the tile host between them is never touched.
-  function paint(top, bottom) {
-    for (const [id, html] of [['c-top', top], ['c-bottom', bottom]]) { const el = $q('#' + id, panel); if (el.__html !== html) { el.innerHTML = html; el.__html = html; } }
-    wireBasic();
-    // Call tiles use the same seal as the rest of the app; let profile pictures take its place when there are any.
-    if (window.__commonsFillAvatars) window.__commonsFillAvatars(panel);
-  }
-
-  function syncTiles(shares) {
-    const host = $q('#c-shares', panel); if (!host) return;
-    const want = new Set(shares.map(x => x.key));
-    for (const [k, t] of [...tiles]) if (!want.has(k)) { try { t.track.detach(t.video); } catch { } t.el.remove(); tiles.delete(k); }
-    shares.forEach((sh, i) => {
-      let t = tiles.get(sh.key);
-      if (!t) t = makeTile(sh);
-      else if (t.track !== sh.track) { try { t.track.detach(t.video); } catch { } sh.track.attach(t.video); t.track = sh.track; t.video.play().catch(() => { }); }
-      const label = `${sh.name} · ${sh.movie ? 'movie' : sh.music ? 'music' : sh.source === 'camera' ? 'camera' : 'screen'}`;
-      if (t.label.textContent !== label) t.label.textContent = label;
-      if (t.sel && document.activeElement !== t.sel && t.sel.value !== sh.quality) t.sel.value = sh.quality;
-      if (host.children[i] !== t.el) host.insertBefore(t.el, host.children[i] || null);   // only new or reordered tiles move
-    });
-    host.hidden = shares.length === 0;
-    panel.classList.toggle('wide', shares.length > 0);
-  }
-
-  function makeTile(sh) {
-    const el = document.createElement('div'); el.className = 'ctile' + (sh.local ? ' local' : ''); el.dataset.key = sh.key; el.dataset.source = sh.source;
-    const video = document.createElement('video'); video.autoplay = true; video.playsInline = true; video.muted = true;
-    sh.track.attach(video);
-    const bar = document.createElement('div'); bar.className = 'bar';
-    bar.innerHTML = '<span class="grow"></span>' + (sh.local ? '' : '<select aria-label="Quality" title="Picture quality"><option value="auto">Quality: auto</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>') + '<button>Fullscreen</button>';
-    const sel = bar.querySelector('select'); if (sel) { sel.value = sh.quality; sel.onchange = () => call.setViewQuality(sh.sid, sel.value); }
-    bar.querySelector('button').onclick = () => (video.requestFullscreen || video.webkitRequestFullscreen).call(video);
-    el.append(video, bar);
-    const t = { el, video, track: sh.track, label: bar.querySelector('.grow'), sel };
-    tiles.set(sh.key, t);
-    video.play().catch(() => { });
-    return t;
-  }
-
-  // Jellyfin sign-in inside Settings. Quick Connect is the normal path: Jellyfin shows a code, the user approves it there,
-  // and the poll below picks up the access token. A pasted API key stays available under Advanced.
+  // ---------------------------------------------------------------- Jellyfin sign-in (inside the settings dialog)
   function jellyfinAuthMarkup() {
     const jf = call.jellyfinConfig();
     if (qcSession) {
@@ -345,11 +564,11 @@
     qcSession = null;
     if (s.timer) clearTimeout(s.timer);
     if (msg) toast(msg);
-    if (panel && !panel.hidden) render();
+    if (showSettings) render();
   }
   async function startQuickConnect() {
     if (qcSession) return;
-    const btn = $q('#c-jfqc', panel);
+    const btn = $q('#c-jfqc', settingsDlg);
     if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
     try {
       const s = await call.jellyfinQuickConnectInitiate();
@@ -388,59 +607,38 @@
     pollSoon();
   }
 
-  function wireBasic() {
-    const on = (id, fn) => { const el = $q('#' + id, panel); if (el) el.onclick = fn; };
-    on('c-close', () => { open = false; closePlayDialog(); cancelQuickConnect(); render(); });
-    on('c-join', async () => { const room = currentRoom(); if (!room) return; try { await call.join(room.gid, room.name); } catch { } render(); });
-    on('c-browser', async () => { const room = currentRoom(); try { const r = await rpc('open_call_in_browser', { gid: room.gid, name: room.name }); if (r.opened) toast('Opened in your browser'); call.fail(r.opened ? 'handoff' : 'browser', (r.opened ? 'The call should now be open in your browser. If nothing appeared, open' : 'Could not start a browser automatically. Open') + ' this link in Chrome, Brave, Edge or Firefox on this computer: ' + r.url);  } catch (e) { call.fail('browser', e.message); } });
-    on('c-leave', () => { closePlayDialog(); cancelQuickConnect(); call.leave(); });
-    on('c-mute', () => { if (call.gameMuted && !call.muted) call.clearGameKey(); else { const m = !call.muted; call.setMuted(m); if (!m) call.clearGameKey(); } });
-    on('c-deaf', () => call.setDeafened(!call.deafened));
-    on('c-share', async () => { try { call.sharing ? await call.stopShare() : await call.startShare(); } catch { } });
-    on('c-playopen', () => openPlayDialog());
-    on('c-playtoggle', () => call.togglePlayback());
-    on('c-playstop', () => call.stopPlayback());
-    const sk = $q('#c-seek', panel); if (sk) sk.onchange = () => call.seekPlayback(Number(sk.value));
-    const pv = $q('#c-pvol', panel); if (pv) pv.oninput = () => call.setPlaybackVolume(Number(pv.value));
-    on('c-cam', () => call.setCamera(!call.camera));
-    on('c-set', async () => { showSettings = !showSettings; if (showSettings) devices = await call.listDevices(); render(); });
-    const p = $q('#c-ptt', panel); if (p) { p.onmousedown = () => call.pttButton(true); p.onmouseup = p.onmouseleave = () => call.pttButton(false); }
-    panel.querySelectorAll('[data-vol]').forEach(r => r.oninput = () => call.setVolume(r.dataset.vol, Number(r.value)));
-    const sel = (id, kind) => { const el = $q('#' + id, panel); if (el) el.onchange = () => call.pickDevice(kind, el.value); };
-    sel('c-mic', 'audioinput'); sel('c-out', 'audiooutput'); sel('c-camsel', 'videoinput');
-    const ns = $q('#c-ns', panel); if (ns) ns.onchange = () => call.setNoiseSuppression(ns.checked);
-    const pc = $q('#c-pttc', panel); if (pc) pc.onchange = () => call.setPtt(pc.checked);
-    const sa = $q('#c-sa', panel); if (sa) sa.onchange = () => { call.prefs.shareAudio = sa.checked; call.savePrefs(); };
-    const pr = $q('#c-prof', panel); if (pr) pr.onchange = () => { call.prefs.shareProfile = pr.value; call.savePrefs(); };
-    const jfs = $q('#c-jfsave', panel);
-    if (jfs) jfs.onclick = () => { call.saveJellyfinUrl($q('#c-jf-url', panel).value); toast('Jellyfin address saved on this device'); render(); };
-    const jfqc = $q('#c-jfqc', panel); if (jfqc) jfqc.onclick = () => startQuickConnect();
-    const jfcancel = $q('#c-jfcancel', panel); if (jfcancel) jfcancel.onclick = () => cancelQuickConnect('Quick Connect cancelled');
-    const jfso = $q('#c-jfsignout', panel); if (jfso) jfso.onclick = () => { call.jellyfinSignOut(); toast('Signed out of Jellyfin on this device'); render(); };
-    const jfkey = $q('#c-jfsavekey', panel);
-    if (jfkey) jfkey.onclick = () => {
-      const k = $q('#c-jf-key', panel).value;
-      call.saveJellyfinConfig($q('#c-jf-url', panel).value, k);
-      toast(k ? 'API key saved on this device' : 'API key cleared');
-      render();
-    };
-    const runes = $q('#c-runesave', panel);
-    if (runes) runes.onclick = () => { call.saveRuneConfig($q('#c-rune-url', panel).value); toast('rune address saved on this device'); render(); };
-    on('c-prev', () => call.runePrev());
-    on('c-next', () => call.runeNext());
-    const pk = $q('#c-pttkey', panel); if (pk) pk.onclick = () => { pk.textContent = 'Press a key…'; const h = e => { e.preventDefault(); document.removeEventListener('keydown', h, true); pk.textContent = 'Change key'; call.setPttKey(e.code); }; document.addEventListener('keydown', h, true); };
+  // ---------------------------------------------------------------- one render
+  function render() {
+    updateButton();
+    let s;
+    try { s = call.snapshot(); } catch { return; }
+    const sup = CommonsCall.support();
+    renderDock(s, sup);
+    renderStage(s);
+    renderSettings(s);
+    wireRail();
+    if (window.__commonsFillAvatars) window.__commonsFillAvatars(dock);
   }
 
-  call.addEventListener('change', () => { if (call.phase === 'connected' || call.phase === 'error' || call.phase === 'idle' || call.phase === 'reconnecting' || call.phase === 'connecting') render(); });
-  setInterval(() => { ensureButton(); updateButton(); if (window.__commonsRefreshAvatars) window.__commonsRefreshAvatars(); }, 700);
-  ensurePanel();
-  // Also used by the rail's call strip: open the panel and join this room's call. If this device is already in that
-  // call (its own row was clicked), just reveal the panel rather than leaving and joining again.
+  call.addEventListener('change', render);
+  setInterval(() => { ensureButton(); render(); if (window.__commonsRefreshAvatars) window.__commonsRefreshAvatars(); }, 700);
+  if (window.matchMedia) {
+    const mq = window.matchMedia('(max-width: 760px)');
+    if (mq.addEventListener) mq.addEventListener('change', () => { placeDock(); render(); });
+  }
+  window.addEventListener('resize', () => { placeDock(); });
+  ensureDock(); ensureStage();
+  // Used by the rail's call rows and by the stand-alone browser call page. A voice room click joins its call; if this
+  // device is already in that call, nothing is torn down and set up again.
   window.__callUI = {
-    open() { open = true; ensurePanel(); render(); },
+    open() {
+      ensureDock(); ensureStage();
+      // The stand-alone call page exists only to run this one call in a real browser tab, so it joins by itself.
+      if (!document.getElementById('rail')) { const room = currentRoom(); if (room && call.phase === 'idle') call.join(room.gid, room.name).catch(() => { }); }
+      render();
+    },
     render,
     joinRoom(gid, name) {
-      open = true; ensurePanel();
       if (call.gid === gid && call.phase !== 'idle') { render(); return; }
       call.join(gid, name).catch(() => { });
       render();

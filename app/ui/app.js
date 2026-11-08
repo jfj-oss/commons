@@ -485,12 +485,14 @@ function liveRow(ch) {
   const n = list.length, names = list.map(p => p.name).join(', ');
   const title = esc(n === 1 ? list[0].name + ' is in the call' : humanCount(n, 'person', 'people') + ' in the call: ' + names);
   const person = p => `${seal(p.account, p.name, 'tiny')}<span class="live-n">${esc(p.me ? 'You' : p.name)}</span>`;
+  // data-account says whose volume the small right-click/long-press popover adjusts (see call-ui.js).
+  const who = p => `data-account="${esc(p.account || '')}" data-name="${esc(p.name)}"`;
   if (ch.kind === 'voice') {
-    const rows = list.map(p => `<button type="button" class="live-p vp${p.speaking ? ' speaking' : ''}${p.muted ? ' muted' : ''}${p.deafened ? ' deafened' : ''}" data-call="${esc(ch.gid)}" title="${esc(p.name)}${p.me ? ' (you)' : ''}" aria-label="Join the call in ${esc(ch.name)}; ${p.me ? 'you are' : esc(p.name) + ' is'} in it">${person(p)}</button>`).join('');
+    const rows = list.map(p => `<button type="button" class="live-p vp${p.speaking ? ' speaking' : ''}${p.muted ? ' muted' : ''}${p.deafened ? ' deafened' : ''}" ${who(p)} data-call="${esc(ch.gid)}" title="${esc(p.name)}${p.me ? ' (you)' : ''}" aria-label="Join the call in ${esc(ch.name)}; ${p.me ? 'you are' : esc(p.name) + ' is'} in it">${person(p)}</button>`).join('');
     return `<div class="room-live voice" title="${title}">${rows}</div>`;
   }
   const shown = list.slice(0, LIVE_SHOWN), extra = n - shown.length;
-  const people = shown.map(p => `<button type="button" class="live-p" data-call="${esc(ch.gid)}" title="${esc(p.name)}${p.me ? ' (you)' : ''}" aria-label="Join the call in ${esc(ch.name)}; ${p.me ? 'you are' : esc(p.name) + ' is'} in it">${person(p)}</button>`).join('');
+  const people = shown.map(p => `<button type="button" class="live-p" ${who(p)} data-call="${esc(ch.gid)}" title="${esc(p.name)}${p.me ? ' (you)' : ''}" aria-label="Join the call in ${esc(ch.name)}; ${p.me ? 'you are' : esc(p.name) + ' is'} in it">${person(p)}</button>`).join('');
   const more = extra ? `<span class="live-more" title="${esc(names)}">+${extra}</span>` : '';
   const act = inCallHere(ch.gid)
     ? '<span class="live-you">you are in the call</span>'
@@ -1355,4 +1357,6 @@ async function gameKeys() {
   return p;
 }
 
+// The call dock's Settings dialog links to the same game-key dialog, rather than copying it.
+window.__commonsGameKeys = gameKeys;
 boot();
