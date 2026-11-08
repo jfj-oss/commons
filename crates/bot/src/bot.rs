@@ -51,7 +51,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             name: DEFAULT_NAME.into(), max_reply_chars: 1200, context_messages: 20, max_per_minute: 6, max_queue: 4,
-            studio_daily_cap: 10, studio_daily_video_cap: 2, studio_queue_max: 3,
+            studio_daily_cap: usize::MAX, studio_daily_video_cap: usize::MAX, studio_queue_max: 3,
         }
     }
 }

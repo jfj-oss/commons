@@ -100,7 +100,7 @@ fn usage() -> ! {
         \n  MEGATRON_BOT_DEEPSEEK_KEY_FILE (default ~/.config/deepseek-key), MEGATRON_BOT_SEARCH_URL (default {DEFAULT_SEARCH_URL}),\
         \n  MEGATRON_BOT_STUDIO_URL (default http://127.0.0.1:4576), MEGATRON_BOT_COMFY_URL (default http://127.0.0.1:8188),\
         \n  MEGATRON_BOT_STUDIO_LOCK, MEGATRON_BOT_STUDIO_TOKEN_FILE (default ~/.config/homebase/token),\
-        \n  MEGATRON_BOT_STUDIO_DAILY_CAP (default 10), MEGATRON_BOT_STUDIO_DAILY_VIDEO_CAP (default 2),\
+        \n  MEGATRON_BOT_STUDIO_DAILY_CAP (default: no limit), MEGATRON_BOT_STUDIO_DAILY_VIDEO_CAP (default: no limit),\
         \n  MEGATRON_BOT_STUDIO_QUEUE_MAX (default 3), MEGATRON_BOT_VOICE_SETTINGS,\
         \n  MEGATRON_BOT_MAX_PER_MINUTE, MEGATRON_BOT_MAX_REPLY_CHARS");
     std::process::exit(2)
