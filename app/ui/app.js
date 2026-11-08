@@ -558,9 +558,16 @@ function renderRail() {
   if (!ch) paintEmpty(c, sn);
   else if (!ch.joined && !S.msgs) paint([{ k: 'e:keys', h: KEYS_WAIT }]);
   const st = $('#sync-status');
-  const unsent = sn.outbox ? `${sn.outbox} unsent · ` : '';
-  const link = sn.net === 'online' ? '' : sn.net === 'connecting' ? 'connecting… · ' : (/clock/.test(sn.net_detail) ? sn.net_detail : 'cannot reach the relay, retrying') + ' · ';
-  st.textContent = link + unsent + 'relay ' + sn.relay.replace(/^https?:\/\//, ''); st.className = 'sync' + (sn.outbox || sn.net === 'offline' ? ' bad' : ''); st.title = sn.net_detail || '';
+  const unsent = sn.outbox ? `${sn.outbox} unsent` : '';
+  // No relay line while connected: the relay address lives in Settings. Offline/reconnecting still says clearly what is wrong.
+  let link = '';
+  if (sn.net !== 'online') {
+    link = sn.net === 'connecting' ? 'Connecting…' : (/clock/.test(sn.net_detail || '') ? sn.net_detail : 'Cannot reach the relay, retrying');
+  }
+  st.textContent = [link, unsent].filter(Boolean).join(' · ');
+  st.className = 'sync' + (sn.outbox || sn.net !== 'online' ? ' bad' : '');
+  st.title = sn.net_detail || '';
+  st.hidden = !link && !unsent;
   const b = $('#banner');
   const log = '<button type="button" class="linkish" data-a="log">Open the activity log</button>';
   if (sn.revoked) { b.hidden = false; b.className = ''; b.innerHTML = `${icon('door')}<span>This device has been revoked, so it can no longer send or receive. What it already received stays readable here.</span>${log}`; }
@@ -1293,20 +1300,24 @@ $('#modal-root').addEventListener('change', async e => {
 });
 
 $('#btn-settings').onclick = () => {
-  const p = modal('Settings', `<label for="n">Display name</label><input type="text" id="n" value="${esc(S.snap.me.name)}">
+  const p = modal('Settings', `<h3 class="set-h">Profile</h3>
+  <label for="n">Display name</label><input type="text" id="n" value="${esc(S.snap.me.name)}">
   <label>Profile picture</label><div class="av-set"><span class="av-prev" id="av-prev">${seal(S.snap.me.account, S.snap.me.name, 'big')}</span><span class="av-btns"><button type="button" class="btn ghost slim" id="av-pick">Choose a picture…</button><button type="button" class="btn ghost slim" id="av-none" ${AVS.got.has(S.snap.me.account) ? '' : 'hidden'}>Remove</button></span></div><input type="file" id="av-file" accept="image/*" hidden>
-  <p class="muted small">Shown instead of your seal in every community and on your other devices. It is shrunk on this device and sent encrypted; older versions keep showing your seal.</p>
+  <p class="muted small">Shown instead of your seal. Shrunk on this device and sent encrypted; older versions keep your seal.</p>
+  <label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints — the relay can see that a message-sized packet was sent at that moment</span></label>
+  <label class="check"><input type="checkbox" id="lstr" ${S.snap.share_listening ? 'checked' : ''}><span>Share what I'm listening to</span></label>
+  <h3 class="set-h">Appearance</h3>
   <label>Theme</label>${seg('th', [['', 'Match system'], ['light', 'Daylight'], ['dark', 'After hours']], pref.get('theme') || '')}
   <label>Message font</label>${seg('rd', [['', 'Book'], ['plain', 'Plain']], pref.get('read') || '')}
-  <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when Megatron is in the background or the message is in another room. The window title shows how many are unread.</p>
-  <label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints (the relay can see that a message-sized packet was sent at that moment)</span></label>
-  <label class="check"><input type="checkbox" id="lstr" ${S.snap.share_listening ? 'checked' : ''}><span>Share what I'm listening to</span></label>
-  <label for="rune">rune address</label><input type="text" id="rune" value="${esc(S.snap.rune_url)}" spellcheck="false"><p class="muted small">Where rune, the music player on this computer, answers. The song title and artist go to the people in your communities, end to end encrypted, and stop showing when playback stops (ten minutes at most if the app closes). Nothing else is read or sent.</p>
-  ${mobileApp() ? '' : `<label for="dl-dir">Large-file downloads folder</label><input type="text" id="dl-dir" value="${esc(S.snap.download_dir || '')}" spellcheck="false"><p class="muted small">Large files are written here as they arrive, one verified piece at a time. Leave empty to use your usual Downloads folder.</p>`}
+  <h3 class="set-h">Sound</h3>
+  <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when Megatron is in the background or the message is in another room.</p>
+  <h3 class="set-h">Advanced</h3>
+  <label for="rune">rune address</label><input type="text" id="rune" value="${esc(S.snap.rune_url)}" spellcheck="false"><p class="muted small">Song title and artist go to your communities, end to end encrypted. Nothing else is read or sent.</p>
+  ${mobileApp() ? '' : `<label for="dl-dir">Large-file downloads folder</label><input type="text" id="dl-dir" value="${esc(S.snap.download_dir || '')}" spellcheck="false"><p class="muted small">Written here as they arrive, one verified piece at a time. Leave empty for your usual Downloads folder.</p>`}
   ${window.__TAURI__ ? '' : '<label>Updates</label><button type="button" class="btn ghost" id="set-update">Check for updates</button>'}
   ${mobileApp() ? '' : '<label>Calls</label><button type="button" class="btn ghost" id="set-gamekeys">Game keys…</button><p class="muted small">Mute yourself in Megatron while you talk to your game team.</p>'}
   <label for="rl">Relay address</label><input type="text" id="rl" value="${esc(S.snap.relay)}" spellcheck="false"><p class="muted small">Change this only if your relay moved. A different relay does not have your communities.<br>Your account id: <span class="mono">${esc(S.snap.me.account.slice(0, 16))}…</span></p>
-  <label for="rs">This server's sign-up secret</label><input type="password" id="rs" value="" spellcheck="false" autocomplete="off" placeholder="${S.snap.relay_secret ? 'Saved on this device — leave empty to keep it' : 'Not saved on this device — paste it here if you have it'}"><p class="muted small">A device added by pairing or recovery may not have it; without it, invite links from this device only work for people who already have an account here. It is checked with the relay and never shown again once saved.</p>`,
+  <label for="rs">This server's sign-up secret</label><input type="password" id="rs" value="" spellcheck="false" autocomplete="off" placeholder="${S.snap.relay_secret ? 'Saved on this device — leave empty to keep it' : 'Not saved on this device — paste it here if you have it'}"><p class="muted small">A device added by pairing may not have it; without it, invite links from this device only work for people who already have an account here. It is checked with the relay and never shown again once saved.</p>`,
   [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => {
     if (val(w, 'rl').trim() !== S.snap.relay) await rpc('set_relay', { relay: val(w, 'rl') });
     const secret = val(w, 'rs').trim();
