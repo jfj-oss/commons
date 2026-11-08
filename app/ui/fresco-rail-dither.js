@@ -3,14 +3,16 @@
    The same wave field continues across the wall as a barely-there shimmer of warm amber dots on the swell crests,
    kept out of the header and the message column so the small grey text keeps WCAG AA. One clock and one coordinate
    system (window x and y, in units of the rail's width), so the swells run on across the seam in lockstep.
-   About 20 fps, paused while the window is hidden, one still frame under reduced motion.
+   Kept cheap: the wave terms are worked out once per row and once per column, and the per-dot work is table
+   lookups (sine, tone curve), so a frame costs a few milliseconds. About 15 fps, paused while the window is hidden
+   or in the background, one still frame under reduced motion.
    Dark ("After hours") theme only: it starts and stops when the theme changes. */
 (function () {
   const root = document.documentElement;
   const sysDark = matchMedia('(prefers-color-scheme: dark)');
   const isDark = () => root.dataset.theme === 'dark' || (root.dataset.theme !== 'light' && sysDark.matches);
   const DOT = 2;                  // CSS px per dot
-  const FPS = 20;
+  const FPS = 15;
   // rail tones: [r, g, b, alpha 0..255], darker than the rail, so they can only raise text contrast
   const MID = [0, 16, 20, 120];   // swell bodies
   const LIGHT = [0, 6, 8, 185];   // swell cores, darkest
@@ -25,6 +27,8 @@
   const WALL_MAX = 0.20;          // at most this share of dots lit on a crest
   // waves: wavelength in rail widths and downward speed for the two swell layers
   const WK1 = 2 * Math.PI / 0.95, WS1 = WK1 * 0.06, WK2 = 2 * Math.PI / 1.6, WS2 = WK2 * 0.045;
+  const pack = c => ((c[3] << 24) | (c[2] << 16) | (c[1] << 8) | c[0]) >>> 0;
+  const PX_MID = pack(MID), PX_LIGHT = pack(LIGHT), PX_GLOW = pack(GLOW), PX_AMBER = pack(AMBER);
   const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
   // the wave field at (x, y) in rail widths from the window's top-left, time t in seconds
@@ -35,6 +39,26 @@
     return { f: 1.15 * ss(0.32, 0.95, 0.62 * s1 + 0.38 * s2), edge: Math.max(0, Math.cos(ph1)) * (0.5 + 0.5 * s2) };
   }
 
+  // tables: sine over one turn, and the tone curves over the swell mix u = 0.62 s1 + 0.38 s2 in 0..1
+  const SN = 4096, SIN = new Float32Array(SN + 1), TWO_PI = 2 * Math.PI;
+  for (let k = 0; k <= SN; k++) SIN[k] = Math.sin(k / SN * TWO_PI);
+  const sinT = a => { let x = a / TWO_PI; x -= Math.floor(x); return SIN[(x * SN) | 0]; };
+  const UN = 1024, DL = new Float32Array(UN + 1), DM = new Float32Array(UN + 1), WL = new Float32Array(UN + 1);
+  for (let k = 0; k <= UN; k++) {
+    const f = 1.15 * ss(0.32, 0.95, k / UN), tau = ss(TONE.lo, TONE.hi, f);
+    DL[k] = Math.pow(tau, 1.6) * MASK.light; DM[k] = Math.min(1 - DL[k], BASE + (1 - BASE) * Math.pow(tau, 0.6) * MASK.mid);
+    WL[k] = ss(0.55, 1.05, f) * WALL_MAX;
+  }
+  const GL_ = new Float32Array(UN + 1); for (let k = 0; k <= UN; k++) GL_[k] = ss(0.55, 0.98, k / UN) * GLOW_MAX;
+  // per-column and per-row wave terms for one canvas
+  function terms(x0, y0, W, H, U, t, C1, C2, R1, R2) {
+    for (let i = 0; i < W; i++) {
+      const px = (x0 + (i + 0.5) * DOT) / U;
+      C1[i] = 0.9 * Math.sin(px * 4.1 + t * 0.21) + 0.45 * Math.sin(px * 9.3 - t * 0.13 + 1.7);
+      C2[i] = 1.1 * Math.sin(px * 3.2 - t * 0.17 + 2.4);
+    }
+    for (let j = 0; j < H; j++) { const py = (y0 + (j + 0.5) * DOT) / U; R1[j] = py * WK1 - t * WS1; R2[j] = py * WK2 - t * WS2; }
+  }
   let stop = null;
   function start() {
     const rail = document.getElementById('rail'), main = document.getElementById('main'); if (!rail || !main) return;
@@ -46,6 +70,7 @@
     let U = 268;                    // the rail's width in CSS px: the unit of the shared field
     const nimg = new Image();
     nimg.onload = () => {
+      if (!alive) return;            // stopped (the theme changed) before the noise map arrived
       const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d');
       x.drawImage(nimg, 0, 0); const d = x.getImageData(0, 0, 64, 64).data;
       noise = new Float32Array(64 * 64); for (let i = 0; i < noise.length; i++) noise[i] = (d[i * 4] + 0.5) / 256;
@@ -57,9 +82,11 @@
       const r = rail.getBoundingClientRect(), m = main.getBoundingClientRect();
       U = r.width > 40 ? r.width : 268;
       R.W = Math.max(1, Math.ceil(r.width / DOT)); R.H = Math.max(1, Math.ceil(r.height / DOT)); R.x0 = r.left; R.y0 = r.top;
-      rc.width = R.W; rc.height = R.H; R.img = rx.createImageData(R.W, R.H);
+      rc.width = R.W; rc.height = R.H; R.img = rx.createImageData(R.W, R.H); R.px = new Uint32Array(R.img.data.buffer);
+      R.C1 = new Float32Array(R.W); R.C2 = new Float32Array(R.W); R.R1 = new Float32Array(R.H); R.R2 = new Float32Array(R.H);
       M.W = Math.max(1, Math.ceil(m.width / DOT)); M.H = Math.max(1, Math.ceil(m.height / DOT)); M.x0 = m.left; M.y0 = m.top;
-      wc.width = M.W; wc.height = M.H; M.img = wx.createImageData(M.W, M.H);
+      wc.width = M.W; wc.height = M.H; M.img = wx.createImageData(M.W, M.H); M.px = new Uint32Array(M.img.data.buffer);
+      M.C1 = new Float32Array(M.W); M.C2 = new Float32Array(M.W); M.R1 = new Float32Array(M.H); M.R2 = new Float32Array(M.H);
       // keep the wall's dots out of the message column and the header (soft 40 px edges)
       // the column is the stream's content box narrowed to --col and centred (as style.css lays out #stream > *)
       const stream = document.getElementById('stream');
@@ -80,36 +107,38 @@
       if (!noise || !R.img || !M.img) return;
       const t = ms / 1000;
       // the rail
-      let d = R.img.data;
+      terms(R.x0, R.y0, R.W, R.H, U, t, R.C1, R.C2, R.R1, R.R2);
+      const rp = R.px;
       for (let j = 0; j < R.H; j++) {
-        const py = (R.y0 + (j + 0.5) * DOT) / U;
+        const r1 = R.R1[j], r2 = R.R2[j], row = j * R.W, nrow = (j & 63) * 64;
         for (let i = 0; i < R.W; i++) {
-          const px = (R.x0 + (i + 0.5) * DOT) / U;
-          const { f, edge } = field(px, py, t);
-          const tau = ss(TONE.lo, TONE.hi, f);
-          const dL = Math.pow(tau, 1.6) * MASK.light, dM = Math.min(1 - dL, BASE + (1 - BASE) * Math.pow(tau, 0.6) * MASK.mid);
-          const th = noise[(j & 63) * 64 + (i & 63)];
-          const k = (j * R.W + i) * 4;
-          let col = th < dL ? LIGHT : th < dL + dM ? MID : null;
-          if (!col && 1 - th < ss(0.55, 0.98, edge) * GLOW_MAX) col = GLOW;
-          if (col) { d[k] = col[0]; d[k + 1] = col[1]; d[k + 2] = col[2]; d[k + 3] = col[3]; } else d[k + 3] = 0;
+          const ph1 = r1 + R.C1[i], s1 = 0.5 + 0.5 * sinT(ph1), s2 = 0.5 + 0.5 * sinT(r2 + R.C2[i]);
+          const u = ((0.62 * s1 + 0.38 * s2) * UN) | 0;
+          const th = noise[nrow + (i & 63)], dL = DL[u];
+          let c = 0;
+          if (th < dL) c = PX_LIGHT;
+          else if (th < dL + DM[u]) c = PX_MID;
+          else {
+            const e = Math.max(0, sinT(ph1 + Math.PI / 2)) * (0.5 + 0.5 * s2);   // the crest's leading edge, as field()
+            if (1 - th < GL_[(e * UN) | 0]) c = PX_GLOW;
+          }
+          rp[row + i] = c;
         }
       }
       rx.putImageData(R.img, 0, 0);
       // the wall: only crests, only outside the column and below the header; most dots are skipped early
-      d = M.img.data; d.fill(0);
+      terms(M.x0, M.y0, M.W, M.H, U, t, M.C1, M.C2, M.R1, M.R2);
+      const mp = M.px; mp.fill(0);
       for (let j = 0; j < M.H; j++) {
         const y = (j + 0.5) * DOT; const vy = ss(M.top, M.top + 40, y); if (vy <= 0) continue;
-        const py = (M.y0 + y) / U;
+        const r1 = M.R1[j], r2 = M.R2[j], row = j * M.W, nrow = (j & 63) * 64;
         for (let i = 0; i < M.W; i++) {
+          const th = noise[nrow + (i & 63)];
+          if (th > WALL_MAX) continue;                          // can never light: skip the field
           const x = (i + 0.5) * DOT;
           const vx = Math.max(ss(M.c0, M.c0 - 40, x), ss(M.c1, M.c1 + 40, x)); if (vx <= 0) continue;
-          const th = noise[(j & 63) * 64 + (i & 63)];
-          if (th > WALL_MAX) continue;                          // can never light: skip the field
-          const { f } = field((M.x0 + x) / U, py, t);
-          if (th < ss(0.55, 1.05, f) * WALL_MAX * vx * vy) {
-            const k = (j * M.W + i) * 4; d[k] = AMBER[0]; d[k + 1] = AMBER[1]; d[k + 2] = AMBER[2]; d[k + 3] = AMBER[3];
-          }
+          const s1 = 0.5 + 0.5 * sinT(r1 + M.C1[i]), s2 = 0.5 + 0.5 * sinT(r2 + M.C2[i]);
+          if (th < WL[((0.62 * s1 + 0.38 * s2) * UN) | 0] * vx * vy) mp[row + i] = PX_AMBER;
         }
       }
       wx.putImageData(M.img, 0, 0);
@@ -117,10 +146,11 @@
     const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
     let last = 0, raf = 0;
     function loop() { if (!alive) return; raf = requestAnimationFrame(ms => { if (ms - last >= 1000 / FPS) { last = ms; frame(ms); } loop(); }); }
-    const onVis = () => { cancelAnimationFrame(raf); if (!document.hidden && !still && noise) loop(); };
-    document.addEventListener('visibilitychange', onVis);
+    // paused while the window is hidden or another app has focus: nobody is watching it then
+    const onVis = () => { cancelAnimationFrame(raf); if (!document.hidden && document.hasFocus() && !still && noise) loop(); };
+    document.addEventListener('visibilitychange', onVis); window.addEventListener('focus', onVis); window.addEventListener('blur', onVis);
     const ro = new ResizeObserver(() => { size(); frame(performance.now()); }); ro.observe(rail); ro.observe(main);
-    stop = () => { alive = false; cancelAnimationFrame(raf); document.removeEventListener('visibilitychange', onVis); ro.disconnect(); rc.remove(); wc.remove(); stop = null; };
+    stop = () => { alive = false; cancelAnimationFrame(raf); document.removeEventListener('visibilitychange', onVis); window.removeEventListener('focus', onVis); window.removeEventListener('blur', onVis); ro.disconnect(); rc.remove(); wc.remove(); stop = null; };
   }
   function sync() { if (isDark()) { if (!stop) start(); } else if (stop) stop(); }
   function init() {
