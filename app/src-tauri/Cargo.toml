@@ -3,7 +3,7 @@ name = "commons-app"
 version = "0.2.1"
 edition = "2021"
 publish = false
-description = "Commons: private end-to-end encrypted group chat (desktop)"
+description = "Megatron: private end-to-end encrypted group chat (desktop)"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
