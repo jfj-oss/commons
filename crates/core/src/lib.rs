@@ -9,6 +9,7 @@ pub mod transport;
 pub mod vault;
 pub mod ops;
 mod round;
+pub mod rune;
 pub mod sync;
 pub mod api;
 pub mod update;
