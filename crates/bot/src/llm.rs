@@ -249,10 +249,27 @@ impl Llm for Ollama {
             "options": {"temperature": 0.85, "top_p": 0.9, "top_k": 40, "repeat_penalty": 1.18, "repeat_last_n": 256,
                         "presence_penalty": 0.5, "num_predict": 700},
         });
-        if self.tool_mode() == ToolMode::FunctionCalling && !tools.is_empty() {
-            body["tools"] = tool_specs_json(tools);
-        }
-        let r = agent(self.timeout).post(&format!("{}/api/chat", self.base)).set("Content-Type", "application/json").send_json(body).map_err(|e| failed("Ollama", e))?;
+        let with_tools = self.tool_mode() == ToolMode::FunctionCalling && !tools.is_empty();
+        if with_tools { body["tools"] = tool_specs_json(tools); }
+        let send = |b: &Value| agent(self.timeout).post(&format!("{}/api/chat", self.base)).set("Content-Type", "application/json").send_json(b.clone());
+        // Small models sometimes write a tool call Ollama cannot parse ("invalid tool call arguments"), which Ollama
+        // answers with HTTP 500. That is the model's mistake, not Ollama being down: try once more, then answer
+        // without tools rather than telling people the model is unreachable.
+        let mut tries = 0;
+        let r = loop {
+            match send(&body) {
+                Ok(r) => break r,
+                Err(ureq::Error::Status(500, resp)) if with_tools => {
+                    let text = resp.into_string().unwrap_or_default();
+                    if !text.contains("tool call") { return Err(AskError::Unavailable(format!("Ollama answered HTTP 500: {}", text.chars().take(200).collect::<String>()))); }
+                    tries += 1;
+                    eprintln!("[bot] the model wrote a broken tool call (try {tries}); {}", if tries < 2 { "asking again" } else { "answering without tools" });
+                    if tries >= 2 { body.as_object_mut().map(|o| o.remove("tools")); }
+                    if tries >= 3 { return Err(AskError::Failed("the model kept writing broken tool calls".into())); }
+                }
+                Err(e) => return Err(failed("Ollama", e)),
+            }
+        };
         let v: Value = r.into_json().map_err(|e| AskError::Failed(format!("Ollama's answer could not be read: {e}")))?;
         Self::parse_reply(&v)
     }
