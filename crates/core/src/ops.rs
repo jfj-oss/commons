@@ -29,9 +29,15 @@ impl Plan {
 }
 /// How long before a member whose consent is missing from the table offers it again.
 const CONSENT_RETRY_SECS: u64 = 600;
+/// How often a device repeats its offer of the relay's sign-up secret to the account's other devices, or asks for it.
+/// A device answers a request as soon as it sees one, so this is only the fallback.
+const RELAY_SECRET_RETRY_SECS: u64 = 6 * 3600;
 
 #[derive(Debug, PartialEq)]
 pub enum Outcome { Applied, Pending, Lost }
+
+/// An invite link, and whether it can sign up a friend who has no account on this relay yet.
+pub struct InviteMade { pub link: String, pub signup_needs_secret: bool }
 
 impl Client {
     fn ctl_ext(&self, cid: &str) -> Result<GroupExt> {
@@ -150,8 +156,18 @@ impl Client {
     }
 
     pub fn create_invite(&mut self, cid: &str, uses: Option<u32>, ttl_secs: u64) -> Result<String> {
+        self.create_invite_checked(cid, uses, ttl_secs).map(|m| m.link)
+    }
+
+    /// As `create_invite`, but says whether the link can sign up a friend who has no account. A device that does not
+    /// hold the relay's sign-up secret asks the relay whether it is gated before building the link, so the UI can tell
+    /// the person plainly instead of their friend meeting a refusal.
+    pub fn create_invite_checked(&mut self, cid: &str, uses: Option<u32>, ttl_secs: u64) -> Result<InviteMade> {
         if self.my_role(cid) < Role::Admin { bail!("only admins can create invites"); }
         if uses == Some(0) { bail!("an invite needs at least one use"); }
+        // Asked first, as the person is about to share a link: with no secret here, only already-registered people
+        // can use it. A relay that cannot be asked is not assumed to be gated.
+        let signup_needs_secret = self.st.relay_invite.is_empty() && self.relay_gated().unwrap_or(false);
         let sk = SigningKey::generate(&mut rand::rngs::OsRng);
         let id = rand_hex(16);
         let mut t = self.ctl_ext(cid)?;
@@ -166,7 +182,50 @@ impl Client {
         let link = InviteLink { owner: founder, relay: self.st.relay.clone(), community: cid.into(), invite: id.clone(), sk: hex::encode(sk.to_bytes()), name: cname, secret: self.st.relay_invite.clone() };
         self.st.communities.get_mut(cid).unwrap().invite_sks.insert(id, link.sk.clone());
         self.save()?;
-        Ok(link.encode())
+        Ok(InviteMade { link: link.encode(), signup_needs_secret })
+    }
+
+    // ------------------------------------------------------------------ the relay's sign-up secret, across one account's devices
+    /// Pass this device's relay sign-up secret on to the same account's other devices, sealed under a key only that
+    /// account's devices hold. The carrier is an ordinary consent, so an older version parses and verifies it without
+    /// noticing the extra field and without showing an "unknown kind" notice.
+    pub(crate) fn queue_relay_secret(&mut self, cid: &str) -> Result<()> {
+        let secret = self.st.relay_invite.clone();
+        if secret.is_empty() { bail!("this device has no sign-up secret to pass on"); }
+        let sealed = self.seal_relay_secret(&secret)?;
+        let con = sign_consent(&self.acct_key()?, cid, now_secs());
+        self.st.relay_secret_shared.insert(cid.into(), now_secs());
+        self.queue_env(cid, Envelope::Consent { ts: con.ts, sig: con.sig, relay_secret: Some(sealed), relay_secret_want: false });
+        Ok(())
+    }
+
+    /// Ask the same account's other devices for the relay's sign-up secret.
+    pub(crate) fn queue_relay_secret_request(&mut self, cid: &str) -> Result<()> {
+        let con = sign_consent(&self.acct_key()?, cid, now_secs());
+        self.st.relay_secret_asked.insert(cid.into(), now_secs());
+        self.queue_env(cid, Envelope::Consent { ts: con.ts, sig: con.sig, relay_secret: None, relay_secret_want: true });
+        Ok(())
+    }
+
+    /// Planning only, no network: offer the sign-up secret on every community this device can encrypt in, or ask for
+    /// it when this device has none. Runs after `reconcile` and before the outbox is encrypted.
+    pub(crate) fn plan_relay_secret(&mut self) {
+        let now = now_secs();
+        // Nothing to pass on to, or ask of, unless this account has another device we know of.
+        let me = self.my_device();
+        if !self.st.known_devices.iter().any(|d| *d != me) { return; }
+        let cids: Vec<String> = self.st.communities.values().filter(|c| !c.removed).map(|c| c.id.clone()).collect();
+        for cid in cids {
+            let ready = self.st.groups.get(&cid).is_some_and(|g| !g.removed && !g.broken && g.pending.is_none());
+            if !ready || !self.synced.contains(&cid) { continue; }
+            if self.st.relay_invite.is_empty() {
+                if self.st.relay_secret_asked.get(&cid).is_none_or(|t| now >= *t + RELAY_SECRET_RETRY_SECS) {
+                    if let Err(e) = self.queue_relay_secret_request(&cid) { log::warn!("ask for the relay secret: {e}"); }
+                }
+            } else if self.st.relay_secret_shared.get(&cid).is_none_or(|t| now >= *t + RELAY_SECRET_RETRY_SECS) {
+                if let Err(e) = self.queue_relay_secret(&cid) { log::warn!("pass on the relay secret: {e}"); }
+            }
+        }
     }
 
     pub fn revoke_invite(&mut self, cid: &str, invite: &str) -> Result<()> {
@@ -561,7 +620,7 @@ impl Client {
                 self.consent_offered.insert(cid.to_string(), now);
                 let con = sign_consent(&self.acct_key()?, cid, now);
                 if role >= Role::Admin { self.st.communities.get_mut(cid).unwrap().consent_queue.insert(me.clone(), con); }
-                else { self.queue_env(cid, Envelope::Consent { ts: con.ts, sig: con.sig }); }
+                else { self.queue_env(cid, Envelope::Consent { ts: con.ts, sig: con.sig, relay_secret: None, relay_secret_want: false }); }
             }
         }
         let c = self.st.communities[cid].clone();

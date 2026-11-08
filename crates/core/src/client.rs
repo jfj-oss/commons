@@ -4,6 +4,8 @@ use crate::state::*;
 use crate::transport::*;
 use crate::vault::{KdfParams, Vault};
 use anyhow::{anyhow, bail, Context, Result};
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use commons_proto::*;
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
@@ -139,7 +141,9 @@ impl Client {
         let acct = SigningKey::generate(&mut rand::rngs::OsRng);
         c.install_identity(&acct)?;
         c.save()?;
-        let _ = c.ensure_registered();
+        // Registration is not optional: an account the relay refused (a gated relay without the right secret, or a
+        // full relay) would look created and then do nothing. The UI shows this error where the account was made.
+        c.ensure_registered()?;
         c.save()?;
         Ok(c)
     }
@@ -151,7 +155,9 @@ impl Client {
         let mut c = Self::blank(dir, vault, relay, name, t, lock);
         c.install_identity(&SigningKey::from_bytes(&secret))?;
         c.save()?;
-        let _ = c.ensure_registered();
+        // A recovery registers as an existing account and needs no secret; if the relay does not know it (its data is
+        // gone, or it is a different relay) the refusal says so instead of leaving a device that can do nothing.
+        c.ensure_registered()?;
         c.save()?;
         Ok(c)
     }
@@ -265,6 +271,49 @@ impl Client {
     // ------------------------------------------------------------------ registration and key packages
     fn invite(&self) -> Option<String> { Some(self.st.relay_invite.clone()).filter(|s| !s.is_empty()) }
     pub(crate) fn register_invite(&self) -> Option<String> { self.invite() }
+    /// Whether the relay asks new accounts for a secret. Only asked when this device does not already have one.
+    pub fn relay_gated(&self) -> Result<bool> { Ok(self.api.info(None)?.gated) }
+    /// Save the relay's sign-up secret after checking it with the relay. The value is never exposed again: the UI and
+    /// the snapshot only learn whether one is held, and invite links (which need it) are the one place it goes out.
+    pub fn set_relay_invite(&mut self, secret: &str) -> Result<()> {
+        let secret = secret.trim();
+        if secret.is_empty() || secret.len() > 256 { bail!("that is not a relay's sign-up secret"); }
+        let info = self.api.info(Some(secret))?;
+        if !info.gated { bail!("this relay does not ask for a sign-up secret"); }
+        if !info.ok { bail!("that is not this relay's sign-up secret"); }
+        self.st.relay_invite = secret.into();
+        self.st.relay_secret_shared.clear();
+        self.st.relay_secret_asked.clear();
+        self.notice("relay", "the sign-up secret for this relay was saved on this device");
+        self.save()
+    }
+    /// Seal the sign-up secret to this account's own devices. It travels inside an MLS-encrypted consent, but is
+    /// encrypted again under a key derived from the account key, so other members of the community cannot read it.
+    pub(crate) fn seal_relay_secret(&self, secret: &str) -> Result<String> {
+        let aad = self.relay_secret_aad()?;
+        let mut nonce = [0u8; 12];
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        let ct = ChaCha20Poly1305::new((&self.relay_secret_key()?).into())
+            .encrypt(Nonce::from_slice(&nonce), Payload { msg: secret.as_bytes(), aad: &aad })
+            .map_err(|_| anyhow!("could not seal the sign-up secret"))?;
+        let mut blob = nonce.to_vec(); blob.extend(ct);
+        Ok(b64(&blob))
+    }
+    /// Open one sealed for this account, if it is really ours. None for anyone else's, or for a different relay.
+    pub(crate) fn open_relay_secret(&self, blob: &str) -> Option<String> {
+        let bytes = unb64(blob).ok()?;
+        if bytes.len() < 12 { return None; }
+        let (nonce, ct) = bytes.split_at(12);
+        let aad = self.relay_secret_aad().ok()?;
+        let plain = ChaCha20Poly1305::new((&self.relay_secret_key().ok()?).into())
+            .decrypt(Nonce::from_slice(nonce), Payload { msg: ct, aad: &aad }).ok()?;
+        let s = String::from_utf8(plain).ok()?;
+        (!s.is_empty() && s.len() <= 256).then_some(s)
+    }
+    fn relay_secret_key(&self) -> Result<[u8; 32]> { Ok(sha256(&[b"commons/relay-secret/v1", &self.acct_key()?.to_bytes()])) }
+    fn relay_secret_aad(&self) -> Result<Vec<u8>> {
+        Ok(sha256(&[b"commons/relay-secret/aad/v1", self.my_account().as_bytes(), self.st.relay.trim_end_matches('/').as_bytes()]).to_vec())
+    }
     /// The relay has no record of us: its data is gone, or it is a different relay.
     pub(crate) fn relay_forgot_us(&mut self) {
         self.st.registered = false;
@@ -320,7 +369,9 @@ impl Client {
     pub(crate) fn pairing_apply(&mut self, sealed: &[u8]) -> Result<bool> {
         let Some(p) = self.st.pairing.clone() else { return Ok(self.has_identity()) };
         let sk = crypto_box::SecretKey::from_bytes(hex32(&p.secret)?.into());
-        #[derive(serde::Deserialize)] struct P { account_secret: String, name: String, #[serde(default)] withdrawn: Vec<String> }
+        // An approver from before the secret travelled this way sends no `relay_invite`; one that does adds a field an
+        // older new-device ignores (serde skips unknown fields). Both directions are tested in `pairing_compat_tests`.
+        #[derive(serde::Deserialize)] struct P { account_secret: String, name: String, #[serde(default)] withdrawn: Vec<String>, #[serde(default)] relay_invite: String }
         let Some(pl) = sk.unseal(sealed).ok().and_then(|plain| serde_json::from_slice::<P>(&plain).ok()) else {
             self.notice("pair", "ignored something at the pairing address that was not sealed for this device");
             return Ok(false);
@@ -328,6 +379,12 @@ impl Client {
         let acct = SigningKey::from_bytes(&hex32(&pl.account_secret)?);
         self.install_identity(&acct)?;
         self.st.withdrawn = pl.withdrawn.into_iter().take(MAX_WITHDRAWN).collect();
+        // The approving device may know the relay's sign-up secret. Keep it, so that invites this device makes can let
+        // a friend without an account in nothing else having been done.
+        if self.st.relay_invite.is_empty() && !pl.relay_invite.is_empty() && pl.relay_invite.len() <= 256 {
+            self.st.relay_invite = pl.relay_invite;
+            self.st.relay_secret_shared.clear();
+        }
         if self.st.name.is_empty() { self.st.name = if check_name("name", pl.name.trim()).is_ok() { pl.name.trim().into() } else { "me".into() }; }
         self.st.pairing = None;
         self.st.registered = false;
@@ -356,7 +413,11 @@ impl Client {
         let pkb = crypto_box::PublicKey::from(hex32(&pk)?);
         // What the account took back goes along, or the new device would believe a community this account left.
         let withdrawn: Vec<&String> = self.st.withdrawn.iter().rev().take(PAIR_WITHDRAWN).collect();
-        let payload = serde_json::to_vec(&serde_json::json!({"account_secret": self.st.account_secret, "name": self.st.name, "withdrawn": withdrawn}))?;
+        let mut payload = serde_json::json!({"account_secret": self.st.account_secret, "name": self.st.name, "withdrawn": withdrawn});
+        // The relay's sign-up secret too, when this device has it: without it the new device could not make an invite
+        // that admits someone without an account. Omitted when empty, which is exactly what an older approver sends.
+        if !self.st.relay_invite.is_empty() { payload["relay_invite"] = serde_json::json!(self.st.relay_invite); }
+        let payload = serde_json::to_vec(&payload)?;
         let sealed = pkb.seal(&mut rand::rngs::OsRng, &payload).map_err(|_| anyhow!("seal failed"))?;
         Ok((rid, sealed, pairing_check(&pk)))
     }
@@ -430,6 +491,64 @@ impl Client {
 pub fn pairing_check(new_pk: &str) -> String {
     let h = sha256(&[b"commons/pair-check", new_pk.as_bytes()]);
     format!("{:04}", u32::from_be_bytes(h[..4].try_into().unwrap()) % 10000)
+}
+
+#[cfg(test)]
+mod pairing_compat_tests {
+    use super::*;
+    use crate::vault::KdfParams;
+
+    struct Offline;
+    impl Transport for Offline {
+        fn request(&self, _: Option<&SigningKey>, _: &str, _: &str, _: &[u8], _: std::time::Duration) -> Result<HttpResp> { Err(anyhow!("offline")) }
+    }
+    fn new_device() -> (Client, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let (c, _) = Client::create_for_pairing(dir.path(), "pw", "http://127.0.0.1:1", "", KdfParams::TEST, Arc::new(Offline)).unwrap();
+        (c, dir)
+    }
+    fn seal(c: &Client, payload: &serde_json::Value) -> Vec<u8> {
+        let pk = crypto_box::PublicKey::from(hex32(&c.st.pairing.as_ref().unwrap().public).unwrap());
+        pk.seal(&mut rand::rngs::OsRng, &serde_json::to_vec(payload).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_new_approver_hands_the_secret_to_the_new_device() {
+        let (mut c, _d) = new_device();
+        let secret = "this-relay-sign-up-secret";
+        let sealed = seal(&c, &serde_json::json!({
+            "account_secret": "11".repeat(32), "name": "alice", "withdrawn": [], "relay_invite": secret
+        }));
+        assert!(c.pairing_apply(&sealed).unwrap());
+        assert_eq!(c.st.relay_invite, secret);
+        assert!(c.st.relay_secret_shared.is_empty());
+    }
+
+    #[test]
+    fn an_old_approver_sends_no_field_and_the_new_device_still_pairs() {
+        let (mut c, _d) = new_device();
+        // Exactly what 0.2.x seals: three fields, no relay_invite.
+        let sealed = seal(&c, &serde_json::json!({
+            "account_secret": "22".repeat(32), "name": "alice", "withdrawn": []
+        }));
+        assert!(c.pairing_apply(&sealed).unwrap());
+        assert!(c.has_identity());
+        assert!(c.st.relay_invite.is_empty(), "nothing is invented: this device simply has no secret yet");
+    }
+
+    #[test]
+    fn an_old_new_device_ignores_the_field_a_new_approver_adds() {
+        // What 0.2.x parses, field for field. serde skips what it does not know, so a new approver's payload opens.
+        #[derive(serde::Deserialize)]
+        struct OldPayload { account_secret: String, name: String, #[serde(default)] withdrawn: Vec<String> }
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "account_secret": "33".repeat(32), "name": "alice", "withdrawn": ["aa".repeat(64)], "relay_invite": "s3cret"
+        })).unwrap();
+        let old: OldPayload = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(old.account_secret, "33".repeat(32));
+        assert_eq!(old.name, "alice");
+        assert_eq!(old.withdrawn.len(), 1);
+    }
 }
 
 pub fn safety_number(a: &str, b: &str) -> String {

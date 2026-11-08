@@ -596,11 +596,30 @@ impl Client {
                     self.st.revoked.insert(device, sig);
                 } else { self.notice("reject", "ignored a device revocation with a bad signature".to_string()); }
             }
-            (Kind::Control, Envelope::Consent { ts, sig }) => {
+            (Kind::Control, Envelope::Consent { ts, sig, relay_secret, relay_secret_want }) => {
                 // Only for one's own account, and it has to carry that account's signature, whoever passes it on.
                 let con = Consent { account: acct.clone(), ts, sig };
                 if verify_consent(gid, &con).is_err() { self.notice("reject", "ignored a consent with a bad signature".to_string()); }
-                else if let Some(c) = self.st.communities.get_mut(&comm) { c.consent_queue.insert(acct, con); }
+                else {
+                    // The relay's sign-up secret rides in the same envelope, sealed so that the rest of the community
+                    // can read nothing. Only this account's own other devices may hand it to us, or ask for it.
+                    if acct == self.my_account() && cert.device != self.my_device() {
+                        if let Some(blob) = relay_secret {
+                            if self.st.relay_invite.is_empty() {
+                                if let Some(secret) = self.open_relay_secret(&blob) {
+                                    self.st.relay_invite = secret;
+                                    self.st.relay_secret_shared.clear();
+                                    self.st.relay_secret_asked.remove(&comm);
+                                    self.notice("relay", "this device received this server's sign-up secret from another of your devices");
+                                }
+                            }
+                        }
+                        if relay_secret_want && !self.st.relay_invite.is_empty() {
+                            if let Err(e) = self.queue_relay_secret(&comm) { log::warn!("answer a request for the relay secret: {e}"); }
+                        }
+                    }
+                    if let Some(c) = self.st.communities.get_mut(&comm) { c.consent_queue.insert(acct, con); }
+                }
             }
             (Kind::Channel, Envelope::Typing) => { self.typing.insert(format!("{gid}|{acct}"), now_secs()); }
             (Kind::Channel, env @ (Envelope::Text { .. } | Envelope::File { .. } | Envelope::Edit { .. } | Envelope::Delete { .. } | Envelope::React { .. })) => {

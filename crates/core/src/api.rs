@@ -312,9 +312,9 @@ impl App {
             "create_invite" => self.with(|c| {
                 let uses = a.get("uses").and_then(|x| x.as_u64()).map(|x| x as u32);
                 let ttl = a.get("ttl").and_then(|x| x.as_u64()).unwrap_or(7 * 86400);
-                let link = c.create_invite(&s(&a, "cid"), uses, ttl).map_err(e)?;
-                let web = InviteLink::decode(&link).ok().and_then(|l| l.web());
-                Ok(json!({"link": web.as_deref().unwrap_or(&link), "qr": Client::qr_svg(web.as_deref().unwrap_or(&link))}))
+                let made = c.create_invite_checked(&s(&a, "cid"), uses, ttl).map_err(e)?;
+                let web = InviteLink::decode(&made.link).ok().and_then(|l| l.web());
+                Ok(json!({"link": web.as_deref().unwrap_or(&made.link), "qr": Client::qr_svg(web.as_deref().unwrap_or(&made.link)), "signup_needs_secret": made.signup_needs_secret}))
             }),
             "join" => self.with(|c| c.join_with_link(&s(&a, "link")).map(|id| json!({"id": id})).map_err(e)),
             "cancel_join" => self.with(|c| c.cancel_join(&s(&a, "id")).map(|_| json!({})).map_err(e)),
@@ -368,6 +368,8 @@ impl App {
                 self.probe(&relay, None)?;
                 self.with(|c| c.set_relay(&relay, HttpTransport::new(&relay).into_arc()).map(|_| json!({"relay": relay})).map_err(e))
             }
+            // The sign-up secret, typed in once on a device that never got it. Checked with the relay before saving.
+            "set_relay_invite" => self.with(|c| c.set_relay_invite(&s(&a, "secret")).map(|_| json!({})).map_err(e)),
             "set_typing_enabled" => self.with(|c| { c.st.typing_enabled = a["on"].as_bool().unwrap_or(false); c.save().map_err(e)?; Ok(json!({})) }),
             "notices" => self.read("notices".into(), |c| json!(c.st.notices.iter().rev().take(80).map(|n| json!({"ts": n.ts, "kind": n.kind, "text": n.text})).collect::<Vec<_>>())),
             "call_state" => self.with(|c| {
@@ -429,7 +431,7 @@ fn snapshot(c: &Client) -> Value {
     let refused: Vec<Value> = c.st.join_refused.iter().map(|(id, r)| json!({"id": id, "name": r.name, "reason": r.reason, "ts": r.ts})).collect();
     let problems: Vec<Value> = c.st.notices.iter().rev().filter(|n| matches!(n.kind.as_str(), "decrypt" | "broken" | "rollback" | "reject" | "gap" | "welcome" | "relay" | "state" | "clock" | "revoked")).take(5).map(|n| json!({"ts": n.ts, "kind": n.kind, "text": n.text})).collect();
     let net = match c.net.state { NetState::Connecting => "connecting", NetState::Online => "online", NetState::Offline => "offline" };
-    json!({"me": {"account": me, "name": c.st.name, "device": c.my_device()}, "relay": c.st.relay, "communities": comms, "joining": joining, "refused": refused,
+    json!({"me": {"account": me, "name": c.st.name, "device": c.my_device()}, "relay": c.st.relay, "relay_secret": !c.st.relay_invite.is_empty(), "communities": comms, "joining": joining, "refused": refused,
            "typing_enabled": c.st.typing_enabled, "outbox": c.st.outbox.len(), "problems": problems, "net": net, "net_detail": c.net.detail, "revoked": c.st.self_revoked,
            "version": c.activity})
 }

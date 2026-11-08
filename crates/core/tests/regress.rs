@@ -546,9 +546,8 @@ fn the_relay_gate_and_quotas_hold() {
     let net = Net::with_limits(lim);
     let dir = tempfile::tempdir().unwrap();
     let d = Duration::from_secs(5);
-    let c = Client::create(dir.path(), "pw", &net.url(), "nobody", KdfParams::TEST, transport(&net.url()).0).unwrap();
-    assert!(!c.st.registered, "no secret, no account");
-    drop(c);
+    let err = Client::create(dir.path(), "pw", &net.url(), "nobody", KdfParams::TEST, transport(&net.url()).0).err().expect("no secret, no account");
+    assert!(format!("{err}").contains("invite secret"), "the refusal is surfaced, not swallowed: {err}");
     let dir = tempfile::tempdir().unwrap();
     let mut c = Client::create_with_invite(dir.path(), "pw", &net.url(), "friend", "letmein", KdfParams::TEST, transport(&net.url()).0).unwrap();
     assert!(c.st.registered);
@@ -560,7 +559,8 @@ fn the_relay_gate_and_quotas_hold() {
     let dir2 = tempfile::tempdir().unwrap();
     assert!(Client::create_from_recovery(dir2.path(), "pw", &net.url(), "friend", &key, KdfParams::TEST, transport(&net.url()).0).unwrap().st.registered);
     let dir3 = tempfile::tempdir().unwrap();
-    assert!(!Client::create_from_recovery(dir3.path(), "pw", &net.url(), "friend", &key, KdfParams::TEST, transport(&net.url()).0).unwrap().st.registered, "too many devices");
+    let err = Client::create_from_recovery(dir3.path(), "pw", &net.url(), "friend", &key, KdfParams::TEST, transport(&net.url()).0).err().expect("too many devices");
+    assert!(format!("{err}").contains("too many devices"), "the refusal is surfaced, not swallowed: {err}");
     let (_, k) = c.net_handle().unwrap();
     let t = HttpTransport::new(&net.url());
     let id = || hex::encode(rand::random::<[u8; 16]>());

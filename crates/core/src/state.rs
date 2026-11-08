@@ -43,6 +43,12 @@ pub struct State {
     pub typing_enabled: bool,
     /// The relay's invite secret, kept so that we can register again if the relay ever forgets this device.
     pub relay_invite: String,
+    /// When this device last passed the relay's sign-up secret on, per community's control group.
+    #[serde(default)]
+    pub relay_secret_shared: BTreeMap<String, u64>,
+    /// When this device last asked its other devices for the secret, per community's control group.
+    #[serde(default)]
+    pub relay_secret_asked: BTreeMap<String, u64>,
     /// When we last asked to join (community id -> time), and when we may next try.
     pub join_asked: BTreeMap<String, u64>,
     pub join_retry: BTreeMap<String, u64>,

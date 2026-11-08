@@ -841,7 +841,8 @@ $('#btn-invite').onclick = () => {
       const until = new Date((Date.now() / 1000 + ttl) * 1000).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
       const admits = !uses ? 'Admits anyone with the link' : uses === '1' ? 'Admits one' : `Admits up to ${uses}`;
       $('#inv-form', w).hidden = true;
-      $('#out', w).innerHTML = `<div class="ticket"><div class="t-main"><div class="t-head">${crest(c.id, c.name)}<div><div class="t-club">${esc(c.name)}</div><div class="t-admit">${esc(admits)}</div></div></div><div class="code">${esc(r.link)}</div><div class="t-until">Valid until ${esc(until)}</div></div><div class="t-stub"><div class="qr">${r.qr}</div></div></div><p>Send this link privately. Whoever has it can ask to join.</p><p class="muted small">An admin has to be online (now or later) to let them in.</p>`;
+      const noSecret = r.signup_needs_secret ? `<div class="state-line">This device doesn't know this server's sign-up secret, so this link only works for people who already have an account on ${esc(S.snap.relay)}.</div><p class="muted small">If you have the secret, open Settings → Relay address, paste it next to the address and save; then create the link again.</p>` : '';
+      $('#out', w).innerHTML = `<div class="ticket"><div class="t-main"><div class="t-head">${crest(c.id, c.name)}<div><div class="t-club">${esc(c.name)}</div><div class="t-admit">${esc(admits)}</div></div></div><div class="code">${esc(r.link)}</div><div class="t-until">Valid until ${esc(until)}</div></div><div class="t-stub"><div class="qr">${r.qr}</div></div></div><p>Send this link privately. Whoever has it can ask to join.</p><p class="muted small">An admin has to be online (now or later) to let them in.</p>${noSecret}`;
       $('.acts button:last-child', w).textContent = 'Copy link';
       return false;
     } }], { cls: 'invite-modal' });
@@ -897,8 +898,14 @@ $('#btn-settings').onclick = () => modal('Settings', `<label for="n">Display nam
   <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when Megatron is in the background or the message is in another room. The window title shows how many are unread.</p>
   <label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints (the relay can see that a message-sized packet was sent at that moment)</span></label>
   <label>Calls</label><button type="button" class="btn ghost" id="set-gamekeys">Game keys…</button><p class="muted small">Mute yourself in Megatron while you talk to your game team.</p>
-  <label for="rl">Relay address</label><input type="text" id="rl" value="${esc(S.snap.relay)}" spellcheck="false"><p class="muted small">Change this only if your relay moved. A different relay does not have your communities.<br>Your account id: <span class="mono">${esc(S.snap.me.account.slice(0, 16))}…</span></p>`,
-  [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => { if (val(w, 'rl').trim() !== S.snap.relay) await rpc('set_relay', { relay: val(w, 'rl') }); await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); pref.set('theme', val(w, 'th')); pref.set('read', val(w, 'rd')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs(); } }]).then(tick);
+  <label for="rl">Relay address</label><input type="text" id="rl" value="${esc(S.snap.relay)}" spellcheck="false"><p class="muted small">Change this only if your relay moved. A different relay does not have your communities.<br>Your account id: <span class="mono">${esc(S.snap.me.account.slice(0, 16))}…</span></p>
+  <label for="rs">This server's sign-up secret</label><input type="password" id="rs" value="" spellcheck="false" autocomplete="off" placeholder="${S.snap.relay_secret ? 'Saved on this device — leave empty to keep it' : 'Not saved on this device — paste it here if you have it'}"><p class="muted small">A device added by pairing or recovery may not have it; without it, invite links from this device only work for people who already have an account here. It is checked with the relay and never shown again once saved.</p>`,
+  [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => {
+    if (val(w, 'rl').trim() !== S.snap.relay) await rpc('set_relay', { relay: val(w, 'rl') });
+    const secret = val(w, 'rs').trim();
+    if (secret) await rpc('set_relay_invite', { secret });
+    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); pref.set('theme', val(w, 'th')); pref.set('read', val(w, 'rd')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs();
+  } }]).then(tick);
 
 // Clicks inside Settings are caught here, so that the dialog above can stay as it is.
 $('#modal-root').addEventListener('click', e => { if (e.target.closest('#set-gamekeys')) gameKeys(); });

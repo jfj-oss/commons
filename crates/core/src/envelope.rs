@@ -57,6 +57,8 @@ pub fn cut_name(n: &str, max: usize) -> String {
     format!("{}{ext}", &n[..end])
 }
 
+fn is_false(b: &bool) -> bool { !*b }
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "t")]
 pub enum Envelope {
@@ -73,7 +75,20 @@ pub enum Envelope {
     Revoked { account: String, device: String, sig: String },
     /// A member's own `Consent` for this community, for an admin to put in the table. Only for members whose table entry
     /// is missing: everyone else's arrived with their join request.
-    Consent { ts: u64, sig: String },
+    ///
+    /// The two optional fields are how one of a person's devices hands the relay's sign-up secret to another (see
+    /// `Client::seal_relay_secret`). They ride on `Consent` on purpose: an app from before they existed parses this as
+    /// an ordinary consent and checks the signature, so it neither reports an unknown kind nor acts on the extra data.
+    Consent {
+        ts: u64,
+        sig: String,
+        /// The sign-up secret, sealed to the account's own devices. Other members can read the bytes and nothing else.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_secret: Option<String>,
+        /// This account's device has no secret and is asking its other devices for it.
+        #[serde(default, skip_serializing_if = "is_false")]
+        relay_secret_want: bool,
+    },
     /// A kind this version does not know, sent by a newer app. Skipped quietly instead of shown as a broken message, so
     /// that a newer friend's app adding a kind never makes an older app's rooms look damaged (docs/DESIGN.md, compatibility).
     /// Never sent.
@@ -117,7 +132,11 @@ impl Envelope {
             Typing | Leave | Unknown => {}
             Profile { name, .. } => if name.is_empty() || !short(name, 64) { return bad("bad profile"); },
             Revoked { account, device, sig } => if !is_key(account) || !is_key(device) || sig.len() != 128 { return bad("bad revocation"); },
-            Consent { sig, .. } => if sig.len() != 128 { return bad("bad consent"); },
+            Consent { sig, relay_secret, .. } => {
+                if sig.len() != 128 { return bad("bad consent"); }
+                // Sealed secret: a base64 blob of a nonce and ciphertext, never more than a short secret needs.
+                if relay_secret.as_ref().is_some_and(|s| s.len() > 1024 || commons_proto::unb64(s).is_err()) { return bad("bad relay secret"); }
+            }
         }
         Ok(())
     }
@@ -393,5 +412,32 @@ mod compat_tests {
         assert!(Envelope::parse(br#"{"text":"no kind"}"#).is_err());
         // and the old wire form is unchanged
         assert_eq!(Envelope::Typing.to_bytes(), br#"{"t":"Typing"}"#);
+    }
+
+    #[test]
+    fn the_relay_secret_rides_on_a_shape_old_apps_already_know() {
+        // What a device with the relay's sign-up secret sends. The extra fields are not a new kind, so an app from
+        // 0.2.x must parse this as the Consent it knows rather than as Unknown (which it would show as a notice).
+        let sig = "ab".repeat(64);
+        let msg = format!(r#"{{"t":"Consent","ts":7,"sig":"{sig}","relay_secret":"AQID","relay_secret_want":true}}"#);
+        let e = Envelope::parse(msg.as_bytes()).unwrap();
+        assert!(matches!(e, Envelope::Consent { ts: 7, relay_secret: Some(ref s), relay_secret_want: true, .. } if s == "AQID"));
+        assert_ne!(e, Envelope::Unknown);
+
+        #[derive(serde::Deserialize)]
+        #[serde(tag = "t")]
+        enum OldEnvelope {
+            Consent { ts: u64, sig: String },
+            #[serde(other)]
+            Unknown,
+        }
+        let old: OldEnvelope = serde_json::from_str(&msg).unwrap();
+        assert!(matches!(old, OldEnvelope::Consent { ts: 7, ref sig } if sig == &"ab".repeat(64)));
+
+        // An ordinary consent goes out exactly as before: no empty fields, no new spelling.
+        let plain = Envelope::Consent { ts: 7, sig: sig.clone(), relay_secret: None, relay_secret_want: false };
+        assert_eq!(plain.to_bytes(), format!(r#"{{"t":"Consent","ts":7,"sig":"{sig}"}}"#).into_bytes());
+        // And an old consent, with neither field, still reads.
+        assert_eq!(Envelope::parse(format!(r#"{{"t":"Consent","ts":7,"sig":"{sig}"}}"#).as_bytes()).unwrap(), plain);
     }
 }

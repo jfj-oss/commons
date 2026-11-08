@@ -226,6 +226,7 @@ impl Client {
             for g in ctls { self.queue_env(&g, Envelope::Profile { name: name.clone(), ts: now_secs() }); }
         }
         self.reconcile();
+        self.plan_relay_secret();
         // nothing goes out unless the state behind it is on disk
         if let Err(e) = self.encrypt_outbox().and_then(|_| self.save()) { log::warn!("save before sending: {e}"); r.sync = Some(self.sync_req(wait_ms)); return r; }
         for g in self.st.groups.values() {
