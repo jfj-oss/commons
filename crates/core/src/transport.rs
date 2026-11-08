@@ -122,6 +122,17 @@ impl Api {
             c => Err(anyhow!("call token: relay said {c} {}", String::from_utf8_lossy(&r.body))),
         }
     }
+    /// Who the relay's media server reports in these rooms' calls, as device ids. The relay only answers about
+    /// rooms this account is a current member of; a relay without calls configured says 404.
+    pub fn call_presence(&self, k: &SigningKey, gids: &[String]) -> Result<CallPresenceResp> {
+        let body = serde_json::to_vec(&CallPresenceReq { gids: gids.to_vec() })?;
+        let r = self.t.request(Some(k), "POST", "/v1/call-presence", &body, T)?;
+        match r.status {
+            200 => Ok(serde_json::from_slice(&r.body)?),
+            404 => Err(anyhow!("this relay has no call server configured")),
+            c => Err(anyhow!("call presence: relay said {c} {}", String::from_utf8_lossy(&r.body))),
+        }
+    }
     pub fn acl_get(&self, k: &SigningKey, gid: &str) -> Result<AclResp> {
         let r = ok(self.t.request(Some(k), "GET", &format!("/v1/groups/{gid}/acl"), &[], T)?, "acl")?;
         Ok(serde_json::from_slice(&r.body)?)

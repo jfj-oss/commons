@@ -218,6 +218,15 @@ pub struct CallTokenResp {
 }
 /// The opaque media-room name for a group: the media server never sees the group id itself.
 pub fn call_room(gid: &str) -> String { hex::encode(sha256(&[b"commons/livekit-room/v1", gid.as_bytes()])) }
+/// Ask the relay who the media server says is connected to some rooms' calls. It answers only about groups the
+/// signed-in account is a current member of. Devices, not people: each member maps them to names locally from
+/// its own MLS group, so no name ever leaves a member's device for this.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct CallPresenceReq { pub gids: Vec<String> }
+/// Reply of `POST /v1/call-presence`: group id -> device ids in that room's call. A gid that is absent means
+/// nobody there (or the caller is not a current member of it). See `CallPresenceReq`.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct CallPresenceResp { pub rooms: std::collections::BTreeMap<String, Vec<String>> }
 /// One link of the chain of owners: `from` hands the community to `to` as step `seq` (1 = from the founder).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct OwnerStep { pub seq: u64, pub from: String, pub to: String, pub sig: String }

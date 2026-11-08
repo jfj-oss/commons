@@ -9,9 +9,9 @@
 use crate::client::Client;
 use crate::mls;
 use anyhow::{anyhow, bail, Result};
-use commons_proto::CallTokenResp;
+use commons_proto::{CallPresenceResp, CallTokenResp};
 use openmls_traits::OpenMlsProvider;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const CALL_LABEL: &str = "commons-call-e2ee-v1";
 
@@ -25,6 +25,11 @@ pub struct CallState {
     /// per sending device: the 32-byte frame key for this epoch
     pub keys: BTreeMap<String, [u8; 32]>,
 }
+
+/// One person in a room's call, as the rail shows them. `devices` is how many of that account's current devices
+/// the media server reports; the name comes from this device's own state, never from the relay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallPerson { pub account: String, pub name: String, pub devices: Vec<String>, pub is_me: bool }
 
 impl Client {
     /// The call keys of this room at the epoch this device is at. Fails if this device is no longer in the room.
@@ -49,6 +54,37 @@ impl Client {
         }
         if !keys.contains_key(&me) { bail!("this device is not in the room's key group"); }
         Ok(CallState { epoch: g.epoch().as_u64(), my_device: me, members, keys })
+    }
+
+    /// Turn the relay's answer (device ids per room) into people, using this device's own MLS view of each room.
+    /// A device the room's current key group does not know is dropped, so a stale or wrong answer can never show
+    /// a stranger, or someone who has left, as sitting in the room. Rooms this device is no longer in are dropped
+    /// too; the relay already refuses to answer about them.
+    pub fn call_presence(&self, resp: &CallPresenceResp) -> BTreeMap<String, Vec<CallPerson>> {
+        let mut out = BTreeMap::new();
+        let me = self.my_account();
+        for (gid, devices) in &resp.rooms {
+            if !self.st.groups.get(gid).is_some_and(|g| !g.removed && !g.broken) { continue; }
+            let Some(g) = self.load_group(gid) else { continue };
+            if !g.is_active() { continue; }
+            let wanted: BTreeSet<&str> = devices.iter().map(String::as_str).collect();
+            let mut people: BTreeMap<String, CallPerson> = BTreeMap::new();
+            for (_, c) in mls::members_of(&g) {
+                if !wanted.contains(c.device.as_str()) { continue; }
+                let e = people.entry(c.account.clone()).or_insert_with(|| CallPerson {
+                    account: c.account.clone(), name: self.display_name(&c.account), devices: vec![], is_me: c.account == me,
+                });
+                e.devices.push(c.device.clone());
+            }
+            if people.is_empty() { continue; }
+            let mut v: Vec<CallPerson> = people.into_values().collect();
+            // The same order everywhere: you first, then by name, with the account id as a tie-break.
+            v.sort_by(|x, y| y.is_me.cmp(&x.is_me)
+                .then_with(|| x.name.to_lowercase().cmp(&y.name.to_lowercase()))
+                .then_with(|| x.account.cmp(&y.account)));
+            out.insert(gid.clone(), v);
+        }
+        out
     }
 
     /// A join token from the relay (it checks that the account is a current member).

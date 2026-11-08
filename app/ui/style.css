@@ -171,6 +171,21 @@ p { margin: 0 0 10px; }
 .at-mark { font: 700 13.5px/1 var(--sans); color: var(--hot-pill); }
 .menu .pill { background: var(--brass-soft); color: var(--brass); }
 .room-note { margin: 4px 10px 4px 2px; padding: 9px 10px; font-size: 13px; color: var(--rail-mute); border: 1px dashed var(--rail-line); border-radius: 10px; }
+/* A room whose call has people in it: a quiet speaker mark on the room, then their seals and names underneath,
+   like a voice channel. The accent stays soft: the rail stays baize, not a dashboard. */
+.room-wrap { display: flex; flex-direction: column; min-width: 0; }
+.room.live { color: var(--rail-ink); }
+.room.live .live-ic { width: 13px; height: 13px; flex: none; color: var(--accent); opacity: .9; filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 55%, transparent)); }
+.room.active .live-ic { color: var(--accent); }
+.room-live { display: flex; align-items: center; flex-wrap: wrap; gap: 3px 5px; padding: 0 12px 6px 31px; margin-right: 10px; min-width: 0; }
+.live-p { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 76px; padding: 1px 3px; border: 0; border-radius: 6px; background: none; color: var(--rail-mute); }
+.live-p:hover { background: var(--rail-2); color: var(--rail-ink); }
+.live-p .seal { --s: 15px; }
+.live-p .live-n { font-size: 12px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.live-more { font: 600 11.5px var(--sans); color: var(--rail-mute); padding: 1px 2px; }
+.live-join { margin-left: auto; border: 1px solid var(--rail-line); border-radius: 999px; background: none; color: var(--rail-mute); font: 600 11.5px/1.5 var(--sans); padding: 1px 9px; }
+.live-join:hover { color: var(--rail-ink); border-color: var(--accent); background: var(--rail-2); }
+.live-you { margin-left: auto; font-size: 11.5px; color: var(--accent); white-space: nowrap; }
 
 .sync { font: 400 11.5px var(--mono); color: var(--rail-mute); padding: 8px 18px 8px; display: flex; align-items: center; gap: 7px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .sync::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--rail-mute); flex: none; opacity: .7; }
