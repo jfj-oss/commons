@@ -263,7 +263,7 @@ pub fn studio_tool() -> ToolSpec {
             "properties": {
                 "kind": {"type": "string", "enum": ["picture", "song", "sound", "video"], "description": "What to make."},
                 "prompt": {"type": "string", "description": "A detailed description of the picture, sound or video. For a song this is the musical style (for example 'warm reggae, live drums, horns')."},
-                "lyrics": {"type": "string", "description": "The words to sing (songs only)."},
+                "lyrics": {"type": "string", "description": "The words to sing (songs only). Everyone in them is an adult: write woman or man, never girl, boy, baby, kid or young."},
                 "count": {"type": "integer", "description": "songs only: how many to make, 1 to 10. Use what the person asked for."},
                 "length": {"type": "string", "description": "song: 30, 60, 120 or 180 seconds (use what the person asked for: 2 minutes = 120); sound: 3, 6, 10 or 15 seconds; video: 2s, 4s or 5s."},
                 "size": {"type": "string", "description": "picture: square, portrait, landscape, wide, tall or small; video: vland, vtall, vhd or vhdtall."},

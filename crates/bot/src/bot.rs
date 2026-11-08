@@ -728,8 +728,9 @@ impl Bot {
         // A length the person named ("a 2 minute song") wins over the one the model picked or forgot.
         if let Some(l) = studio::length_from_words(req.kind, &job.text) { req.length = l; }
         // The hard block. Both the person's own request and the model-written prompt (and lyrics) are read.
-        for text in [job.text.as_str(), req.prompt.as_str(), req.lyrics.as_str()] {
-            if safety::blocked(text) {
+        for (source, text) in [("request", job.text.as_str()), ("prompt", req.prompt.as_str()), ("lyrics", req.lyrics.as_str())] {
+            if let Some(why) = safety::reason(text) {
+                eprintln!("[bot] hard block: {why:?}, in the {source}");   // the rule and the place, never the text
                 return self.studio_notice(
                     c, job, safety::REFUSAL,
                     "A hard rule refused this request. Do not try again, do not rephrase it, and do not describe it.",
