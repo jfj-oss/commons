@@ -243,7 +243,9 @@ impl Llm for Ollama {
             "messages": messages,
             "stream": false,
             "keep_alive": KEEP_ALIVE,
-            "options": {"temperature": 0.7, "num_predict": 600},
+            // thinking models (qwen3.x) otherwise spend the whole budget reasoning and return no answer
+            "think": false,
+            "options": {"temperature": 0.7, "num_predict": 1200},
         });
         if self.tool_mode() == ToolMode::FunctionCalling && !tools.is_empty() {
             body["tools"] = tool_specs_json(tools);
