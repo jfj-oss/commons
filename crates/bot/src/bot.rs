@@ -721,10 +721,12 @@ impl Bot {
     /// first on the person's words and on the prompt the model wrote, then permission, then Studio's own readiness,
     /// then the daily cap, then the one-job queue. Studio is not contacted at all until every check has passed.
     fn studio_make(&self, call: &ToolCall, c: &mut dyn Chat, job: &Job) -> String {
-        let req = match studio::Request::from_args(&call.arguments) {
+        let mut req = match studio::Request::from_args(&call.arguments) {
             Ok(r) => r,
             Err(e) => return e,
         };
+        // A length the person named ("a 2 minute song") wins over the one the model picked or forgot.
+        if let Some(l) = studio::length_from_words(req.kind, &job.text) { req.length = l; }
         // The hard block. Both the person's own request and the model-written prompt (and lyrics) are read.
         for text in [job.text.as_str(), req.prompt.as_str(), req.lyrics.as_str()] {
             if safety::blocked(text) {
