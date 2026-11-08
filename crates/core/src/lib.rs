@@ -13,3 +13,4 @@ pub mod rune;
 pub mod sync;
 pub mod api;
 pub mod update;
+pub mod browser_update;

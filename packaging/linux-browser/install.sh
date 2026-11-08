@@ -5,7 +5,8 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 DST="${XDG_DATA_HOME:-$HOME/.local/share}/megatron-browser"
 [ -f "$DST/.pid" ] && kill "$(cat "$DST/.pid")" 2>/dev/null || true
 mkdir -p "$DST" "$HOME/.local/bin" "${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-rm -rf "$DST/ui"; cp -r "$SRC/ui" "$SRC/bridge" "$SRC/megatron" "$SRC/relay.txt" "$SRC/megatron.png" "$DST/"
+rm -rf "$DST/ui" "$DST/.update-previous" "$DST/.update-note.json" "$DST/.update.lock"
+cp -r "$SRC/ui" "$SRC/bridge" "$SRC/megatron" "$SRC/relay.txt" "$SRC/megatron.png" "$DST/"
 chmod +x "$DST/bridge" "$DST/megatron"
 ln -sf "$DST/megatron" "$HOME/.local/bin/megatron"
 cat > "${XDG_DATA_HOME:-$HOME/.local/share}/applications/megatron-browser.desktop" <<D

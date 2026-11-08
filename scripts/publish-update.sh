@@ -156,7 +156,10 @@ sign() {
   [ "$(keyid_sig "$1.sig")" = "$WANT_ID" ] || die "$1 was signed with a key the apps do not trust (key id $(keyid_sig "$1.sig"), apps trust $WANT_ID)"
 }
 declare -A UP=()    # platform -> file in the staging folder
+# The browser version is its own platform: no Tauri updater target is called "linux-browser-x86_64", so desktop apps
+# ignore it (they look for linux-x86_64), and the browser bridge looks only for this one.
 want linux   && UP[linux-x86_64]=Megatron-linux-x86_64.AppImage
+want linux   && UP[linux-browser-x86_64]=Megatron-linux-browser.tar.gz
 want windows && UP[windows-x86_64]=Megatron-windows-x64-setup.exe
 want mac     && UP[darwin-aarch64]=Megatron-macos-arm64.app.tar.gz
 [ ${#UP[@]} -gt 0 ] || die "nothing to publish"
@@ -164,7 +167,7 @@ for p in "${!UP[@]}"; do [ -s "$STAGE/${UP[$p]}" ] || die "missing build output 
 
 # ---- into dist/: versioned update files first, then friends' downloads, the manifest last
 mkdir -p "$DIST/update"
-upname() { case $1 in linux-x86_64) echo "Megatron_${NEW}_x86_64.AppImage" ;; windows-x86_64) echo "Megatron_${NEW}_x64-setup.exe" ;; darwin-aarch64) echo "Megatron_${NEW}_aarch64.app.tar.gz" ;; esac; }
+upname() { case $1 in linux-x86_64) echo "Megatron_${NEW}_x86_64.AppImage" ;; linux-browser-x86_64) echo "Megatron_${NEW}_linux-browser.tar.gz" ;; windows-x86_64) echo "Megatron_${NEW}_x64-setup.exe" ;; darwin-aarch64) echo "Megatron_${NEW}_aarch64.app.tar.gz" ;; esac; }
 platforms='{}'
 for p in "${!UP[@]}"; do
   n=$(upname "$p")
