@@ -357,7 +357,7 @@ try {
     await A.ev(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}`);
     await sleep(400);
     await A.ev(`[...document.querySelectorAll('#rooms .room')].find(r => r.dataset.g === ${JSON.stringify(textGid)}).click()`);
-    await sleep(250);
+    await sleep(900);
     await A.shot(`${tag}-chat`);
     await click(A, '#btn-settings'); await A.waitFor(`document.querySelector('.modal')`); await sleep(300);
     await A.shot(`${tag}-settings`);
