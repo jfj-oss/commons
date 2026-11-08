@@ -110,6 +110,22 @@ fn a_large_file_resumes_after_a_restart_and_arrives_intact() {
     let again = bob.c.large_download_begin(&gid, &mid).unwrap();
     assert!(again.finished);
     assert_eq!(PathBuf::from(again.path), path);
+
+    // Saving this one file somewhere else leaves the Settings folder alone.
+    assert!(bob.c.large_download_begin_in(&gid, &mid, Some("not/a/full/path")).is_err());
+    let other = tempfile::tempdir().unwrap();
+    let mut d = bob.c.large_download_begin_in(&gid, &mid, Some(other.path().to_str().unwrap())).unwrap();
+    assert!(!d.finished, "a different folder is a new save");
+    let (api, k) = bob.c.net_handle().unwrap();
+    while d.done < d.chunks {
+        let ct = api.large_get_chunk(&k, &d.blob, d.done).unwrap();
+        let step = bob.c.large_download_write(&gid, &mid, &ct).unwrap();
+        d.done = step.done;
+    }
+    assert_eq!(std::fs::read(other.path().join("a big film.mkv")).unwrap(), data);
+    assert_eq!(bob.c.download_dir(), dir.path());
+    assert_eq!(std::fs::read(&path).unwrap(), data, "the first copy is untouched");
+    assert!(bob.c.large_download_begin_in(&gid, &mid, Some(other.path().to_str().unwrap())).unwrap().finished);
 }
 
 #[test]

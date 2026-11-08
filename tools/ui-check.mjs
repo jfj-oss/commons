@@ -37,11 +37,12 @@ const fakeBin = path.join(out, 'fakebin');
 const xdgMarker = path.join(out, 'xdg-open.log');
 fs.mkdirSync(fakeBin, { recursive: true });
 fs.rmSync(xdgMarker, { force: true });
+for (const p of ['kdialog', 'zenity']) fs.writeFileSync(path.join(fakeBin, p), '#!/bin/sh\nprintf "%s" "$COMMONS_PICKED"\n', { mode: 0o755 });
 fs.writeFileSync(path.join(fakeBin, 'xdg-open'), '#!/bin/sh\nprintf "%s\\n" "$1" > "$COMMONS_XDG_MARKER"\n', { mode: 0o755 });
 run(bin('commons-relay'), ['--bind', `127.0.0.1:${RELAY_PORT}`, '--data', path.join(out, 'data/relay')]);
 for (const [n, port] of [['alice', A_PORT], ['bob', B_PORT]]) {
   const env = { COMMONS_DATA: path.join(out, 'data', n), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1' };
-  if (n === 'bob') Object.assign(env, { PATH: fakeBin + ':' + process.env.PATH, COMMONS_XDG_MARKER: xdgMarker });
+  if (n === 'bob') Object.assign(env, { PATH: fakeBin + ':' + process.env.PATH, COMMONS_XDG_MARKER: xdgMarker, COMMONS_PICKED: path.join(out, 'downloads-bob') });
   run(bin('dev_bridge'), [String(port), path.join(root, 'app/ui')], env);
 }
 await sleep(1500);
@@ -385,7 +386,13 @@ try {
 
   // Download: progress and speed next to the message, then Cancel, then Download again to the end.
   const get = `(${row(bigName)}).querySelector('[data-a=get]').click()`;
-  await B.ev(get);
+  // Save to: the dialog comes first. Cancelling it starts nothing.
+  await B.ev(get); await B.waitFor(`document.querySelector('#dl-to')`);
+  await B.shot('15b-save-to');
+  await click(B, '.modal .acts button'); await sleep(300);
+  if (await B.ev(`!!document.querySelector('#transfers') && !document.querySelector('#transfers').hidden`)) throw new Error('cancelling Save to started a download');
+  await B.ev(get); await B.waitFor(`document.querySelector('#dl-to')`);
+  await click(B, '.modal .acts button:last-child');
   await B.waitFor(`(() => { const e = document.querySelector('#transfers'); return !!e && !e.hidden && e.innerText.includes(${JSON.stringify(bigName)}); })()`, 30000);
   await B.waitFor(`(() => { const n = document.querySelector('.xfer-inline .xfer-note'); return !!n && n.innerText.includes('%') && n.innerText.includes('/s'); })()`, 30000);
   await B.shot('16-downloading-large');
@@ -394,7 +401,12 @@ try {
   await sleep(800);
   const afterCancel = fs.readdirSync(dlDir);
   if (afterCancel.length) throw new Error('cancelling a download left a file behind: ' + afterCancel.join(', '));
-  await B.ev(get);
+  // Browse: the system's folder chooser (a stand-in here) fills the box.
+  await B.ev(get); await B.waitFor(`document.querySelector('#dl-to')`);
+  await B.ev(`document.querySelector('#dl-to').value = ''`);
+  await click(B, '#dl-browse');
+  await B.waitFor(`document.querySelector('#dl-to').value === ${JSON.stringify(dlDir)}`, 10000);
+  await click(B, '.modal .acts button:last-child');
   await B.waitFor(`(() => { const m = ${row(bigName)}; return !!(m && m.querySelector('.saved-line') && m.querySelector('[data-a=show]') && m.querySelector('[data-a=get]')); })()`, 600000);
   const saved = await B.ev(`(() => { const m = S.msgs.messages.find(x => x.file && x.file.name === ${JSON.stringify(bigName)}); return m && m.file.download || null; })()`);
   if (!saved || !saved.finished) throw new Error('the core does not report the download as finished: ' + JSON.stringify(saved));

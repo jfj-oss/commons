@@ -934,9 +934,17 @@ async function uploadLarge(f, name) {
 async function downloadLarge(m) {
   const key = 'd:' + m.id;
   if (XFER.has(key)) return;
+  // A partly saved file carries on where it is; a phone has one place to save.
+  const part = m.file.download && !m.file.download.finished && m.file.download.done > 0;
+  let folder = '';
+  if (!part && !mobileApp()) {
+    folder = await askSaveFolder(m.file.name);
+    if (folder === null || XFER.has(key)) return;
+    pref.set('dlFolder', folder);
+  }
   let st;
   try {
-    st = await rpc('file_download_begin', { gid: S.gid, id: m.id });
+    st = await rpc('file_download_begin', { gid: S.gid, id: m.id, folder });
     if (st.finished) { toast('Already saved to ' + st.path); return; }
     const x = { key, id: m.id, kind: 'down', name: m.file.name, started: performance.now(), bytes: st.done * st.chunk_size, done: st.done, chunks: st.chunks, total: st.size, cancelled: false, path: '' };
     XFER.set(key, x); xferRender(); renderStream();
@@ -956,6 +964,20 @@ async function downloadLarge(m) {
     const ms = S.msgs && S.msgs.messages.find(v => v.id === m.id);
     if (ms) renderStream();
   }
+}
+// Where this one file goes. The folder from Settings comes first until something else is chosen. null: cancelled.
+async function askSaveFolder(name) {
+  const start = pref.get('dlFolder') || S.snap.download_dir || '';
+  const r = await modal('Save to', `<p class="muted small">${esc(name)}</p><label for="dl-to">Folder</label><div class="dl-to"><input type="text" id="dl-to" value="${esc(start)}" spellcheck="false"><button type="button" class="btn ghost" id="dl-browse">Browse…</button></div>`,
+    [{ label: 'Cancel', primary: false }, { label: 'Save here', run: w => val(w, 'dl-to').trim() }]);
+  return typeof r === 'string' ? r : null;
+}
+async function browseSaveFolder(w) {
+  const input = $('#dl-to', w), err = $('#m-err', w), b = $('#dl-browse', w);
+  b.disabled = true; err.textContent = '';
+  try { const r = await rpc('pick_folder', { start: input.value }); if (r.path) input.value = r.path; }
+  catch (e) { err.textContent = e.message; }
+  b.disabled = false;
 }
 async function showDownload(m) {
   try { const r = await rpc('file_show_in_folder', { id: m.id }); if (!r.opened) toast('The file is at ' + ((m.file.download && m.file.download.path) || 'your Downloads folder') + '.'); }
@@ -1322,6 +1344,7 @@ $('#modal-root').addEventListener('click', e => {
   if (e.target.closest('#av-pick')) { const f = $('#av-file'); if (f) f.click(); return; }
   if (e.target.closest('#av-none')) { removeOwnAvatar(); return; }
   if (e.target.closest('#set-gamekeys')) gameKeys();
+  if (e.target.closest('#dl-browse')) browseSaveFolder(e.target.closest('.modal'));
 });
 const keyName = c => !c ? 'Press to set' : c.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Mouse(\d)/, 'Mouse button $1').replace(/(Left|Right)$/, ' $1');
 async function gameKeys() {

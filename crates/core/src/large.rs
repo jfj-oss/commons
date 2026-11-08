@@ -185,16 +185,30 @@ impl Client {
 
     // ------------------------------------------------------------------ downloads
     pub fn large_download_begin(&mut self, gid: &str, msg_id: &str) -> Result<LargeDownload> {
+        self.large_download_begin_in(gid, msg_id, None)
+    }
+
+    /// [`Self::large_download_begin`], saving into `folder` for this one file. `None` or an empty folder means the
+    /// downloads folder from Settings, which this never changes. A different folder from the one a file was saved to or
+    /// was partly saved to starts it again there.
+    pub fn large_download_begin_in(&mut self, gid: &str, msg_id: &str, folder: Option<&str>) -> Result<LargeDownload> {
+        let folder = folder.map(str::trim).filter(|f| !f.is_empty()).map(PathBuf::from);
+        if folder.as_ref().is_some_and(|f| !f.is_absolute()) { bail!("the folder must be a full path, like /home/you/Downloads"); }
         let m = self.st.chans.get(gid).and_then(|l| l.msgs.iter().find(|m| m.id == msg_id)).ok_or_else(|| anyhow!("no such message"))?;
         let MsgBody::File { name, mime, blob, key, nonce, large: Some(large), .. } = &m.body else { bail!("not a large file") };
         if large.expires <= now_secs() { bail!("this file has expired and the relay has removed it"); }
-        if self.st.large_downloads.get(msg_id).is_some_and(|d| d.finished && Path::new(&d.path).exists()) {
+        let same_place = |d: &LargeDownload| folder.as_ref().is_none_or(|f| Path::new(&d.dir) == f.as_path());
+        if self.st.large_downloads.get(msg_id).is_some_and(|d| d.finished && Path::new(&d.path).exists() && same_place(d)) {
             return Ok(self.st.large_downloads[msg_id].clone());
         }
-        let dir = self.download_dir();
+        let dir = folder.clone().unwrap_or_else(|| self.download_dir());
         std::fs::create_dir_all(&dir)?;
-        let reusable = self.st.large_downloads.get(msg_id).is_some_and(|d| !d.finished && d.blob == *blob && d.size == large.size && d.chunks == large.chunks && Path::new(&d.part).exists());
-        if !reusable { self.st.large_downloads.remove(msg_id); }
+        let reusable = self.st.large_downloads.get(msg_id).is_some_and(|d| !d.finished && d.blob == *blob && d.size == large.size && d.chunks == large.chunks && Path::new(&d.part).exists() && same_place(d));
+        if !reusable {
+            if let Some(old) = self.st.large_downloads.remove(msg_id) {
+                if !old.finished { let _ = std::fs::remove_file(&old.part); }
+            }
+        }
         if !self.st.large_downloads.contains_key(msg_id) {
             let save_name = safe_file_name(name);
             let final_path = unique_path(&dir, &save_name);
@@ -339,6 +353,71 @@ fn default_download_dir() -> PathBuf {
     home.map(|h| h.join("Downloads")).filter(|p| p.is_dir())
         .unwrap_or_else(|| std::env::temp_dir().join("Megatron downloads"))
 }
+
+/// The system's own folder chooser, for the Save to dialog. `Ok(None)` when the person cancelled it. Blocks until they
+/// answer, so callers must not hold the client while it is open.
+pub fn pick_folder(start: &str) -> Result<Option<String>> {
+    let start = Some(Path::new(start.trim())).filter(|p| p.is_dir());
+    native_folder_picker(start)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn picked(out: std::process::Output) -> Option<String> {
+    if !out.status.success() { return None; }
+    let text = String::from_utf8_lossy(&out.stdout).trim_end_matches(['\r', '\n']).to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+#[cfg(target_os = "linux")]
+fn native_folder_picker(start: Option<&Path>) -> Result<Option<String>> {
+    use std::process::Command;
+    let kdialog = || {
+        let mut c = Command::new("kdialog");
+        c.args(["--title", "Save to", "--getexistingdirectory"]).arg(start.map(Path::as_os_str).unwrap_or(std::ffi::OsStr::new(".")));
+        c
+    };
+    let zenity = || {
+        let mut c = Command::new("zenity");
+        c.args(["--file-selection", "--directory", "--title=Save to"]);
+        if let Some(p) = start { c.arg(format!("--filename={}/", p.display())); }
+        c
+    };
+    let kde = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_uppercase().contains("KDE"));
+    let order = if kde { [kdialog(), zenity()] } else { [zenity(), kdialog()] };
+    for mut picker in order {
+        match picker.output() {
+            Ok(out) => return Ok(picked(out)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => bail!("could not open the folder chooser: {e}"),
+        }
+    }
+    bail!("this computer has no folder chooser (zenity or kdialog); type the folder instead")
+}
+
+#[cfg(target_os = "macos")]
+fn native_folder_picker(start: Option<&Path>) -> Result<Option<String>> {
+    let mut c = std::process::Command::new("osascript");
+    match start {
+        Some(p) => { c.args(["-e", "on run argv", "-e", "POSIX path of (choose folder default location (POSIX file (item 1 of argv)))", "-e", "end run"]).arg(p); }
+        None => { c.args(["-e", "POSIX path of (choose folder)"]); }
+    }
+    Ok(picked(c.output().map_err(|e| anyhow!("could not open the folder chooser: {e}"))?))
+}
+
+#[cfg(windows)]
+fn native_folder_picker(start: Option<&Path>) -> Result<Option<String>> {
+    use std::os::windows::process::CommandExt;
+    const SCRIPT: &str = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Add-Type -AssemblyName System.Windows.Forms; \
+        $d=New-Object System.Windows.Forms.FolderBrowserDialog; if($env:MEGATRON_PICK_START){$d.SelectedPath=$env:MEGATRON_PICK_START}; \
+        if($d.ShowDialog() -eq 'OK'){[Console]::Out.Write($d.SelectedPath)}";
+    let mut c = std::process::Command::new("powershell");
+    c.args(["-NoProfile", "-STA", "-Command", SCRIPT]).creation_flags(0x0800_0000);   // CREATE_NO_WINDOW
+    if let Some(p) = start { c.env("MEGATRON_PICK_START", p); }
+    Ok(picked(c.output().map_err(|e| anyhow!("could not open the folder chooser: {e}"))?))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn native_folder_picker(_start: Option<&Path>) -> Result<Option<String>> { bail!("no folder chooser on this device") }
 
 fn show_in_folder(path: &Path) -> bool {
     let dir = path.parent().unwrap_or(path);
