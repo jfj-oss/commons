@@ -7,8 +7,8 @@
 #main > #lamp { display: none; }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --rail: #052f39; --rail-2: #0e3f4a; --rail-3: #032229; --rail-ink: #eee6d4; --rail-mute: #a6c2c6; --rail-line: rgba(238, 230, 212, .11);
-    --accent: #8ec1e8; --accent-ink: #0b1a28; --accent-soft: #1b3249;
+  :root:not([data-theme="light"]) { --rail: #5a2e1c; --rail-2: #6b3824; --rail-3: #43210f; --rail-ink: #f3e6d6; --rail-mute: #dcc0ac; --rail-line: rgba(238, 230, 212, .11);
+    --accent: #f0a868; --accent-ink: #2a1206; --accent-soft: #4a2a18;
     --lamp-k: .17; }
   /* the wall: lime plaster at the page colour, faint mottling and hairline cracks (a seamless 768 px tile) */
   :root:not([data-theme="light"]) #main { background: #1f1a15 url(fresco/plaster.webp) 0 0 / 768px 768px repeat;
@@ -34,12 +34,12 @@
   /* the rail: dark teal, with a faded Minoan ceiling of bold running spirals under a wash of the rail colour, a darkening
      toward the bottom, and a faint left-edge shade. Isolated, so its z-index:-1 layers sit between its background and content. */
   :root:not([data-theme="light"]) #rail { isolation: isolate;
-    background: linear-gradient(to top, rgba(3, 14, 16, .42), rgba(3, 14, 16, .14) 18%, rgba(3, 14, 16, 0) 38%), linear-gradient(rgba(5, 47, 57, .84), rgba(5, 47, 57, .84)), url(fresco/rail-art.webp) 0 0 / 1536px 1536px repeat, var(--rail);
-    background-image: linear-gradient(to top, rgba(3, 14, 16, .42), rgba(3, 14, 16, .14) 18%, rgba(3, 14, 16, 0) 38%), linear-gradient(rgba(5, 47, 57, .84), rgba(5, 47, 57, .84)), -webkit-image-set(url(fresco/rail-art.webp) 1x, url(fresco/rail-art@2x.webp) 2x);
-    background-image: linear-gradient(to top, rgba(3, 14, 16, .42), rgba(3, 14, 16, .14) 18%, rgba(3, 14, 16, 0) 38%), linear-gradient(rgba(5, 47, 57, .84), rgba(5, 47, 57, .84)), image-set(url(fresco/rail-art.webp) 1x, url(fresco/rail-art@2x.webp) 2x);
+    background: linear-gradient(to top, rgba(26, 10, 4, .42), rgba(26, 10, 4, .14) 18%, rgba(26, 10, 4, 0) 38%), linear-gradient(rgba(90, 46, 28, .84), rgba(90, 46, 28, .84)), url(fresco/rail-art.webp) 0 0 / 1536px 1536px repeat, var(--rail);
+    background-image: linear-gradient(to top, rgba(26, 10, 4, .42), rgba(26, 10, 4, .14) 18%, rgba(26, 10, 4, 0) 38%), linear-gradient(rgba(90, 46, 28, .84), rgba(90, 46, 28, .84)), -webkit-image-set(url(fresco/rail-art.webp) 1x, url(fresco/rail-art@2x.webp) 2x);
+    background-image: linear-gradient(to top, rgba(26, 10, 4, .42), rgba(26, 10, 4, .14) 18%, rgba(26, 10, 4, 0) 38%), linear-gradient(rgba(90, 46, 28, .84), rgba(90, 46, 28, .84)), image-set(url(fresco/rail-art.webp) 1x, url(fresco/rail-art@2x.webp) 2x);
     background-size: auto, auto, 1536px 1536px; background-repeat: no-repeat, no-repeat, repeat; }
   :root:not([data-theme="light"]) #rail::before { content: ""; display: block; position: absolute; top: 0; bottom: 0; left: 0; width: 64px; pointer-events: none; z-index: -1;
-    background: linear-gradient(to left, rgba(4, 15, 17, 0), rgba(4, 15, 17, .3)); }
+    background: linear-gradient(to left, rgba(28, 11, 5, 0), rgba(28, 11, 5, .3)); }
   /* the drifting dither drawn by fresco-rail-dither.js */
   :root:not([data-theme="light"]) #rail > canvas.rail-dither { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; image-rendering: pixelated; }
   /* ...and its faint amber continuation on the wall, under the content, the lamp and the edge darkening */
@@ -83,8 +83,8 @@
 }
 
 /* ---- the same rules when "After hours" is chosen explicitly ---- */
-:root[data-theme="dark"] { --rail: #052f39; --rail-2: #0e3f4a; --rail-3: #032229; --rail-ink: #eee6d4; --rail-mute: #a6c2c6; --rail-line: rgba(238, 230, 212, .11);
-  --accent: #8ec1e8; --accent-ink: #0b1a28; --accent-soft: #1b3249;
+:root[data-theme="dark"] { --rail: #5a2e1c; --rail-2: #6b3824; --rail-3: #43210f; --rail-ink: #f3e6d6; --rail-mute: #dcc0ac; --rail-line: rgba(238, 230, 212, .11);
+  --accent: #f0a868; --accent-ink: #2a1206; --accent-soft: #4a2a18;
   --lamp-k: .17; }
 /* the wall: lime plaster at the page colour, faint mottling and hairline cracks (a seamless 768 px tile) */
 :root[data-theme="dark"] #main { background: #1f1a15 url(fresco/plaster.webp) 0 0 / 768px 768px repeat;
@@ -110,12 +110,12 @@
 /* the rail: dark teal, with a faded Minoan ceiling of bold running spirals under a wash of the rail colour, a darkening
    toward the bottom, and a faint left-edge shade. Isolated, so its z-index:-1 layers sit between its background and content. */
 :root[data-theme="dark"] #rail { isolation: isolate;
-  background: linear-gradient(to top, rgba(3, 14, 16, .42), rgba(3, 14, 16, .14) 18%, rgba(3, 14, 16, 0) 38%), linear-gradient(rgba(5, 47, 57, .84), rgba(5, 47, 57, .84)), url(fresco/rail-art.webp) 0 0 / 1536px 1536px repeat, var(--rail);
-  background-image: linear-gradient(to top, rgba(3, 14, 16, .42), rgba(3, 14, 16, .14) 18%, rgba(3, 14, 16, 0) 38%), linear-gradient(rgba(5, 47, 57, .84), rgba(5, 47, 57, .84)), -webkit-image-set(url(fresco/rail-art.webp) 1x, url(fresco/rail-art@2x.webp) 2x);
-  background-image: linear-gradient(to top, rgba(3, 14, 16, .42), rgba(3, 14, 16, .14) 18%, rgba(3, 14, 16, 0) 38%), linear-gradient(rgba(5, 47, 57, .84), rgba(5, 47, 57, .84)), image-set(url(fresco/rail-art.webp) 1x, url(fresco/rail-art@2x.webp) 2x);
+  background: linear-gradient(to top, rgba(26, 10, 4, .42), rgba(26, 10, 4, .14) 18%, rgba(26, 10, 4, 0) 38%), linear-gradient(rgba(90, 46, 28, .84), rgba(90, 46, 28, .84)), url(fresco/rail-art.webp) 0 0 / 1536px 1536px repeat, var(--rail);
+  background-image: linear-gradient(to top, rgba(26, 10, 4, .42), rgba(26, 10, 4, .14) 18%, rgba(26, 10, 4, 0) 38%), linear-gradient(rgba(90, 46, 28, .84), rgba(90, 46, 28, .84)), -webkit-image-set(url(fresco/rail-art.webp) 1x, url(fresco/rail-art@2x.webp) 2x);
+  background-image: linear-gradient(to top, rgba(26, 10, 4, .42), rgba(26, 10, 4, .14) 18%, rgba(26, 10, 4, 0) 38%), linear-gradient(rgba(90, 46, 28, .84), rgba(90, 46, 28, .84)), image-set(url(fresco/rail-art.webp) 1x, url(fresco/rail-art@2x.webp) 2x);
   background-size: auto, auto, 1536px 1536px; background-repeat: no-repeat, no-repeat, repeat; }
 :root[data-theme="dark"] #rail::before { content: ""; display: block; position: absolute; top: 0; bottom: 0; left: 0; width: 64px; pointer-events: none; z-index: -1;
-  background: linear-gradient(to left, rgba(4, 15, 17, 0), rgba(4, 15, 17, .3)); }
+  background: linear-gradient(to left, rgba(28, 11, 5, 0), rgba(28, 11, 5, .3)); }
 /* the drifting dither drawn by fresco-rail-dither.js */
 :root[data-theme="dark"] #rail > canvas.rail-dither { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; image-rendering: pixelated; }
 /* ...and its faint amber continuation on the wall, under the content, the lamp and the edge darkening */

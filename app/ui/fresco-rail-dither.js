@@ -19,13 +19,13 @@
   const DOT = 2;                  // CSS px per dot
   const FPS = 15;
   // rail tones: [r, g, b, alpha 0..255], darker than the rail, so they can only raise text contrast
-  const MID = [0, 16, 20, 120];   // swell bodies
-  const LIGHT = [0, 6, 8, 185];   // swell cores, darkest
+  const MID = [22, 8, 3, 120];   // swell bodies
+  const LIGHT = [12, 4, 1, 185];   // swell cores, darkest
   const MASK = { light: 0.30, mid: 0.70 };
   const TONE = { lo: 0.38, hi: 0.9 };
   const BASE = 0.24;              // share of rail dots dithered even between waves
   // the leading edge of each crest catches a few lighter dots on the rail
-  const GLOW = [70, 150, 160, 60];
+  const GLOW = [214, 140, 92, 60];
   const GLOW_MAX = 0.32;
   // the wall: sparse, faint warm amber dots on the swells only (no base layer)
   const AMBER = [228, 170, 90, 30];
