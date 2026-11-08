@@ -6,7 +6,7 @@
    Kept cheap: the wave terms are worked out once per row and once per column, and the per-dot work is table
    lookups (sine, tone curve), so a frame costs a few milliseconds. About 15 fps, paused while the window is hidden
    or in the background, one still frame under reduced motion.
-   Dark ("After hours") theme only: it starts and stops when the theme changes. */
+   Both themes: dark dots over After hours, light sepia ink over Daylight; it restarts when the theme changes. */
 (function () {
   const root = document.documentElement;
   // Linux's WebKitGTK draws blur, blends and constantly changing canvases on the CPU (badly so on NVIDIA and at 4K):
@@ -18,22 +18,27 @@
   const isDark = () => root.dataset.theme === 'dark' || (root.dataset.theme !== 'light' && sysDark.matches);
   const DOT = 2;                  // CSS px per dot
   const FPS = 15;
-  // rail tones: [r, g, b, alpha 0..255], darker than the rail, so they can only raise text contrast
-  const MID = [22, 8, 3, 120];   // swell bodies
-  const LIGHT = [12, 4, 1, 185];   // swell cores, darkest
+  // rail tones: [r, g, b, alpha 0..255]. After hours dots are darker than the wall; Daylight dots are light sepia ink.
+  const DARK_PAL = {
+    mid: [22, 8, 3, 120],       // swell bodies
+    light: [12, 4, 1, 185],     // swell cores, darkest
+    glow: [214, 140, 92, 60],   // the leading edge of each crest
+    amber: [228, 170, 90, 30],  // the wall: sparse, faint warm amber dots on the swells only
+  };
+  const LIGHT_PAL = {
+    mid: [168, 140, 100, 92],
+    light: [130, 104, 74, 130],
+    glow: [208, 166, 110, 52],
+    amber: [150, 120, 80, 28],
+  };
   const MASK = { light: 0.30, mid: 0.70 };
   const TONE = { lo: 0.38, hi: 0.9 };
   const BASE = 0.24;              // share of rail dots dithered even between waves
-  // the leading edge of each crest catches a few lighter dots on the rail
-  const GLOW = [214, 140, 92, 60];
   const GLOW_MAX = 0.32;
-  // the wall: sparse, faint warm amber dots on the swells only (no base layer)
-  const AMBER = [228, 170, 90, 30];
   const WALL_MAX = 0.20;          // at most this share of dots lit on a crest
   // waves: wavelength in rail widths and downward speed for the two swell layers
   const WK1 = 2 * Math.PI / 0.95, WS1 = WK1 * 0.06, WK2 = 2 * Math.PI / 1.6, WS2 = WK2 * 0.045;
   const pack = c => ((c[3] << 24) | (c[2] << 16) | (c[1] << 8) | c[0]) >>> 0;
-  const PX_MID = pack(MID), PX_LIGHT = pack(LIGHT), PX_GLOW = pack(GLOW), PX_AMBER = pack(AMBER);
   const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
   // the wave field at (x, y) in rail widths from the window's top-left, time t in seconds
@@ -70,6 +75,8 @@
     const mk = (cls, parent) => { const c = document.createElement('canvas'); c.className = cls; c.setAttribute('aria-hidden', 'true'); parent.prepend(c); return c; };
     const rc = mk('rail-dither', rail), wc = mk('wall-dither', main);
     const rx = rc.getContext('2d'), wx = wc.getContext('2d');
+    const P = isDark() ? DARK_PAL : LIGHT_PAL;
+    const PX_MID = pack(P.mid), PX_LIGHT = pack(P.light), PX_GLOW = pack(P.glow), PX_AMBER = pack(P.amber);
     let alive = true, noise = null;
     const R = { W: 0, H: 0, img: null, x0: 0 }, M = { W: 0, H: 0, img: null, x0: 0, y0: 0, c0: 0, c1: 0, top: 0 };
     let U = 268;                    // the rail's width in CSS px: the unit of the shared field
@@ -160,7 +167,7 @@
     const ro = new ResizeObserver(() => { size(); wallDone = false; frame(performance.now()); }); ro.observe(rail); ro.observe(main);
     stop = () => { alive = false; cancelAnimationFrame(raf); document.removeEventListener('visibilitychange', onVis); window.removeEventListener('focus', onVis); window.removeEventListener('blur', onVis); ro.disconnect(); rc.remove(); wc.remove(); stop = null; };
   }
-  function sync() { if (isDark()) { if (!stop) start(); } else if (stop) stop(); }
+  function sync() { if (stop) stop(); start(); }
   function init() {
     sync();
     sysDark.addEventListener('change', sync);
