@@ -115,8 +115,12 @@ p { margin: 0 0 10px; }
 
 /* ---- shell ---- */
 #app { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr) auto; height: 100vh; height: 100dvh; }
+/* The iOS keyboard covers the page instead of resizing it; app.js sets --app-h to the height really visible. */
+body[data-platform="mobile"] #app { height: var(--app-h, 100dvh); }
 #rail-scrim { display: none; }
-#rail { background: var(--rail); color: var(--rail-ink); display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; padding: 12px 0 10px; z-index: 3; }
+#rail { background: var(--rail); color: var(--rail-ink); display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; padding: 12px 0 10px; z-index: 3;
+  padding-left: max(0px, env(safe-area-inset-left)); padding-right: max(0px, env(safe-area-inset-right));
+  padding-top: max(12px, env(safe-area-inset-top)); padding-bottom: max(10px, env(safe-area-inset-bottom)); }
 #main { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; container: main / inline-size; position: relative;
   background: radial-gradient(1000px 520px at 38% -8%, var(--glow), transparent 72%), var(--page); }
 #main::before { content: ""; position: absolute; inset: 0; background: var(--grain); opacity: var(--grain-o); pointer-events: none; z-index: 0; }
@@ -189,7 +193,9 @@ p { margin: 0 0 10px; }
 #rooms-dot { background: var(--pill); box-shadow: 0 0 0 2px var(--page); }
 
 /* ---- header ---- */
-#head { display: flex; align-items: center; padding: 10px var(--pad); border-bottom: 1px solid var(--line); gap: 12px; min-height: 60px; }
+#head { display: flex; align-items: center; padding: 10px var(--pad); border-bottom: 1px solid var(--line); gap: 12px; min-height: 60px;
+  padding-left: max(var(--pad), env(safe-area-inset-left)); padding-right: max(var(--pad), env(safe-area-inset-right));
+  padding-top: max(10px, env(safe-area-inset-top)); }
 #btn-rooms { display: none; margin-left: -6px; }
 .head-title { flex: 1; min-width: 0; }
 .head-title h1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -379,7 +385,8 @@ mark { background: var(--brass-soft); color: inherit; border-radius: 3px; paddin
 #jump { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); display: flex; gap: 5px; align-items: center; background: var(--card); color: var(--ink); border: 1px solid var(--line-2); border-radius: 999px; padding: 5px 13px 5px 9px; font-size: 12.5px; font-weight: 650; box-shadow: var(--shadow); z-index: 4; animation: rise .18s var(--ease); }
 #jump .ic { width: 15px; height: 15px; }
 #jump.has-new { background: var(--pill); color: var(--pill-ink); border-color: transparent; }
-#composer { padding: 6px var(--pad) 8px; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+#composer { padding: 6px var(--pad) 8px; padding-bottom: max(8px, env(safe-area-inset-bottom));
+  padding-left: max(var(--pad), env(safe-area-inset-left)); padding-right: max(var(--pad), env(safe-area-inset-right)); }
 #composer > * { max-width: calc(var(--col) - 20px); margin-inline: auto; }
 .slip { background: var(--card); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: var(--shadow-s); transition: border-color .15s, box-shadow .15s; overflow: hidden; }
 .slip:focus-within { border-color: var(--brass-line); box-shadow: 0 0 0 3px color-mix(in oklab, var(--brass-line) 20%, transparent); }
@@ -411,7 +418,8 @@ mark { background: var(--brass-soft); color: inherit; border-radius: 3px; paddin
 .mention-pop button.on, .mention-pop button:hover { background: var(--page-sunk); }
 
 /* ---- people ---- */
-#people { width: 304px; border-left: 1px solid var(--line); background: var(--page-sunk); padding: 14px 14px 12px; overflow-y: auto; display: flex; flex-direction: column; animation: slide .2s var(--ease); }
+#people { width: 304px; border-left: 1px solid var(--line); background: var(--page-sunk); padding: 14px 14px 12px; overflow-y: auto; display: flex; flex-direction: column; animation: slide .2s var(--ease);
+  padding-right: max(14px, env(safe-area-inset-right)); padding-bottom: max(12px, env(safe-area-inset-bottom)); }
 .p-head { display: flex; justify-content: space-between; align-items: center; }
 .p-head h2 { margin: 0; font-size: 19px; }
 .count { font: 600 12.5px var(--sans); color: var(--ink-3); margin-left: 3px; }

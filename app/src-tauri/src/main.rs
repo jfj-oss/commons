@@ -1,47 +1,5 @@
-// The UI is plain HTML/JS. It can only call `rpc`, which forwards to commons-core. No keys or plaintext
-// are ever handed to JavaScript beyond what is displayed.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use commons_core::api::App;
-use std::sync::Arc;
-use tauri::Manager;
-mod update;
-
-#[tauri::command]
-async fn rpc(app: tauri::State<'_, Arc<App>>, method: String, args: serde_json::Value) -> Result<serde_json::Value, String> {
-    let app = app.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || app.call(&method, args)).await.map_err(|e| e.to_string())?
-}
 
 fn main() {
-    // The updater's HTTP client (reqwest with rustls) needs a process-wide crypto provider before its first download.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let mut builder = tauri::Builder::default().plugin(tauri_plugin_updater::Builder::new().build()).manage(update::Updates::default());
-    // Opening the app twice brings the window forward; two copies on one account would reuse keys. With COMMONS_DATA set,
-    // several instances on separate folders are the point, and the core's lock on each folder still guards every case.
-    if std::env::var_os("COMMONS_DATA").is_none() {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            if let Some(w) = app.get_webview_window("main") { let _ = w.unminimize(); let _ = w.show(); let _ = w.set_focus(); }
-        }));
-    }
-    builder
-        .setup(|t| {
-            // COMMONS_DATA lets you run several independent instances ("two windows") on one machine.
-            let dir = std::env::var("COMMONS_DATA").map(std::path::PathBuf::from).unwrap_or_else(|_| t.path().app_data_dir().expect("app data dir"));
-            // The server this build belongs to (default-relay.txt), so signing in on a new device or with a recovery key
-            // needs no invite link. COMMONS_RELAY still overrides it; an empty file means no default.
-            let relay = std::env::var("COMMONS_RELAY").unwrap_or_else(|_| include_str!("../default-relay.txt").trim().to_string());
-            let app = App::new(dir, &relay);
-            app.start_background();
-            t.manage(app);
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![rpc, update::update_check, update::update_install, update::update_apply, update::update_status])
-        .build(tauri::generate_context!())
-        .expect("error while building Commons")
-        .run(|handle, event| {
-            // Stop the sync loop and the browser-call listener (its thread keeps the core alive) when the app quits.
-            if let tauri::RunEvent::Exit = event {
-                if let Some(app) = handle.try_state::<Arc<App>>() { app.shutdown(); }
-            }
-        });
+    commons_app_lib::run();
 }

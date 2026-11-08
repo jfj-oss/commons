@@ -128,5 +128,8 @@ pub fn open_in_browser(url: &str) -> bool {
     };
     #[cfg(target_os = "macos")] let r = std::process::Command::new("open").arg(url).spawn();
     #[cfg(target_os = "windows")] let r = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
+    // iOS has no way to start another program; the app opens the link itself (tauri-plugin-opener) and never calls this.
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    let r: std::io::Result<std::process::Child> = Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "opening a browser is not available here"));
     r.is_ok()
 }

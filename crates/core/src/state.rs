@@ -58,6 +58,8 @@ pub struct State {
     /// table can go on holding one, so one of these never gets a Welcome accepted. Newest last.
     pub withdrawn: VecDeque<String>,
     /// Game keys of this device. They stay in this file: the relay never sees them, and pairing does not pass them on.
+    /// Phones have no keyboard for a game to read, so the setting is not kept there.
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     pub game_keys: commons_gamekeys::Settings,
 }
 

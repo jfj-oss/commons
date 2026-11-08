@@ -171,8 +171,23 @@ $('#modal-root').addEventListener('click', e => {
 
 // ---- boot / onboarding ----
 const BRAND = `<div class="brand"><svg viewBox="0 0 40 46" aria-hidden="true"><use href="#crest"/></svg><svg class="hole" viewBox="0 0 12 14" aria-hidden="true"><use href="#i-keyhole"/></svg></div>`;
+// "mobile" is the iOS app: a few things a phone cannot do (game keys, updates) are left out there. A narrow desktop
+// window is still a desktop, so this is not the same question as isPhone().
+const mobileApp = () => window.__commonsPlatform === 'mobile';
+// iOS draws the keyboard over the page and leaves it at full height. Follow the visual viewport instead, so the
+// message box (and whatever is being typed) stays above the keyboard.
+(function fitKeyboard() {
+  const vv = window.visualViewport; if (!vv) return;
+  const fit = () => { if (mobileApp()) document.documentElement.style.setProperty('--app-h', vv.height + 'px'); };
+  vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit);
+  window.addEventListener('orientationchange', fit);
+  window.__fitKeyboard = fit;
+})();
 async function boot() {
   const st = await rpc('state');
+  window.__commonsPlatform = st.mobile ? 'mobile' : 'desktop';
+  document.body.dataset.platform = window.__commonsPlatform;
+  if (window.__fitKeyboard) window.__fitKeyboard();
   if (!st.locked) return st.has_identity ? startApp() : pairScreen(await rpc('pairing_resume'));
   const el = $('#boot'); el.hidden = false; $('#app').hidden = true;
   if (st.exists) {
@@ -896,7 +911,7 @@ $('#btn-settings').onclick = () => modal('Settings', `<label for="n">Display nam
   <label>Message font</label>${seg('rd', [['', 'Book'], ['plain', 'Plain']], pref.get('read') || '')}
   <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when Megatron is in the background or the message is in another room. The window title shows how many are unread.</p>
   <label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints (the relay can see that a message-sized packet was sent at that moment)</span></label>
-  <label>Calls</label><button type="button" class="btn ghost" id="set-gamekeys">Game keys…</button><p class="muted small">Mute yourself in Megatron while you talk to your game team.</p>
+  ${mobileApp() ? '' : '<label>Calls</label><button type="button" class="btn ghost" id="set-gamekeys">Game keys…</button><p class="muted small">Mute yourself in Megatron while you talk to your game team.</p>'}
   <label for="rl">Relay address</label><input type="text" id="rl" value="${esc(S.snap.relay)}" spellcheck="false"><p class="muted small">Change this only if your relay moved. A different relay does not have your communities.<br>Your account id: <span class="mono">${esc(S.snap.me.account.slice(0, 16))}…</span></p>`,
   [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => { if (val(w, 'rl').trim() !== S.snap.relay) await rpc('set_relay', { relay: val(w, 'rl') }); await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); pref.set('theme', val(w, 'th')); pref.set('read', val(w, 'rd')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs(); } }]).then(tick);
 

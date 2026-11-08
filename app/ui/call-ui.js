@@ -18,6 +18,9 @@
     </g></svg>`);
   }
   const ic = n => `<svg class="ic"><use href="#${n}"/></svg>`;
+  // Handing a call to the browser is a desktop escape hatch (WebKitGTK without WebRTC). A phone has no second
+  // browser to hand it to, and Safari is already the engine underneath.
+  const desktopApp = () => !!window.__TAURI__ && window.__commonsPlatform !== 'mobile';
   window.__commonsCall = call;               // used by the headless tests
   const $q = (s, r = document) => r.querySelector(s);
   const hue = s => { let h = 0; for (const c of s || 'x') h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
@@ -95,16 +98,18 @@
     let h = `<div class="ch"><h3>${esc(inThis || s.phase !== 'idle' ? (s.roomName || 'Call') : (room ? room.name : 'Call'))}</h3>${encBadge(s)}<button class="mini" id="c-close" title="Hide (the call keeps running)">×</button></div>`;
     if (!sup.ok) {
       const why = `<details class="cnote"><summary>Why?</summary>${sup.reasons.map(esc).join('<br>')}</details>`;
-      h += (s.error ? `<div class="${s.error.kind === 'handoff' ? 'cinfo' : 'cerr'} wrapall">${esc(s.error.msg)}</div>` : '') + (window.__TAURI__
+      h += (s.error ? `<div class="${s.error.kind === 'handoff' ? 'cinfo' : 'cerr'} wrapall">${esc(s.error.msg)}</div>` : '') + (desktopApp()
         ? `<div class="cnote"><b>On this computer, calls open in your browser.</b> The app window cannot do encrypted calls here, so the call runs in a browser tab: same room, same end-to-end encryption. Use Chrome, Brave, Edge or Firefox. If you are asked for the microphone, allow it. Close the tab to leave the call.</div>
            ${room ? '<div class="cbar"><button class="btn" id="c-browser">Open this call in my browser</button></div>' : ''}${why}`
+        : window.__commonsPlatform === 'mobile'
+        ? `<div class="cerr"><b>Calls are not available in this app.</b><br>${sup.reasons.map(esc).join('<br>')}</div><div class="cnote">Megatron will never fall back to an unencrypted call.</div>`
         : `<div class="cerr"><b>Calls are not available in this window.</b><br>${sup.reasons.map(esc).join('<br>')}</div><div class="cnote">Megatron will never fall back to an unencrypted call. Try a current Chromium-based browser or Firefox.</div>`);
       paint(h, ''); return;
     }
     if (s.phase === 'idle' || (s.phase === 'error' && !inThis && !s.gid)) {
       h += `${s.error ? `<div class="${s.error.kind === 'handoff' ? 'cinfo' : 'cerr'} wrapall">${esc(s.error.msg)}</div>` : ''}
         <div class="cinfo">${room ? `Join the voice room for <b>${esc(room.name)}</b>. Anyone in this room can join; media is encrypted with keys from the room's group and the call server only forwards ciphertext.` : 'Open a room first.'}</div>
-        <div class="cbar"><button class="btn" id="c-join" ${room ? '' : 'disabled'}>Join voice</button>${window.__TAURI__ && room ? '<button class="btn ghost" id="c-browser" title="If the microphone or screen share does not work in this window">Open in my browser</button>' : ''}</div>`;
+        <div class="cbar"><button class="btn" id="c-join" ${room ? '' : 'disabled'}>Join voice</button>${desktopApp() && room ? '<button class="btn ghost" id="c-browser" title="If the microphone or screen share does not work in this window">Open in my browser</button>' : ''}</div>`;
       paint(h, ''); return;
     }
     if (s.error) h += `<div class="cerr">${esc(s.error.msg)}</div>`;

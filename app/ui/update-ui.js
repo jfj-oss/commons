@@ -86,8 +86,10 @@
     if (res === 0 || res === -1) { U.ready.later = Date.now() + U.snooze; note('restart later'); }
   }
 
+  // SideStore updates the iOS app (a new .ipa every 7 days); there is no in-app updater there to offer anything.
+  const onPhone = () => window.__commonsPlatform === 'mobile' || /iPhone|iPad|iPod/.test(navigator.userAgent);
   async function step() {
-    if (U.open || !unlocked()) return;
+    if (onPhone() || U.open || !unlocked()) return;
     const now = Date.now();
     if (!U.last ? now - T0 > U.first : now - U.last > U.every) await check();
     if (U.open || !unlocked()) return;

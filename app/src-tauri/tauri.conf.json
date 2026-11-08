@@ -44,6 +44,9 @@
       "signingIdentity": "-",
       "minimumSystemVersion": "12.0"
     },
+    "iOS": {
+      "minimumSystemVersion": "15.0"
+    },
     "windows": {
       "nsis": {
         "installMode": "currentUser"
