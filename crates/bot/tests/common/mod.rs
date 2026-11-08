@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 //! Test furniture: a throwaway relay (as crates/core/tests use) and a tiny HTTP server that stands in for Ollama and
 //! DeepSeek. The real services are never contacted.
+use commons_bot::gpu::{GpuCheck, Pause};
+use commons_bot::search::{SearchResult, WebSearch};
 use commons_core::client::Client;
 use commons_core::state::MsgBody;
 use commons_core::transport::HttpTransport;
@@ -184,15 +186,51 @@ pub fn relay_bytes(net: &Net) -> Vec<u8> {
 }
 pub fn contains(hay: &[u8], needle: &str) -> bool { hay.windows(needle.len()).any(|w| w == needle.as_bytes()) }
 
-/// A fake Ollama that answers with `answer` and reports the models in `models`.
+/// A fake Ollama that answers with `answer` and reports the models in `models`. The model advertises tool support,
+/// so the ordinary bot uses function calling; nothing ever calls the tool unless the answer says so.
 pub fn fake_ollama(models: &[&str], answer: &str) -> FakeHttp {
     let models: Vec<String> = models.iter().map(|s| s.to_string()).collect();
     let answer = answer.to_string();
     FakeHttp::start(move |r| match r.path.as_str() {
         "/api/tags" => (200, serde_json::json!({"models": models.iter().map(|n| serde_json::json!({"name": n})).collect::<Vec<_>>()}).to_string()),
+        "/api/show" => (200, serde_json::json!({"capabilities": ["completion", "tools"]}).to_string()),
         "/api/chat" => (200, serde_json::json!({"model": models.first().cloned().unwrap_or_default(), "message": {"role": "assistant", "content": answer}, "done": true}).to_string()),
+        "/api/generate" => (200, serde_json::json!({"done": true}).to_string()),
         _ => (404, "{\"error\":\"not found\"}".into()),
     })
+}
+
+/// A fake Ollama that does not advertise tool support; the bot must fall back to the text protocol.
+pub fn fake_ollama_without_tools(models: &[&str], answer: &str) -> FakeHttp {
+    let models: Vec<String> = models.iter().map(|s| s.to_string()).collect();
+    let answer = answer.to_string();
+    FakeHttp::start(move |r| match r.path.as_str() {
+        "/api/tags" => (200, serde_json::json!({"models": models.iter().map(|n| serde_json::json!({"name": n})).collect::<Vec<_>>()}).to_string()),
+        "/api/show" => (200, serde_json::json!({"capabilities": ["completion"]}).to_string()),
+        "/api/chat" => (200, serde_json::json!({"model": models.first().cloned().unwrap_or_default(), "message": {"role": "assistant", "content": answer}, "done": true}).to_string()),
+        "/api/generate" => (200, serde_json::json!({"done": true}).to_string()),
+        _ => (404, "{\"error\":\"not found\"}".into()),
+    })
+}
+
+/// A fake DuckDuckGo HTML page server: every request gets `html`.
+pub fn fake_search(html: &str) -> FakeHttp {
+    let html = html.to_string();
+    FakeHttp::start(move |_| (200, html.clone()))
+}
+
+/// A search backend that fails loudly: tests that must not search use it.
+pub struct DeadSearch;
+impl WebSearch for DeadSearch {
+    fn search(&self, _query: &str) -> Result<Vec<SearchResult>, String> {
+        Err("the test bot must not search".into())
+    }
+}
+
+/// A GPU that is never busy: tests that are not about pausing use it.
+pub struct NoGpu;
+impl GpuCheck for NoGpu {
+    fn blocked(&self) -> Option<Pause> { None }
 }
 
 /// A fake DeepSeek that answers every completion with `answer`.

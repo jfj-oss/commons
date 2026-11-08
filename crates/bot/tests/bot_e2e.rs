@@ -6,6 +6,7 @@ use commons_bot::bot::{Bot, Config, JobKind};
 use commons_bot::llm::{DeepSeek, Ollama};
 use commons_core::state::MsgBody;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 fn make_bot(cfg: Config, state: &Path, ollama_url: &str, deepseek_url: &str) -> Bot {
@@ -15,6 +16,8 @@ fn make_bot(cfg: Config, state: &Path, ollama_url: &str, deepseek_url: &str) -> 
         cfg,
         Box::new(Ollama::new(ollama_url, None, Duration::from_secs(5))),
         Box::new(DeepSeek::new(deepseek_url, key, "deepseek-chat", Duration::from_secs(5))),
+        Arc::new(DeadSearch),
+        Arc::new(NoGpu),
         state,
     )
 }

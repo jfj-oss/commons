@@ -6,7 +6,9 @@
 //! Data lives in ~/.local/share/megatron-bot (override: MEGATRON_BOT_DATA). The account's passphrase is generated on
 //! first use and kept in that folder, readable by its owner only, so the unattended service can unlock it.
 use commons_bot::bot::{Bot, Config, Job, SharedClient, DEFAULT_NAME};
+use commons_bot::gpu::{GpuGate, Pause};
 use commons_bot::llm::{DeepSeek, Ollama, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DEFAULT_OLLAMA};
+use commons_bot::search::{DuckDuckGo, WebSearch, DEFAULT_SEARCH_URL, SEARCH_TIMEOUT};
 use commons_core::client::Client;
 use commons_core::envelope::InviteLink;
 use commons_core::transport::{Api, HttpTransport};
@@ -85,7 +87,10 @@ fn usage() -> ! {
         \n  megatron-bot run                  answer mentions in every room it is in (the systemd service runs this)\n\n\
         Environment: MEGATRON_BOT_DATA, MEGATRON_BOT_NAME (default {DEFAULT_NAME}), MEGATRON_BOT_MODEL,\
         \n  MEGATRON_BOT_OLLAMA_URL (default {DEFAULT_OLLAMA}), MEGATRON_BOT_DEEPSEEK_URL, MEGATRON_BOT_DEEPSEEK_MODEL,\
-        \n  MEGATRON_BOT_DEEPSEEK_KEY_FILE (default ~/.config/deepseek-key), MEGATRON_BOT_MAX_PER_MINUTE, MEGATRON_BOT_MAX_REPLY_CHARS");
+        \n  MEGATRON_BOT_DEEPSEEK_KEY_FILE (default ~/.config/deepseek-key), MEGATRON_BOT_SEARCH_URL (default {DEFAULT_SEARCH_URL}),\
+        \n  MEGATRON_BOT_STUDIO_URL (default http://127.0.0.1:4576), MEGATRON_BOT_COMFY_URL (default http://127.0.0.1:8188),\
+        \n  MEGATRON_BOT_STUDIO_LOCK, MEGATRON_BOT_STUDIO_TOKEN_FILE, MEGATRON_BOT_VOICE_SETTINGS,\
+        \n  MEGATRON_BOT_MAX_PER_MINUTE, MEGATRON_BOT_MAX_REPLY_CHARS");
     std::process::exit(2)
 }
 
@@ -167,8 +172,18 @@ fn run() -> Result<(), String> {
     let ds_url = env_string("MEGATRON_BOT_DEEPSEEK_URL").unwrap_or_else(|| DEFAULT_DEEPSEEK_URL.into());
     let ds_model = env_string("MEGATRON_BOT_DEEPSEEK_MODEL").unwrap_or_else(|| DEFAULT_DEEPSEEK_MODEL.into());
     let deepseek = DeepSeek::new(&ds_url, deepseek_key_file(), &ds_model, timeout);
+    let search_url = env_string("MEGATRON_BOT_SEARCH_URL").unwrap_or_else(|| DEFAULT_SEARCH_URL.into());
+    let searcher: Arc<dyn WebSearch> = Arc::new(DuckDuckGo::new(&search_url, SEARCH_TIMEOUT));
+    let gate = Arc::new(GpuGate::from_env());
 
-    let bot = Arc::new(Bot::new(cfg.clone(), Box::new(local), Box::new(deepseek), dir.join("bot-state.json")));
+    let bot = Arc::new(Bot::new(
+        cfg.clone(),
+        Box::new(local),
+        Box::new(deepseek),
+        searcher,
+        gate,
+        dir.join("bot-state.json"),
+    ));
     eprintln!("[bot] running as \"{}\"; answers stay local unless an admin switches a room to DeepSeek", cfg.name);
     serve(c, bot);
     Ok(())
@@ -186,6 +201,27 @@ fn serve(client: Client, bot: Arc<Bot>) {
                 let _ = c.tick(0);
             }
             std::thread::sleep(Duration::from_secs(1));
+        });
+    }
+
+    // GPU manners: every ten seconds, cheaply, ask whether a game or Studio owns the card. If so, free the bot's model
+    // at once (Ollama would otherwise hold it for five minutes) and keep it free while the pause lasts. Questions that
+    // arrive meanwhile get a short notice in `Bot::answer` instead of loading the model.
+    {
+        let bot = bot.clone();
+        std::thread::spawn(move || {
+            let mut last: Option<Pause> = None;
+            loop {
+                let now = bot.tick_gpu();
+                if now != last {
+                    match &now {
+                        Some(pause) => eprintln!("[bot] GPU needed by {}; local model unloaded", pause.reason()),
+                        None => eprintln!("[bot] GPU free again; the local model may load on the next question"),
+                    }
+                    last = now;
+                }
+                std::thread::sleep(Duration::from_secs(10));
+            }
         });
     }
 
