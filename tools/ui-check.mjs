@@ -403,6 +403,8 @@ try {
 
   // The uploader can remove the relay copy; everyone's message goes away.
   const picId = await B.ev(`(() => { const m = ${row(picName)}; return m ? m.dataset.id : null; })()`);
+  // The uploader's transfer bar hides before its next message refresh lands; wait for the row here too.
+  await A.waitFor(`!!(${row(picName)})`, 30000);
   await A.ev(`(${row(picName)}).querySelector('[data-a=del]').click()`);
   await B.waitFor(`(() => { const m = document.querySelector('.msg[data-id="' + ${JSON.stringify(picId)} + '"]'); return !!m && m.classList.contains('deleted'); })()`, 30000);
 
@@ -418,7 +420,7 @@ try {
   fs.rmSync(dlDir, { recursive: true, force: true });
 
   // Phone-width layout: the rail folds away, the composer stays on screen, and desktop-only settings are gone.
-  const P = await open('http://127.0.0.1:7101/');
+  const P = await open(`http://127.0.0.1:${A_PORT}/`);
   await P.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
   await P.waitFor(`!document.querySelector('#app').hidden`, 20000);
   await P.waitFor(`document.querySelectorAll('.room').length>=1`, 20000);

@@ -1211,11 +1211,14 @@ mod site_tests {
     async fn updates_are_served_from_their_own_folder_and_not_listed_for_friends() {
         let d = tmp();
         std::fs::write(d.join("Commons-linux-x86_64.AppImage"), b"app").unwrap();
+        std::fs::write(d.join("Megatron-windows-browser.zip"), b"win browser").unwrap();
+        std::fs::write(d.join("Megatron-macos-browser.zip"), b"mac browser").unwrap();
         std::fs::write(d.join("update/latest.json"), br#"{"version":"0.2.1","platforms":{"linux-x86_64":{"url":"update/Commons_0.2.1_amd64.AppImage","signature":"c2ln"}}}"#).unwrap();
         std::fs::write(d.join("update/Commons_0.2.1_amd64.AppImage"), b"new app").unwrap();
         let (c, list) = body(site(&d, "/download/", None).await.unwrap()).await;
         assert_eq!(c, 200);
         assert!(list.contains("Commons-linux-x86_64.AppImage") && !list.contains("latest.json") && !list.contains("0.2.1"), "the download page lists only what friends install: {list}");
+        assert!(list.contains("Megatron-windows-browser.zip") && list.contains("Megatron-macos-browser.zip"), "both browser versions are offered: {list}");
         let (c, m) = body(site(&d, "/update/latest.json", None).await.unwrap()).await;
         assert_eq!(c, 200);
         let v: serde_json::Value = serde_json::from_str(&m).unwrap();

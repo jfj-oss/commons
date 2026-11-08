@@ -1,12 +1,18 @@
-//! Signed updates for the Linux "browser version" (packaging/linux-browser, docs/UPDATES.md).
+//! Signed updates for the "browser versions" (packaging/linux-browser, -windows-browser, -macos-browser,
+//! docs/UPDATES.md).
 //!
 //! The launcher runs `bridge --update <relay> <install-dir>` before it starts: the bridge fetches the same
-//! `<relay>/update/latest.json` the desktop app uses, takes the `linux-browser-x86_64` entry (which no desktop Tauri
-//! target matches, so desktop apps never see it), downloads the tarball, and checks its minisign signature against the
-//! public key embedded in this build. Nothing is installed until the signature, the version in it, and the "newer than
-//! this build" rule all pass. The tarball is unpacked into a temporary directory next to the install and its `ui/` and
-//! `bridge` are then renamed into place; the previous copy stays in `.update-previous` until the new bridge has started
-//! (it removes the old copy itself after it binds its port), so a failed start can be rolled back.
+//! `<relay>/update/latest.json` the desktop app uses, takes the entry for this system (`linux-browser-x86_64`,
+//! `windows-browser-x86_64`, or `darwin-browser-aarch64`; no desktop Tauri target matches any of them, so desktop apps
+//! never see it), downloads the tarball, and checks its minisign signature against the public key embedded in this
+//! build. Nothing is installed until the signature, the version in it, and the "newer than this build" rule all pass.
+//! The tarball is unpacked into a temporary directory next to the install and its `ui/`, `bridge` (and `launcher`,
+//! where the package has one) are then renamed into place; the previous copy stays in `.update-previous` until the new
+//! bridge has started (it removes the old copy itself after it binds its port), so a failed start can be rolled back.
+//!
+//! On Windows the file being replaced is `bridge.exe`. The update runs in a child process (`bridge.exe --update`), so
+//! the file it replaces is its own running image: it is renamed aside (Windows allows renaming a running executable)
+//! and the new one is moved into place, rather than being overwritten.
 //!
 //! The manifest is fetched and localized by [`crate::update`], so the same rules apply as for the desktop app: only the
 //! account's relay, no redirects, https (plain http only on this computer). Downloads never follow redirects either.
@@ -21,9 +27,26 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// The manifest key for the browser version. It is deliberately not a Tauri updater target (`linux-x86_64`,
-/// `darwin-aarch64`, ...), so desktop apps ignore it.
+/// The manifest key for this system's browser version. It is deliberately not a Tauri updater target (`linux-x86_64`,
+/// `windows-x86_64`, `darwin-aarch64`, ...), so desktop apps ignore it. The macOS build is Apple silicon; an Intel Mac
+/// build would need its own key (`darwin-browser-x86_64`) to be published separately.
+#[cfg(target_os = "windows")]
+pub const PLATFORM: &str = "windows-browser-x86_64";
+#[cfg(target_os = "macos")]
+pub const PLATFORM: &str = "darwin-browser-aarch64";
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub const PLATFORM: &str = "linux-browser-x86_64";
+
+/// The bridge executable's name in an install and in an update tarball.
+pub fn bridge_name() -> &'static str {
+    if cfg!(windows) { "bridge.exe" } else { "bridge" }
+}
+
+/// The launcher's name in an update tarball. Windows and macOS packages carry one; the Linux shell launcher is not in
+/// the tarball, so this is only consulted for an update that actually contains a launcher.
+pub fn launcher_name() -> &'static str {
+    if cfg!(windows) { "launcher.exe" } else { "launcher" }
+}
 
 /// A published Linux browser tarball is a few tens of MB; anything near this is not one.
 pub const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
@@ -57,9 +80,15 @@ pub enum Outcome {
     Available { version: String, reason: String },
 }
 
-/// The newer release a manifest announces for the browser version. `Ok(None)` means "nothing newer": an older or equal
-/// version is refused silently, as a downgrade (the person is not told about something that will never be installed).
+/// The newer release a manifest announces for this system's browser version. `Ok(None)` means "nothing newer": an
+/// older or equal version is refused silently, as a downgrade (the person is not told about something that will never
+/// be installed).
 pub fn release(manifest: &Value, current: &str) -> Result<Option<Release>, String> {
+    release_for(manifest, current, PLATFORM)
+}
+
+/// [`release`] for one named platform; the tests use it for all three.
+pub fn release_for(manifest: &Value, current: &str, platform: &str) -> Result<Option<Release>, String> {
     let version = match manifest.get("version").and_then(Value::as_str) {
         Some(v) => v.to_string(),
         None => return Ok(None),
@@ -72,7 +101,7 @@ pub fn release(manifest: &Value, current: &str) -> Result<Option<Release>, Strin
     }
     let p = manifest
         .get("platforms")
-        .and_then(|p| p.get(PLATFORM))
+        .and_then(|p| p.get(platform))
         .ok_or_else(|| "no browser version is published for this system yet".to_string())?;
     let url = p
         .get("url")
@@ -213,8 +242,8 @@ pub fn unpack(bytes: &[u8], dest: &Path) -> Result<PathBuf, String> {
         }
     }
     let root = dest.join("megatron-browser");
-    if !root.join("bridge").is_file() || !root.join("ui").is_dir() {
-        return Err("the update tarball does not contain a browser version (bridge and ui/); refused".into());
+    if !root.join(bridge_name()).is_file() || !root.join("ui").is_dir() {
+        return Err(format!("the update tarball does not contain a browser version ({} and ui/); refused", bridge_name()));
     }
     Ok(root)
 }
@@ -254,25 +283,47 @@ fn temp_next_to(install: &Path) -> Result<TempDir, String> {
     Err("could not make a temporary folder next to the install".into())
 }
 
-/// Renames the new `ui/` and `bridge` into place, keeping the previous ones in `<install>/.update-previous`.
-/// On any failure everything is put back; the returned error says what went wrong.
+/// One file or directory an update replaces: `ui/`, the bridge, and the launcher when the package carries one.
+struct Item {
+    name: &'static str,
+    dir: bool,
+}
+
+fn remove_path(p: &Path, dir: bool) {
+    if dir {
+        let _ = std::fs::remove_dir_all(p);
+    } else {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Renames the new `ui/`, bridge (and launcher, when the package has one) into place, keeping the previous ones in
+/// `<install>/.update-previous`. On any failure everything is put back; the returned error says what went wrong.
 pub fn swap(install: &Path, new_root: &Path) -> Result<PathBuf, String> {
     swap_inner(install, new_root, None)
 }
 
 /// `fail_after`: test hook. Stop after this many successful renames and roll back, as if the next one failed.
 fn swap_inner(install: &Path, new_root: &Path, fail_after: Option<usize>) -> Result<PathBuf, String> {
-    let ui = install.join("ui");
-    let bridge = install.join("bridge");
     let meta = |p: &Path| std::fs::symlink_metadata(p).ok().map(|m| m.file_type());
-    if !meta(&ui).is_some_and(|t| t.is_dir()) {
-        return Err("the install folder has no ui/ to replace; refused".into());
+    let mut items = vec![Item { name: "ui", dir: true }, Item { name: bridge_name(), dir: false }];
+    // Windows and macOS packages also update the launcher. A running launcher can be renamed aside on both systems
+    // (Windows allows renaming a running executable), so it is part of the same transaction.
+    if meta(&new_root.join(launcher_name())).is_some_and(|t| t.is_file()) {
+        items.push(Item { name: launcher_name(), dir: false });
     }
-    if !meta(&bridge).is_some_and(|t| t.is_file()) {
-        return Err("the install folder has no bridge to replace; refused".into());
-    }
-    if !meta(&new_root.join("ui")).is_some_and(|t| t.is_dir()) || !meta(&new_root.join("bridge")).is_some_and(|t| t.is_file()) {
-        return Err("the unpacked update is not a browser version; refused".into());
+    for it in &items {
+        let old_ok = match meta(&install.join(it.name)) {
+            Some(t) => if it.dir { t.is_dir() } else { t.is_file() },
+            None => false,
+        };
+        let new_ok = match meta(&new_root.join(it.name)) {
+            Some(t) => if it.dir { t.is_dir() } else { t.is_file() },
+            None => false,
+        };
+        if !old_ok || !new_ok {
+            return Err(format!("the update is not a complete browser version ({} is missing); refused", it.name));
+        }
     }
     let backup = install.join(".update-previous");
     if backup.exists() {
@@ -280,10 +331,9 @@ fn swap_inner(install: &Path, new_root: &Path, fail_after: Option<usize>) -> Res
     }
     std::fs::create_dir(&backup).map_err(|e| format!("could not keep a copy of the previous version: {e}"))?;
 
-    let mut moved_old_ui = false;
-    let mut put_new_ui = false;
-    let mut moved_old_bridge = false;
-    let mut put_new_bridge = false;
+    let mut moved_old = vec![false; items.len()];
+    let mut put_new = vec![false; items.len()];
+    let mut step = 0usize;
     let do_step = |n: usize| -> Result<(), String> {
         if fail_after.is_some_and(|f| f < n) {
             return Err("test: a rename failed".into());
@@ -291,38 +341,53 @@ fn swap_inner(install: &Path, new_root: &Path, fail_after: Option<usize>) -> Res
         Ok(())
     };
     let result = (|| -> Result<(), String> {
-        do_step(1)?;
-        std::fs::rename(&ui, backup.join("ui")).map_err(|e| format!("could not move the old ui/ aside: {e}"))?;
-        moved_old_ui = true;
-        do_step(2)?;
-        std::fs::rename(new_root.join("ui"), &ui).map_err(|e| format!("could not put the new ui/ in place: {e}"))?;
-        put_new_ui = true;
-        do_step(3)?;
-        std::fs::rename(&bridge, backup.join("bridge")).map_err(|e| format!("could not move the old bridge aside: {e}"))?;
-        moved_old_bridge = true;
-        do_step(4)?;
-        std::fs::rename(new_root.join("bridge"), &bridge).map_err(|e| format!("could not put the new bridge in place: {e}"))?;
-        put_new_bridge = true;
+        for (i, it) in items.iter().enumerate() {
+            step += 1;
+            do_step(step)?;
+            std::fs::rename(install.join(it.name), backup.join(it.name))
+                .map_err(|e| format!("could not move the old {} aside: {e}", it.name))?;
+            moved_old[i] = true;
+            step += 1;
+            do_step(step)?;
+            std::fs::rename(new_root.join(it.name), install.join(it.name))
+                .map_err(|e| format!("could not put the new {} in place: {e}", it.name))?;
+            put_new[i] = true;
+        }
         Ok(())
     })();
     if let Err(e) = result {
         // Put back what was moved, newest first. Every step is best-effort: report the original error.
-        if put_new_bridge {
-            let _ = std::fs::remove_file(&bridge);
-        }
-        if put_new_ui {
-            let _ = std::fs::remove_dir_all(&ui);
-        }
-        if moved_old_bridge {
-            let _ = std::fs::rename(backup.join("bridge"), &bridge);
-        }
-        if moved_old_ui {
-            let _ = std::fs::rename(backup.join("ui"), &ui);
+        for (i, it) in items.iter().enumerate().rev() {
+            if put_new[i] {
+                remove_path(&install.join(it.name), it.dir);
+            }
+            if moved_old[i] {
+                let _ = std::fs::rename(backup.join(it.name), install.join(it.name));
+            }
         }
         let _ = std::fs::remove_dir_all(&backup);
         return Err(e);
     }
     Ok(backup)
+}
+
+/// Puts the previous bridge and `ui/` back after an update whose new bridge did not start. The launcher (this running
+/// program on Windows and macOS) is left as it is: it is what is working. Returns false if there was nothing to restore.
+pub fn restore_previous(install: &Path) -> bool {
+    let backup = install.join(".update-previous");
+    if !backup.is_dir() || !backup.join(bridge_name()).is_file() {
+        return false;
+    }
+    for it in [Item { name: bridge_name(), dir: false }, Item { name: "ui", dir: true }] {
+        let old = backup.join(it.name);
+        if !old.exists() {
+            continue;
+        }
+        let cur = install.join(it.name);
+        remove_path(&cur, it.dir);
+        let _ = std::fs::rename(&old, &cur);
+    }
+    true
 }
 
 /// Removes the previous copy (`<install>/.update-previous`) once the new bridge has started, and any temporary folder
@@ -340,21 +405,25 @@ pub fn cleanup_previous(install: &Path) {
     }
 }
 
+/// The note lives in the install folder, except inside a macOS app bundle, where macOS seals `Contents/Resources`:
+/// the launcher sets MEGATRON_NOTE_DIR to a folder outside the bundle, so writing and later removing the note does
+/// not invalidate the signature. Both the updater and the bridge read the same variable.
 fn note_path(install: &Path) -> PathBuf {
-    install.join(".update-note.json")
+    let dir = std::env::var_os("MEGATRON_NOTE_DIR").map(PathBuf::from).unwrap_or_else(|| install.to_path_buf());
+    dir.join(".update-note.json")
 }
 
 /// Writes the note the page shows, replacing any earlier one. Atomic, so the bridge never reads a half-written file.
 pub fn write_note(install: &Path, kind: &str, version: &str, reason: &str) -> Result<(), String> {
     let note = serde_json::json!({"kind": kind, "version": version, "reason": reason});
-    let tmp = install.join(".update-note.json.tmp");
+    let tmp = note_path(install).with_file_name(".update-note.json.tmp");
     std::fs::write(&tmp, note.to_string()).map_err(|e| format!("could not write the update note: {e}"))?;
     std::fs::rename(&tmp, note_path(install)).map_err(|e| format!("could not write the update note: {e}"))
 }
 
 pub fn clear_note(install: &Path) {
     let _ = std::fs::remove_file(note_path(install));
-    let _ = std::fs::remove_file(install.join(".update-note.json.tmp"));
+    let _ = std::fs::remove_file(note_path(install).with_file_name(".update-note.json.tmp"));
 }
 
 /// The note for the page, if there is one. Reading it removes it, so it is shown once (the launcher writes it again
@@ -636,6 +705,85 @@ mod tests {
         assert_eq!(std::fs::read_to_string(backup.join("bridge")).unwrap(), "old-bridge");
         cleanup_previous(&inst);
         assert!(!inst.join(".update-previous").exists(), "the old copy is removed once the new bridge starts");
+    }
+
+    #[test]
+    fn each_system_reads_only_its_own_browser_key() {
+        let key = TestKey::new(4);
+        let sig = key.sign(b"x", "0.2.4");
+        let manifest = json!({"version": "0.2.4", "platforms": {
+            "linux-browser-x86_64": {"url": "update/linux.tar.gz", "signature": sig},
+            "windows-browser-x86_64": {"url": "update/windows.tar.gz", "signature": sig},
+            "darwin-browser-aarch64": {"url": "update/mac.tar.gz", "signature": sig},
+            "windows-x86_64": {"url": "update/desktop.exe", "signature": "desktop"},
+        }});
+        let pick = |p: &str| release_for(&manifest, "0.2.3", p).unwrap().unwrap().url;
+        assert_eq!(pick("linux-browser-x86_64"), "update/linux.tar.gz");
+        assert_eq!(pick("windows-browser-x86_64"), "update/windows.tar.gz");
+        assert_eq!(pick("darwin-browser-aarch64"), "update/mac.tar.gz");
+        // A manifest with only desktop targets has no browser version for any of the three keys.
+        let desktops = json!({"version": "0.2.4", "platforms": {
+            "linux-x86_64": {"url": "update/linux.AppImage", "signature": "s"},
+            "windows-x86_64": {"url": "update/windows.exe", "signature": "s"},
+            "darwin-aarch64": {"url": "update/mac.app.tar.gz", "signature": "s"},
+        }});
+        for p in ["linux-browser-x86_64", "windows-browser-x86_64", "darwin-browser-aarch64"] {
+            assert!(release_for(&desktops, "0.2.3", p).is_err(), "{p} must not take a desktop entry");
+        }
+    }
+
+    #[test]
+    fn an_update_that_carries_a_launcher_replaces_it_in_the_same_transaction() {
+        let d = tempfile::tempdir().unwrap();
+        let inst = d.path().join("install");
+        let new = d.path().join("new");
+        for (root, ui, bridge, launcher) in [(&inst, "old-ui", "old-bridge", "old-launcher"), (&new, "new-ui", "new-bridge", "new-launcher")] {
+            install_with(root, ui, bridge);
+            std::fs::write(root.join(launcher_name()), launcher).unwrap();
+        }
+        let backup = swap(&inst, &new).unwrap();
+        assert_eq!(std::fs::read_to_string(inst.join("ui/index.html")).unwrap(), "new-ui");
+        assert_eq!(std::fs::read_to_string(inst.join(bridge_name())).unwrap(), "new-bridge");
+        assert_eq!(std::fs::read_to_string(inst.join(launcher_name())).unwrap(), "new-launcher");
+        assert_eq!(std::fs::read_to_string(backup.join(launcher_name())).unwrap(), "old-launcher");
+        cleanup_previous(&inst);
+        assert!(!inst.join(".update-previous").exists());
+    }
+
+    #[test]
+    fn a_failed_launcher_swap_rolls_back_everything() {
+        for fail_after in [0usize, 1, 2, 3, 4, 5] {
+            let d = tempfile::tempdir().unwrap();
+            let inst = d.path().join("install");
+            let new = d.path().join("new");
+            for (root, ui, bridge, launcher) in [(&inst, "old-ui", "old-bridge", "old-launcher"), (&new, "new-ui", "new-bridge", "new-launcher")] {
+                install_with(root, ui, bridge);
+                std::fs::write(root.join(launcher_name()), launcher).unwrap();
+            }
+            assert!(swap_inner(&inst, &new, Some(fail_after)).is_err(), "fail_after={fail_after}");
+            assert_eq!(std::fs::read_to_string(inst.join("ui/index.html")).unwrap(), "old-ui", "fail_after={fail_after}");
+            assert_eq!(std::fs::read_to_string(inst.join(bridge_name())).unwrap(), "old-bridge", "fail_after={fail_after}");
+            assert_eq!(std::fs::read_to_string(inst.join(launcher_name())).unwrap(), "old-launcher", "fail_after={fail_after}");
+            assert!(!inst.join(".update-previous").exists(), "fail_after={fail_after}");
+        }
+    }
+
+    #[test]
+    fn restore_previous_puts_back_the_bridge_and_ui_but_leaves_the_running_launcher() {
+        let d = tempfile::tempdir().unwrap();
+        let inst = d.path().join("install");
+        let new = d.path().join("new");
+        for (root, ui, bridge, launcher) in [(&inst, "old-ui", "old-bridge", "old-launcher"), (&new, "new-ui", "new-bridge", "new-launcher")] {
+            install_with(root, ui, bridge);
+            std::fs::write(root.join(launcher_name()), launcher).unwrap();
+        }
+        swap(&inst, &new).unwrap();
+        assert!(restore_previous(&inst));
+        assert_eq!(std::fs::read_to_string(inst.join("ui/index.html")).unwrap(), "old-ui");
+        assert_eq!(std::fs::read_to_string(inst.join(bridge_name())).unwrap(), "old-bridge");
+        assert_eq!(std::fs::read_to_string(inst.join(launcher_name())).unwrap(), "new-launcher", "the working launcher stays");
+        cleanup_previous(&inst);
+        assert!(!inst.join(".update-previous").exists());
     }
 
     #[test]

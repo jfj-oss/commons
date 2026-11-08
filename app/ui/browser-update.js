@@ -1,5 +1,5 @@
 'use strict';
-// The Linux browser version's launcher checks for a signed update before the page opens (packaging/linux-browser,
+// The browser versions' launchers check for a signed update before the page opens (packaging/*-browser,
 // docs/UPDATES.md). The bridge leaves a note for this page: "Updated to x.y.z" after an install, or "Update available"
 // and the reason when a newer version exists but could not be installed. Shown once, in the same bar the desktop app
 // uses. The desktop app has its own update-ui.js and never runs this (there is a Tauri shell).
