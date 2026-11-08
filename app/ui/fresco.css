@@ -8,7 +8,7 @@
 #main > #lamp { display: none; }
 
 /* one wall: the rail and the page are the same plaster; the dither canvases sit just above the wall */
-#rail { isolation: isolate; background: var(--wall); }
+#rail { isolation: isolate; background: linear-gradient(to bottom, var(--wall) 0 42%, var(--rail-floor) 92%); }
 #main { isolation: isolate; background: radial-gradient(860px 440px at 50% -6%, color-mix(in srgb, var(--brass) 7%, transparent), transparent 72%), var(--wall); }
 /* a soft shade where the wall meets the rail's left edge */
 #main::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 140px; z-index: -1; pointer-events: none;
@@ -93,7 +93,7 @@
 /* ---- Linux (WebKitGTK) light mode: the same look without the effects WebKitGTK draws on the CPU at 4K. No live
    blur behind any glass surface (a solid smoked glass instead), plain-alpha lamplight instead of a blend, and the
    dithered waves drawn as still frames (fresco-rail-dither.js sets html.fx-lite). ---- */
-html.fx-lite #head, html.fx-lite #people, html.fx-lite .slip, html.fx-lite .modal, html.fx-lite .modal-out, html.fx-lite .boot-card {
+html.fx-lite .me, html.fx-lite #head, html.fx-lite #people, html.fx-lite .slip, html.fx-lite .modal, html.fx-lite .modal-out, html.fx-lite .boot-card {
   -webkit-backdrop-filter: none !important; backdrop-filter: none !important; background-color: var(--glass-solid) !important; }
 html.fx-lite #main > #lamp { mix-blend-mode: normal !important; opacity: .55; }
 html.fx-lite .lightbox { -webkit-backdrop-filter: none; backdrop-filter: none; }
