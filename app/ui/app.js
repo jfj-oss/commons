@@ -228,7 +228,14 @@ const mobileApp = () => window.__commonsPlatform === 'mobile';
 // message box (and whatever is being typed) stays above the keyboard.
 (function fitKeyboard() {
   const vv = window.visualViewport; if (!vv) return;
-  const fit = () => { if (mobileApp()) document.documentElement.style.setProperty('--app-h', vv.height + 'px'); };
+  // iOS also scrolls the page up to show the focused box; the page itself is pinned (style.css), and the app is
+  // placed where the visible area really is (offsetTop), so the message box stays just above the keyboard.
+  const fit = () => {
+    if (!mobileApp()) return;
+    const r = document.documentElement.style;
+    r.setProperty('--app-h', vv.height + 'px'); r.setProperty('--app-top', vv.offsetTop + 'px');
+    if (window.scrollY) window.scrollTo(0, 0);
+  };
   vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit);
   window.addEventListener('orientationchange', fit);
   window.__fitKeyboard = fit;
@@ -237,6 +244,12 @@ async function boot() {
   const st = await rpc('state');
   window.__commonsPlatform = st.mobile ? 'mobile' : 'desktop';
   document.body.dataset.platform = window.__commonsPlatform;
+  if (st.mobile) {
+    // the phone app: no pinch zoom or zoom-on-focus (browsers keep normal zoom; this only runs in the iOS app)
+    const vp = document.querySelector('meta[name=viewport]');
+    if (vp) vp.content = 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover';
+    document.addEventListener('gesturestart', e => e.preventDefault(), { passive: false });
+  }
   if (window.__fitKeyboard) window.__fitKeyboard();
   if (!st.locked) return st.has_identity ? startApp() : pairScreen(await rpc('pairing_resume'));
   const el = $('#boot'); el.hidden = false; $('#app').hidden = true;

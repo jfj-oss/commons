@@ -117,6 +117,13 @@ p { margin: 0 0 10px; }
 #app { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr) auto; height: 100vh; height: 100dvh; }
 /* The iOS keyboard covers the page instead of resizing it; app.js sets --app-h to the height really visible. */
 body[data-platform="mobile"] #app { height: var(--app-h, 100dvh); }
+/* The phone app: the page never scrolls as a whole (iOS would slide everything up when the keyboard opens); the
+   app sits exactly over the visible area, below the clock and notch. */
+html:has(body[data-platform="mobile"]), body[data-platform="mobile"] { position: fixed; inset: 0; overflow: hidden; overscroll-behavior: none; }
+body[data-platform="mobile"] #app { position: fixed; left: 0; right: 0; top: var(--app-top, 0px); }
+body[data-platform="mobile"] { touch-action: pan-x pan-y; -webkit-text-size-adjust: 100%; }
+/* iOS zooms into any text box whose text is under 16 px when it is tapped */
+body[data-platform="mobile"] input, body[data-platform="mobile"] textarea, body[data-platform="mobile"] select { font-size: max(16px, 1em); }
 #rail-scrim { display: none; }
 #rail { background: var(--rail); color: var(--rail-ink); display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; padding: 12px 0 10px; z-index: 3;
   padding-left: max(0px, env(safe-area-inset-left)); padding-right: max(0px, env(safe-area-inset-right));
