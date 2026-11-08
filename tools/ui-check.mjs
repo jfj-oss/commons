@@ -118,6 +118,89 @@ try {
   // Playback stops in rune: friends stop seeing it at once, not when the ten-minute TTL runs out.
   runeSong.status = 'stopped'; runeSong.index = -1; runeSong.queue = [];
   await B.waitFor(`![...document.querySelectorAll('.person .listen')].some(e=>e.innerText.includes('Detective'))`, 30000);
+
+  // ---- profile pictures ----
+  // Alice picks a phone-style JPEG: its EXIF orientation says "rotate 90° clockwise". Stored, the four quadrants are
+  // red (top left), green (top right), blue (bottom left), yellow (bottom right); shown the right way up, the blue
+  // corner moves to the top left. If EXIF were ignored (or applied twice) the sampled colours below would not match.
+  await click(A, '#btn-settings'); await A.waitFor(`document.querySelector('#av-file')`);
+  await sleep(300); await A.shot('09-settings-picture');
+  const sent = await A.ev(`(() => {
+    const c = document.createElement('canvas'); c.width = c.height = 512;
+    const g = c.getContext('2d');
+    g.fillStyle = '#e00000'; g.fillRect(0, 0, 256, 256);
+    g.fillStyle = '#00c000'; g.fillRect(256, 0, 256, 256);
+    g.fillStyle = '#0000e0'; g.fillRect(0, 256, 256, 256);
+    g.fillStyle = '#e0e000'; g.fillRect(256, 256, 256, 256);
+    const raw = Uint8Array.from(atob(c.toDataURL('image/jpeg', .95).split(',')[1]), x => x.charCodeAt(0));
+    const app1 = new Uint8Array([0xFF,0xE1,0x00,0x22,0x45,0x78,0x69,0x66,0x00,0x00,0x49,0x49,0x2A,0x00,0x08,0x00,0x00,0x00,0x01,0x00,0x12,0x01,0x03,0x00,0x01,0x00,0x00,0x00,0x06,0x00,0x00,0x00,0x00,0x00,0x00,0x00]);
+    const out = new Uint8Array(raw.length + app1.length);
+    out.set(raw.subarray(0, 2)); out.set(app1, 2); out.set(raw.subarray(2), 2 + app1.length);
+    const dt = new DataTransfer(); dt.items.add(new File([out], 'phone.jpg', { type: 'image/jpeg' }));
+    const inp = document.querySelector('#av-file'); if (!inp) return 'no input';
+    inp.files = dt.files; inp.dispatchEvent(new Event('change', { bubbles: true }));
+    return 'sent';
+  })()`);
+  if (sent !== 'sent') throw new Error('could not hand the picture to Settings: ' + sent);
+  await A.waitFor(`document.querySelector('.crop-modal canvas')`, 10000);
+  await A.ev(`document.querySelector('.crop-modal .seg[data-for="crop-shape"] button[data-v=square]').click()`);
+  await sleep(300); await A.shot('10-crop');
+  await A.ev(`document.querySelector('.crop-modal .acts button:last-child').click()`);
+  await A.waitFor(`document.querySelector('#av-prev img.av-img')`, 15000);
+  const avatar = await A.ev(`(async () => {
+    const acct = S.snap.me.account;
+    const vers = await rpc('avatar_versions');
+    const d = await rpc('avatar_data', { account: acct });
+    if (!vers[acct] || !d.blob) return { err: 'the core has no picture' };
+    if (d.size > 40 * 1024) return { err: 'the picture is ' + d.size + ' bytes, over 40 KB' };
+    const bytes = Uint8Array.from(atob(d.data.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+    const img = await createImageBitmap(new Blob([bytes], { type: d.mime }));
+    const cv = document.createElement('canvas'); cv.width = 256; cv.height = 256;
+    const g = cv.getContext('2d'); g.drawImage(img, 0, 0, 256, 256);
+    const at = (x, y) => [...g.getImageData(x, y, 1, 1).data];
+    const near = (p, r, gg, b) => Math.abs(p[0] - r) < 60 && Math.abs(p[1] - gg) < 60 && Math.abs(p[2] - b) < 60;
+    const got = { tl: at(64, 64), tr: at(192, 64), bl: at(64, 192), br: at(192, 192) };
+    const ok = near(got.tl, 0, 0, 224) && near(got.tr, 224, 0, 0) && near(got.bl, 224, 224, 0) && near(got.br, 0, 192, 0);
+    return { ok, size: d.size, mime: d.mime, shape: d.shape, got, err: ok ? null : 'the picture came out sideways or upside down' };
+  })()`);
+  if (!avatar.ok) throw new Error('picture check: ' + JSON.stringify(avatar));
+  // Alice sees it at once in her own strip and her messages.
+  await A.waitFor(`document.querySelector('#me-seal img.av-img')`);
+  await A.waitFor(`[...document.querySelectorAll('#stream .seal[data-av] img.av-img')].length > 0`);
+  // ...and in the People drawer.
+  await click(A, '#btn-people'); await A.waitFor(`document.querySelector('#people .seal img.av-img')`);
+  await click(A, '#btn-people');
+  // Bob sees it without doing anything, in messages, the header stack and People.
+  await B.waitFor(`[...document.querySelectorAll('#stream .seal[data-av] img.av-img')].length > 0`, 20000);
+  await B.waitFor(`document.querySelector('#people-stack img.av-img')`, 10000);
+  await B.shot('11-bob-sees-picture');
+  await click(B, '#btn-people'); await B.waitFor(`document.querySelector('#people .seal img.av-img')`, 10000);
+  await B.shot('12-bob-people-picture'); await click(B, '#btn-people');
+  // The call panel uses the same seal; the fill hook that runs after each of its renders does the same here.
+  const tile = await B.ev(`(() => {
+    const m = S.members.find(x => !x.me) || { account: 'x', name: 'x' };
+    const host = document.createElement('div'); host.className = 'cpeople';
+    host.innerHTML = '<div class="av sealed">' + seal(m.account, m.name) + '</div>';
+    document.body.appendChild(host);
+    window.__commonsFillAvatars(host);
+    const ok = !!host.querySelector('.av.sealed .seal img.av-img');
+    host.remove();
+    return ok;
+  })()`);
+  if (!tile) throw new Error('a call tile did not get the picture');
+  // No one was told anything about an unknown kind: the picture rides in the Profile message old apps already read.
+  for (const P of [A, B]) {
+    const newer = await P.ev(`(async () => (await rpc('notices')).filter(n => n.kind === 'newer').length)()`);
+    if (newer) throw new Error('a newer-version notice appeared');
+  }
+  // Back to the seal, for everyone.
+  await click(A, '#av-none');
+  await A.waitFor(`!document.querySelector('#av-prev img.av-img')`, 10000);
+  await A.shot('13-alice-picture-removed');
+  await B.waitFor(`[...document.querySelectorAll('#stream .seal[data-av] img.av-img')].length === 0`, 20000);
+  await B.waitFor(`!document.querySelector('#people-stack img.av-img')`, 10000);
+  await A.ev(`document.querySelector('.modal .acts button').click()`);
+  await sleep(400); await B.shot('14-bob-seal-again');
   console.log('UI check OK; screenshots in', out);
 } catch (e) { console.error('UI check FAILED:', e.message); process.exitCode = 1; }
 finally { runeSrv.close(); procs.forEach(p => { try { p.kill(); } catch { } }); }

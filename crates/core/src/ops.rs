@@ -360,7 +360,15 @@ impl Client {
         let id = match &env { Envelope::Text { id, .. } | Envelope::File { id, .. } => id.clone(), _ => rand_hex(16) };
         if let Ok(cert) = self.cert() {
             match &env {
-                Envelope::Profile { name, ts, .. } => { let p = self.st.profiles.entry(cert.account.clone()).or_default(); if *ts >= p.ts { p.name = name.clone(); p.ts = *ts; } }
+                Envelope::Profile { name, ts, avatar, avatar_cleared, .. } => {
+                    let p = self.st.profiles.entry(cert.account.clone()).or_default();
+                    if *ts >= p.ts {
+                        p.name = name.clone();
+                        p.ts = *ts;
+                        if *avatar_cleared { p.avatar = None; }
+                        else if avatar.is_some() { p.avatar = avatar.clone(); }
+                    }
+                }
                 Envelope::Leave | Envelope::Revoked { .. } => {}
                 _ => self.apply_chat(gid, 0, &cert, env.clone(), true),
             }
@@ -454,6 +462,88 @@ impl Client {
         let plain = f.bytes(&self.api, &self.dev_key()?)?;
         if fresh { self.file_cache(&f.slot, &plain); }
         Ok((f.name, f.mime, plain))
+    }
+    // ------------------------------------------------------------------ profile pictures
+    /// Everything about a picture that can go wrong before any bytes move. Encrypts it exactly like an attachment (no
+    /// network). The picture is one per account: it lives in the account-keyed profile every device already shares.
+    pub fn avatar_prepare(&self, mime: &str, shape: &str, data: &[u8]) -> Result<OutAvatar> {
+        if !self.has_identity() { bail!("this device has no identity yet"); }
+        if data.is_empty() { bail!("the picture is empty"); }
+        if data.len() as u64 > MAX_AVATAR { bail!("the picture is larger than {} KB after shrinking", MAX_AVATAR / 1024); }
+        let mime = clean_mime(mime);
+        if !mime.starts_with("image/") { bail!("that is not a picture"); }
+        let mut key = [0u8; 32]; let mut nonce = [0u8; 12];
+        rand::rngs::OsRng.fill_bytes(&mut key); rand::rngs::OsRng.fill_bytes(&mut nonce);
+        let ct = ChaCha20Poly1305::new((&key).into()).encrypt(Nonce::from_slice(&nonce), data).map_err(|_| anyhow!("encrypt"))?;
+        let shape = if shape == "square" { "square" } else { "circle" };
+        let r = AvatarRef { blob: rand_hex(16), key: hex::encode(key), nonce: hex::encode(nonce), mime, size: data.len() as u64, shape: shape.into() };
+        r.validate().map_err(|e| anyhow!("{e}"))?;
+        Ok(OutAvatar { r, ct })
+    }
+    /// The bytes are on the relay: now the next profile message may carry the reference.
+    pub fn avatar_set(&mut self, r: AvatarRef) -> Result<()> {
+        if !self.has_identity() { bail!("this device has no identity yet"); }
+        r.validate().map_err(|e| anyhow!("{e}"))?;
+        let me = self.my_account();
+        // Never go backwards on this account's clock: another device of ours may have set a later time, and a picture
+        // sent with an older ts would be ignored by everyone.
+        let ts = now_secs().max(self.st.profiles.get(&me).map_or(0, |p| p.ts.saturating_add(1)));
+        let name = self.st.name.clone();
+        let p = self.st.profiles.entry(me).or_default();
+        if p.name.is_empty() { p.name = name; }
+        p.avatar = Some(r);
+        p.ts = ts;
+        self.st.avatar_removed = false;
+        self.st.profile_dirty = true;
+        self.save()
+    }
+    /// Back to the generated seal, on every device of this account and in every community.
+    pub fn avatar_clear(&mut self) -> Result<()> {
+        if !self.has_identity() { bail!("this device has no identity yet"); }
+        let me = self.my_account();
+        let ts = now_secs().max(self.st.profiles.get(&me).map_or(0, |p| p.ts.saturating_add(1)));
+        let name = self.st.name.clone();
+        let p = self.st.profiles.entry(me).or_default();
+        if p.name.is_empty() { p.name = name; }
+        p.avatar = None;
+        p.ts = ts;
+        self.st.avatar_removed = true;
+        self.st.profile_dirty = true;
+        self.save()
+    }
+    /// For tests and simple callers: prepare, upload, and set in one go.
+    pub fn set_avatar(&mut self, mime: &str, data: &[u8]) -> Result<AvatarRef> {
+        self.set_avatar_shaped(mime, "circle", data)
+    }
+    pub fn set_avatar_shaped(&mut self, mime: &str, shape: &str, data: &[u8]) -> Result<AvatarRef> {
+        let f = self.avatar_prepare(mime, shape, data)?;
+        f.upload(&self.api, &self.dev_key()?)?;
+        let r = f.r.clone();
+        self.avatar_set(r.clone())?;
+        Ok(r)
+    }
+    pub fn avatar_of(&self, account: &str) -> Option<AvatarRef> {
+        self.st.profiles.get(account).and_then(|p| p.avatar.clone())
+    }
+    /// Account -> blob id, the cheap check the UI polls: download only the pictures that changed.
+    pub fn avatar_versions(&self) -> BTreeMap<String, String> {
+        self.st.profiles.iter().filter_map(|(a, p)| p.avatar.as_ref().map(|v| (a.clone(), v.blob.clone()))).collect()
+    }
+    /// What it takes to show one person's picture: from the cache if we can, otherwise from the relay.
+    pub fn avatar_locate(&self, account: &str) -> Result<InAvatar> {
+        let avatar = self.avatar_of(account).ok_or_else(|| anyhow!("no profile picture"))?;
+        avatar.validate().map_err(|e| anyhow!("{e}"))?;
+        let slot = hex::encode(sha256(&[b"commons/avatar-cache/v1", avatar.blob.as_bytes(), avatar.key.as_bytes(), avatar.nonce.as_bytes()]));
+        let cached = std::fs::read(self.dir.join("blobs").join(&slot)).ok().and_then(|s| self.vault.unseal(&s).ok());
+        Ok(InAvatar { avatar, slot, cached })
+    }
+    /// One person's picture, from the cache when it is there.
+    pub fn fetch_avatar(&mut self, account: &str) -> Result<(String, Vec<u8>)> {
+        let mut f = self.avatar_locate(account)?;
+        let fresh = f.cached.is_none();
+        let plain = f.bytes(&self.api, &self.dev_key()?)?;
+        if fresh { self.file_cache(&f.slot, &plain); }
+        Ok((f.avatar.mime.clone(), plain))
     }
     /// Best-effort typing hint. Off by default (see THREAT-MODEL.md).
     pub fn send_typing(&mut self, gid: &str) {
@@ -935,7 +1025,9 @@ impl Client {
         if name.is_empty() { return false; }
         let ctls: Vec<String> = self.st.groups.values().filter(|g| g.kind == Kind::Control && !g.removed && !g.broken && !g.tainted).map(|g| g.gid.clone()).collect();
         let ts = now_secs();
-        for gid in &ctls { self.queue_env(gid, Envelope::Profile { name: name.clone(), ts, listen: value.clone() }); }
+        // the picture rides along too, so a status refresh never looks like "no picture" to a device that missed one
+        let avatar = self.st.profiles.get(&self.my_account()).and_then(|p| p.avatar.clone());
+        for gid in &ctls { self.queue_env(gid, Envelope::Profile { name: name.clone(), ts, listen: value.clone(), avatar: avatar.clone(), avatar_cleared: false }); }
         if ctls.is_empty() { return false; }
         self.st.listening_sent = value;
         self.st.listening_sent_ts = ts;
@@ -1078,6 +1170,28 @@ impl OutFile {
     pub fn upload(&self, api: &Api, k: &SigningKey) -> Result<()> {
         let Envelope::File { blob, .. } = &self.env else { bail!("not a file") };
         api.put_blob(k, blob, &self.ct)
+    }
+}
+/// A profile picture on its way out: encrypted, not yet uploaded.
+pub struct OutAvatar { r: AvatarRef, ct: Vec<u8> }
+impl OutAvatar {
+    pub fn upload(&self, api: &Api, k: &SigningKey) -> Result<()> { api.put_blob(k, &self.r.blob, &self.ct) }
+    pub fn into_ref(self) -> AvatarRef { self.r }
+}
+/// A profile picture we want to show.
+pub struct InAvatar { pub avatar: AvatarRef, pub slot: String, pub cached: Option<Vec<u8>> }
+impl InAvatar {
+    /// Decrypted bytes, downloading them if they are not cached. No reference to the client, as above.
+    pub fn bytes(&mut self, api: &Api, k: &SigningKey) -> Result<Vec<u8>> {
+        let plain = if let Some(p) = self.cached.take() { p } else {
+            let ct = api.get_blob(k, &self.avatar.blob)?;
+            ChaCha20Poly1305::new((&hex32(&self.avatar.key)?).into()).decrypt(Nonce::from_slice(&hex::decode(&self.avatar.nonce)?), ct.as_slice())
+                .map_err(|_| anyhow!("the profile picture is corrupt or was tampered with on the relay (authentication failed)"))?
+        };
+        // The size in the reference is checked, but the relay's copy is only trusted once it is open: a sender could
+        // point at a much larger blob of their own.
+        if plain.len() as u64 != self.avatar.size || plain.len() as u64 > MAX_AVATAR { bail!("the profile picture is not the size it claims"); }
+        Ok(plain)
     }
 }
 /// An attachment we want to read.

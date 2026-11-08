@@ -177,7 +177,7 @@ impl App {
         if in_call { self.saw_call(); }
         let r = self.dispatch(method, a);
         if in_call && r.is_ok() { self.saw_call(); }
-        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "pairing_status" | "game_mute_wait") { self.nudge(); }
+        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait") { self.nudge(); }
         r
     }
 
@@ -336,6 +336,28 @@ impl App {
             "fetch_file" => {
                 let (n, m, d) = self.open_file(&s(&a, "gid"), &s(&a, "id"))?;
                 Ok(json!({"name": n, "save_name": safe_file_name(&n), "mime": m, "data": b64(&d)}))
+            }
+            // A profile picture, shrunk on the device by the UI: encrypted here, uploaded, then announced in the
+            // account's profile message (one picture per account, for every community).
+            "set_avatar" => {
+                let data = unb64(&s(&a, "data")).map_err(e)?;
+                let (f, (api, k)) = self.with(|c| Ok((c.avatar_prepare(&s(&a, "mime"), &s(&a, "shape"), &data).map_err(e)?, c.net_handle().map_err(e)?)))?;
+                f.upload(&api, &k).map_err(e)?; // the slow part, with the client free
+                let r = f.into_ref();
+                let blob = r.blob.clone();
+                self.with(|c| c.avatar_set(r).map(|_| json!({"blob": blob})).map_err(e))
+            }
+            "remove_avatar" => self.with(|c| c.avatar_clear().map(|_| json!({})).map_err(e)),
+            // Account -> blob id: the UI downloads only the pictures that changed.
+            "avatar_versions" => self.read("avatar_versions".into(), |c| json!(c.avatar_versions())),
+            "avatar_data" => {
+                let account = s(&a, "account");
+                let mut f = self.with(|c| c.avatar_locate(&account).map_err(e))?;
+                let fresh = f.cached.is_none();
+                let (api, k) = self.with(|c| c.net_handle().map_err(e))?;
+                let plain = f.bytes(&api, &k).map_err(e)?; // the slow part, with the client free
+                if fresh { let _ = self.with(|c| { c.file_cache(&f.slot, &plain); Ok(()) }); }
+                Ok(json!({"blob": f.avatar.blob, "mime": f.avatar.mime, "shape": f.avatar.shape, "size": plain.len(), "data": b64(&plain)}))
             }
             // The same file, without one message of tens of megabytes: open it, then read it in pieces.
             "file_open" => {

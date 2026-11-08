@@ -53,6 +53,9 @@ pub struct State {
     pub pairing: Option<Pairing>,
     pub notices: VecDeque<Notice>,
     pub profile_dirty: bool,
+    /// The next profile message must say that the picture was removed, so that everyone lets go of it.
+    #[serde(default)]
+    pub avatar_removed: bool,
     pub lr_published: bool,
     pub typing_enabled: bool,
     /// The relay's invite secret, kept so that we can register again if the relay ever forgets this device.
@@ -85,7 +88,13 @@ pub struct State {
 pub struct JoinRefused { pub name: String, pub reason: String, pub ts: u64 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
-pub struct Profile { pub name: String, pub ts: u64 }
+pub struct Profile {
+    pub name: String,
+    pub ts: u64,
+    /// Where this account's picture is, if it has one. One picture per account, as there is one name per account.
+    #[serde(default)]
+    pub avatar: Option<AvatarRef>,
+}
 
 /// A status someone shared, and the local time it arrived: a sender that goes quiet (playback stops, the app
 /// closes) stops being shown by itself.

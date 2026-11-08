@@ -575,9 +575,20 @@ impl Client {
         let comm = self.st.groups[gid].community.clone();
         let acct = cert.account.clone();
         match (&kind, env) {
-            (Kind::Control, Envelope::Profile { name, ts, listen }) => {
+            (Kind::Control, Envelope::Profile { name, ts, listen, avatar, avatar_cleared }) => {
                 let ts = sane_ts(ts);
-                let newer = { let p = self.st.profiles.entry(acct.clone()).or_default(); if ts >= p.ts { p.name = name; p.ts = ts; true } else { false } };
+                let newer = {
+                    let p = self.st.profiles.entry(acct.clone()).or_default();
+                    if ts >= p.ts {
+                        p.name = name;
+                        p.ts = ts;
+                        // An older app sends this same message with neither picture field. That must not wipe a picture
+                        // set from a newer one, so only a picture or an explicit removal changes it.
+                        if avatar_cleared { p.avatar = None; }
+                        else if avatar.is_some() { p.avatar = avatar; }
+                        true
+                    } else { false }
+                };
                 // A status is only as good as the profile it rode in on: an older one, arriving late, changes nothing.
                 if newer {
                     match listen {

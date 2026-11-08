@@ -278,6 +278,8 @@
   function paint(top, bottom) {
     for (const [id, html] of [['c-top', top], ['c-bottom', bottom]]) { const el = $q('#' + id, panel); if (el.__html !== html) { el.innerHTML = html; el.__html = html; } }
     wireBasic();
+    // Call tiles use the same seal as the rest of the app; let profile pictures take its place when there are any.
+    if (window.__commonsFillAvatars) window.__commonsFillAvatars(panel);
   }
 
   function syncTiles(shares) {
@@ -425,7 +427,7 @@
   }
 
   call.addEventListener('change', () => { if (call.phase === 'connected' || call.phase === 'error' || call.phase === 'idle' || call.phase === 'reconnecting' || call.phase === 'connecting') render(); });
-  setInterval(() => { ensureButton(); updateButton(); }, 700);
+  setInterval(() => { ensureButton(); updateButton(); if (window.__commonsRefreshAvatars) window.__commonsRefreshAvatars(); }, 700);
   ensurePanel();
   window.__callUI = { open() { open = true; ensurePanel(); render(); }, render };
 })();

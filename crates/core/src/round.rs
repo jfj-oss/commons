@@ -222,10 +222,15 @@ impl Client {
         if self.st.profile_dirty && !self.st.name.is_empty() {
             self.st.profile_dirty = false;
             let name = self.st.name.clone();
-            // A name change is still a profile refresh: carry the status along, or say plainly there is none.
-            let listen = if self.st.share_listening { self.listening_of(&self.my_account()).cloned() } else { None };
+            let me = self.my_account();
+            // A profile refresh carries the listening status (or says plainly there is none) and the one picture per
+            // account. A joining device gets both with the next broadcast. Older apps ignore the extra fields.
+            let listen = if self.st.share_listening { self.listening_of(&me).cloned() } else { None };
+            let avatar = self.st.profiles.get(&me).and_then(|p| p.avatar.clone());
+            let avatar_cleared = std::mem::replace(&mut self.st.avatar_removed, false);
+            let ts = self.st.profiles.get(&me).map_or_else(now_secs, |p| p.ts.max(now_secs()));
             let ctls: Vec<String> = self.st.groups.values().filter(|g| g.kind == Kind::Control && !g.removed && !g.broken).map(|g| g.gid.clone()).collect();
-            for g in ctls { self.queue_env(&g, Envelope::Profile { name: name.clone(), ts: now_secs(), listen: listen.clone() }); }
+            for g in ctls { self.queue_env(&g, Envelope::Profile { name: name.clone(), ts, listen: listen.clone(), avatar: avatar.clone(), avatar_cleared }); }
         }
         self.reconcile();
         self.plan_relay_secret();
