@@ -257,9 +257,14 @@ fn body_limit(m: &Method, path: &str) -> usize {
 }
 
 /// The pages a friend sees before they have the app. Fixed files plus one flat folder: nothing here touches accounts.
-const JOIN_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'";
+const JOIN_CSP: &str = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'";
 fn page(ty: &'static str, body: &'static str) -> Resp {
     Response::builder().header("content-type", ty).header("content-security-policy", JOIN_CSP).header("x-content-type-options", "nosniff").header("referrer-policy", "no-referrer")
+        .body(Body::from(body)).unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR, "page"))
+}
+/// A static picture for the join page (favicons), with the same headers as page().
+fn page_bytes(ty: &'static str, body: &'static [u8]) -> Resp {
+    Response::builder().header("content-type", ty).header("x-content-type-options", "nosniff").header("cache-control", "public, max-age=86400")
         .body(Body::from(body)).unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR, "page"))
 }
 /// A plain file name: no path, nothing hidden.
@@ -301,6 +306,9 @@ async fn site(dir: &std::path::Path, path: &str, min: Option<&str>) -> Option<Re
     match path {
         "/join" => return Some(page("text/html; charset=utf-8", include_str!("join.html"))),
         "/join.js" => return Some(page("text/javascript; charset=utf-8", include_str!("join.js"))),
+        "/favicon.svg" => return Some(page("image/svg+xml", include_str!("site/favicon.svg"))),
+        "/favicon.ico" => return Some(page_bytes("image/x-icon", include_bytes!("site/favicon.ico"))),
+        "/apple-touch-icon.png" => return Some(page_bytes("image/png", include_bytes!("site/apple-touch-icon.png"))),
         "/download/" => {
             let mut list = vec![];
             if let Ok(mut rd) = tokio::fs::read_dir(dir).await {
