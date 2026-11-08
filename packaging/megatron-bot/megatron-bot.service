@@ -1,0 +1,27 @@
+[Unit]
+Description=Megatron bot (Oracle): a local-model member of your chat
+# It is fine for the bot to start before the network is up: it keeps retrying the relay.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Install it first: see packaging/megatron-bot/README.md (or enable.sh here).
+ExecStart=%h/.local/bin/megatron-bot run
+Environment=MEGATRON_BOT_DATA=%h/.local/share/megatron-bot
+
+# A hard ceiling the owner asked for. Answers are local by default; only a community admin can switch one room to
+# DeepSeek, and those answers say so in the room.
+MemoryMax=1G
+Restart=on-failure
+RestartSec=5
+
+# The bot's work is its own encrypted data folder and a connection to the relay and Ollama on this machine.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/megatron-bot
+
+[Install]
+WantedBy=default.target

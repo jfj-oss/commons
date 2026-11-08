@@ -720,6 +720,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "commons-bot"
+version = "0.1.0"
+dependencies = [
+ "commons-core",
+ "commons-proto",
+ "commons-relay",
+ "rand 0.8.8",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "ureq",
+]
+
+[[package]]
 name = "commons-core"
 version = "0.1.0"
 dependencies = [
@@ -6159,6 +6175,8 @@ dependencies = [
  "once_cell",
  "rustls",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "url",
  "webpki-roots 0.26.11",
 ]
