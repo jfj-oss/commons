@@ -149,6 +149,39 @@ pub fn length_from_words(kind: Kind, words: &str) -> Option<String> {
     snap(duration_secs(words)?, allowed)
 }
 
+/// The most songs one request can ask for.
+pub const MAX_BATCH: usize = 10;
+
+/// How many songs the person's own words ask for ("10 songs", "ten tracks", "5 versions"), up to [`MAX_BATCH`].
+pub fn count_from_words(text: &str) -> Option<usize> {
+    let lower = text.to_lowercase();
+    let cleaned: String = lower.chars().map(|c| if c.is_alphanumeric() { c } else { ' ' }).collect();
+    let words: Vec<&str> = cleaned.split_whitespace().collect();
+    let number = |w: &str| -> Option<usize> {
+        if let Ok(v) = w.parse::<usize>() { return Some(v); }
+        Some(match w {
+            "two" | "couple" => 2, "three" => 3, "four" => 4, "five" => 5, "six" => 6, "seven" => 7, "eight" => 8,
+            "nine" => 9, "ten" | "dozen" => 10,
+            _ => return None,
+        })
+    };
+    for pair in words.windows(2) {
+        let Some(n) = number(pair[0]) else { continue };
+        if n >= 1 && ["song", "songs", "track", "tracks", "tune", "tunes", "banger", "bangers", "version", "versions", "take", "takes"].contains(&pair[1]) {
+            return Some(n.min(MAX_BATCH));
+        }
+    }
+    None
+}
+
+/// The `count` the model passed, from 1 to [`MAX_BATCH`]; 1 when it passed none.
+pub fn count_from_args(arguments: &str) -> usize {
+    let v: Value = serde_json::from_str(arguments).unwrap_or_default();
+    let c = &v["count"];
+    let n = c.as_u64().or_else(|| c.as_str().and_then(|s| s.trim().parse().ok())).unwrap_or(1) as usize;
+    n.clamp(1, MAX_BATCH)
+}
+
 /// The first duration written in `text`, in seconds: "2 minutes", "2min", "1.5 mins", "two minutes",
 /// "a minute", "90 seconds", "30s", "2:30". Bare numbers ("2 dogs") are not durations.
 pub fn duration_secs(text: &str) -> Option<f64> {
@@ -231,6 +264,7 @@ pub fn studio_tool() -> ToolSpec {
                 "kind": {"type": "string", "enum": ["picture", "song", "sound", "video"], "description": "What to make."},
                 "prompt": {"type": "string", "description": "A detailed description of the picture, sound or video. For a song this is the musical style (for example 'warm reggae, live drums, horns')."},
                 "lyrics": {"type": "string", "description": "The words to sing (songs only)."},
+                "count": {"type": "integer", "description": "songs only: how many to make, 1 to 10. Use what the person asked for."},
                 "length": {"type": "string", "description": "song: 30, 60, 120 or 180 seconds (use what the person asked for: 2 minutes = 120); sound: 3, 6, 10 or 15 seconds; video: 2s, 4s or 5s."},
                 "size": {"type": "string", "description": "picture: square, portrait, landscape, wide, tall or small; video: vland, vtall, vhd or vhdtall."},
                 "style": {"type": "string", "description": "picture: none, gritty, harsh, grime, war, darksf, decay, cine or clean."}
@@ -380,6 +414,19 @@ mod tests {
         assert!(Request::from_args(r#"{"kind":"song","prompt":"x","length":"long"}"#).is_err());
         let long = "a".repeat(MAX_PROMPT_CHARS + 1);
         assert!(Request::from_args(&format!(r#"{{"kind":"picture","prompt":"{long}"}}"#)).is_err());
+    }
+
+    #[test]
+    fn song_counts_in_plain_words() {
+        assert_eq!(count_from_words("@Oracle make 10 songs about my cat"), Some(10));
+        assert_eq!(count_from_words("ten tracks please"), Some(10));
+        assert_eq!(count_from_words("give me 3 versions of it"), Some(3));
+        assert_eq!(count_from_words("make 25 songs"), Some(10));
+        assert_eq!(count_from_words("a 2 minute song about 2 dogs"), None);
+        assert_eq!(count_from_args(r#"{"count":4}"#), 4);
+        assert_eq!(count_from_args(r#"{"count":"7"}"#), 7);
+        assert_eq!(count_from_args(r#"{"count":99}"#), 10);
+        assert_eq!(count_from_args(r#"{}"#), 1);
     }
 
     #[test]

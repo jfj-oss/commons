@@ -335,6 +335,29 @@ fn video_is_owner_only_even_when_the_room_is_allowed() {
 // ---------------------------------------------------------------- the two other kinds reach the right routes
 
 #[test]
+fn ten_songs_in_one_request_are_made_one_after_another() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = fake_studio(idle_state(), "MP3DATA");
+    let ollama = studio_ollama_args(json!({"kind": "song", "prompt": "warm reggae", "lyrics": "la la"}));
+    let bot = make_bot(dir.path(), Config::default(), &ollama.url(), Arc::new(DeadSearch), studio_with(&server, dir.path()), Arc::new(NoGpu));
+    let mut chat = FakeChat::new(Role::Owner);
+    bot.answer(&mut chat, &ask_job("@Oracle make 10 songs about my cat")).expect("an answer");
+    assert_eq!(server.hits("/api/jobs"), 10, "one job per song");
+    assert_eq!(chat.files.len(), 10, "every song is posted");
+}
+
+#[test]
+fn asking_for_more_than_ten_songs_makes_ten() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = fake_studio(idle_state(), "MP3DATA");
+    let ollama = studio_ollama_args(json!({"kind": "song", "prompt": "warm reggae", "lyrics": "la la", "count": 40}));
+    let bot = make_bot(dir.path(), Config::default(), &ollama.url(), Arc::new(DeadSearch), studio_with(&server, dir.path()), Arc::new(NoGpu));
+    let mut chat = FakeChat::new(Role::Owner);
+    bot.answer(&mut chat, &ask_job("@Oracle make me some songs")).expect("an answer");
+    assert_eq!(server.hits("/api/jobs"), 10);
+}
+
+#[test]
 fn songs_and_sounds_use_the_audio_route_and_their_own_lengths() {
     let cases = [
         (json!({"kind": "song", "prompt": "warm reggae", "lyrics": "la la", "length": "60"}), "ace15xl", "60"),

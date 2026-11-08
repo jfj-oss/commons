@@ -51,7 +51,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             name: DEFAULT_NAME.into(), max_reply_chars: 1200, context_messages: 20, max_per_minute: 6, max_queue: 4,
-            studio_daily_cap: usize::MAX, studio_daily_video_cap: usize::MAX, studio_queue_max: 3,
+            studio_daily_cap: usize::MAX, studio_daily_video_cap: usize::MAX, studio_queue_max: 10,
         }
     }
 }
@@ -818,6 +818,43 @@ impl Bot {
             );
         };
 
+        // Songs can come in batches ("make 10 songs"): the same request rendered again and again, each its own take. The
+        // ticket is held for the whole batch, so anyone else's request waits behind it instead of cutting in.
+        let count = if req.kind == studio::Kind::Song {
+            studio::count_from_words(&job.text).unwrap_or_else(|| studio::count_from_args(&call.arguments))
+        } else { 1 };
+        if count == 1 {
+            let mut posted = false;
+            return self.studio_one(&req, c, job, day, false, &mut posted);
+        }
+        if let Err(e) = c.send(&job.gid, &format!("Making {count} songs, one after another…"), Some(job.trigger.clone())) {
+            eprintln!("[bot] could not post a Studio notice: {e}");
+        }
+        let mut made = 0usize;
+        for n in 1..=count {
+            if n > 1 {
+                // A game or a pause that starts part-way ends the batch: Studio gives way, and nothing waits for later.
+                match self.studio.state() {
+                    Ok(st) if !st.game && st.paused.is_empty() => {}
+                    _ => {
+                        let text = format!("Stopping after {made} of {count} songs: Studio has to give way right now.");
+                        return self.studio_notice(c, job, &text, "The batch stopped early because Studio is busy or paused.");
+                    }
+                }
+            }
+            let mut posted = false;
+            let result = self.studio_one(&req, c, job, day, true, &mut posted);
+            if !posted {
+                return format!("Studio made {made} of {count} songs before stopping. {result}");
+            }
+            made += 1;
+        }
+        format!("Studio made all {made} songs and they have been posted in the chat. Tell the person in one short sentence that they're there; do not claim to hear them.")
+    }
+
+    /// Submit one job, wait for it and post the file. `quiet` leaves out the "Making it…" line (a batch said so once).
+    /// `posted` is set only when the file reached the chat.
+    fn studio_one(&self, req: &studio::Request, c: &mut dyn Chat, job: &Job, day: u64, quiet: bool, posted: &mut bool) -> String {
         let id = match self.studio.submit(&req) {
             Ok(id) => id,
             Err(e) => return self.studio_notice(
@@ -837,8 +874,10 @@ impl Bot {
             store.save();
         }
 
-        if let Err(e) = c.send(&job.gid, "Making it…", Some(job.trigger.clone())) {
-            eprintln!("[bot] could not post a Studio notice: {e}");
+        if !quiet {
+            if let Err(e) = c.send(&job.gid, "Making it…", Some(job.trigger.clone())) {
+                eprintln!("[bot] could not post a Studio notice: {e}");
+            }
         }
         c.typing(&job.gid);
 
@@ -890,11 +929,11 @@ impl Bot {
             ),
         };
         match c.send_file(&job.gid, &req.file_name(id), req.kind.mime(), &data, &req.prompt) {
-            Ok(_) => format!(
+            Ok(_) => { *posted = true; format!(
                 "Studio made the {} and it has been posted in the chat with the prompt as its caption. Tell the person \
                  in one short sentence that it's there; do not claim to see or hear it in detail.",
                 req.kind.name()
-            ),
+            ) }
             Err(e) => {
                 eprintln!("[bot] could not post a Studio result: {e}");
                 "The result was made but could not be posted here. The person has been told.".to_string()
