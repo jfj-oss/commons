@@ -2,16 +2,41 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark"><title>Megatron call</title>
 <style>
-:root { --page:#f7f1e4; --card:#fffbf1; --ink:#2a251c; --ink-2:#5a5142; --ink-3:#6c6250; --line:#e3d9c4; --line-2:#cdbfa4; --hover:rgba(116,92,44,.07); --accent:#1f5c4e; --accent-ink:#fffbf1; --hot:#b93a1f; --hot-soft:#fbe4d8; --brass-soft:#f6e8c6; --ok:#24704f; --ok-soft:#dcecdf; --sealed:#a63b26; --shadow:0 12px 34px -8px rgba(60,44,20,.28); --display:Georgia,serif; --sans:system-ui,sans-serif; --mono:ui-monospace,monospace; --ease:cubic-bezier(.22,.8,.3,1);
-  --rail:#1d3b34; --rail-2:#274a41; --rail-line:rgba(241,233,216,.13); --rail-ink:#f1e9d8; --rail-mute:#afc2b6; --pill:#e6bb62; }
-@media (prefers-color-scheme: dark) { :root { --page:#1f1a15; --card:#2a241d; --ink:#efe6d5; --ink-2:#bdb19c; --ink-3:#9a8e78; --line:#372f27; --line-2:#4b4136; --hover:rgba(240,215,165,.05); --accent:#79c7ab; --accent-ink:#0e1f19; --hot:#ff9472; --hot-soft:#452719; --brass-soft:#3f3220; --ok:#86cfa9; --ok-soft:#22382c; --sealed:#f0917a; --shadow:0 16px 40px -8px rgba(0,0,0,.6); } }
+:root { color-scheme: light;
+  --wall: #f7f1e4; --page: #f7f1e4; --page-sunk: #efe7d6; --card: #fffbf1; --raise: #fffdf7;
+  --ink: #2a251c; --ink-2: #5a5142; --ink-3: #6c6250; --line: #e3d9c4; --line-2: #cdbfa4; --hover: rgba(116,92,44,.07);
+  --glass: rgba(255, 251, 241, .8); --glass-line: rgba(205, 191, 164, .9); --glass-ink: #2a251c; --glass-solid: #fbf6ea;
+  --glass-hi: rgba(255, 253, 247, .55); --glass-lo: rgba(255, 251, 241, .12);
+  --act: #b4531c; --act-ink: #fff8ef; --act-soft: #f9e4d2;
+  --id: #1f5c4e; --id-ink: #fffbf1; --id-soft: #dcebdf;
+  --danger: #b3261e; --danger-ink: #ffffff; --danger-soft: #f8e0dd;
+  --warn: #955012; --focus: #b5762a; --ok: var(--id); --ok-soft: var(--id-soft);
+  --accent: var(--id); --accent-ink: var(--id-ink);
+  --rail: #f7f1e4; --rail-2: #ece2cd; --rail-ink: #2a251c; --rail-mute: #6c6250; --rail-line: rgba(42, 37, 28, .14);
+  --shadow-s: 0 1px 2px rgba(60, 44, 20, .08); --shadow: 0 12px 34px -8px rgba(60, 44, 20, .28); --scrim: rgba(28, 34, 28, .42);
+  --video-bg: #000000; --video-ink: #ffffff;
+  --display: Georgia, serif; --sans: system-ui, sans-serif; --mono: ui-monospace, monospace; --ease: cubic-bezier(.22,.8,.3,1);
+  --r-s: 6px; --r-m: 10px; --r-l: 16px; --r-full: 999px;
+  --t-xs: 12px; --t-s: 13px; --t-m: 14px; --t-l: 18px; --t-xl: 24px;
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 20px; --s-6: 24px; --s-7: 28px; --s-8: 32px; --pad: 22px; }
+@media (prefers-color-scheme: dark) { :root { color-scheme: dark;
+  --wall: #1f1a15; --page: #1f1a15; --page-sunk: #181410; --card: #2a241d; --raise: #322b23;
+  --ink: #efe6d5; --ink-2: #bdb19c; --ink-3: #9a8e78; --line: #372f27; --line-2: #4b4136; --hover: rgba(240,215,165,.05);
+  --glass: rgba(24, 20, 16, .72); --glass-line: rgba(255, 240, 215, .14); --glass-ink: #efe6d5; --glass-solid: #1d1813;
+  --glass-hi: rgba(255, 248, 235, .24); --glass-lo: rgba(0, 0, 0, .29);
+  --act: #f0a868; --act-ink: #2a1206; --act-soft: #4a2a18;
+  --id: #79c7ab; --id-ink: #0e1f19; --id-soft: #24382f;
+  --danger: #ff8d80; --danger-ink: #2c0e05; --danger-soft: #45211b;
+  --warn: #ecab62; --focus: #f0a868;
+  --rail: #1f1a15; --rail-2: #2a241d; --rail-ink: #ece4d2; --rail-mute: #9a8e78; --rail-line: rgba(236, 228, 210, .12);
+  --shadow-s: 0 1px 2px rgba(0, 0, 0, .3); --shadow: 0 16px 40px -8px rgba(0, 0, 0, .6); --scrim: rgba(8, 7, 5, .6); } }
 body { margin: 0; background: var(--page); color: var(--ink); font: 15px/1.45 var(--sans); }
 [hidden] { display: none !important; }
 .ic { width: 18px; height: 18px; flex: none; display: block; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.btn { display: inline-flex; align-items: center; gap: 7px; background: var(--accent); color: var(--accent-ink); border: 1px solid transparent; border-radius: 10px; padding: 7px 13px; font-weight: 650; font-size: 13.5px; cursor: pointer; }
-.btn.ghost { background: none; color: var(--ink); border-color: var(--line-2); } .btn.danger { background: var(--sealed); color: var(--card); }
-.mini { background: none; border: 0; color: inherit; cursor: pointer; font-size: 18px; } .muted { color: var(--ink-3); } .small { font-size: 12.5px; } .grow { flex: 1; }
-#lead { max-width: 900px; margin: 0 auto; padding: 10px 14px; }
+.btn { display: inline-flex; align-items: center; gap: 7px; background: var(--act); color: var(--act-ink); border: 1px solid transparent; border-radius: var(--r-m); padding: var(--s-2) var(--s-3); font-weight: 650; font-size: var(--t-s); cursor: pointer; }
+.btn.ghost { background: none; color: var(--ink); border-color: var(--line-2); } .btn.danger { background: var(--danger); color: var(--danger-ink); }
+.mini { background: none; border: 0; color: inherit; cursor: pointer; font-size: 18px; } .muted { color: var(--ink-3); } .small { font-size: var(--t-xs); } .grow { flex: 1; }
+#lead { max-width: 900px; margin: 0 auto; padding: var(--s-2) var(--s-4); }
 body { padding-bottom: 96px; }   /* room for the dock, fixed at the bottom of this tab */
 </style><link rel="stylesheet" href="call.css"></head>
 <body><div id="lead" class="small muted">Megatron call, opened from the desktop app. This tab holds the call's keys for this room only; close it to leave. It talks only to the app on this computer.</div>
