@@ -729,6 +729,8 @@ label.check input { accent-color: var(--accent); margin: 3px 0 0; flex: none; }
 .joinline time { font-size: var(--t-xs); opacity: .8; }
 .body a.link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px; overflow-wrap: anywhere; }
 /* Settings: the picture, and the crop dialog it opens on top */
+.dl-to { display: flex; gap: 8px; }
+.dl-to input { flex: 1; min-width: 0; }
 .av-set { display: flex; align-items: center; gap: 14px; margin: 4px 0 2px; }
 .av-set .av-prev { flex: none; display: inline-flex; }
 .av-set .av-btns { display: flex; flex-wrap: wrap; gap: 8px; }

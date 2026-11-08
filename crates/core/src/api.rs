@@ -432,7 +432,8 @@ impl App {
                 Ok(json!({}))
             }
             "file_download_begin" => {
-                let d = self.with(|c| c.large_download_begin(&s(&a, "gid"), &s(&a, "id")).map_err(e))?;
+                let folder = s(&a, "folder");
+                let d = self.with(|c| c.large_download_begin_in(&s(&a, "gid"), &s(&a, "id"), Some(&folder)).map_err(e))?;
                 Ok(json!({"done": d.done, "chunks": d.chunks, "size": d.size, "chunk_size": d.chunk_size, "save_name": d.save_name, "finished": d.finished, "path": d.path}))
             }
             "file_download_chunk" => {
@@ -458,6 +459,7 @@ impl App {
                 }
                 self.with(|c| c.large_delete_done(&gid, &id).map(|_| json!({})).map_err(e))
             }
+            "pick_folder" => crate::large::pick_folder(&s(&a, "start")).map(|path| json!({"path": path})).map_err(e),
             "set_download_dir" => self.with(|c| c.set_download_dir(&s(&a, "dir")).map(|dir| json!({"dir": dir})).map_err(e)),
             "create_community" => self.with(|c| c.create_community(&s(&a, "name")).map(|id| json!({"id": id})).map_err(e)),
             "create_channel" => self.with(|c| {
