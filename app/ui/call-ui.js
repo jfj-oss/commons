@@ -616,6 +616,7 @@
     renderDock(s, sup);
     renderStage(s);
     renderSettings(s);
+    if (window.__railCallChanged) window.__railCallChanged();
     wireRail();
     if (window.__commonsFillAvatars) window.__commonsFillAvatars(dock);
   }
