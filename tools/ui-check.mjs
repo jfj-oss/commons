@@ -349,6 +349,26 @@ try {
   if ((await A.ev(`S.gid`)) !== chatBefore) throw new Error('opening a voice room replaced the chat with a room screen');
   await A.shot('09-voice-room');
 
+  // Themed screenshots: Daylight and After Hours, so the wall, dither and glass can be checked in both themes.
+  // The voice-room row was selected a moment ago; force each theme and re-shoot the same three states.
+  const textGid = gid;
+  for (const [theme, tag] of [['light', 'daylight'], ['dark', 'afterhours']]) {
+    await A.ev(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}`);
+    await sleep(400);
+    await A.ev(`[...document.querySelectorAll('#rooms .room')].find(r => r.dataset.g === ${JSON.stringify(textGid)}).click()`);
+    await sleep(250);
+    await A.shot(`${tag}-chat`);
+    await click(A, '#btn-settings'); await A.waitFor(`document.querySelector('.modal')`); await sleep(300);
+    await A.shot(`${tag}-settings`);
+    await click(A, '.modal .acts button'); await sleep(250);
+    await A.ev(`[...document.querySelectorAll('#rooms .room')].find(r => r.dataset.g === ${JSON.stringify(vgid)}).click()`);
+    await sleep(300);
+    await A.shot(`${tag}-voice-room`);
+  }
+  await A.ev(`delete document.documentElement.dataset.theme`);
+  await A.ev(`[...document.querySelectorAll('#rooms .room')].find(r => r.dataset.g === ${JSON.stringify(textGid)}).click()`);
+  await sleep(200);
+
   // ---- large files ----
   // Over the 24 MB line the same paperclip takes the chunked path: the page reads 8 MB slices of the picked file,
   // the core encrypts and sends one at a time. Nothing large is ever downloaded unless Download is pressed.
