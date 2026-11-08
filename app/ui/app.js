@@ -38,7 +38,8 @@ function fmtDay(ts) {
   if (d.toDateString() === y.toDateString()) return 'Yesterday';
   return d.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', ...(d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) });
 }
-const fmtSize = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+const fmtSize = n => n >= 1073741824 ? `${(n / 1073741824).toFixed(2)} GB` : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+const LARGE_OVER = 24 * 1024 * 1024;
 function fmtLeft(ts) {
   const s = ts - Date.now() / 1000; if (s <= 0) return 'expired';
   if (s < 3600) return `${Math.ceil(s / 60)} min left`;
@@ -677,15 +678,23 @@ function msgRow(x, cont, m, byId, admin) {
   let body;
   if (x.deleted) body = `<div class="body gone">message deleted</div>`;
   else if (x.kind === 'file') {
-    const img = x.file.mime.startsWith('image/');
+    const L = x.file.large, saved = L && x.file.download && x.file.download.finished;
+    const img = x.file.mime.startsWith('image/') && !L; // a large picture is never fetched just because it scrolled by
     const ext = (/\.([a-z0-9]{1,8})$/i.exec(x.file.name) || [])[1];
-    const media = mediaKind(x.file.mime, ext);
-    const meta = `<span class="small">${esc(fmtSize(x.file.size))}${img ? '' : ` · ${esc((ext || x.file.mime.split('/')[1] || 'file').toUpperCase().slice(0, 12))}`}</span>`;
-    const dl = `<a href="#" class="dl" data-id="${esc(x.id)}" title="Download ${esc(x.file.name)}">${icon('download')}<span>Download</span></a>`;
+    const media = L ? null : mediaKind(x.file.mime, ext);   // large files stream to disk; small ones can play here
+    const meta = `<span class="small">${esc(fmtSize(x.file.size))}${img ? '' : ` · ${esc((ext || x.file.mime.split('/')[1] || 'file').toUpperCase().slice(0, 12))}`}${L ? ` · ${esc(fmtLeft(L.expires))} on the relay` : ''}</span>`;
+    const live = L && XFER.get('d:' + x.id);
+    const dl = L
+      ? (live ? `<button type="button" class="dl xget" data-a="cancel-get" data-id="${esc(x.id)}" title="Cancel download">${icon('x')}<span>Cancel</span></button>`
+        : saved ? `<button type="button" class="dl xshow" data-a="show" data-id="${esc(x.id)}" title="Show in folder">${icon('folder', 'fi')}<span>Show in folder</span></button><button type="button" class="dl xget again" data-a="get" data-id="${esc(x.id)}" title="Download again">${icon('download')}<span>Download again</span></button>`
+          : `<button type="button" class="dl xget" data-a="get" data-id="${esc(x.id)}" title="Download ${esc(x.file.name)}">${icon('download')}<span>Download</span></button>`)
+      : `<a href="#" class="dl" data-id="${esc(x.id)}" title="Download ${esc(x.file.name)}">${icon('download')}<span>Download</span></a>`;
+    const progress = live ? `<div class="xfer-inline"><div id="xdl-${esc(x.id)}">${xferBody(live)}</div></div>` : '';
     body = (img ? `<div class="imgslot" data-id="${esc(x.id)}"></div><div class="file photo" data-file="${esc(x.id)}"><span class="fname">${esc(x.file.name)}</span>${meta}${dl}</div>`
-      : `<div class="file" data-file="${esc(x.id)}">${icon('file', 'fi')}<div class="fbody"><div class="fname">${esc(x.file.name)}</div>${meta}</div>${dl}</div>`
+      : `<div class="file" data-file="${esc(x.id)}">${icon('file', 'fi')}<div class="fbody"><div class="fname">${esc(x.file.name)}</div>${meta}</div>${dl}</div>${progress}`
         + (media ? `<div class="mediaslot ${media}" data-id="${esc(x.id)}" data-kind="${media}"><button type="button" class="btn ghost slim media-play">${icon('play')}<span>Play ${media}</span></button></div>` : ''))
       + (x.text ? `<div class="body">${fmt(x.text)}</div>` : '');
+    if (saved) body += `<div class="small saved-line">${icon('check')} Saved to ${esc(x.file.download.save_name || x.file.name)}</div>`;
   } else body = `<div class="body${onlyEmoji(x.text) ? ' jumbo' : ''}">${fmt(x.text)}${x.edited ? '<span class="edited">(edited)</span>' : ''}</div>`;
   const src = x.reply && byId.get(x.reply.id);
   const quote = x.reply ? `<button type="button" class="quote" data-a="goto" data-id="${esc(x.reply.id)}" title="Go to this message">${seal(src ? src.sender : x.reply.name, x.reply.name, 'tiny')}<b>${esc(x.reply.name)}</b><span>${esc(plain(x.reply.text))}</span></button>` : '';
@@ -811,7 +820,10 @@ $('#stream').addEventListener('click', async e => {
     else if (a === 'goto') { const el = $(`.msg[data-id="${CSS.escape(id)}"]`); if (el) flashTo(el); else toast('That message is not on this device.'); }
     else if (a === 'reply') { S.reply = m; S.edit = null; renderComposer(); $('#input').focus(); }
     else if (a === 'edit') { startEdit(m); }
-    else if (a === 'del') { try { await rpc('delete', { gid: S.gid, id }); tick(); soon(); } catch (er) { toast(er.message); } }
+    else if (a === 'del') { try { await rpc(m && m.file && m.file.large ? 'file_delete' : 'delete', { gid: S.gid, id }); tick(); soon(); } catch (er) { toast(er.message); } }
+    else if (a === 'get') downloadLarge(m);
+    else if (a === 'show') showDownload(m);
+    else if (a === 'cancel-get') { const x = XFER.get('d:' + id); if (x) { x.cancelled = true; xferRender(); } }
     else if (a === 'react') emojiPop(b, m);
     return;
   }
@@ -844,6 +856,101 @@ async function fileBlob(id) {
   const gid = S.gid, f = await rpc('file_open', { gid, id }), parts = [];
   for (let at = 0; at < f.size; at += f.chunk) parts.push(unb64((await rpc('file_read', { gid, id, offset: at })).data));
   return { name: f.save_name, blob: new Blob(parts, { type: f.mime }) };
+}
+const b64u = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+
+// ---- large files: one chunk at a time, in both directions ----
+// The core keeps only a chunk; this page does too. Nothing here downloads a large file unless the person pressed
+// Download, and every transfer can be cancelled without leaving a half file in the Downloads folder.
+const XFER = new Map();
+const xferRate = x => {
+  const secs = (performance.now() - x.started) / 1000;
+  if (secs < 0.7 || x.bytes <= 0) return { speed: 0, left: '' };
+  const speed = x.bytes / secs, rest = Math.max(0, x.total - x.bytes) / speed;
+  return { speed, left: rest < 60 ? `${Math.ceil(rest)}s left` : rest < 3600 ? `${Math.ceil(rest / 60)} min left` : `${(rest / 3600).toFixed(1)} h left` };
+};
+function xferBody(x) {
+  const pct = x.total ? Math.min(100, Math.round(x.bytes / x.total * 100)) : 0;
+  const { speed, left } = xferRate(x);
+  return `<div class="xfer-bar"><i style="width:${pct}%"></i></div><div class="small xfer-note">${pct}% · ${fmtSize(Math.min(x.bytes, x.total))} of ${fmtSize(x.total)}${speed ? ` · ${fmtSize(speed)}/s` : ''}${left ? ` · ${esc(left)}` : ''}</div>`;
+}
+function xferPanel() {
+  let el = $('#transfers');
+  if (!el) {
+    el = document.createElement('section'); el.id = 'transfers'; el.setAttribute('aria-live', 'polite');
+    el.onclick = e => { const b = e.target.closest('[data-xcancel]'); if (b) { const x = XFER.get(b.dataset.xcancel); if (x) { x.cancelled = true; xferRender(); } } };
+    document.body.appendChild(el);
+  }
+  return el;
+}
+function xferRender() {
+  const el = xferPanel(), rows = [...XFER.values()];
+  el.hidden = !rows.length;
+  el.innerHTML = `<div class="xfer-title">Transfers</div>` + rows.map(x => `<div class="xfer">
+    <div class="xfer-head"><span class="xfer-name" title="${esc(x.name)}">${esc(x.name)}</span><button type="button" class="mini" data-xcancel="${esc(x.key)}" title="Cancel" aria-label="Cancel ${esc(x.kind === 'up' ? 'upload' : 'download')}">${icon('x')}</button></div>
+    ${xferBody(x)}<div class="small xfer-state">${x.cancelled ? 'Cancelling…' : x.kind === 'up' ? 'Sending to the relay' : 'Saving to your Downloads folder'}</div></div>`).join('');
+  // The same live numbers appear next to the message being downloaded.
+  for (const x of rows) if (x.kind === 'down') { const slot = document.getElementById('xdl-' + x.id); if (slot) slot.innerHTML = xferBody(x); }
+}
+async function uploadLarge(f, name) {
+  const key = 'upload'; let info;
+  try {
+    info = await rpc('file_upload_begin', { gid: S.gid, name, mime: f.type || 'application/octet-stream', size: f.size, last_modified: Math.floor((f.lastModified || 0) / 1000), caption: '' });
+    const x = { key: info.id, kind: 'up', name, started: performance.now(), bytes: 0, total: f.size, done: 0, chunks: info.chunks, cancelled: false };
+    XFER.set(x.key, x); xferRender();
+    for (let i = 0; i < info.chunks; i++) {
+      if (x.cancelled) break;
+      const at = i * info.chunk_size, end = Math.min(at + info.chunk_size, f.size);
+      // Read only this slice of the File. The core hashes it even when the relay already holds it, so a resumed
+      // upload can still finish with the whole-file check.
+      const buf = new Uint8Array(await f.slice(at, end).arrayBuffer());
+      await rpc('file_upload_chunk', { id: info.id, index: i, data: b64u(buf) });
+      x.done = i + 1; x.bytes = end; xferRender();
+    }
+    if (x.cancelled) {
+      await rpc('file_upload_cancel', { id: info.id });
+      XFER.delete(x.key); xferRender(); toast('Upload cancelled.');
+      return;
+    }
+    await rpc('file_upload_finish', { id: info.id });
+    XFER.delete(x.key); xferRender(); toast(`${name} sent.`);
+    S.lastMsgs = ''; tick(); soon();
+  } catch (er) {
+    if (info) XFER.delete(info.id);
+    xferRender();
+    // The uploaded parts stay on the relay, so offering the same file again continues where this stopped.
+    toast(`Upload of ${name} stopped: ${er.message}. Drop the same file again to continue.`);
+  }
+}
+async function downloadLarge(m) {
+  const key = 'd:' + m.id;
+  if (XFER.has(key)) return;
+  let st;
+  try {
+    st = await rpc('file_download_begin', { gid: S.gid, id: m.id });
+    if (st.finished) { toast('Already saved to ' + st.path); return; }
+    const x = { key, id: m.id, kind: 'down', name: m.file.name, started: performance.now(), bytes: st.done * st.chunk_size, done: st.done, chunks: st.chunks, total: st.size, cancelled: false, path: '' };
+    XFER.set(key, x); xferRender(); renderStream();
+    while (x.done < x.chunks && !x.cancelled) {
+      const r = await rpc('file_download_chunk', { gid: S.gid, id: m.id });
+      x.done = r.done; x.bytes = Math.min(r.done * st.chunk_size, st.size);
+      if (r.finished) { x.path = r.path; break; }
+      xferRender();
+    }
+    if (x.cancelled) { await rpc('file_download_cancel', { id: m.id }); toast('Download cancelled.'); }
+    else if (x.path) { toast('Saved to ' + x.path); S.lastMsgs = ''; tick(); }
+  } catch (er) {
+    // Keep the partial file: Download on the same message picks it up again, from the last verified chunk.
+    toast(`Download stopped: ${er.message}. Press Download again to continue.`);
+  } finally {
+    XFER.delete(key); xferRender();
+    const ms = S.msgs && S.msgs.messages.find(v => v.id === m.id);
+    if (ms) renderStream();
+  }
+}
+async function showDownload(m) {
+  try { const r = await rpc('file_show_in_folder', { id: m.id }); if (!r.opened) toast('The file is at ' + ((m.file.download && m.file.download.path) || 'your Downloads folder') + '.'); }
+  catch (er) { toast(er.message); }
 }
 // Object URLs, never strings of markup. The newest ones stay; an old image is simply fetched again from the local cache.
 const MAX_IMGS = 48;
@@ -977,10 +1084,11 @@ $('#input').onblur = () => setTimeout(mentionClose, 120);
 $('#attach').onclick = () => $('#file').click();
 async function uploadFile(f) {
   if (!S.gid) return toast('Open a room first.');
-  if (f.size > 24 * 1024 * 1024) return toast(`${f.name} is over the 24 MB limit.`);
-  const buf = new Uint8Array(await f.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
   // A pasted screenshot has no real name, so it gets one with the time.
   const name = f.name && f.name !== 'image.png' ? f.name : `Pasted image ${(d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}.${String(d.getMinutes()).padStart(2, '0')}.${String(d.getSeconds()).padStart(2, '0')}`)(new Date())}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`;
+  // Same paperclip and drop target; the size decides which way it goes.
+  if (f.size > LARGE_OVER) return uploadLarge(f, name);
+  const buf = new Uint8Array(await f.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
   toast('Encrypting and uploading…');
   try { await rpc('send_file', { gid: S.gid, name, mime: f.type || 'application/octet-stream', data: btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''), caption: '' }); S.lastMsgs = ''; tick(); soon(); } catch (er) { toast(er.message); }
 }
@@ -1185,6 +1293,7 @@ $('#btn-settings').onclick = () => {
   <label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints (the relay can see that a message-sized packet was sent at that moment)</span></label>
   <label class="check"><input type="checkbox" id="lstr" ${S.snap.share_listening ? 'checked' : ''}><span>Share what I'm listening to</span></label>
   <label for="rune">rune address</label><input type="text" id="rune" value="${esc(S.snap.rune_url)}" spellcheck="false"><p class="muted small">Where rune, the music player on this computer, answers. The song title and artist go to the people in your communities, end to end encrypted, and stop showing when playback stops (ten minutes at most if the app closes). Nothing else is read or sent.</p>
+  ${mobileApp() ? '' : `<label for="dl-dir">Large-file downloads folder</label><input type="text" id="dl-dir" value="${esc(S.snap.download_dir || '')}" spellcheck="false"><p class="muted small">Large files are written here as they arrive, one verified piece at a time. Leave empty to use your usual Downloads folder.</p>`}
   ${mobileApp() ? '' : '<label>Calls</label><button type="button" class="btn ghost" id="set-gamekeys">Game keys…</button><p class="muted small">Mute yourself in Megatron while you talk to your game team.</p>'}
   <label for="rl">Relay address</label><input type="text" id="rl" value="${esc(S.snap.relay)}" spellcheck="false"><p class="muted small">Change this only if your relay moved. A different relay does not have your communities.<br>Your account id: <span class="mono">${esc(S.snap.me.account.slice(0, 16))}…</span></p>
   <label for="rs">This server's sign-up secret</label><input type="password" id="rs" value="" spellcheck="false" autocomplete="off" placeholder="${S.snap.relay_secret ? 'Saved on this device — leave empty to keep it' : 'Not saved on this device — paste it here if you have it'}"><p class="muted small">A device added by pairing or recovery may not have it; without it, invite links from this device only work for people who already have an account here. It is checked with the relay and never shown again once saved.</p>`,
@@ -1192,6 +1301,7 @@ $('#btn-settings').onclick = () => {
     if (val(w, 'rl').trim() !== S.snap.relay) await rpc('set_relay', { relay: val(w, 'rl') });
     const secret = val(w, 'rs').trim();
     if (secret) await rpc('set_relay_invite', { secret });
+    if (!mobileApp() && val(w, 'dl-dir').trim() !== (S.snap.download_dir || '')) await rpc('set_download_dir', { dir: val(w, 'dl-dir') });
     await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('theme', val(w, 'th')); pref.set('read', val(w, 'rd')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs();
   } }]);
   fillAvatars();

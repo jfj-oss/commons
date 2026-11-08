@@ -1,6 +1,7 @@
 // Headless UI check: real relay + two dev bridges (two "windows") + Chromium on the GPU (ANGLE/Vulkan, never SwiftShader).
 // No window is ever shown. Usage: node tools/ui-check.mjs <outdir>
 import { spawn, execSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -30,8 +31,19 @@ const [A_PORT, B_PORT] = [Number(process.env.COMMONS_UI_A_PORT || 7101), Number(
 const CDP_PORT = Number(process.env.COMMONS_UI_CDP_PORT || 9333);
 const RELAY = `http://127.0.0.1:${RELAY_PORT}`;
 fs.rmSync(path.join(out, 'data'), { recursive: true, force: true });
+// Bob's core runs "Show in folder" through xdg-open. Point it at a script that records the folder, so the check
+// proves the wiring without opening a file manager on the machine running the test.
+const fakeBin = path.join(out, 'fakebin');
+const xdgMarker = path.join(out, 'xdg-open.log');
+fs.mkdirSync(fakeBin, { recursive: true });
+fs.rmSync(xdgMarker, { force: true });
+fs.writeFileSync(path.join(fakeBin, 'xdg-open'), '#!/bin/sh\nprintf "%s\\n" "$1" > "$COMMONS_XDG_MARKER"\n', { mode: 0o755 });
 run(bin('commons-relay'), ['--bind', `127.0.0.1:${RELAY_PORT}`, '--data', path.join(out, 'data/relay')]);
-for (const [n, port] of [['alice', A_PORT], ['bob', B_PORT]]) run(bin('dev_bridge'), [String(port), path.join(root, 'app/ui')], { COMMONS_DATA: path.join(out, 'data', n), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1' });
+for (const [n, port] of [['alice', A_PORT], ['bob', B_PORT]]) {
+  const env = { COMMONS_DATA: path.join(out, 'data', n), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1' };
+  if (n === 'bob') Object.assign(env, { PATH: fakeBin + ':' + process.env.PATH, COMMONS_XDG_MARKER: xdgMarker });
+  run(bin('dev_bridge'), [String(port), path.join(root, 'app/ui')], env);
+}
 await sleep(1500);
 
 const chrome = run('chromium', ['--headless=new', `--remote-debugging-port=${CDP_PORT}`, '--user-data-dir=' + path.join(out, 'chrome'), '--use-gl=angle', '--use-angle=vulkan',
@@ -45,6 +57,17 @@ class Page {
   async ev(expr) { const r = await this.send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 400)); return r.result.result.value; }
   async shot(name) { await this.send('Page.bringToFront'); await sleep(250); const r = await this.send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(r.result.data, 'base64')); }
   async waitFor(expr, ms = 15000) { const t = Date.now(); while (Date.now() - t < ms) { if (await this.ev(expr).catch(() => false)) return; await sleep(250); } throw new Error('timeout waiting for ' + expr); }
+  // Hand a real file on disk to a file input. Chromium keeps it backed by the file, so a several-hundred-megabyte
+  // file never has to be materialised as a JavaScript string in this process or in the page.
+  async setFiles(sel, file) {
+    await this.send('DOM.enable');
+    const doc = await this.send('DOM.getDocument', { depth: -1 });
+    if (doc.error) throw new Error('DOM.getDocument: ' + JSON.stringify(doc.error));
+    const q = await this.send('DOM.querySelector', { nodeId: doc.result.root.nodeId, selector: sel });
+    if (q.error || !q.result || !q.result.nodeId) throw new Error('no file input matching ' + sel + ': ' + JSON.stringify(q.error || q.result));
+    const r = await this.send('DOM.setFileInputFiles', { files: [file], nodeId: q.result.nodeId });
+    if (r.error) throw new Error('DOM.setFileInputFiles: ' + JSON.stringify(r.error));
+  }
 }
 async function open(url) {
   const t = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/new?` + encodeURIComponent(url), { method: 'PUT' })).json();
@@ -54,6 +77,36 @@ async function open(url) {
 const type = (p, sel, v) => p.ev(`(()=>{const e=document.querySelector(${JSON.stringify(sel)});e.value=${JSON.stringify(v)};e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
 const click = (p, sel) => p.ev(`document.querySelector(${JSON.stringify(sel)}).click()`);
 const textOf = (p, sel) => p.ev(`document.querySelector(${JSON.stringify(sel)})?.innerText||''`);
+
+// A deterministic file of `size` bytes, written a megabyte at a time so this process stays small.
+function makeBigFile(file, size) {
+  return new Promise((resolve, reject) => {
+    const block = Buffer.alloc(1 << 20);
+    let x = 0x9e3779b9;
+    for (let i = 0; i < block.length; i++) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; block[i] = x & 255; }
+    const hash = crypto.createHash('sha256'), ws = fs.createWriteStream(file);
+    let at = 0, n = 0;
+    const pump = () => {
+      while (at < size) {
+        const len = Math.min(block.length, size - at);
+        block.writeUInt32LE(n >>> 0, 0);
+        const b = block.subarray(0, len);
+        hash.update(b); at += len; n++;
+        if (!ws.write(Buffer.from(b))) { ws.once('drain', pump); return; }
+      }
+      ws.end();
+    };
+    ws.on('error', reject);
+    ws.on('finish', () => resolve(hash.digest('hex')));
+    pump();
+  });
+}
+function hashFile(file) {
+  return new Promise((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    fs.createReadStream(file).on('error', reject).on('data', d => h.update(d)).on('end', () => resolve(h.digest('hex')));
+  });
+}
 
 try {
   const A = await open(`http://127.0.0.1:${A_PORT}/`); const B = await open(`http://127.0.0.1:${B_PORT}/`);
@@ -265,6 +318,105 @@ try {
   if (!(await A.ev(`!!window.__joined && window.__joined[0] === ${JSON.stringify(vgid)}`))) throw new Error('clicking a voice room did not join its call');
   if ((await A.ev(`S.gid`)) !== chatBefore) throw new Error('opening a voice room replaced the chat with a room screen');
   await A.shot('09-voice-room');
+
+  // ---- large files ----
+  // Over the 24 MB line the same paperclip takes the chunked path: the page reads 8 MB slices of the picked file,
+  // the core encrypts and sends one at a time. Nothing large is ever downloaded unless Download is pressed.
+  const dlDir = path.join(out, 'downloads-bob');
+  fs.rmSync(dlDir, { recursive: true, force: true });
+  fs.mkdirSync(dlDir, { recursive: true });
+  const bigName = 'a-big-film.bin';
+  const bigPath = path.join(out, bigName);
+  const bigSize = 300 * 1024 * 1024 + 12345;
+  const bigHash = await makeBigFile(bigPath, bigSize);
+  const row = name => `[...document.querySelectorAll('.msg')].find(m => m.querySelector('.fname')?.textContent === ${JSON.stringify(name)})`;
+
+  // Bob chooses where large files land (desktop setting), before anything arrives.
+  await click(B, '#btn-settings'); await B.waitFor(`document.querySelector('#dl-dir')`);
+  await type(B, '#dl-dir', dlDir); await click(B, '.modal .acts button:last-child');
+  await B.waitFor(`!document.querySelector('.modal')`);
+  await B.waitFor(`S.snap.download_dir === ${JSON.stringify(dlDir)}`, 5000);
+
+  // Upload it once, watch the tray (percentage, speed, time left), then cancel before it finishes.
+  await A.setFiles('#file', bigPath);
+  await A.waitFor(`(() => { const e = document.querySelector('#transfers'); return !!e && !e.hidden && e.innerText.includes(${JSON.stringify(bigName)}); })()`, 30000);
+  await A.waitFor(`(() => { const n = document.querySelector('#transfers .xfer-note'); return !!n && n.innerText.includes('%') && n.innerText.includes('/s') && n.innerText.includes('left'); })()`, 30000);
+  await A.shot('15-uploading-large');
+  await A.ev(`document.querySelector('#transfers [data-xcancel]').click()`);
+  await A.waitFor(`(() => { const e = document.querySelector('#transfers'); return !e || e.hidden; })()`, 30000);
+  await sleep(1500);
+  if (await A.ev(`!!(${row(bigName)})`)) throw new Error('a cancelled upload still produced a message');
+
+  // Send it for real. The chunk that was in flight when Cancel was pressed is gone with the relay copy, so this is
+  // a full send; resuming after a dropped connection is covered by crates/core/tests/large_files.rs.
+  await A.setFiles('#file', bigPath);
+  await A.waitFor(`(() => { const e = document.querySelector('#transfers'); return !!e && !e.hidden && e.innerText.includes(${JSON.stringify(bigName)}); })()`, 15000);
+  await A.waitFor(`(() => { const e = document.querySelector('#transfers'); return !e || e.hidden; })()`, 600000);
+  await B.waitFor(`!!(${row(bigName)})`, 60000);
+  const shown = await B.ev(`(() => { const m = ${row(bigName)}; return { text: m.innerText, img: !!m.querySelector('.imgslot'), get: !!m.querySelector('[data-a=get]') }; })()`);
+  if (!shown.text.includes('300.0 MB')) throw new Error('the message does not show the real size: ' + shown.text);
+  if (!(shown.text.includes('days left on the relay') || shown.text.includes('day left on the relay'))) throw new Error('the message does not show when it leaves the relay: ' + shown.text);
+  if (!shown.get) throw new Error('no Download button on the large file');
+  if (shown.img) throw new Error('a large file got an image slot (it must never be fetched by scrolling)');
+  if (fs.readdirSync(dlDir).length) throw new Error('a large file was downloaded without pressing Download');
+
+  // Download: progress and speed next to the message, then Cancel, then Download again to the end.
+  const get = `(${row(bigName)}).querySelector('[data-a=get]').click()`;
+  await B.ev(get);
+  await B.waitFor(`(() => { const e = document.querySelector('#transfers'); return !!e && !e.hidden && e.innerText.includes(${JSON.stringify(bigName)}); })()`, 30000);
+  await B.waitFor(`(() => { const n = document.querySelector('.xfer-inline .xfer-note'); return !!n && n.innerText.includes('%') && n.innerText.includes('/s'); })()`, 30000);
+  await B.shot('16-downloading-large');
+  await B.ev(`(${row(bigName)}).querySelector('[data-a="cancel-get"]').click()`);
+  await B.waitFor(`(() => { const e = document.querySelector('#transfers'); return !e || e.hidden; })()`, 30000);
+  await sleep(800);
+  const afterCancel = fs.readdirSync(dlDir);
+  if (afterCancel.length) throw new Error('cancelling a download left a file behind: ' + afterCancel.join(', '));
+  await B.ev(get);
+  await B.waitFor(`(() => { const m = ${row(bigName)}; return !!(m && m.querySelector('.saved-line') && m.querySelector('[data-a=show]') && m.querySelector('[data-a=get]')); })()`, 600000);
+  const saved = await B.ev(`(() => { const m = S.msgs.messages.find(x => x.file && x.file.name === ${JSON.stringify(bigName)}); return m && m.file.download || null; })()`);
+  if (!saved || !saved.finished) throw new Error('the core does not report the download as finished: ' + JSON.stringify(saved));
+  const savedPath = path.join(dlDir, bigName);
+  if (path.resolve(saved.path) !== path.resolve(savedPath)) throw new Error('saved to the wrong folder: ' + saved.path);
+  if (fs.statSync(savedPath).size !== bigSize) throw new Error('the saved file has the wrong size');
+  if (await hashFile(savedPath) !== bigHash) throw new Error('the saved file is not the file that was sent');
+
+  // Show in folder goes through the core and ends at the folder, which the fake xdg-open records.
+  await B.ev(`(${row(bigName)}).querySelector('[data-a=show]').click()`);
+  for (let i = 0; i < 40 && !fs.existsSync(xdgMarker); i++) await sleep(100);
+  if (!fs.existsSync(xdgMarker)) throw new Error('Show in folder did not reach xdg-open');
+  const opened = fs.readFileSync(xdgMarker, 'utf8').trim();
+  if (path.resolve(opened) !== path.resolve(dlDir)) throw new Error('Show in folder opened ' + opened);
+
+  // A large picture is still a file, not an inline image: the page has no slot and fetches nothing until Download.
+  const picName = 'a-big-picture.png';
+  const picPath = path.join(out, picName);
+  await makeBigFile(picPath, 24 * 1024 * 1024 + 1000);
+  await A.setFiles('#file', picPath);
+  await A.waitFor(`(() => { const e = document.querySelector('#transfers'); return !!e && !e.hidden && e.innerText.includes(${JSON.stringify(picName)}); })()`, 15000);
+  await A.waitFor(`(() => { const e = document.querySelector('#transfers'); return !e || e.hidden; })()`, 600000);
+  await B.waitFor(`!!(${row(picName)})`, 60000);
+  const pic = await B.ev(`(() => { const m = ${row(picName)}; return { img: !!m.querySelector('.imgslot'), get: !!m.querySelector('[data-a=get]'), text: m.innerText }; })()`);
+  if (pic.img) throw new Error('a large picture got an inline image slot');
+  if (!pic.get) throw new Error('no Download button on the large picture');
+  if (!pic.text.includes('24.0 MB')) throw new Error('the large picture does not show its real size: ' + pic.text);
+  if (fs.readdirSync(dlDir).length !== 1) throw new Error('something was auto-downloaded: ' + fs.readdirSync(dlDir).join(', '));
+
+  // The uploader can remove the relay copy; everyone's message goes away.
+  const picId = await B.ev(`(() => { const m = ${row(picName)}; return m ? m.dataset.id : null; })()`);
+  await A.ev(`(${row(picName)}).querySelector('[data-a=del]').click()`);
+  await B.waitFor(`(() => { const m = document.querySelector('.msg[data-id="' + ${JSON.stringify(picId)} + '"]'); return !!m && m.classList.contains('deleted'); })()`, 30000);
+
+  // Old apps must see ordinary File messages, never an unknown kind.
+  for (const P of [A, B]) {
+    const newer = await P.ev(`(async () => (await rpc('notices')).filter(n => n.kind === 'newer').length)()`);
+    if (newer) throw new Error('a newer-version notice appeared after a large file');
+  }
+  await B.shot('17-large-file');
+
+  // Done with the big test files; the screenshots and data directory stay.
+  fs.rmSync(bigPath, { force: true }); fs.rmSync(picPath, { force: true });
+  fs.rmSync(dlDir, { recursive: true, force: true });
+
   // Phone-width layout: the rail folds away, the composer stays on screen, and desktop-only settings are gone.
   const P = await open('http://127.0.0.1:7101/');
   await P.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });

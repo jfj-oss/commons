@@ -84,6 +84,69 @@ pub struct State {
     /// Phones have no keyboard for a game to read, so the setting is not kept there.
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     pub game_keys: commons_gamekeys::Settings,
+    /// Large uploads that have not finished yet, by the relay's file id. The relay is the source of truth for which
+    /// chunks arrived; this holds the key material and enough to offer the same file again after a restart.
+    #[serde(default)]
+    pub large_uploads: BTreeMap<String, LargeUpload>,
+    /// Large downloads, by message id: where the partial file is and how much of it has been written.
+    #[serde(default)]
+    pub large_downloads: BTreeMap<String, LargeDownload>,
+    /// Where large downloads are saved. Empty means the system's Downloads folder.
+    #[serde(default)]
+    pub download_dir: String,
+}
+
+/// One large file on its way out. Chunk bytes are never stored here, only the key material and where we are.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct LargeUpload {
+    pub gid: String,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    /// The file's modification time when it was picked, so a changed file with the same name and size does not
+    /// resume as if it were the same bytes.
+    #[serde(default)]
+    pub last_modified: u64,
+    pub chunk_size: u64,
+    pub chunks: u64,
+    /// The relay's id for the file (also the message's `blob`).
+    pub blob: String,
+    pub key: String,
+    pub nonce: String,
+    pub caption: String,
+    pub expires: u64,
+    /// Chunk indexes the relay said it has, as of the last begin or the last chunk sent.
+    #[serde(default)]
+    pub uploaded: Vec<u64>,
+    pub started: u64,
+}
+
+/// One large file coming in. The partial file lives on disk; `done` chunks have been decrypted, verified and
+/// appended, and their plaintext hashes are kept so the whole-file check can be finished after a restart.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct LargeDownload {
+    pub gid: String,
+    pub msg_id: String,
+    pub blob: String,
+    pub name: String,
+    pub save_name: String,
+    pub mime: String,
+    pub size: u64,
+    pub chunks: u64,
+    pub chunk_size: u64,
+    pub sha256: String,
+    pub key: String,
+    pub nonce: String,
+    pub expires: u64,
+    pub dir: String,
+    pub part: String,
+    pub done: u64,
+    #[serde(default)]
+    pub hashes: Vec<String>,
+    #[serde(default)]
+    pub finished: bool,
+    #[serde(default)]
+    pub path: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -203,7 +266,12 @@ impl GroupState {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum MsgBody {
     Text(String),
-    File { name: String, mime: String, size: u64, blob: String, key: String, nonce: String, caption: String },
+    File {
+        name: String, mime: String, size: u64, blob: String, key: String, nonce: String, caption: String,
+        /// Too large for one blob: the real size, chunk layout and whole-file hash. Absent for ordinary files.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        large: Option<LargeFile>,
+    },
     /// System line shown in the timeline (decrypt failures, rejoin notices...). Never silent.
     Notice(String),
 }

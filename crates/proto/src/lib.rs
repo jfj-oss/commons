@@ -17,6 +17,13 @@ pub const SYNC_MIN_BYTES: u64 = 64 * 1024;
 /// Most accounts one ACL request may name, so that one request cannot hold the relay's database for long.
 pub const MAX_ACL_BATCH: usize = 256;
 pub const MAX_BLOB_BYTES: usize = 25 * 1024 * 1024;
+/// Files larger than this take the chunked large-file path instead of a single blob. The UI uses the same number.
+pub const LARGE_FILE_THRESHOLD: u64 = 24 * 1024 * 1024;
+/// The chunk size a client picks for a large file. One chunk is all that is ever held in memory.
+pub const LARGE_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
+/// Largest chunk the relay accepts, and the most it holds in memory for one upload request.
+pub const MAX_LARGE_CHUNK_BYTES: u64 = 16 * 1024 * 1024;
+pub const MIN_LARGE_CHUNK_BYTES: u64 = 64 * 1024;
 pub const MAX_WELCOME_BYTES: usize = 1024 * 1024;
 pub const MAX_RENDEZVOUS_BYTES: usize = 8 * 1024;
 pub const AUTH_SKEW_SECS: u64 = 600;
@@ -286,6 +293,26 @@ pub struct SyncReq {
 pub struct Entry { pub seq: u64, pub id: String, pub data: String }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WelcomeEntry { pub id: String, pub data: String }
+// ---- large files: a resumable chunked area with its own quota and expiry ----
+/// Start (or rejoin) a large upload. `id` is chosen by the uploader: the same file offered again resumes the same
+/// upload, chunks already on the relay are listed in the answer and need not be sent again.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LargeBeginReq { pub gid: String, pub size: u64, pub chunk_size: u64 }
+/// What the relay knows about a large file, and which chunk indexes it already holds.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct LargeInfoResp {
+    pub size: u64,
+    pub chunk_size: u64,
+    pub chunks: u64,
+    pub complete: bool,
+    pub expires: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uploaded: Vec<u64>,
+}
+/// The whole-file hash: SHA-256 over a domain tag, the chunk count, the size, and every chunk's plaintext hash.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LargeFinishReq { pub sha256: String }
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct SyncResp {
     pub messages: std::collections::BTreeMap<String, Vec<Entry>>,
