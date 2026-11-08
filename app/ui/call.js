@@ -534,7 +534,7 @@
 
     // ---- Jellyfin: configured per device, in this browser's localStorage only. The token/key never leaves this device.
     // Sign-in is Quick Connect (the user types a code into Jellyfin, no API key to copy); a pasted API key remains as an
-    // advanced fallback. Both are sent as X-Emby-Token straight to the Jellyfin server.
+    // advanced fallback. Both go in the standard Authorization header (Token=...) straight to the Jellyfin server.
     jellyfinConfig() {
       const c = lsGet('commons.call.jellyfin', null) || {};
       return {
@@ -555,8 +555,10 @@
       return String(v);
     }
     // Jellyfin's client identity header. Quick Connect needs it even before there is a token.
-    jellyfinHeader() {
-      return 'MediaBrowser Client="Megatron", Device="Call", DeviceId="' + this.jellyfinDeviceId() + '", Version="0.2.3"';
+    // Sent as the standard Authorization header: Jellyfin 10.11+ refuses the old X-Emby-Authorization one with 400.
+    jellyfinHeader(token) {
+      const t = token ? ', Token="' + String(token).replace(/"/g, '') + '"' : '';
+      return 'MediaBrowser Client="Megatron", Device="Call", DeviceId="' + this.jellyfinDeviceId() + '", Version="0.2.5"' + t;
     }
     saveJellyfinConfig(url, key) {
       lsSet('commons.call.jellyfin', { url: String(url || '').trim().replace(/\/+$/, ''), key: String(key || '').trim() });
@@ -584,9 +586,8 @@
     async _jellyfinFetch(path, opts = {}) {
       const c = this.jellyfinConfig();
       this._jellyfinUrlCheck(c);
-      const headers = { 'X-Emby-Authorization': this.jellyfinHeader(), ...(opts.headers || {}) };
       const cred = opts.noToken ? '' : this.jellyfinCredential();
-      if (cred) headers['X-Emby-Token'] = cred;
+      const headers = { 'Authorization': this.jellyfinHeader(cred), ...(opts.headers || {}) };
       let r;
       try { r = await fetch(c.url + path, { ...opts, headers, mode: 'cors', credentials: 'omit' }); }
       catch (e) { throw new CallError('jellyfin', 'Could not reach Jellyfin at ' + c.url + '. Check the address and that Jellyfin is running, and that Jellyfin allows this page\'s origin (CORS). (' + (e.message || e) + ')'); }
@@ -652,7 +653,7 @@
       if (t) { u.searchParams.set('searchTerm', t); u.searchParams.set('SortBy', 'SortName'); u.searchParams.set('SortOrder', 'Ascending'); }
       else { u.searchParams.set('SortBy', 'DateCreated,SortName'); u.searchParams.set('SortOrder', 'Descending'); }
       let r;
-      try { r = await fetch(u.href, { headers: { 'X-Emby-Authorization': this.jellyfinHeader(), 'X-Emby-Token': this.jellyfinCredential() }, mode: 'cors', credentials: 'omit' }); }
+      try { r = await fetch(u.href, { headers: { 'Authorization': this.jellyfinHeader(this.jellyfinCredential()) }, mode: 'cors', credentials: 'omit' }); }
       catch (e) { throw new CallError('jellyfin', 'Could not reach Jellyfin at ' + c.url + '. Check the address and that Jellyfin is running, and that Jellyfin allows this page\'s origin (CORS). (' + (e.message || e) + ')'); }
       if (r.status === 401 || r.status === 403) throw new CallError('jellyfin', 'Jellyfin refused the sign-in. Sign in again in call Settings.');
       if (!r.ok) throw new CallError('jellyfin', 'Jellyfin answered ' + r.status + ' ' + r.statusText + '.');
@@ -668,8 +669,8 @@
       const c = this.jellyfinConfig();
       const cred = this.jellyfinCredential();
       if (!c.url || !item || !item.hasImage || !cred) return '';
-      // images cannot carry the X-Emby-Token header, so the key goes in the query; Jellyfin accepts api_key there
-      return c.url + '/Items/' + encodeURIComponent(item.id) + '/Images/Primary?maxHeight=360&quality=80&api_key=' + encodeURIComponent(cred);
+      // images cannot carry a header, so the key goes in the query as ApiKey (Jellyfin's current name for it)
+      return c.url + '/Items/' + encodeURIComponent(item.id) + '/Images/Primary?maxHeight=360&quality=80&ApiKey=' + encodeURIComponent(cred);
     }
     async startJellyfinPlayback(item, opts = {}) {
       const c = this.jellyfinConfig();
@@ -679,9 +680,9 @@
       const q = encodeURIComponent;
       const urls = [
         // direct play first: no transcoding load on the server and the best picture
-        c.url + '/Videos/' + q(item.id) + '/stream?static=true&api_key=' + q(cred),
+        c.url + '/Videos/' + q(item.id) + '/stream?static=true&ApiKey=' + q(cred),
         // h264/aac mp4 transcode when the container or codec will not play in this browser (MKV/HEVC/DTS and friends)
-        c.url + '/Videos/' + q(item.id) + '/stream.mp4?Static=false&VideoCodec=h264&AudioCodec=aac&AudioChannels=2&Container=mp4&MaxWidth=' + prof.width + '&MaxHeight=' + prof.height + '&api_key=' + q(cred),
+        c.url + '/Videos/' + q(item.id) + '/stream.mp4?Static=false&VideoCodec=h264&AudioCodec=aac&AudioChannels=2&Container=mp4&MaxWidth=' + prof.width + '&MaxHeight=' + prof.height + '&ApiKey=' + q(cred),
       ];
       return this._startPlayback({ title: item.name || 'Video', kind: 'jellyfin', urls, crossOrigin: true, profile: opts.profile });
     }
