@@ -22,40 +22,40 @@
 
 /* ---- After hours: dark plaster, lamplight, and a warm bloom over the hovered message ---- */
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) #main { background: var(--wall) url(fresco/plaster.webp) 0 0 / 768px 768px repeat;
+  :root:not([data-theme="light"],[data-theme="solar"]) #main { background: var(--wall) url(fresco/plaster.webp) 0 0 / 768px 768px repeat;
     background-image: -webkit-image-set(url(fresco/plaster.webp) 1x, url(fresco/plaster@2x.webp) 2x);
     background-image: image-set(url(fresco/plaster.webp) 1x, url(fresco/plaster@2x.webp) 2x); }
-  :root:not([data-theme="light"]) #main::before { content: none; }
-  :root:not([data-theme="light"]) #main::after { background: linear-gradient(to right, color-mix(in srgb, var(--wall-2) 55%, transparent), color-mix(in srgb, var(--wall-2) 24%, transparent) 40%, transparent); }
+  :root:not([data-theme="light"],[data-theme="solar"]) #main::before { content: none; }
+  :root:not([data-theme="light"],[data-theme="solar"]) #main::after { background: linear-gradient(to right, color-mix(in srgb, var(--wall-2) 55%, transparent), color-mix(in srgb, var(--wall-2) 24%, transparent) 40%, transparent); }
   /* lamplight: round, soft, uneven pools of warm light at the top of the wall (screen blend) */
-  :root:not([data-theme="light"]) #main > #lamp { display: block; position: absolute; left: 0; right: 0; top: 0; height: 46%; z-index: 1; pointer-events: none; mix-blend-mode: screen;
+  :root:not([data-theme="light"],[data-theme="solar"]) #main > #lamp { display: block; position: absolute; left: 0; right: 0; top: 0; height: 46%; z-index: 1; pointer-events: none; mix-blend-mode: screen;
     background:
       radial-gradient(42% 70% at 82% -10%, color-mix(in srgb, var(--brass) 42%, transparent), color-mix(in srgb, var(--brass) 13%, transparent) 38%, transparent 72%),
       radial-gradient(38% 60% at 28% -14%, color-mix(in srgb, var(--brass) 32%, transparent), color-mix(in srgb, var(--brass) 9%, transparent) 40%, transparent 74%),
       radial-gradient(30% 48% at 56% -16%, color-mix(in srgb, var(--brass) 24%, transparent), transparent 76%); }
   /* a whisper of lamp soot at the very top edge, above each pool (behind the header text) */
-  :root:not([data-theme="light"]) #head { background:
+  :root:not([data-theme="light"],[data-theme="solar"]) #head { background:
       radial-gradient(30% 34px at 82% 0, color-mix(in srgb, var(--wall-2) 55%, transparent), transparent),
       radial-gradient(26% 30px at 28% 0, color-mix(in srgb, var(--wall-2) 42%, transparent), transparent),
       radial-gradient(18% 26px at 56% 0, color-mix(in srgb, var(--wall-2) 34%, transparent), transparent); }
   /* the header subtitle sits in the brightest light, so it uses --ink-2 (AA there) */
-  :root:not([data-theme="light"]) #chan-sub { color: var(--ink-2); }
+  :root:not([data-theme="light"],[data-theme="solar"]) #chan-sub { color: var(--ink-2); }
   /* the hover glow reaches a little past each row; keep it from adding a sideways scrollbar */
-  :root:not([data-theme="light"]) #stream { overflow-x: hidden; }
+  :root:not([data-theme="light"],[data-theme="solar"]) #stream { overflow-x: hidden; }
   /* a lamp held over a message: a soft warm bloom behind the hovered (or keyboard-focused) row; the row's small
      grey text steps up to --ink-2 while lit so it stays AA. Hover only on devices that can hover. */
-  :root:not([data-theme="light"]) .msg::after { content: ""; position: absolute; inset: -16px -48px; z-index: -1; pointer-events: none; border-radius: 50%;
+  :root:not([data-theme="light"],[data-theme="solar"]) .msg::after { content: ""; position: absolute; inset: -16px -48px; z-index: -1; pointer-events: none; border-radius: 50%;
     background: radial-gradient(closest-side, color-mix(in srgb, var(--brass) 30%, transparent), color-mix(in srgb, var(--brass) 16%, transparent) 55%, transparent);
     opacity: 0; transition: opacity .3s ease-out; }
-  :root:not([data-theme="light"]) .msg:has(:focus-visible)::after { opacity: 1; transition: opacity .17s ease-out; }
-  :root:not([data-theme="light"]) .msg:has(:focus-visible) .when, :root:not([data-theme="light"]) .msg:has(:focus-visible) .quote { color: var(--ink-2); }
+  :root:not([data-theme="light"],[data-theme="solar"]) .msg:has(:focus-visible)::after { opacity: 1; transition: opacity .17s ease-out; }
+  :root:not([data-theme="light"],[data-theme="solar"]) .msg:has(:focus-visible) .when, :root:not([data-theme="light"],[data-theme="solar"]) .msg:has(:focus-visible) .quote { color: var(--ink-2); }
   @media (hover: hover) {
-    :root:not([data-theme="light"]) .msg:not(.mention):hover { background: transparent; }
-    :root:not([data-theme="light"]) .msg:hover::after { opacity: 1; transition: opacity .17s ease-out; }
-    :root:not([data-theme="light"]) .msg:hover .when, :root:not([data-theme="light"]) .msg:hover .quote { color: var(--ink-2); }
+    :root:not([data-theme="light"],[data-theme="solar"]) .msg:not(.mention):hover { background: transparent; }
+    :root:not([data-theme="light"],[data-theme="solar"]) .msg:hover::after { opacity: 1; transition: opacity .17s ease-out; }
+    :root:not([data-theme="light"],[data-theme="solar"]) .msg:hover .when, :root:not([data-theme="light"],[data-theme="solar"]) .msg:hover .quote { color: var(--ink-2); }
   }
   @media (prefers-reduced-motion: reduce) {
-    :root:not([data-theme="light"]) .msg::after { transition: none; }
+    :root:not([data-theme="light"],[data-theme="solar"]) .msg::after { transition: none; }
   }
 }
 

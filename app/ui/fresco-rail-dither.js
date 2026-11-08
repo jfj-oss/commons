@@ -31,6 +31,12 @@
     glow: [208, 166, 110, 52],
     amber: [150, 120, 80, 28],
   };
+  const SOLAR_PAL = {
+    mid: [0, 26, 33, 120],
+    light: [0, 16, 21, 185],
+    glow: [70, 190, 178, 64],
+    amber: [205, 165, 50, 30],
+  };
   const MASK = { light: 0.30, mid: 0.70 };
   const TONE = { lo: 0.38, hi: 0.9 };
   const BASE = 0.24;              // share of rail dots dithered even between waves
@@ -75,7 +81,7 @@
     const mk = (cls, parent) => { const c = document.createElement('canvas'); c.className = cls; c.setAttribute('aria-hidden', 'true'); parent.prepend(c); return c; };
     const rc = mk('rail-dither', rail), wc = mk('wall-dither', main);
     const rx = rc.getContext('2d'), wx = wc.getContext('2d');
-    const P = isDark() ? DARK_PAL : LIGHT_PAL;
+    const P = root.dataset.theme === 'solar' ? SOLAR_PAL : isDark() ? DARK_PAL : LIGHT_PAL;
     const PX_MID = pack(P.mid), PX_LIGHT = pack(P.light), PX_GLOW = pack(P.glow), PX_AMBER = pack(P.amber);
     let alive = true, noise = null;
     const R = { W: 0, H: 0, img: null, x0: 0 }, M = { W: 0, H: 0, img: null, x0: 0, y0: 0, c0: 0, c1: 0, top: 0 };
