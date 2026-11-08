@@ -75,6 +75,13 @@
 #call-panel .cplay .time { white-space: nowrap; font-variant-numeric: tabular-nums; }
 #call-panel .cset .jfset { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 4px; }
 #call-panel .cset input[type=password] { min-width: 0; width: 100%; }
+#call-panel .cset .qc { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 9px 11px; border: 1px solid var(--line-2, var(--line)); border-radius: 9px; background: var(--page-sunk, var(--hover)); }
+#call-panel .cset .qc-code { font: 700 26px/1.15 var(--display); letter-spacing: .14em; user-select: all; }
+#call-panel .cset .qc-signed { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#call-panel .cset .qc-signed .ok { color: var(--ok); font-weight: 600; }
+#call-panel .cset details.adv > .pd-row { display: flex; gap: 8px; margin-top: 6px; }
+#call-panel .cset details.adv input[type=password] { flex: 1; }
+#call-panel .cset .w { color: var(--warn); }
 
 #play-dialog { position: fixed; inset: 0; z-index: 70; background: rgba(20, 15, 8, .42); display: flex; align-items: center; justify-content: center; padding: 14px; }
 #play-dialog[hidden] { display: none; }
@@ -87,7 +94,8 @@
 #play-dialog .pd-pick { cursor: pointer; }
 #play-dialog input[type=search] { flex: 1; min-width: 180px; background: var(--page-sunk, var(--card)); color: var(--ink); border: 1px solid var(--line-2, var(--line)); border-radius: 8px; padding: 7px 9px; font: inherit; }
 #play-dialog select { background: var(--page-sunk, var(--card)); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font: inherit; }
-#play-dialog .pd-jf { border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+#play-dialog .pd-rune, #play-dialog .pd-jf { border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+#play-dialog .pd-rune .pd-item .pos { aspect-ratio: 1 / 1; }
 #play-dialog .pd-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: 8px; }
 #play-dialog .pd-item { display: flex; flex-direction: column; gap: 3px; text-align: left; background: none; color: inherit; border: 1px solid transparent; border-radius: 9px; padding: 5px; cursor: pointer; font: inherit; }
 #play-dialog .pd-item:hover, #play-dialog .pd-item:focus-visible { border-color: var(--line-2, var(--line)); background: var(--hover); }

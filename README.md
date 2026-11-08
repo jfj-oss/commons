@@ -24,7 +24,7 @@ app/src-tauri     Tauri 2 desktop shell (Linux, macOS arm64)
 app/ui            HTML/CSS/JS front end (no build step)
 app/ui/call*.js, vendor/  voice rooms and screen share (LiveKit client, frame encryption keys from MLS)
 tools/call-e2e.mjs  end-to-end call tests (local LiveKit + relay + Chrome with fake devices), tools/webkit-probe.py
-tools/call-play-e2e.mjs  playing a video into a call: a local file, the canvas fallback, a stand-in Jellyfin, two clients
+tools/call-play-e2e.mjs  playing into a call: a local file, the canvas fallback, a stand-in Jellyfin (Quick Connect), local music from a stand-in rune, two clients
 tools/ui-check.mjs  headless UI check (Chromium on the GPU via ANGLE/Vulkan, no window)
 tools/hosting-e2e.mjs  the hosted path on loopback: go-online.sh, a TLS terminator standing in for Funnel, media forced through TURN over TLS
 tools/packaged-e2e.mjs the AppImage on a clean Ubuntu in Docker, through to a call

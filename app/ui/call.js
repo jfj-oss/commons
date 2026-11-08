@@ -505,17 +505,20 @@
       } catch (e) { this.camera = false; const ce = e instanceof CallError ? e : this._explain(e); this.fail(ce.kind === 'other' ? 'camera' : ce.kind, ce.message.replace('microphone', 'camera')); }
       this.changed();
     }
-    // ------------------------------------------------------------------ play into the call (a video with sound, for everyone)
-    // One movie at a time per device, and never at the same time as a screen share: both use the screen-share source slots.
+    // ------------------------------------------------------------------ play into the call (video or music, with sound, for everyone)
+    // One thing at a time per device, and never at the same time as a screen share: both use the screen-share source slots.
     playbackProfiles() { return PLAY_PROFILES; }
     playbackState() {
       const p = this.play; if (!p) return null;
-      const v = p.video;
+      const m = p.video || p.audio;
       return {
-        title: p.title, kind: p.kind, profile: p.profile, paused: p.paused, volume: p.volume,
-        position: v && isFinite(v.currentTime) ? v.currentTime : 0,
-        duration: v && isFinite(v.duration) ? v.duration : 0,
+        title: p.title, artist: p.artist || '', kind: p.kind, profile: p.profile, paused: p.paused, volume: p.volume,
+        position: m && isFinite(m.currentTime) ? m.currentTime : 0,
+        duration: m && isFinite(m.duration) ? m.duration : 0,
         capture: p.capture, width: p.width || 0, height: p.height || 0,
+        queueName: p.queueName || '', queueIndex: p.queue ? p.index : 0, queueLength: p.queue ? p.queue.length : 0,
+        hasNext: !!(p.queue && p.index + 1 < p.queue.length), hasPrev: !!(p.queue && p.index > 0),
+        coverUrl: p.coverUrl || '',
       };
     }
     _playHostEl() {
@@ -529,22 +532,118 @@
       return host;
     }
 
-    // ---- Jellyfin: configured per device, in this browser's localStorage only. The key never leaves this device.
+    // ---- Jellyfin: configured per device, in this browser's localStorage only. The token/key never leaves this device.
+    // Sign-in is Quick Connect (the user types a code into Jellyfin, no API key to copy); a pasted API key remains as an
+    // advanced fallback. Both are sent as X-Emby-Token straight to the Jellyfin server.
     jellyfinConfig() {
       const c = lsGet('commons.call.jellyfin', null) || {};
-      return { url: String(c.url || '').trim().replace(/\/+$/, ''), key: String(c.key || '').trim() };
+      return {
+        url: String(c.url || '').trim().replace(/\/+$/, ''),
+        key: String(c.key || '').trim(),
+        token: String(c.token || '').trim(),
+        userId: String(c.userId || '').trim(),
+        userName: String(c.userName || '').trim(),
+      };
+    }
+    jellyfinCredential() { const c = this.jellyfinConfig(); return c.token || c.key; }
+    jellyfinDeviceId() {
+      let v = lsGet('commons.call.jellyfinDevice', '');
+      if (!v) {
+        v = 'megatron-' + (crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2)));
+        lsSet('commons.call.jellyfinDevice', v);
+      }
+      return String(v);
+    }
+    // Jellyfin's client identity header. Quick Connect needs it even before there is a token.
+    jellyfinHeader() {
+      return 'MediaBrowser Client="Megatron", Device="Call", DeviceId="' + this.jellyfinDeviceId() + '", Version="0.2.3"';
     }
     saveJellyfinConfig(url, key) {
       lsSet('commons.call.jellyfin', { url: String(url || '').trim().replace(/\/+$/, ''), key: String(key || '').trim() });
       this.log('Jellyfin settings saved on this device');
       this.changed();
     }
+    saveJellyfinUrl(url) {
+      const c = this.jellyfinConfig();
+      const u = String(url || '').trim().replace(/\/+$/, '');
+      // A different server invalidates the sign-in; saving the same address again must not sign the user out.
+      if (u === c.url) lsSet('commons.call.jellyfin', { ...c, url: u });
+      else lsSet('commons.call.jellyfin', { url: u });
+      this.changed();
+    }
+    jellyfinSignOut() {
+      const c = this.jellyfinConfig();
+      lsSet('commons.call.jellyfin', { url: c.url });
+      this.log('signed out of Jellyfin');
+      this.changed();
+    }
+    _jellyfinUrlCheck(c) {
+      if (!c.url) throw new CallError('jellyfin', 'Set your Jellyfin address in call Settings first.');
+      if (!/^https?:\/\//i.test(c.url)) throw new CallError('jellyfin', 'The Jellyfin address must start with http:// or https://.');
+    }
+    async _jellyfinFetch(path, opts = {}) {
+      const c = this.jellyfinConfig();
+      this._jellyfinUrlCheck(c);
+      const headers = { 'X-Emby-Authorization': this.jellyfinHeader(), ...(opts.headers || {}) };
+      const cred = opts.noToken ? '' : this.jellyfinCredential();
+      if (cred) headers['X-Emby-Token'] = cred;
+      let r;
+      try { r = await fetch(c.url + path, { ...opts, headers, mode: 'cors', credentials: 'omit' }); }
+      catch (e) { throw new CallError('jellyfin', 'Could not reach Jellyfin at ' + c.url + '. Check the address and that Jellyfin is running, and that Jellyfin allows this page\'s origin (CORS). (' + (e.message || e) + ')'); }
+      return { r, c };
+    }
+    async _jellyfinJson(r, what) {
+      let j; try { j = await r.json(); } catch { throw new CallError('jellyfin', 'Jellyfin sent an answer that is not JSON' + (what ? ' (' + what + ')' : '') + '. Is the address really a Jellyfin server?'); }
+      return j;
+    }
+    // Quick Connect: POST /QuickConnect/Initiate, show the code, poll /QuickConnect/Connect?secret=…, then exchange
+    // the approved secret for an access token with POST /Users/AuthenticateWithQuickConnect.
+    async jellyfinQuickConnectInitiate() {
+      const { r, c } = await this._jellyfinFetch('/QuickConnect/Initiate', { method: 'POST', noToken: true, headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      if (r.status === 401 || r.status === 403 || r.status === 404) throw new CallError('jellyfin', 'Jellyfin refused Quick Connect (' + r.status + '). Turn on Quick Connect in Jellyfin under Dashboard → General.');
+      if (!r.ok) throw new CallError('jellyfin', 'Jellyfin answered ' + r.status + ' ' + r.statusText + '.');
+      const j = await this._jellyfinJson(r, 'Quick Connect');
+      if (!j || !j.Secret) throw new CallError('jellyfin', 'Jellyfin sent an unexpected answer to Quick Connect.');
+      this.log('Jellyfin Quick Connect started at ' + c.url);
+      return { secret: String(j.Secret), code: String(j.Code || '') };
+    }
+    async jellyfinQuickConnectPoll(secret) {
+      const { r, c } = await this._jellyfinFetch('/QuickConnect/Connect?secret=' + encodeURIComponent(secret), { noToken: true });
+      if (r.status === 404) throw new CallError('jellyfin', 'Jellyfin does not know this Quick Connect code any more. Start again.');
+      if (!r.ok) throw new CallError('jellyfin', 'Jellyfin answered ' + r.status + ' ' + r.statusText + '.');
+      const j = await this._jellyfinJson(r, 'Quick Connect');
+      if (!j || !j.Authenticated) return { authenticated: false };
+      const ex = await this._jellyfinFetch('/Users/AuthenticateWithQuickConnect', {
+        method: 'POST', noToken: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ Secret: secret }),
+      });
+      if (!ex.r.ok) throw new CallError('jellyfin', 'Jellyfin did not accept the Quick Connect sign-in (' + ex.r.status + ').');
+      const j2 = await this._jellyfinJson(ex.r, 'Quick Connect sign-in');
+      const token = j2 && j2.AccessToken;
+      if (!token) throw new CallError('jellyfin', 'Jellyfin approved the sign-in but sent no access token.');
+      const user = (j2 && j2.User) || {};
+      lsSet('commons.call.jellyfin', { url: c.url, token: String(token), userId: String(user.Id || ''), userName: String(user.Name || '') });
+      this.log('signed in to Jellyfin as ' + (user.Name || 'this user'));
+      this.changed();
+      return { authenticated: true, userId: String(user.Id || ''), userName: String(user.Name || '') };
+    }
+    // The user's library views. Signed-in (user) sessions scope all reads under /Users/{id}; a pasted API key uses the
+    // admin-wide routes.
+    async jellyfinViews() {
+      const c = this.jellyfinConfig();
+      this._jellyfinUrlCheck(c);
+      if (!c.userId) return [];
+      const { r } = await this._jellyfinFetch('/Users/' + encodeURIComponent(c.userId) + '/Views');
+      if (!r.ok) throw new CallError('jellyfin', 'Jellyfin answered ' + r.status + ' ' + r.statusText + '.');
+      const j = await this._jellyfinJson(r, 'views');
+      return (j && Array.isArray(j.Items) ? j.Items : []).map(v => ({ id: v.Id, name: v.Name || '', collectionType: v.CollectionType || '' }));
+    }
     async jellyfinSearch(term) {
       const c = this.jellyfinConfig();
-      if (!c.url) throw new CallError('jellyfin', 'Set your Jellyfin address in call Settings first.');
-      if (!c.key) throw new CallError('jellyfin', 'Set your Jellyfin API key in call Settings first.');
-      let u; try { u = new URL(c.url + '/Items'); } catch { throw new CallError('jellyfin', 'The Jellyfin address is not a valid URL.'); }
-      if (!/^https?:$/.test(u.protocol)) throw new CallError('jellyfin', 'The Jellyfin address must start with http:// or https://.');
+      this._jellyfinUrlCheck(c);
+      if (!this.jellyfinCredential()) throw new CallError('jellyfin', 'Sign in to Jellyfin in call Settings first (or paste an API key under Advanced).');
+      // A signed-in user reads their own library through /Users/{id}/Items; a pasted API key uses /Items.
+      const base = c.userId ? '/Users/' + encodeURIComponent(c.userId) + '/Items' : '/Items';
+      const u = new URL(c.url + base);
       u.searchParams.set('IncludeItemTypes', 'Movie,Episode');
       u.searchParams.set('Recursive', 'true');
       u.searchParams.set('Limit', '40');
@@ -553,11 +652,11 @@
       if (t) { u.searchParams.set('searchTerm', t); u.searchParams.set('SortBy', 'SortName'); u.searchParams.set('SortOrder', 'Ascending'); }
       else { u.searchParams.set('SortBy', 'DateCreated,SortName'); u.searchParams.set('SortOrder', 'Descending'); }
       let r;
-      try { r = await fetch(u.href, { headers: { 'X-Emby-Token': c.key }, mode: 'cors', credentials: 'omit' }); }
+      try { r = await fetch(u.href, { headers: { 'X-Emby-Authorization': this.jellyfinHeader(), 'X-Emby-Token': this.jellyfinCredential() }, mode: 'cors', credentials: 'omit' }); }
       catch (e) { throw new CallError('jellyfin', 'Could not reach Jellyfin at ' + c.url + '. Check the address and that Jellyfin is running, and that Jellyfin allows this page\'s origin (CORS). (' + (e.message || e) + ')'); }
-      if (r.status === 401 || r.status === 403) throw new CallError('jellyfin', 'Jellyfin refused the API key. Check the key in call Settings.');
+      if (r.status === 401 || r.status === 403) throw new CallError('jellyfin', 'Jellyfin refused the sign-in. Sign in again in call Settings.');
       if (!r.ok) throw new CallError('jellyfin', 'Jellyfin answered ' + r.status + ' ' + r.statusText + '.');
-      let j; try { j = await r.json(); } catch { throw new CallError('jellyfin', 'Jellyfin sent an answer that is not JSON. Is the address really a Jellyfin server?'); }
+      const j = await this._jellyfinJson(r, 'search');
       const items = (j && Array.isArray(j.Items)) ? j.Items : null;
       if (!items) throw new CallError('jellyfin', 'Jellyfin sent an unexpected answer.');
       return items.map(it => ({
@@ -567,23 +666,301 @@
     }
     jellyfinImageUrl(item) {
       const c = this.jellyfinConfig();
-      if (!c.url || !item || !item.hasImage) return '';
+      const cred = this.jellyfinCredential();
+      if (!c.url || !item || !item.hasImage || !cred) return '';
       // images cannot carry the X-Emby-Token header, so the key goes in the query; Jellyfin accepts api_key there
-      return c.url + '/Items/' + encodeURIComponent(item.id) + '/Images/Primary?maxHeight=360&quality=80&api_key=' + encodeURIComponent(c.key);
+      return c.url + '/Items/' + encodeURIComponent(item.id) + '/Images/Primary?maxHeight=360&quality=80&api_key=' + encodeURIComponent(cred);
     }
     async startJellyfinPlayback(item, opts = {}) {
       const c = this.jellyfinConfig();
-      if (!c.url || !c.key) throw new CallError('jellyfin', 'Set up Jellyfin in call Settings first.');
+      const cred = this.jellyfinCredential();
+      if (!c.url || !cred) throw new CallError('jellyfin', 'Set up Jellyfin in call Settings first.');
       const prof = PLAY_PROFILES[opts.profile || this.prefs.playProfile] || PLAY_PROFILES['1080p30'];
       const q = encodeURIComponent;
       const urls = [
         // direct play first: no transcoding load on the server and the best picture
-        c.url + '/Videos/' + q(item.id) + '/stream?static=true&api_key=' + q(c.key),
+        c.url + '/Videos/' + q(item.id) + '/stream?static=true&api_key=' + q(cred),
         // h264/aac mp4 transcode when the container or codec will not play in this browser (MKV/HEVC/DTS and friends)
-        c.url + '/Videos/' + q(item.id) + '/stream.mp4?Static=false&VideoCodec=h264&AudioCodec=aac&AudioChannels=2&Container=mp4&MaxWidth=' + prof.width + '&MaxHeight=' + prof.height + '&api_key=' + q(c.key),
+        c.url + '/Videos/' + q(item.id) + '/stream.mp4?Static=false&VideoCodec=h264&AudioCodec=aac&AudioChannels=2&Container=mp4&MaxWidth=' + prof.width + '&MaxHeight=' + prof.height + '&api_key=' + q(cred),
       ];
       return this._startPlayback({ title: item.name || 'Video', kind: 'jellyfin', urls, crossOrigin: true, profile: opts.profile });
     }
+    // ---- rune: the owner's local music server, configured per device. Only local tracks are ever fetched; Spotify tracks
+    // are filtered out of every result and queue, because they cannot be captured or rebroadcast.
+    runeConfig() {
+      const c = lsGet('commons.call.rune', null) || {};
+      const url = String(c.url || '').trim().replace(/\/+$/, '');
+      return { url: url || 'http://127.0.0.1:4545' };
+    }
+    saveRuneConfig(url) {
+      const u = String(url || '').trim().replace(/\/+$/, '') || 'http://127.0.0.1:4545';
+      lsSet('commons.call.rune', { url: u });
+      this.log('rune address saved on this device: ' + u);
+      this.changed();
+    }
+    _runeAsset(u) {
+      if (!u) return '';
+      const s = String(u);
+      if (/^https?:\/\//i.test(s)) return s;
+      return this.runeConfig().url + (s.charAt(0) === '/' ? s : '/' + s);
+    }
+    _runeStreamUrl(id) { return this.runeConfig().url + '/api/stream/' + encodeURIComponent(id) + '?fmt=orig'; }
+    async _runeGet(path) {
+      const base = this.runeConfig().url;
+      let u; try { u = new URL(base + path); } catch { throw new CallError('rune', 'The rune address is not a valid URL.'); }
+      if (!/^https?:$/.test(u.protocol)) throw new CallError('rune', 'The rune address must start with http:// or https://.');
+      let r;
+      try { r = await fetch(u.href, { mode: 'cors', credentials: 'omit' }); }
+      catch (e) { throw new CallError('rune', 'Could not reach rune at ' + base + '. Is rune running, and does its corsOrigins list this device? (' + (e.message || e) + ')'); }
+      if (!r.ok) throw new CallError('rune', 'rune answered ' + r.status + ' ' + r.statusText + '.');
+      let j; try { j = await r.json(); } catch { throw new CallError('rune', 'rune sent an answer that is not JSON. Is the address really rune?'); }
+      return j;
+    }
+    _runeResultTrack(t) {
+      return {
+        id: t.id, title: t.title || 'Untitled',
+        artist: (t.artists || []).map(a => a && a.name).filter(Boolean).join(', '),
+        durationMs: t.durationMs || 0, albumId: t.albumId || '', albumTitle: t.albumTitle || '',
+        coverUrl: this._runeAsset(t.coverUrl || (t.albumId ? '/api/cover/' + encodeURIComponent(t.albumId) + '?size=600' : '')),
+      };
+    }
+    _runeQueueTrack(t, album) {
+      const al = album || t.album || {};
+      return {
+        id: t.id, title: t.title || 'Untitled',
+        artist: (t.artists || []).map(a => a && a.name).filter(Boolean).join(', '),
+        durationMs: t.durationMs || 0, albumId: al.id || t.albumId || '', albumTitle: al.title || '',
+        coverUrl: this._runeAsset((al && al.coverUrl) || t.coverUrl || (t.albumId ? '/api/cover/' + encodeURIComponent(t.albumId) + '?size=600' : '')),
+      };
+    }
+    _runeAlbum(a) {
+      return {
+        id: a.id, title: a.title || 'Untitled', artist: (a.artist && a.artist.name) || '', year: a.year || null,
+        trackCount: a.trackCount || 0, coverUrl: this._runeAsset(a.coverUrl || '/api/cover/' + encodeURIComponent(a.id) + '?size=600'),
+      };
+    }
+    // Search local tracks, albums and playlists. /api/search?local=1 already leaves Spotify out; the source checks below
+    // make that guarantee explicit (and also cover playlists, which are filtered by name locally).
+    async runeSearch(term) {
+      const q = String(term || '').trim();
+      if (!q) return { tracks: [], albums: [], playlists: [] };
+      const j = await this._runeGet('/api/search?' + new URLSearchParams({ q, local: '1' }).toString());
+      let playlists = [];
+      try {
+        const all = await this._runeGet('/api/playlists');
+        const needle = q.toLowerCase();
+        playlists = (Array.isArray(all) ? all : []).filter(p => p && p.source !== 'spotify' && String(p.name || '').toLowerCase().includes(needle));
+      } catch (e) { this.log('rune playlists: ' + e.message); }
+      return {
+        tracks: (Array.isArray(j.tracks) ? j.tracks : []).filter(t => t && t.source !== 'spotify').map(t => this._runeResultTrack(t)),
+        albums: (Array.isArray(j.albums) ? j.albums : []).filter(a => a && a.source !== 'spotify').map(a => this._runeAlbum(a)),
+        playlists: playlists.map(p => ({ id: p.id, name: p.name || 'Playlist', trackCount: p.trackCount || 0, coverUrl: this._runeAsset(p.imageUrl || '') })),
+      };
+    }
+    async runeAlbumQueue(id) {
+      const a = await this._runeGet('/api/albums/' + encodeURIComponent(id));
+      const tracks = (Array.isArray(a.tracks) ? a.tracks : []).filter(t => t.source !== 'spotify').map(t => this._runeQueueTrack(t, a));
+      return { name: a.title || 'Album', artist: (a.artist && a.artist.name) || '', coverUrl: this._runeAsset(a.coverUrl || ''), tracks };
+    }
+    async runePlaylistQueue(id) {
+      const p = await this._runeGet('/api/playlists/' + encodeURIComponent(id));
+      const tracks = (Array.isArray(p.tracks) ? p.tracks : []).filter(t => t.source !== 'spotify').map(t => this._runeQueueTrack(t, null));
+      return { name: p.name || 'Playlist', artist: '', coverUrl: this._runeAsset(p.imageUrl || ''), tracks };
+    }
+    // A track (one-item queue), an album, or a playlist. Spotify-only content is refused with an explanation rather than
+    // played silently.
+    async startRunePlayback(item, opts = {}) {
+      if (!item) throw new CallError('rune', 'Pick something in rune first.');
+      let queue = [], queueName = '';
+      if (item.type === 'album' && item.id) {
+        const a = await this.runeAlbumQueue(item.id);
+        queue = a.tracks; queueName = a.name + (a.artist ? ' — ' + a.artist : '');
+      } else if (item.type === 'playlist' && item.id) {
+        const p = await this.runePlaylistQueue(item.id);
+        queue = p.tracks; queueName = p.name;
+      } else {
+        const t = item.track || item;
+        if (t && t.id && (t.source === undefined || t.source !== 'spotify')) queue = [this._runeQueueTrack(t, null)];
+        queueName = queue[0] ? queue[0].title : '';
+      }
+      if (!queue.length) throw new CallError('rune', 'There is nothing here that can be played into the call. Spotify tracks cannot be captured or rebroadcast, so they are left out.');
+      return this._startMusicPlayback({ queue, index: 0, queueName });
+    }
+
+    async _startMusicPlayback(o) {
+      if (!this.room) throw new CallError('idle', 'Join the call first.');
+      if (this.sharing) throw new CallError('busy', 'Stop sharing your screen before playing music into the call.');
+      if (this.play) throw new CallError('busy', 'Something is already playing into the call. Stop it first.');
+      const LK = this.LK;
+      const audio = document.createElement('audio');
+      audio.playsInline = true; audio.preload = 'auto'; audio.volume = 1;
+      audio.crossOrigin = 'anonymous';   // rune sends CORS; without this the Web Audio graph is silent
+      this._playHostEl().appendChild(audio);
+      let actx = null, vpub = null, apub = null, vtrack = null, atrack = null, drawTimer = null;
+      try {
+        actx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'playback' });
+        const srcNode = actx.createMediaElementSource(audio);
+        const gain = actx.createGain(); gain.gain.value = 1;
+        const dest = actx.createMediaStreamDestination();
+        dest.channelCount = 2; dest.channelCountMode = 'explicit'; dest.channelInterpretation = 'speakers';
+        srcNode.connect(gain); gain.connect(dest); gain.connect(actx.destination);
+        await actx.resume().catch(() => { });
+
+        // The picture is a 720p canvas with the cover and the track's title/artist. It is redrawn once a second while
+        // playing so the progress line moves slowly and viewers can see where they are; a static picture would be enough.
+        const canvas = document.createElement('canvas'); canvas.width = 1280; canvas.height = 720;
+        const first = o.queue[o.index];
+        const cover = await this._loadRuneCover(first.coverUrl);
+        this._paintMusicCanvas(canvas, first, cover);
+        const vstream = canvas.captureStream(2);
+        vtrack = vstream.getVideoTracks()[0];
+        if (vtrack) vtrack.contentHint = 'detail';
+        atrack = dest.stream.getAudioTracks()[0];
+        if (atrack) atrack.contentHint = 'music';
+        if (!vtrack) throw new CallError('play', 'The cover picture could not be captured as a video track.');
+        if (!atrack) throw new CallError('play', 'The music could not be captured as an audio track.');
+
+        await this._openMedia(audio, [this._runeStreamUrl(first.id)], true);
+        await audio.play();
+
+        vpub = await this.room.localParticipant.publishTrack(vtrack, {
+          name: 'music', source: LK.Track.Source.ScreenShare,
+          screenShareEncoding: { maxBitrate: 600_000, maxFramerate: 2 },
+          videoCodec: 'vp8', degradationPreference: 'maintain-framerate',
+        });
+        apub = await this.room.localParticipant.publishTrack(atrack, {
+          name: 'music-audio', source: LK.Track.Source.ScreenShareAudio,
+          audioPreset: { maxBitrate: PLAY_AUDIO_BITRATE, priority: 'high' },
+          forceStereo: true, dtx: false, red: true,
+        });
+        for (const pub of [vpub, apub]) {
+          if (!pub || !pub.isEncrypted) throw new CallError('no-e2ee', 'The music was not encrypted, so it was stopped. Nothing was sent.');
+        }
+
+        const st = {
+          title: first.title, artist: first.artist, kind: 'rune', profile: 'music', paused: false, volume: 1,
+          audio, actx, gain, dest, vpub, apub, vtrack, atrack, capture: 'canvas', width: 1280, height: 720,
+          queue: o.queue, index: o.index || 0, queueName: o.queueName || '', canvas, cover, coverUrl: first.coverUrl,
+          canvasStop: null,
+        };
+        this.play = st;
+        audio.addEventListener('timeupdate', () => { const now = Date.now(); if (now - (this._playPaintAt || 0) >= 500) { this._playPaintAt = now; this.changed(); } });
+        audio.addEventListener('ended', () => { if (this.play && this.play.audio === audio) this._runeEnded(); });
+        audio.addEventListener('error', () => { if (this.play && this.play.audio === audio) { const m = audio.error ? ' ' + audio.error.message : ''; this.fail('play', 'The music stopped because the browser could not decode it.' + m); this.stopPlayback(); } });
+        let stopped = false;
+        const tick = () => {
+          if (stopped || !this.play || this.play.audio !== audio) return;
+          if (!audio.paused) { try { this._paintMusicCanvas(canvas, this.play.queue[this.play.index], this.play.cover); } catch { } }
+          drawTimer = setTimeout(tick, 1000);
+        };
+        drawTimer = setTimeout(tick, 1000);
+        st.canvasStop = () => { stopped = true; clearTimeout(drawTimer); };
+        this.log('playing "' + st.title + '" from rune into the call');
+        this.changed();
+        return this.playbackState();
+      } catch (e) {
+        if (drawTimer) clearTimeout(drawTimer);
+        for (const pub of [apub, vpub]) { try { if (pub && pub.track) await this.room.localParticipant.unpublishTrack(pub.track); } catch { } }
+        for (const t of [vtrack, atrack]) { try { t && t.stop(); } catch { } }
+        if (actx) { try { actx.close(); } catch { } }
+        try { audio.pause(); audio.removeAttribute('src'); audio.load(); audio.remove(); } catch { }
+        const ce = e instanceof CallError ? e : new CallError('play', 'Could not play this music: ' + ((e && e.message) || e));
+        this.fail(ce.kind, ce.message);
+        throw ce;
+      }
+    }
+    _loadRuneCover(url) {
+      return new Promise(resolve => {
+        if (!url) return resolve(null);
+        const img = new Image();
+        img.crossOrigin = 'anonymous';   // rune allows cover art; a taint would blank the canvas capture
+        // The picker shows the same cover as a plain <img>, whose cache entry has no CORS headers; a CORS request for
+        // that exact URL would be refused from the cache without reaching rune. A distinct query gets a fresh entry.
+        let src = url;
+        try { const u = new URL(url, location.href); u.searchParams.set('mb-cover', '1'); src = u.href; } catch { }
+        img.onload = () => resolve(img);
+        img.onerror = () => resolve(null);
+        img.src = src;
+        setTimeout(() => resolve(img.complete && img.naturalWidth ? img : null), 8000);
+      });
+    }
+    _paintMusicCanvas(canvas, item, cover) {
+      const g = canvas.getContext('2d');
+      const W = canvas.width, H = canvas.height;
+      g.fillStyle = '#17130e'; g.fillRect(0, 0, W, H);
+      // a soft glow from the cover dominates the background (still one flat draw: cheap and stable)
+      g.fillStyle = '#241d14'; g.fillRect(0, 0, W, H);
+      const pad = 70, art = 500;
+      const ax = pad, ay = (H - art) / 2;
+      if (cover && cover.naturalWidth) {
+        try { g.drawImage(cover, ax, ay, art, art); } catch { }
+      } else {
+        g.fillStyle = '#3a2f22'; g.fillRect(ax, ay, art, art);
+        g.fillStyle = '#8d7a5e'; g.font = '160px sans-serif'; g.textAlign = 'center'; g.fillText('♪', ax + art / 2, ay + art / 2 + 60);
+      }
+      const x = ax + art + 60, right = W - pad;
+      g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+      let y = 210;
+      g.fillStyle = '#f2e7d2'; g.font = 'bold 46px sans-serif';
+      y = this._wrapCanvasText(g, item.title || 'Untitled', x, y, right - x, 54, 3);
+      if (item.artist) { y += 14; g.fillStyle = '#cbb997'; g.font = '30px sans-serif'; y = this._wrapCanvasText(g, item.artist, x, y, right - x, 38, 2); }
+      if (item.albumTitle && item.albumTitle !== item.title) { y += 10; g.fillStyle = '#9e8d70'; g.font = '24px sans-serif'; this._wrapCanvasText(g, item.albumTitle, x, y, right - x, 30, 2); }
+      if (this.play && this.play.kind === 'rune' && this.play.queue && this.play.queue.length > 1) {
+        g.fillStyle = '#9e8d70'; g.font = '22px sans-serif';
+        g.fillText((this.play.index + 1) + ' / ' + this.play.queue.length, x, H - 120);
+      }
+      // progress line
+      const a = this.play && this.play.audio ? this.play.audio : null;
+      const pos = a && isFinite(a.currentTime) ? a.currentTime : 0;
+      const dur = a && isFinite(a.duration) ? a.duration : 0;
+      g.fillStyle = '#3a3226'; g.fillRect(x, H - 92, right - x, 6);
+      if (dur > 0) { g.fillStyle = '#c8a96b'; g.fillRect(x, H - 92, Math.max(0, Math.min(1, pos / dur)) * (right - x), 6); }
+      g.fillStyle = '#7e7059'; g.font = '20px ui-monospace, monospace';
+      g.fillText(this._fmtClock(pos) + (dur > 0 ? ' / ' + this._fmtClock(dur) : ''), x, H - 60);
+      g.textAlign = 'left';
+    }
+    _wrapCanvasText(g, text, x, y, maxW, lineH, maxLines) {
+      const words = String(text).split(/\s+/).filter(Boolean);
+      let line = '', lines = 0;
+      for (const w of words) {
+        const test = line ? line + ' ' + w : w;
+        if (g.measureText(test).width > maxW && line) {
+          g.fillText(line, x, y); y += lineH; line = w; lines++;
+          if (maxLines && lines >= maxLines - 1) break;
+        } else line = test;
+      }
+      if (line && (!maxLines || lines < maxLines)) { g.fillText(line, x, y); y += lineH; }
+      return y;
+    }
+    _fmtClock(s) { s = Math.max(0, Math.floor(Number(s) || 0)); const m = Math.floor(s / 60), x = s % 60; return m + ':' + String(x).padStart(2, '0'); }
+    async _runeSwitch(i) {
+      const p = this.play; if (!p || p.kind !== 'rune' || !p.queue) return;
+      i = Math.max(0, Math.min(p.queue.length - 1, Number(i) || 0));
+      const t = p.queue[i]; if (!t) return;
+      const cover = await this._loadRuneCover(t.coverUrl);
+      try {
+        await this._openMedia(p.audio, [this._runeStreamUrl(t.id)], true);
+        await p.audio.play();
+      } catch (e) {
+        this.fail('play', 'Could not play "' + t.title + '": ' + (e.message || e));
+        return;
+      }
+      p.index = i; p.title = t.title; p.artist = t.artist; p.cover = cover; p.coverUrl = t.coverUrl; p.paused = false;
+      try { this._paintMusicCanvas(p.canvas, t, cover); } catch { }
+      this.changed();
+    }
+    async runeNext() { const p = this.play; if (!p || p.kind !== 'rune') return; if (p.index + 1 < p.queue.length) await this._runeSwitch(p.index + 1); }
+    async runePrev() {
+      const p = this.play; if (!p || p.kind !== 'rune') return;
+      if (p.audio && p.audio.currentTime > 3) { try { p.audio.currentTime = 0; } catch { } this.changed(); return; }
+      if (p.index > 0) await this._runeSwitch(p.index - 1);
+    }
+    _runeEnded() {
+      const p = this.play; if (!p || p.kind !== 'rune') return;
+      if (p.index + 1 < p.queue.length) this._runeSwitch(p.index + 1);
+      else this.stopPlayback();
+    }
+
     async startFilePlayback(file, opts = {}) {
       const url = URL.createObjectURL(file);
       try { return await this._startPlayback({ title: file.name || 'Video file', kind: 'file', urls: [url], revoke: url, crossOrigin: false, profile: opts.profile }); }
@@ -705,42 +1082,44 @@
     }
 
     // Loads the first URL that the browser accepts. Jellyfin's static stream is tried before its transcode.
-    async _openMedia(video, urls, crossOrigin) {
+    async _openMedia(el, urls, crossOrigin) {
       let last = null;
       for (const url of urls) {
         try {
           await new Promise((res, rej) => {
             let timer = 0;
-            const fin = err => { clearTimeout(timer); video.removeEventListener('loadeddata', ok); video.removeEventListener('error', bad); err ? rej(err) : res(); };
+            const fin = err => { clearTimeout(timer); el.removeEventListener('loadeddata', ok); el.removeEventListener('error', bad); err ? rej(err) : res(); };
             const ok = () => fin();
-            const bad = () => { const me = video.error; fin(new Error(me ? (me.message || ('media error ' + me.code)) : 'the media could not be loaded')); };
-            timer = setTimeout(() => { this.log('play: no loadeddata after ' + PLAY_MAX_LOAD_MS + ' ms (readyState ' + video.readyState + ', networkState ' + video.networkState + ', src ' + (video.currentSrc || '').slice(0, 40) + ')'); fin(new Error('it took too long to start')); }, PLAY_MAX_LOAD_MS);
-            video.addEventListener('loadeddata', ok);
-            video.addEventListener('error', bad);
-            video.src = url; video.load();
+            const bad = () => { const me = el.error; fin(new Error(me ? (me.message || ('media error ' + me.code)) : 'the media could not be loaded')); };
+            timer = setTimeout(() => { this.log('play: no loadeddata after ' + PLAY_MAX_LOAD_MS + ' ms (readyState ' + el.readyState + ', networkState ' + el.networkState + ', src ' + (el.currentSrc || '').slice(0, 40) + ')'); fin(new Error('it took too long to start')); }, PLAY_MAX_LOAD_MS);
+            el.addEventListener('loadeddata', ok);
+            el.addEventListener('error', bad);
+            el.src = url; el.load();
           });
           return url;
         } catch (e) {
           last = e;
           this.log('play: a source failed: ' + e.message);
-          try { video.pause(); video.removeAttribute('src'); video.load(); } catch { }
+          try { el.pause(); el.removeAttribute('src'); el.load(); } catch { }
         }
       }
-      const hint = crossOrigin ? ' If this is a CORS problem, Jellyfin must allow this page\'s origin (Jellyfin\'s allowed origins / a reverse proxy that adds Access-Control-Allow-Origin).' : '';
-      throw new CallError('play', 'Could not load the video' + (last ? ': ' + last.message : '') + '.' + hint);
+      const hint = crossOrigin ? ' If this is a CORS problem, the media server must allow this page\'s origin (rune\'s corsOrigins, or Jellyfin\'s allowed origins / a reverse proxy that adds Access-Control-Allow-Origin).' : '';
+      throw new CallError('play', 'Could not load ' + ((el && el.tagName === 'AUDIO') ? 'the music' : 'the video') + (last ? ': ' + last.message : '') + '.' + hint);
     }
 
     async pausePlayback() {
       const p = this.play; if (!p || p.paused) return;
       p.paused = true;
-      try { p.video.pause(); } catch { }
+      const m = p.video || p.audio;
+      try { m && m.pause(); } catch { }
       // Video: the track keeps its last frame (no black frame); audio: mute the Opus track, so silence, not stray samples.
       if (p.apub && p.apub.track && p.apub.track.mute) { try { await p.apub.track.mute(); } catch { } }
       this.changed();
     }
     async resumePlayback() {
       const p = this.play; if (!p || !p.paused) return;
-      try { await p.video.play(); } catch (e) { this.fail('play', 'Could not resume the video: ' + (e.message || e)); return; }
+      const m = p.video || p.audio;
+      try { await m.play(); } catch (e) { this.fail('play', 'Could not resume: ' + (e.message || e)); return; }
       p.paused = false;
       if (p.actx && p.actx.state === 'suspended') { try { await p.actx.resume(); } catch { } }
       if (p.apub && p.apub.track && p.apub.track.unmute) { try { await p.apub.track.unmute(); } catch { } }
@@ -748,8 +1127,9 @@
     }
     seekPlayback(sec) {
       const p = this.play; if (!p) return;
-      const d = p.video && isFinite(p.video.duration) ? p.video.duration : sec;
-      try { p.video.currentTime = Math.max(0, Math.min(Number(sec) || 0, d)); } catch { }
+      const m = p.video || p.audio;
+      const d = m && isFinite(m.duration) ? m.duration : sec;
+      try { m.currentTime = Math.max(0, Math.min(Number(sec) || 0, d)); } catch { }
       this.changed();
     }
     setPlaybackVolume(v) {
@@ -769,10 +1149,11 @@
     // Stops the capture, the audio graph and the hidden preview. Safe to call when nothing is playing.
     _releasePlayback(p = this.play) {
       if (!p) return;
+      if (p.canvasStop) { try { p.canvasStop(); } catch { } }
       if (this._playCanvasStop) { try { this._playCanvasStop(); } catch { } this._playCanvasStop = null; }
       for (const t of [p.vtrack, p.atrack]) { try { t && t.stop(); } catch { } }
       try { p.actx && p.actx.close(); } catch { }
-      try { if (p.video) { p.video.pause(); p.video.removeAttribute('src'); p.video.load(); p.video.remove(); } } catch { }
+      try { const el = p.video || p.audio; if (el) { el.pause(); el.removeAttribute('src'); el.load(); el.remove(); } } catch { }
       if (p.revoke) { try { URL.revokeObjectURL(p.revoke); } catch { } }
       this._playCanvas = null;
       if (this.play === p) this.play = null;
@@ -809,9 +1190,9 @@
       const shares = [];
       if (this.room) {
         // A muted video (a camera switched off is muted, not unpublished) has no tile: it would only be a black box.
-        for (const t of this.tracks.values()) if (t.track.kind === 'video' && !t.pub.isMuted) shares.push({ key: t.identity + '/' + t.pub.trackSid, sid: t.pub.trackSid, identity: t.identity, name: (this.members.get(t.identity) || {}).name || t.identity.slice(0, 8), source: t.source, movie: t.pub.trackName === 'movie', track: t.track, quality: this.qualityOf(t.pub.trackSid), local: false });
+        for (const t of this.tracks.values()) if (t.track.kind === 'video' && !t.pub.isMuted) shares.push({ key: t.identity + '/' + t.pub.trackSid, sid: t.pub.trackSid, identity: t.identity, name: (this.members.get(t.identity) || {}).name || t.identity.slice(0, 8), source: t.source, movie: t.pub.trackName === 'movie', music: t.pub.trackName === 'music', track: t.track, quality: this.qualityOf(t.pub.trackSid), local: false });
         const lp = this.room.localParticipant;
-        for (const src of [LK.Track.Source.ScreenShare, LK.Track.Source.Camera]) { const pub = lp.getTrackPublication(src); if (pub && pub.track && !pub.isMuted) shares.push({ key: 'me/' + pub.trackSid, sid: pub.trackSid, identity: this.me, name: 'You', source: src, movie: pub.trackName === 'movie', track: pub.track, quality: 'auto', local: true }); }
+        for (const src of [LK.Track.Source.ScreenShare, LK.Track.Source.Camera]) { const pub = lp.getTrackPublication(src); if (pub && pub.track && !pub.isMuted) shares.push({ key: 'me/' + pub.trackSid, sid: pub.trackSid, identity: this.me, name: 'You', source: src, movie: pub.trackName === 'movie', music: pub.trackName === 'music', track: pub.track, quality: 'auto', local: true }); }
       }
       return {
         phase: this.phase, error: this.error, gid: this.gid, roomName: this.roomName, muted: this.muted, gameMuted: this.gameMuted, gameName: this.gameName, gameError: this.gameError, deafened: this.deafened, ptt: this.prefs.ptt, pttKey: this.prefs.pttKey, pttHeld: this.pttHeld,
