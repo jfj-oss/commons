@@ -24,6 +24,8 @@
 //! inside a macOS bundle, whose Contents/Resources must not change after signing).
 
 use commons_core::browser_update::{bridge_name, restore_previous};
+#[cfg(target_os = "macos")]
+use commons_core::browser_update::resign_bundle;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -430,27 +432,6 @@ fn open_browser(install: &Path, data: &Path, url: &str) -> bool {
     let ok = fallback.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok();
     log(install, if ok { "opened the fallback browser" } else { "no browser could be opened" });
     ok
-}
-
-#[cfg(target_os = "macos")]
-fn resign_bundle(install: &Path) {
-    // The update replaced files inside the ad-hoc signed bundle, so its seal no longer matches. Re-signing keeps
-    // Gatekeeper happy on the next launch; codesign is part of macOS itself. Failure is not fatal (the app still runs).
-    // Only a bundle layout is re-signed: install is Megatron.app/Contents/Resources.
-    let Some(contents) = install.parent() else { return };
-    let Some(app) = contents.parent() else { return };
-    if contents.file_name().and_then(|n| n.to_str()) != Some("Contents")
-        || install.file_name().and_then(|n| n.to_str()) != Some("Resources")
-        || app.extension().and_then(|e| e.to_str()) != Some("app")
-    {
-        return;
-    }
-    let _ = Command::new("codesign")
-        .args(["--force", "--deep", "--sign", "-"])
-        .arg(app)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
 }
 
 fn main() {

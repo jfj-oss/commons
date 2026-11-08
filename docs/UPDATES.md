@@ -95,8 +95,10 @@ moving the new one into place. The launcher does the same for itself. The portab
 `%LOCALAPPDATA%\Megatron-browser\data` and `~/Library/Application Support/Megatron-browser`, apart from the desktop app.
 
 The page shows a small note from that check: "Updated to x.y.z" after an install, or "Update available" and the reason
-if a newer version exists but could not be installed. Nothing runs while the page is already open: the next start checks
-again. `crates/core/src/browser_update.rs` has the code and its tests; `tools/browser-update-test.sh` exercises the
+if a newer version exists but could not be installed. The bridge can run for days, so the page also asks it (15 s after
+unlocking, then every 4 hours, or from Settings, "Check for updates") and shows an **Update now** button. That runs the
+same checks with no time limit, refuses during a call, then the bridge replaces itself and the page reloads; only an
+installed copy with an embedded key can do this. `crates/core/src/browser_update.rs` has the code and its tests; `tools/browser-update-test.sh` exercises the
 Linux launcher end to end with a throwaway key and a loopback relay.
 
 ## The signing key

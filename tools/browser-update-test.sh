@@ -147,6 +147,40 @@ N=$(note "$PORT")
 stop_bridge
 pass "downgrade refused without a word"
 
+said "the Update button: a running bridge finds, refuses and installs an update, then restarts itself"
+api() { curl -sf "http://127.0.0.1:$PORT$1" "${@:2}" 2>/dev/null || true; }
+PORT=$(free_port)
+launch "$PORT"
+wait_port "$PORT"
+PID_BEFORE=$(cat "$I/.pid")
+N=$(api /update-check)
+case $N in *'"available":false'*) ;; *) fail "the check offered a downgrade: $N" ;; esac
+SIG=$(make_tar 0.2.6 bad "$W/wrong-keys")
+write_manifest 0.2.6 "$SIG"
+N=$(api /update-check)
+case $N in *'"available":true'*'"version":"0.2.6"'*) ;; *) fail "the check did not offer 0.2.6: $N" ;; esac
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Origin: https://example.org' "http://127.0.0.1:$PORT/update-install")
+[ "$CODE" = 403 ] || fail "another website could press Update (HTTP $CODE)"
+N=$(api /update-install -X POST)
+case $N in *'"error"'*signature*) ;; *) fail "a wrongly signed update was not refused with the reason: $N" ;; esac
+[ "$(cat "$I/ui/.version-marker")" = new ] || fail "the refused update changed the ui/"
+[ "$(cat "$I/.pid")" = "$PID_BEFORE" ] && kill -0 "$PID_BEFORE" || fail "the bridge did not survive a refused update"
+SIG=$(make_tar 0.2.6 button "$W/keys")
+write_manifest 0.2.6 "$SIG"
+N=$(api /update-install -X POST)
+case $N in *'"restarting":true'*'"version":"0.2.6"'*) ;; *) fail "the update was not installed: $N" ;; esac
+sleep 1
+wait_port "$PORT"
+sleep 0.5
+[ "$(cat "$I/ui/.version-marker")" = button ] || fail "the Update button did not install the new ui/"
+[ ! -e "$I/.update-previous" ] || fail "the new bridge did not remove the old copy"
+kill -0 "$PID_BEFORE" || fail "the restart changed the process the launcher tracks"
+N=$(note "$PORT")
+case $N in *'"kind":"updated"'*'"version":"0.2.6"'*) ;; *) fail "expected an 'Updated to 0.2.6' note, got: $N" ;; esac
+stop_bridge
+pass "Update refused a bad signature and another website, then installed a good one and restarted"
+printf 'old' > "$I/ui/.version-marker"
+
 said "an unresponsive relay never holds the window"
 kill "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true; SERVER_PID=''
 HANG_PORT=$(free_port)

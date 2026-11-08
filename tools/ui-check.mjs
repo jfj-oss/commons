@@ -163,6 +163,13 @@ try {
   await A.ev(`document.querySelector('#people button[data-a=verify]').click()`); await A.waitFor(`document.querySelector('.safety')`); await sleep(300);
   await A.shot('07-safety-number'); await click(A, '.modal .acts button'); await sleep(300);
   await click(A, '#btn-activity'); await sleep(500); await A.shot('08-activity'); await click(A, '.modal .acts button');
+  // The browser version's Update button, with the bridge's answer stubbed (the real install is tools/browser-update-test.sh).
+  await A.ev(`(()=>{window.__realFetch=window.fetch;window.fetch=(u,o)=>u==='/update-check'?Promise.resolve(new Response('{"available":true,"version":"9.9.9","current":"0.2.5"}')):window.__realFetch(u,o);})()`);
+  await click(A, '#btn-settings'); await A.waitFor(`document.querySelector('#set-update')`);
+  await click(A, '#set-update');
+  await A.waitFor(`document.querySelector('#set-update').textContent==='Update to 9.9.9'&&!!document.querySelector('#upd [data-u=install]')&&!document.querySelector('#upd').hidden`);
+  await click(A, '.modal .acts button'); await sleep(300); await A.shot('08b-update-bar');
+  await A.ev(`(()=>{window.fetch=window.__realFetch;window.__commonsBrowserUpdate.offer=null;const b=document.querySelector('#upd');b.hidden=true;b.innerHTML='';})()`);
   // "Listening to" from rune: one switch in Settings, the account strip, and under the name in the People drawer.
   await click(A, '#btn-settings'); await A.waitFor(`document.querySelector('#lstr')`);
   await type(A, '#rune', runeUrl);

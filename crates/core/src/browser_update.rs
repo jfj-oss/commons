@@ -444,7 +444,17 @@ fn available(install: &Path, version: &str, reason: String) -> Outcome {
 /// Network failures before a newer version is known are returned as `Err`; everything after that (a missing build, a
 /// bad signature, an unpack or rename failure) becomes `Available` with the reason, so the page can say why.
 pub fn run(relay: &str, install: &Path, current: &str, public_key_b64: &str) -> Result<Outcome, String> {
+    run_within(relay, install, current, public_key_b64, Some(Duration::from_secs(4)))
+}
+
+/// [`run`] for the page's Update button: the person is waiting for it, so a slow connection is allowed to finish.
+pub fn run_now(relay: &str, install: &Path, current: &str, public_key_b64: &str) -> Result<Outcome, String> {
+    run_within(relay, install, current, public_key_b64, None)
+}
+
+fn run_within(relay: &str, install: &Path, current: &str, public_key_b64: &str, limit: Option<Duration>) -> Result<Outcome, String> {
     let started = std::time::Instant::now();
+    let late = || limit.is_some_and(|l| started.elapsed() > l);
     if !install.is_dir() {
         return Err(format!("{} is not an install folder", install.display()));
     }
@@ -466,7 +476,7 @@ pub fn run(relay: &str, install: &Path, current: &str, public_key_b64: &str) -> 
     // The launcher allows about five seconds. Stop before the download and before the swap rather than being killed
     // in the middle of the renames: a half-applied update is worse than a plain "try again next time".
     let too_long = || available(install, &rel.version, "the update took too long here; it will try again next time".into());
-    if started.elapsed() > Duration::from_secs(4) {
+    if late() {
         return Ok(too_long());
     }
     let bytes = match download(&rel.url) {
@@ -484,7 +494,7 @@ pub fn run(relay: &str, install: &Path, current: &str, public_key_b64: &str) -> 
         Ok(r) => r,
         Err(e) => return Ok(available(install, &rel.version, e)),
     };
-    if started.elapsed() > Duration::from_secs(4) {
+    if late() {
         return Ok(too_long());
     }
     if let Err(e) = swap(install, &root) {
@@ -495,6 +505,39 @@ pub fn run(relay: &str, install: &Path, current: &str, public_key_b64: &str) -> 
     drop(tmp);
     let _ = write_note(install, "updated", &rel.version, "");
     Ok(Outcome::Updated { version: rel.version })
+}
+
+/// What the page's Update button shows: is something newer published for this system? Changes nothing.
+pub fn check(relay: &str, current: &str) -> Result<Value, String> {
+    let none = serde_json::json!({"current": current, "available": false});
+    let Some(manifest) = crate::update::fetch_manifest(relay)? else { return Ok(none) };
+    Ok(match release(&manifest, current) {
+        Ok(Some(r)) => serde_json::json!({"current": current, "available": true, "version": r.version}),
+        Ok(None) => none,
+        Err(reason) => serde_json::json!({"current": current, "available": false, "reason": reason}),
+    })
+}
+
+/// An update replaced files inside an ad-hoc signed macOS bundle, so its seal no longer matches. Re-signing keeps
+/// Gatekeeper happy on the next launch; codesign is part of macOS itself. Failure is not fatal (the app still runs).
+/// Only a bundle layout is re-signed: install is Megatron.app/Contents/Resources.
+#[cfg(target_os = "macos")]
+pub fn resign_bundle(install: &Path) {
+    use std::process::{Command, Stdio};
+    let Some(contents) = install.parent() else { return };
+    let Some(app) = contents.parent() else { return };
+    if contents.file_name().and_then(|n| n.to_str()) != Some("Contents")
+        || install.file_name().and_then(|n| n.to_str()) != Some("Resources")
+        || app.extension().and_then(|e| e.to_str()) != Some("app")
+    {
+        return;
+    }
+    let _ = Command::new("codesign")
+        .args(["--force", "--deep", "--sign", "-"])
+        .arg(app)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 /// A short line for the log / the launcher.

@@ -281,6 +281,7 @@ mark { background: var(--brass-soft); color: inherit; border-radius: 3px; paddin
 #upd > span { flex: 1; min-width: 0; }
 #upd.need { background: var(--warn-soft); color: var(--warn); }
 #upd .linkish { color: inherit; white-space: nowrap; }
+#upd .btn { flex: none; white-space: nowrap; }
 .upd-notes { white-space: pre-wrap; max-height: 9em; overflow: auto; margin: 0 0 10px; }
 
 /* ---- seals ---- */
