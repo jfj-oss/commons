@@ -1,0 +1,27 @@
+[package]
+name = "commons-bot"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+name = "commons_bot"
+path = "src/lib.rs"
+
+[[bin]]
+name = "megatron-bot"
+path = "src/main.rs"
+
+[dependencies]
+commons-core = { path = "../core" }
+commons-proto = { path = "../proto" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
+rand = "0.8"
+
+[dev-dependencies]
+commons-relay = { path = "../relay" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tempfile = "3"
+rusqlite = { version = "0.37", features = ["bundled"] }
