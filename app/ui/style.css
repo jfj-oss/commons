@@ -679,3 +679,9 @@ label.check input { accent-color: var(--accent); margin: 3px 0 0; flex: none; }
   background: repeating-conic-gradient(rgba(255,255,255,.06) 0 25%, transparent 0 50%) 0 0 / 18px 18px; box-shadow: 0 6px 22px rgba(0,0,0,.28); }
 .crop-stage canvas:active { cursor: grabbing; }
 .crop-modal input[type=range] { width: 100%; }
+
+/* Video and audio attachments play in the chat (app.js playMedia) */
+.mediaslot { margin-top: 6px; }
+.mediaslot .media-play { gap: 6px; }
+.mediaslot video { display: block; max-width: min(520px, 100%); max-height: 380px; border-radius: 10px; background: #000; }
+.mediaslot audio { display: block; width: min(420px, 100%); }

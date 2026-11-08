@@ -640,10 +640,12 @@ function msgRow(x, cont, m, byId, admin) {
   else if (x.kind === 'file') {
     const img = x.file.mime.startsWith('image/');
     const ext = (/\.([a-z0-9]{1,8})$/i.exec(x.file.name) || [])[1];
+    const media = mediaKind(x.file.mime, ext);
     const meta = `<span class="small">${esc(fmtSize(x.file.size))}${img ? '' : ` · ${esc((ext || x.file.mime.split('/')[1] || 'file').toUpperCase().slice(0, 12))}`}</span>`;
     const dl = `<a href="#" class="dl" data-id="${esc(x.id)}" title="Download ${esc(x.file.name)}">${icon('download')}<span>Download</span></a>`;
     body = (img ? `<div class="imgslot" data-id="${esc(x.id)}"></div><div class="file photo" data-file="${esc(x.id)}"><span class="fname">${esc(x.file.name)}</span>${meta}${dl}</div>`
-      : `<div class="file" data-file="${esc(x.id)}">${icon('file', 'fi')}<div class="fbody"><div class="fname">${esc(x.file.name)}</div>${meta}</div>${dl}</div>`)
+      : `<div class="file" data-file="${esc(x.id)}">${icon('file', 'fi')}<div class="fbody"><div class="fname">${esc(x.file.name)}</div>${meta}</div>${dl}</div>`
+        + (media ? `<div class="mediaslot ${media}" data-id="${esc(x.id)}" data-kind="${media}"><button type="button" class="btn ghost slim media-play">${icon('play')}<span>Play ${media}</span></button></div>` : ''))
       + (x.text ? `<div class="body">${fmt(x.text)}</div>` : '');
   } else body = `<div class="body${onlyEmoji(x.text) ? ' jumbo' : ''}">${fmt(x.text)}${x.edited ? '<span class="edited">(edited)</span>' : ''}</div>`;
   const src = x.reply && byId.get(x.reply.id);
@@ -701,7 +703,7 @@ function renderStream() {
   });
   const t = m.typing.length ? m.typing.join(', ') + (m.typing.length > 1 ? ' are typing' : ' is typing') : '';
   const ty = $('#typing'); ty.innerHTML = t ? `<span>${esc(t)}</span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>` : ''; $('#hint').hidden = !!t;
-  fillImages();
+  fillImages(); fillMedia();
   if (S.jumpTo) { const el = $(`.msg[data-id="${CSS.escape(S.jumpTo)}"]`, st); S.jumpTo = null; if (el) flashTo(el); }
   else if (S.first) {
     const nl = $('.newline', st);
@@ -785,6 +787,8 @@ $('#stream').addEventListener('click', async e => {
     return;
   }
   if (t.matches('.imgslot img')) { lightbox(t.src, t.alt); return; }
+  const mp = t.closest('.media-play');
+  if (mp) { playMedia(mp.closest('.mediaslot')); return; }
   // Touch has no hover: a tap on a message shows its tools.
   if (matchMedia('(hover: none)').matches) { const row = t.closest('.msg'); const was = row && row.classList.contains('open'); $$('.msg.open').forEach(x => x.classList.remove('open')); if (row && !was) row.classList.add('open'); }
 });
@@ -820,6 +824,46 @@ function fillImages() {
     if (u && !slot.firstChild) { const i = new Image(); i.src = u; i.alt = m && m.file ? m.file.name : ''; slot.appendChild(i); }
   });
 }
+// Video and audio attachments play right in the chat. Nothing is fetched until Play is pressed; the decrypted file
+// stays in memory as an object URL (the newest few, like pictures) so a repaint or scrolling back does not refetch it.
+function mediaKind(mime, ext) {
+  if (/^video\//.test(mime)) return 'video';
+  if (/^audio\//.test(mime)) return 'audio';
+  const e = (ext || '').toLowerCase();
+  if (['mp4', 'm4v', 'mov', 'webm', 'mkv'].includes(e)) return 'video';
+  if (['mp3', 'm4a', 'aac', 'wav', 'ogg', 'oga', 'opus', 'flac'].includes(e)) return 'audio';
+  return null;
+}
+const MAX_MEDIA = 6;
+function mountMedia(slot, url) {
+  const kind = slot.dataset.kind;
+  const el = document.createElement(kind === 'video' ? 'video' : 'audio');
+  el.controls = true; el.preload = 'metadata'; el.src = url;
+  if (kind === 'video') el.playsInline = true;
+  el.addEventListener('error', () => { slot.innerHTML = `<div class="img-fail">${icon('warn')}<span>This ${esc(kind)} format can't play here. Use Download.</span></div>`; });
+  slot.replaceChildren(el);
+  return el;
+}
+async function playMedia(slot) {
+  if (!slot) return;
+  const id = slot.dataset.id;
+  S.media = S.media || new Map();
+  let url = S.media.get(id);
+  if (!url) {
+    const label = slot.querySelector('.media-play span'); if (label) label.textContent = 'Decrypting…';
+    try { url = URL.createObjectURL((await fileBlob(id)).blob); }
+    catch (er) { slot.innerHTML = `<div class="img-fail">${icon('warn')}<span>${esc(er.message)}</span></div>`; return; }
+    S.media.set(id, url);
+    while (S.media.size > MAX_MEDIA) { const [k, u] = S.media.entries().next().value; S.media.delete(k); URL.revokeObjectURL(u); }
+  }
+  mountMedia(slot, url).play().catch(() => { });
+}
+// After a repaint, a slot that already played gets its player back (paused) instead of the Play button.
+function fillMedia() {
+  if (!S.media) return;
+  $$('.mediaslot').forEach(slot => { const u = S.media.get(slot.dataset.id); if (u && !slot.querySelector('video, audio')) mountMedia(slot, u); });
+}
+
 function startEdit(m) { S.edit = m; S.reply = null; $('#input').value = m.text; sizeInput(); renderComposer(); $('#input').focus(); }
 
 // ---- composer ----
