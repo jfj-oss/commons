@@ -76,9 +76,55 @@ function initials(n) {
 }
 function seal(id, name, cls = '') {
   const h = hash(id || name || 'x'), lobes = 7 + (h >>> 4) % 5, turn = (h >>> 9) % 72 * 5;
-  return `<span class="seal ${cls}" style="--wax:${wax(id || name || 'x')}" aria-hidden="true"><svg viewBox="0 0 40 40"><use href="#s${lobes}" transform="rotate(${turn} 20 20)"/><circle cx="20" cy="20" r="14.6"/></svg><i>${esc(initials(name))}</i></span>`;
+  // data-av lets a profile picture take the seal's place wherever it shows: messages, rail, People, call tiles.
+  return `<span class="seal ${cls}" data-av="${esc(id || '')}" style="--wax:${wax(id || name || 'x')}" aria-hidden="true"><svg viewBox="0 0 40 40"><use href="#s${lobes}" transform="rotate(${turn} 20 20)"/><circle cx="20" cy="20" r="14.6"/></svg><i>${esc(initials(name))}</i></span>`;
 }
 const crest = (id, name, cls = '') => `<span class="crest ${cls}" style="--wax:${wax(id || name)}" aria-hidden="true"><svg viewBox="0 0 40 46"><use href="#crest"/></svg><i>${esc(initials(String(name).replace(/^(the|a|an)\s+(?=\S)/i, '')))}</i></span>`;
+
+// ---- profile pictures ----
+// The core holds the reference (account -> encrypted blob). The version check is separate from the snapshot, so a new
+// picture shows up within a tick; changed pictures are downloaded once and kept as object URLs.
+const AVS = { got: new Map(), busy: new Set(), polling: false };
+function fillAvatars(root = document) {
+  for (const el of $$('.seal[data-av]', root)) {
+    const a = el.dataset.av ? AVS.got.get(el.dataset.av) : null;
+    let img = $('img.av-img', el);
+    if (!a) { if (img) img.remove(); continue; }
+    if (!img) { img = document.createElement('img'); img.alt = ''; img.className = 'av-img'; el.appendChild(img); }
+    const cls = 'av-img ' + (a.shape === 'square' ? 'square' : 'round');
+    if (img.className !== cls) img.className = cls;
+    if (img.getAttribute('src') !== a.url) img.src = a.url;
+  }
+}
+async function refreshAvatars() {
+  if (AVS.polling || !S.snap) return;
+  AVS.polling = true;
+  try {
+    const vers = await rpc('avatar_versions');
+    let changed = false;
+    for (const [acct, a] of [...AVS.got]) if (!(acct in vers) || vers[acct] !== a.blob) { URL.revokeObjectURL(a.url); AVS.got.delete(acct); changed = true; }
+    for (const acct of Object.keys(vers)) {
+      const blob = vers[acct], cur = AVS.got.get(acct);
+      if (cur && cur.blob === blob) continue;
+      const tag = acct + '|' + blob;
+      if (AVS.busy.has(tag)) continue;
+      AVS.busy.add(tag);
+      try {
+        const d = await rpc('avatar_data', { account: acct });
+        if (d.blob !== blob) continue;   // changed again while it was on its way
+        const url = URL.createObjectURL(new Blob([unb64(d.data)], { type: d.mime || 'image/webp' }));
+        const old = AVS.got.get(acct); if (old) URL.revokeObjectURL(old.url);
+        AVS.got.set(acct, { blob, shape: d.shape, url });
+        changed = true;
+      } catch { /* the relay is unreachable: the seal stays until a later look */ }
+      finally { AVS.busy.delete(tag); }
+    }
+    if (changed) fillAvatars();
+  } catch { }
+  finally { AVS.polling = false; }
+}
+window.__commonsFillAvatars = fillAvatars;
+window.__commonsRefreshAvatars = refreshAvatars;
 
 function toast(t) { const el = $('#toast'); el.textContent = t; el.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => el.hidden = true, 2600); }
 async function copy(text, done = 'Copied') {
@@ -135,7 +181,10 @@ function modal(title, html, actions = [{ label: 'Close', primary: false }], opts
       if (opener && opener.focus && document.contains(opener)) opener.focus({ preventScroll: true });
       resolve(v);
     };
+    // Dialogs can open on top of dialogs (a picture crop on top of Settings). Only the top one answers the keyboard.
+    const onTop = () => { const all = $$('#modal-root > .scrim').filter(x => !x.classList.contains('scrim-out')); return all[all.length - 1] === w; };
     const onKey = e => {
+      if (!onTop()) return;
       if (e.key === 'Escape') { e.stopPropagation(); if (!opts.sticky) close(-1); }
       else if (e.key === 'Tab') {
         const f = $$('button:not(:disabled), input:not([type=hidden]), select, textarea, a[href], summary', w).filter(x => x.offsetParent !== null);
@@ -157,7 +206,7 @@ function modal(title, html, actions = [{ label: 'Close', primary: false }], opts
       $('.acts', w).appendChild(b);
     });
     w.addEventListener('mousedown', e => { if (e.target === w && !opts.sticky) close(-1); });
-    const first = $('input:not([type=hidden]), textarea', w); (first || $('.modal', w)).focus({ preventScroll: true });
+    const first = $('input:not([type=hidden]):not([type=file]), textarea', w); (first || $('.modal', w)).focus({ preventScroll: true });
   });
 }
 const val = (w, id) => $('#' + id, w).value;
@@ -298,6 +347,7 @@ async function tickOnce() {
     const key = JSON.stringify(snap);
     const changed = key !== S.last; S.last = key; S.snap = snap;
     if (changed) { renderRail(); refreshMembers(); refreshMentions(); news(snap); }
+    refreshAvatars();   // small read call; downloads only pictures whose version changed
     const gid = S.gid;
     if (gid) {
       const m = await rpc('messages', { gid, limit: S.limit, around: S.jumpTo || '' });
@@ -377,6 +427,7 @@ function renderRail() {
   const seenLog = +pref.get('log-seen') || 0;
   $('#activity-dot').hidden = !sn.problems.some(p => p.ts > seenLog);
   if (S.people) renderPeople();
+  fillAvatars();
 }
 // Joins live outside any community, so they show whichever community is open. A refusal stays until it is read.
 const joinNotes = sn => [
@@ -564,6 +615,7 @@ function renderStream() {
   else if (added) { S.below += added; }
   if (S.keep != null) { st.scrollTop = st.scrollHeight - S.keep; S.keep = null; }
   S.first = false; S.painted = Date.now(); st.setAttribute('aria-busy', false); onScroll();
+  fillAvatars();
 }
 function flashTo(el) {
   el.scrollIntoView({ block: 'center', behavior: calm() ? 'auto' : 'smooth' });
@@ -782,6 +834,7 @@ async function renderPeople() {
   $('#people-close').onclick = () => $('#btn-people').click();
   const lv = $('#leave'); if (lv) lv.onclick = async () => { if ((await modal('Leave ' + c.name + '?', '<p>You stop getting its messages. What you already received stays readable on this device. To come back later you need a new invite.</p>', [{ label: 'Cancel', primary: false }, { label: 'Leave', danger: true, run: async () => { await rpc('leave', { cid: c.id }); pref.set('left.' + c.id, '1'); } }])) === 1) { toast('Leaving. It is done as soon as an admin has Megatron open.'); tick(); } };
   const rn = $('#rename'); if (rn) rn.onclick = () => modal('Rename community', `<input type="text" id="n" value="${esc(c.name)}" aria-label="Community name">`, [{ label: 'Cancel', primary: false }, { label: 'Rename', run: async w => { await rpc('rename_community', { cid: c.id, name: val(w, 'n') }); } }]).then(tick);
+  fillAvatars(el);
 }
 async function personAction(d, c) {
   if (d.a === 'kick') {
@@ -891,17 +944,77 @@ $('#btn-activity').onclick = async () => {
   const stamp = ts => new Date(ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   modal('Activity log', `<p class="muted small">Everything unusual the app noticed, in plain words. Nothing here is hidden from you: if a message could not be read, it says why.</p>` + (ns.length ? `<div class="log">${ns.map(n => `<div class="log-row ${['decrypt', 'broken', 'rollback', 'reject', 'gap'].includes(n.kind) ? 'bad' : ''}"><span class="k">${esc(n.kind)}</span><span class="v">${esc(n.text)}</span><time>${esc(stamp(n.ts))}</time></div>`).join('')}</div>` : '<p class="muted">Nothing yet.</p>'), undefined, { cls: 'log-modal' });
 };
-$('#btn-settings').onclick = () => modal('Settings', `<label for="n">Display name</label><input type="text" id="n" value="${esc(S.snap.me.name)}">
+// ---- profile picture: choose, crop (circle or square), shrink here, then the core sends it encrypted ----
+const bytesB64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+async function cropPicture(file) {
+  let src;
+  try { src = await CommonsAvatar.decode(file); } catch (e) { toast(e.message); return null; }
+  let cropper = null;
+  const p = modal('Your picture', `<div class="crop-stage"><canvas id="crop-c" aria-label="Your picture; drag to move it"></canvas></div>
+    <label for="crop-zoom">Zoom</label><input type="range" id="crop-zoom" min="1" max="4" step="0.01" value="1">
+    <label>Shape</label>${seg('crop-shape', [['circle', 'Circle'], ['square', 'Square']], 'circle')}
+    <p class="muted small">Drag the picture to move it. It is shrunk on this device before it is sent, so it comes out the right way up even from a phone.</p>`,
+    [{ label: 'Cancel', primary: false }, { label: 'Use picture', run: async () => CommonsAvatar.encode(cropper.output(), cropper.shape) }], { cls: 'crop-modal' });
+  const w = $('.crop-modal');
+  cropper = new CommonsAvatar.Cropper($('#crop-c', w), src);
+  $('#crop-zoom', w).oninput = e => cropper.setZoom(e.target.value);
+  w.addEventListener('click', e => { const b = e.target.closest('.seg[data-for="crop-shape"] button'); if (b) cropper.setShape(b.dataset.v); });
+  const out = await p;
+  if (src && src.close) src.close();
+  return out && out.blob ? out : null;
+}
+async function saveOwnAvatar(out) {
+  const data = bytesB64(new Uint8Array(await out.blob.arrayBuffer()));
+  const r = await rpc('set_avatar', { mime: out.blob.type || 'image/webp', shape: out.shape || 'circle', data });
+  const me = S.snap.me.account, old = AVS.got.get(me);
+  if (old) URL.revokeObjectURL(old.url);
+  AVS.got.set(me, { blob: r.blob, shape: out.shape || 'circle', url: URL.createObjectURL(out.blob) });
+  fillAvatars();
+  const rm = $('#av-none'); if (rm) rm.hidden = false;
+  toast('Profile picture set');
+  tick(); soon(); refreshAvatars();
+}
+async function removeOwnAvatar() {
+  try { await rpc('remove_avatar'); } catch (e) { toast(e.message); return; }
+  const me = S.snap.me.account, old = AVS.got.get(me);
+  if (old) URL.revokeObjectURL(old.url);
+  AVS.got.delete(me);
+  fillAvatars();
+  const rm = $('#av-none'); if (rm) rm.hidden = true;
+  toast('Profile picture removed; your seal is back.');
+  tick(); soon(); refreshAvatars();
+}
+$('#modal-root').addEventListener('change', async e => {
+  if (!e.target.matches('#av-file')) return;
+  const f = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  const out = await cropPicture(f);
+  if (!out) return;
+  try { await saveOwnAvatar(out); } catch (er) { toast(er.message); }
+});
+
+$('#btn-settings').onclick = () => {
+  const p = modal('Settings', `<label for="n">Display name</label><input type="text" id="n" value="${esc(S.snap.me.name)}">
+  <label>Profile picture</label><div class="av-set"><span class="av-prev" id="av-prev">${seal(S.snap.me.account, S.snap.me.name, 'big')}</span><span class="av-btns"><button type="button" class="btn ghost slim" id="av-pick">Choose a picture…</button><button type="button" class="btn ghost slim" id="av-none" ${AVS.got.has(S.snap.me.account) ? '' : 'hidden'}>Remove</button></span></div><input type="file" id="av-file" accept="image/*" hidden>
+  <p class="muted small">Shown instead of your seal in every community and on your other devices. It is shrunk on this device and sent encrypted; older versions keep showing your seal.</p>
   <label>Theme</label>${seg('th', [['', 'Match system'], ['light', 'Daylight'], ['dark', 'After hours']], pref.get('theme') || '')}
   <label>Message font</label>${seg('rd', [['', 'Book'], ['plain', 'Plain']], pref.get('read') || '')}
   <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when Megatron is in the background or the message is in another room. The window title shows how many are unread.</p>
   <label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints (the relay can see that a message-sized packet was sent at that moment)</span></label>
   <label>Calls</label><button type="button" class="btn ghost" id="set-gamekeys">Game keys…</button><p class="muted small">Mute yourself in Megatron while you talk to your game team.</p>
   <label for="rl">Relay address</label><input type="text" id="rl" value="${esc(S.snap.relay)}" spellcheck="false"><p class="muted small">Change this only if your relay moved. A different relay does not have your communities.<br>Your account id: <span class="mono">${esc(S.snap.me.account.slice(0, 16))}…</span></p>`,
-  [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => { if (val(w, 'rl').trim() !== S.snap.relay) await rpc('set_relay', { relay: val(w, 'rl') }); await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); pref.set('theme', val(w, 'th')); pref.set('read', val(w, 'rd')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs(); } }]).then(tick);
+  [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => { if (val(w, 'rl').trim() !== S.snap.relay) await rpc('set_relay', { relay: val(w, 'rl') }); await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); pref.set('theme', val(w, 'th')); pref.set('read', val(w, 'rd')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs(); } }]);
+  fillAvatars();
+  p.then(tick);
+};
 
 // Clicks inside Settings are caught here, so that the dialog above can stay as it is.
-$('#modal-root').addEventListener('click', e => { if (e.target.closest('#set-gamekeys')) gameKeys(); });
+$('#modal-root').addEventListener('click', e => {
+  if (e.target.closest('#av-pick')) { const f = $('#av-file'); if (f) f.click(); return; }
+  if (e.target.closest('#av-none')) { removeOwnAvatar(); return; }
+  if (e.target.closest('#set-gamekeys')) gameKeys();
+});
 const keyName = c => !c ? 'Press to set' : c.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Mouse(\d)/, 'Mouse button $1').replace(/(Left|Right)$/, ' $1');
 async function gameKeys() {
   const got = await rpc('game_keys_get').catch(e => { toast(e.message); return null; }); if (!got) return;

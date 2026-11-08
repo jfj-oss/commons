@@ -222,8 +222,15 @@ impl Client {
         if self.st.profile_dirty && !self.st.name.is_empty() {
             self.st.profile_dirty = false;
             let name = self.st.name.clone();
+            let me = self.my_account();
+            // One picture per account, carried by the profile every device already shares. A joining device gets it
+            // with the next broadcast (the profile is marked dirty when members change). Older apps ignore the two
+            // extra fields and keep showing the seal.
+            let avatar = self.st.profiles.get(&me).and_then(|p| p.avatar.clone());
+            let avatar_cleared = std::mem::replace(&mut self.st.avatar_removed, false);
+            let ts = self.st.profiles.get(&me).map_or_else(now_secs, |p| p.ts.max(now_secs()));
             let ctls: Vec<String> = self.st.groups.values().filter(|g| g.kind == Kind::Control && !g.removed && !g.broken).map(|g| g.gid.clone()).collect();
-            for g in ctls { self.queue_env(&g, Envelope::Profile { name: name.clone(), ts: now_secs() }); }
+            for g in ctls { self.queue_env(&g, Envelope::Profile { name: name.clone(), ts, avatar: avatar.clone(), avatar_cleared }); }
         }
         self.reconcile();
         // nothing goes out unless the state behind it is on disk

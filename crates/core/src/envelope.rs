@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_ENVELOPE: usize = 192 * 1024;
 pub const MAX_TEXT: usize = 16 * 1024;
+/// A profile picture is shrunk on the device before it is sent (256x256, about 40 KB). This is the hard ceiling for
+/// what this version will accept from a newer one, so a bad or careless sender cannot grow everybody's state.
+pub const MAX_AVATAR: u64 = 256 * 1024;
 pub const EXT_COMMONS: u16 = 0xF0C1;
 
 pub fn is_id(s: &str) -> bool { s.len() == 32 && s.bytes().all(|c| c.is_ascii_hexdigit()) }
@@ -66,7 +69,18 @@ pub enum Envelope {
     React { target: String, emoji: String, on: bool },
     File { id: String, name: String, mime: String, size: u64, blob: String, key: String, nonce: String, #[serde(default)] caption: String, #[serde(default)] reply: Option<String>, ts: u64 },
     Typing,
-    Profile { name: String, ts: u64 },
+    /// A person's display name and, optionally, their profile picture. The picture fields are extra fields in the same
+    /// message rather than a kind of their own: an older app parses this message as the `Profile` it already knows, and
+    /// serde ignores the fields it does not, so nothing new ever reaches an old app's `Unknown` notice.
+    Profile {
+        name: String,
+        ts: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        avatar: Option<AvatarRef>,
+        /// The picture was removed. A separate field because a missing field and a JSON `null` both become `None`.
+        #[serde(default, skip_serializing_if = "is_false")]
+        avatar_cleared: bool,
+    },
     /// "I am leaving" (the leaver cannot remove itself in MLS; an admin commits the removal).
     Leave,
     /// Account-signed device revocation, so members can drop the leaf even if the relay hides it.
@@ -80,6 +94,29 @@ pub enum Envelope {
     #[serde(other)]
     Unknown,
 }
+
+/// Where one profile picture is, and how to open it. The bytes themselves travel as a blob, encrypted the same way an
+/// attachment's are, with this key and nonce; the relay only ever holds the ciphertext.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AvatarRef {
+    pub blob: String,
+    pub key: String,
+    pub nonce: String,
+    pub mime: String,
+    pub size: u64,
+    /// "circle" or "square": the frame the person chose. Old apps never see any of this object.
+    pub shape: String,
+}
+impl AvatarRef {
+    pub fn validate(&self) -> Result<(), ParseError> {
+        if !is_id(&self.blob) || !is_key(&self.key) || self.nonce.len() != 24 || hex::decode(&self.nonce).is_err() { return bad("bad profile picture reference"); }
+        if !valid_mime(&self.mime) || !self.mime.starts_with("image/") { return bad("a profile picture must be an image"); }
+        if self.size == 0 || self.size > MAX_AVATAR { return bad("bad profile picture size"); }
+        if self.shape != "circle" && self.shape != "square" { return bad("bad profile picture shape"); }
+        Ok(())
+    }
+}
+fn is_false(b: &bool) -> bool { !*b }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseError(pub String);
@@ -115,7 +152,11 @@ impl Envelope {
                 if reply.as_deref().is_some_and(|r| !is_id(r)) { return bad("bad reply"); }
             }
             Typing | Leave | Unknown => {}
-            Profile { name, .. } => if name.is_empty() || !short(name, 64) { return bad("bad profile"); },
+            Profile { name, avatar, avatar_cleared, .. } => {
+                if name.is_empty() || !short(name, 64) { return bad("bad profile"); }
+                if *avatar_cleared && avatar.is_some() { return bad("bad profile picture change"); }
+                if let Some(a) = avatar { a.validate()?; }
+            }
             Revoked { account, device, sig } => if !is_key(account) || !is_key(device) || sig.len() != 128 { return bad("bad revocation"); },
             Consent { sig, .. } => if sig.len() != 128 { return bad("bad consent"); },
         }
@@ -393,5 +434,49 @@ mod compat_tests {
         assert!(Envelope::parse(br#"{"text":"no kind"}"#).is_err());
         // and the old wire form is unchanged
         assert_eq!(Envelope::Typing.to_bytes(), br#"{"t":"Typing"}"#);
+    }
+
+    /// What a 0.2.x app parses: the same variants, with the profile exactly as it was before pictures existed.
+    #[derive(Deserialize, Debug, PartialEq)]
+    #[serde(tag = "t")]
+    enum OldEnvelope {
+        Profile { name: String, ts: u64 },
+        #[serde(other)]
+        Unknown,
+    }
+
+    const AVATAR_JSON: &str = r#""avatar":{"blob":"00112233445566778899aabbccddeeff","key":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f","nonce":"000102030405060708090a0b","mime":"image/webp","size":1234,"shape":"circle"}"#;
+
+    #[test]
+    fn an_older_app_still_reads_a_profile_with_a_picture() {
+        let new = format!(r#"{{"t":"Profile","name":"Ana","ts":5,{AVATAR_JSON}}}"#);
+        // This version reads the picture...
+        let e = Envelope::parse(new.as_bytes()).unwrap();
+        assert!(matches!(e, Envelope::Profile { ref name, avatar: Some(ref a), avatar_cleared: false, .. } if name == "Ana" && a.size == 1234));
+        // ...while a 0.2.x app reads the very same bytes as the Profile it already knew, not as an unknown kind.
+        assert_eq!(serde_json::from_str::<OldEnvelope>(&new).unwrap(), OldEnvelope::Profile { name: "Ana".into(), ts: 5 });
+        // The removal flag is also just an ignored field to it.
+        let removed = br#"{"t":"Profile","name":"Ana","ts":6,"avatar_cleared":true}"#;
+        assert_eq!(serde_json::from_slice::<OldEnvelope>(removed).unwrap(), OldEnvelope::Profile { name: "Ana".into(), ts: 6 });
+        // With no picture, the bytes are exactly what 0.2.x sends and expects.
+        let plain = Envelope::Profile { name: "Ana".into(), ts: 5, avatar: None, avatar_cleared: false };
+        assert_eq!(plain.to_bytes(), br#"{"t":"Profile","name":"Ana","ts":5}"#);
+    }
+
+    #[test]
+    fn a_bad_picture_reference_is_refused() {
+        let good = serde_json::json!({"blob":"00112233445566778899aabbccddeeff","key":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f","nonce":"000102030405060708090a0b","mime":"image/webp","size":1234,"shape":"circle"});
+        let env = |a: serde_json::Value, cleared: bool| serde_json::to_vec(&serde_json::json!({"t":"Profile","name":"Ana","ts":5,"avatar":a,"avatar_cleared":cleared})).unwrap();
+        // a picture that is not an image, names a blob badly, is huge, or claims both states
+        let mut no_image = good.clone(); no_image["mime"] = "text/html".into();
+        assert!(Envelope::parse(&env(no_image, false)).is_err());
+        let mut bad_blob = good.clone(); bad_blob["blob"] = "../etc/passwd".into();
+        assert!(Envelope::parse(&env(bad_blob, false)).is_err());
+        let mut huge = good.clone(); huge["size"] = (MAX_AVATAR + 1).into();
+        assert!(Envelope::parse(&env(huge, false)).is_err());
+        let mut odd_shape = good.clone(); odd_shape["shape"] = "oval".into();
+        assert!(Envelope::parse(&env(odd_shape, false)).is_err());
+        assert!(Envelope::parse(&env(good.clone(), true)).is_err());
+        assert!(Envelope::parse(&env(good, false)).is_ok());
     }
 }

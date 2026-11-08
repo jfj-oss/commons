@@ -575,10 +575,17 @@ impl Client {
         let comm = self.st.groups[gid].community.clone();
         let acct = cert.account.clone();
         match (&kind, env) {
-            (Kind::Control, Envelope::Profile { name, ts }) => {
+            (Kind::Control, Envelope::Profile { name, ts, avatar, avatar_cleared }) => {
                 let ts = sane_ts(ts);
                 let p = self.st.profiles.entry(acct).or_default();
-                if ts >= p.ts { p.name = name; p.ts = ts; }
+                if ts >= p.ts {
+                    p.name = name;
+                    p.ts = ts;
+                    // An older app sends this same message with neither picture field. That must not wipe a picture
+                    // set from a newer one, so only a picture or an explicit removal changes it.
+                    if avatar_cleared { p.avatar = None; }
+                    else if avatar.is_some() { p.avatar = avatar; }
+                }
             }
             (Kind::Control, Envelope::Leave) => {
                 if let Some(c) = self.st.communities.get_mut(&comm) {
