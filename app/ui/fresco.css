@@ -156,3 +156,11 @@
 @media (prefers-reduced-motion: reduce) {
   :root[data-theme="dark"] .msg::after { transition: none; }
 }
+
+/* ---- Linux (WebKitGTK) light mode: the same look without the effects WebKitGTK draws on the CPU at 4K. No live
+   blur behind the message box (a solid smoked glass instead), plain-alpha lamplight instead of a blend, and the
+   dithered waves drawn as still frames (fresco-rail-dither.js sets html.fx-lite). ---- */
+html.fx-lite .slip { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; background-color: rgba(30, 25, 20, .94) !important; }
+html.fx-lite #main > #lamp { mix-blend-mode: normal !important; opacity: .55; }
+html.fx-lite .lightbox { -webkit-backdrop-filter: none; backdrop-filter: none; }
+html.fx-lite .msg, html.fx-lite .msg::before, html.fx-lite .msg::after { transition: none !important; }

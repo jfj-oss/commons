@@ -115,6 +115,8 @@ heavy() { systemd-run --user --scope -q -p MemoryMax=6G "$@"; }
 if want linux; then
   say "Building Linux (log: $LOGS/linux.log)"
   COMMONS_OUT=$STAGE COMMONS_BUILD_JOBS=$JOBS heavy scripts/build-appimage-portable.sh > "$LOGS/linux.log" 2>&1 || die "Linux build failed: $LOGS/linux.log"
+  say "Building the Linux browser version (log: $LOGS/linux-browser.log)"
+  COMMONS_OUT=$STAGE COMMONS_BUILD_JOBS=$JOBS heavy scripts/build-linux-browser.sh > "$LOGS/linux-browser.log" 2>&1 || die "Linux browser build failed: $LOGS/linux-browser.log"
 fi
 if want windows; then
   say "Building Windows (log: $LOGS/windows.log)"
@@ -170,7 +172,7 @@ for p in "${!UP[@]}"; do
   platforms=$(jq -c --arg p "$p" --arg u "update/$n" --rawfile s "$STAGE/${UP[$p]}.sig" '. + {($p): {url: $u, signature: $s}}' <<<"$platforms")
 done
 mkdir -p "$DIST/.previous"
-for f in Megatron-linux-x86_64.AppImage Megatron-windows-x64-setup.exe Megatron-macos-arm64.dmg; do
+for f in Megatron-linux-x86_64.AppImage Megatron-linux-browser.tar.gz Megatron-windows-x64-setup.exe Megatron-macos-arm64.dmg; do
   [ -s "$STAGE/$f" ] || continue
   [ -e "$DIST/$f" ] && cp --reflink=auto -p "$DIST/$f" "$DIST/.previous/$f"
   cp --reflink=auto "$STAGE/$f" "$DIST/.$f.tmp" && chmod 755 "$DIST/.$f.tmp" && mv "$DIST/.$f.tmp" "$DIST/$f"

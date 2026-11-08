@@ -9,6 +9,11 @@
    Dark ("After hours") theme only: it starts and stops when the theme changes. */
 (function () {
   const root = document.documentElement;
+  // Linux's WebKitGTK draws blur, blends and constantly changing canvases on the CPU (badly so on NVIDIA and at 4K):
+  // there only the small rail animates (the wall's big canvas is drawn once per resize) and fresco.css drops the
+  // live blur and blend
+  const LITE = /Linux/.test(navigator.userAgent) && !/Android|Chrome|Firefox/.test(navigator.userAgent);
+  if (LITE) root.classList.add('fx-lite');
   const sysDark = matchMedia('(prefers-color-scheme: dark)');
   const isDark = () => root.dataset.theme === 'dark' || (root.dataset.theme !== 'light' && sysDark.matches);
   const DOT = 2;                  // CSS px per dot
@@ -126,6 +131,8 @@
         }
       }
       rx.putImageData(R.img, 0, 0);
+      if (LITE && wallDone) return;
+      wallDone = true;
       // the wall: only crests, only outside the column and below the header; most dots are skipped early
       terms(M.x0, M.y0, M.W, M.H, U, t, M.C1, M.C2, M.R1, M.R2);
       const mp = M.px; mp.fill(0);
@@ -144,12 +151,13 @@
       wx.putImageData(M.img, 0, 0);
     }
     const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let wallDone = false;           // LITE: the wall is drawn once until the next resize
     let last = 0, raf = 0;
     function loop() { if (!alive) return; raf = requestAnimationFrame(ms => { if (ms - last >= 1000 / FPS) { last = ms; frame(ms); } loop(); }); }
     // paused while the window is hidden or another app has focus: nobody is watching it then
     const onVis = () => { cancelAnimationFrame(raf); if (!document.hidden && document.hasFocus() && !still && noise) loop(); };
     document.addEventListener('visibilitychange', onVis); window.addEventListener('focus', onVis); window.addEventListener('blur', onVis);
-    const ro = new ResizeObserver(() => { size(); frame(performance.now()); }); ro.observe(rail); ro.observe(main);
+    const ro = new ResizeObserver(() => { size(); wallDone = false; frame(performance.now()); }); ro.observe(rail); ro.observe(main);
     stop = () => { alive = false; cancelAnimationFrame(raf); document.removeEventListener('visibilitychange', onVis); window.removeEventListener('focus', onVis); window.removeEventListener('blur', onVis); ro.disconnect(); rc.remove(); wc.remove(); stop = null; };
   }
   function sync() { if (isDark()) { if (!stop) start(); } else if (stop) stop(); }
