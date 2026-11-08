@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Builds an UNSIGNED Megatron .ipa on the Mac, over ssh, for SideStore to sign with a free Apple ID.
 #
+# This is the optional route. The normal way is the GitHub Actions workflow (.github/workflows/ios.yml):
+# Actions tab -> ios -> Run workflow, then download the Megatron-ipa artifact. That needs no Mac or Xcode.
+# Use this script when the Mac is at hand or GitHub is unavailable.
+#
 #   scripts/build-ios.sh              -> dist/Megatron-ios.ipa
 #   scripts/build-ios.sh --fresh      regenerate the Xcode project (app/src-tauri/gen/apple) first
 #
