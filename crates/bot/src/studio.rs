@@ -391,6 +391,7 @@ mod tests {
         assert_eq!(duration_secs("90 seconds of jungle"), Some(90.0));
         assert_eq!(duration_secs("two and a half minutes"), Some(150.0));
         assert_eq!(duration_secs("a song about 2 dogs"), None);
+        assert_eq!(length_from_words(Kind::Song, "@Oracle make some blood curdling, belly boomin bass 400bpm reggaton, intense dancehall 2 min long"), Some("120".into()));
         assert_eq!(length_from_words(Kind::Song, "a 2 minute song"), Some("120".into()));
         assert_eq!(length_from_words(Kind::Song, "a song of 2.5 mins"), Some("180".into()));
         assert_eq!(length_from_words(Kind::Song, "a 10 minute epic"), Some("180".into()));
