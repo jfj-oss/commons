@@ -105,6 +105,16 @@ jobs:
           echo "Generating app/src-tauri/gen/apple"
           ../../tools/node_modules/.bin/tauri ios init --ci --skip-targets-install
 
+          # The Xcode project's "Build Rust Code" phase calls the Tauri CLI the way init recorded it, which here is a
+          # relative `node tauri` that does not exist inside gen/apple, and Xcode's script PATH may lack node. Point
+          # it at absolute paths instead.
+          NODE="$(command -v node)"; CLI="$GITHUB_WORKSPACE/tools/node_modules/@tauri-apps/cli/tauri.js"
+          PBX="$(ls -d gen/apple/*.xcodeproj)/project.pbxproj"
+          echo "before:"; grep -o 'shellScript = "[^"]*xcode-script' "$PBX" | head -3 || true
+          perl -0pi -e "s{shellScript = \"[^\"]*? ios xcode-script}{shellScript = \"$NODE $CLI ios xcode-script}g" "$PBX"
+          echo "after:"; grep -o 'shellScript = "[^"]*xcode-script' "$PBX" | head -3
+          grep -q "$CLI ios xcode-script" "$PBX" || { echo "::error::could not point the Xcode build phase at the Tauri CLI"; exit 1; }
+
       - name: Generate the opaque iOS app icon
         working-directory: app/src-tauri
         shell: bash
