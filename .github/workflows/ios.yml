@@ -111,7 +111,8 @@ jobs:
           NODE="$(command -v node)"; CLI="$GITHUB_WORKSPACE/tools/node_modules/@tauri-apps/cli/tauri.js"
           PBX="$(ls -d gen/apple/*.xcodeproj)/project.pbxproj"
           echo "before:"; grep -o 'shellScript = "[^"]*xcode-script' "$PBX" | head -3 || true
-          perl -0pi -e "s{shellScript = \"[^\"]*? ios xcode-script}{shellScript = \"$NODE $CLI ios xcode-script}g" "$PBX"
+          # (the command goes in through the environment: "@tauri-apps" in a perl string would be read as an array)
+          NEWCMD="$NODE $CLI" perl -0pi -e 's{shellScript = "[^"]*? ios xcode-script}{shellScript = "$ENV{NEWCMD} ios xcode-script}g' "$PBX"
           echo "after:"; grep -o 'shellScript = "[^"]*xcode-script' "$PBX" | head -3
           grep -q "$CLI ios xcode-script" "$PBX" || { echo "::error::could not point the Xcode build phase at the Tauri CLI"; exit 1; }
 
