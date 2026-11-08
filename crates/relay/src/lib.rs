@@ -120,6 +120,9 @@ pub struct LiveKitCfg {
     /// The websocket URL clients should connect to (wss://... in production).
     pub url: String,
     pub token_ttl_secs: u64,
+    /// Where this relay reaches LiveKit's server API, when that is not `url`. Behind `--front` only `/rtc` is public on
+    /// purpose, so the API has to be asked on LiveKit's own local port.
+    pub api_url: Option<String>,
     /// LiveKit always tells clients TURN over TLS is on port 443. When it is somewhere else, clients are told here.
     pub turn_port: Option<u16>,
 }
@@ -207,7 +210,7 @@ fn lk_state(p: &LkParticipant) -> CallPeerState {
 /// (a room nobody has ever called in) means nobody there. A transport error is reported, so the caller can keep its
 /// last answer instead of showing an empty call just because the media server was briefly unreachable.
 fn livekit_participants(cfg: &LiveKitCfg, gid: &str) -> Result<Vec<(String, CallPeerState)>, String> {
-    let url = livekit_http_url(&cfg.url).ok_or_else(|| "the call server's address is not a websocket or http URL".to_string())?;
+    let url = livekit_http_url(cfg.api_url.as_deref().unwrap_or(&cfg.url)).ok_or_else(|| "the call server's address is not a websocket or http URL".to_string())?;
     let room = call_room(gid);
     let token = mint_livekit_admin_token(cfg, &room, now_secs()).map_err(|_| "cannot sign a call server request".to_string())?;
     let body = serde_json::json!({ "room": room }).to_string();

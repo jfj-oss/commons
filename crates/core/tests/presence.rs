@@ -106,7 +106,7 @@ fn serve(mut s: TcpStream, fake: Arc<Fake>) {
 }
 
 fn net_with(fake_url: &str) -> Net {
-    let cfg = LiveKitCfg { api_key: "k1".into(), api_secret: SECRET.into(), url: fake_url.into(), token_ttl_secs: 600, turn_port: None };
+    let cfg = LiveKitCfg { api_key: "k1".into(), api_secret: SECRET.into(), url: fake_url.into(), token_ttl_secs: 600, turn_port: None, api_url: None };
     Net::with_limits(commons_relay::Limits { livekit: Some(cfg), ..Default::default() })
 }
 

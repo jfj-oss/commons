@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 const SECRET: &str = "unit-test-secret-0123456789abcdef-0123456789";
 
 fn net_with_calls() -> Net {
-    let cfg = LiveKitCfg { api_key: "k1".into(), api_secret: SECRET.into(), url: "wss://calls.example.test".into(), token_ttl_secs: 600, turn_port: None };
+    let cfg = LiveKitCfg { api_key: "k1".into(), api_secret: SECRET.into(), url: "wss://calls.example.test".into(), token_ttl_secs: 600, turn_port: None, api_url: None };
     Net::with_limits(commons_relay::Limits { livekit: Some(cfg), ..Default::default() })
 }
 
