@@ -187,7 +187,7 @@ async function boot() {
   let invited = null; // what a pasted invite said
   const invBox = `<label for="lnk">Invite link</label><input type="text" id="lnk" autocomplete="off" spellcheck="false" placeholder="Paste what your friend sent you"><div class="lnk-note small muted" id="lnk-note" role="status"></div>`;
   // A second device or a recovery only needs to know where the server is; any invite link says that, even a used one.
-  const invBoxOld = `<label for="lnk">Any invite link from your friends <span class="muted">(if this device does not know the server yet)</span></label><input type="text" id="lnk" autocomplete="off" spellcheck="false" placeholder="An old or used one works too"><div class="lnk-note small muted" id="lnk-note" role="status"></div>`;
+  const invBoxOld = st.default_relay ? '' : `<label for="lnk">Any invite link from your friends <span class="muted">(if this device does not know the server yet)</span></label><input type="text" id="lnk" autocomplete="off" spellcheck="false" placeholder="An old or used one works too"><div class="lnk-note small muted" id="lnk-note" role="status"></div>`;
   const readLink = async () => {
     const box = $('#lnk'); if (!box) return; const v = box.value.trim(); invited = null; $('#lnk-note').textContent = '';
     if (!v) return;

@@ -27,8 +27,9 @@ fn main() {
         .setup(|t| {
             // COMMONS_DATA lets you run several independent instances ("two windows") on one machine.
             let dir = std::env::var("COMMONS_DATA").map(std::path::PathBuf::from).unwrap_or_else(|_| t.path().app_data_dir().expect("app data dir"));
-            // No default: a relay is something a friend's invite brings along.
-            let relay = std::env::var("COMMONS_RELAY").unwrap_or_default();
+            // The server this build belongs to (default-relay.txt), so signing in on a new device or with a recovery key
+            // needs no invite link. COMMONS_RELAY still overrides it; an empty file means no default.
+            let relay = std::env::var("COMMONS_RELAY").unwrap_or_else(|_| include_str!("../default-relay.txt").trim().to_string());
             let app = App::new(dir, &relay);
             app.start_background();
             t.manage(app);
