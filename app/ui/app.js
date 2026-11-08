@@ -399,7 +399,20 @@ const isPhone = () => matchMedia('(max-width: 760px)').matches;
 const humanCount = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 // The call in this room, as reported by the relay (which asks LiveKit). Absent means nobody, or a relay that
 // does not do calls: either way the rail simply shows nothing. Names were mapped from device ids by the core.
-const callPeople = gid => { const v = S.presence.get(gid); return Array.isArray(v) ? v : null; };
+// While this device is in a call, the call itself knows who is there and who is talking this instant; the relay's
+// list, which is all anyone outside the call has, runs a couple of seconds behind.
+const callLive = gid => {
+  try {
+    const c = window.__commonsCall;
+    if (!c || c.gid !== gid || c.phase === 'idle' || !c.room) return null;
+    return c.snapshot().peers.map(p => ({ account: p.account || '', name: p.name, me: p.me, muted: p.muted, deafened: p.deafened, speaking: p.speaking }));
+  } catch { return null; }
+};
+const callPeople = gid => { const live = callLive(gid); if (live && live.length) return live; const v = S.presence.get(gid); return Array.isArray(v) ? v : null; };
+window.__railCallChanged = () => {
+  const c = window.__commonsCall, gid = c && c.gid, sig = JSON.stringify([gid, gid ? callLive(gid) : null]);
+  if (sig !== S.callLiveSig) { S.callLiveSig = sig; if (S.snap) renderRail(); }
+};
 const inCallHere = gid => { try { const c = window.__commonsCall; return !!(c && c.gid === gid && c.phase !== 'idle'); } catch { return false; } };
 // Refresh at most every ~2 s; the relay keeps its own two-second cache, so several open windows ask LiveKit once.
 async function presenceTick() {
@@ -472,7 +485,6 @@ $('#rooms').addEventListener('click', async e => {
 // What friends' names carry while they share music. Two short lines from rune, nothing else.
 const listenLine = l => `Listening to ${l.title}${l.artist ? ' · ' + l.artist : ''}`;
 const gone = new Set();
-const LIVE_SHOWN = 3;   // names under a room before the rest become a count
 // The people in a room's call: seals and names, then a count, and a Join. Each row is a button of its own (a
 // button may not hold other buttons), so the room's own row stays exactly as it was.
 //
@@ -485,17 +497,14 @@ function liveRow(ch) {
   const n = list.length, names = list.map(p => p.name).join(', ');
   const title = esc(n === 1 ? list[0].name + ' is in the call' : humanCount(n, 'person', 'people') + ' in the call: ' + names);
   const person = p => `${seal(p.account, p.name, 'tiny')}<span class="live-n">${esc(p.me ? 'You' : p.name)}</span>`;
-  if (ch.kind === 'voice') {
-    const rows = list.map(p => `<button type="button" class="live-p vp${p.speaking ? ' speaking' : ''}${p.muted ? ' muted' : ''}${p.deafened ? ' deafened' : ''}" data-call="${esc(ch.gid)}" title="${esc(p.name)}${p.me ? ' (you)' : ''}" aria-label="Join the call in ${esc(ch.name)}; ${p.me ? 'you are' : esc(p.name) + ' is'} in it">${person(p)}</button>`).join('');
-    return `<div class="room-live voice" title="${title}">${rows}</div>`;
-  }
-  const shown = list.slice(0, LIVE_SHOWN), extra = n - shown.length;
-  const people = shown.map(p => `<button type="button" class="live-p" data-call="${esc(ch.gid)}" title="${esc(p.name)}${p.me ? ' (you)' : ''}" aria-label="Join the call in ${esc(ch.name)}; ${p.me ? 'you are' : esc(p.name) + ' is'} in it">${person(p)}</button>`).join('');
-  const more = extra ? `<span class="live-more" title="${esc(names)}">+${extra}</span>` : '';
+  // data-account says whose volume the small right-click/long-press popover adjusts (see call-ui.js).
+  const who = p => `data-account="${esc(p.account || '')}" data-name="${esc(p.name)}"`;
+  const rows = list.map(p => `<button type="button" class="live-p vp${p.speaking ? ' speaking' : ''}${p.muted ? ' muted' : ''}${p.deafened ? ' deafened' : ''}" ${who(p)} data-call="${esc(ch.gid)}" title="${esc(p.name)}${p.me ? ' (you)' : ''}" aria-label="Join the call in ${esc(ch.name)}; ${p.me ? 'you are' : esc(p.name) + ' is'} in it">${person(p)}</button>`).join('');
+  if (ch.kind === 'voice') return `<div class="room-live voice" title="${title}">${rows}</div>`;
   const act = inCallHere(ch.gid)
     ? '<span class="live-you">you are in the call</span>'
     : `<button type="button" class="live-join" data-call="${esc(ch.gid)}" aria-label="Join the call in ${esc(ch.name)}">Join</button>`;
-  return `<div class="room-live"${inCallHere(ch.gid) ? ' data-in="1"' : ''} title="${title}">${people}${more}${act}</div>`;
+  return `<div class="room-live voice"${inCallHere(ch.gid) ? ' data-in="1"' : ''} title="${title}">${rows}${act}</div>`;
 }
 function renderRail() {
   const sn = S.snap;
@@ -1356,4 +1365,6 @@ async function gameKeys() {
   return p;
 }
 
+// The call dock's Settings dialog links to the same game-key dialog, rather than copying it.
+window.__commonsGameKeys = gameKeys;
 boot();

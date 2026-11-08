@@ -37,20 +37,20 @@ try {
   const room = await rpc(P('alice').port, 'call_token', { gid: world.gid });
   const roomName = room.room;
 
-  // ---------------------------------------------------------------- J. video tiles in the real call panel (runs first, on a fresh call)
-  // Bugs from real use: (1) with camera or screen share on, the videos flickered: every state update rebuilt the panel and moved
+  // ---------------------------------------------------------------- J. video tiles in the real call (runs first, on a fresh call)
+  // Bugs from real use: (1) with camera or screen share on, the videos flickered: every state update rebuilt the call UI and moved
   // the <video> elements into new tiles; (2) a camera switched off left a black box (the SDK mutes a camera, it does not unpublish it).
-  // The panel is watched from inside the page: DOM removals/additions of tiles and videos, media events, and a 50 ms sampler that
+  // The stage is watched from inside the page: DOM removals/additions of tiles and videos, media events, and a 50 ms sampler that
   // counts moments where a shown video is not playing.
   const WATCH = `(() => {
-    const panel = document.querySelector('#call-panel'); const st = window.__vt = { added: 0, removed: 0, events: {}, samples: 0, blank: 0, n: 0 };
+    const panel = document.querySelector('#call-stage'); const st = window.__vt = { added: 0, removed: 0, events: {}, samples: 0, blank: 0, n: 0 };
     const count = (nodes, k) => { for (const n of nodes) if (n.nodeType === 1) st[k] += (n.matches('.ctile, video') ? 1 : 0) + n.querySelectorAll('.ctile, video').length; };
     new MutationObserver(ms => { for (const m of ms) { count(m.addedNodes, 'added'); count(m.removedNodes, 'removed'); } }).observe(panel, { childList: true, subtree: true });
     for (const ev of ['emptied', 'loadstart', 'pause', 'abort']) panel.addEventListener(ev, e => { if (e.target.tagName === 'VIDEO') st.events[ev] = (st.events[ev] || 0) + 1; }, true);
     setInterval(() => { for (const v of panel.querySelectorAll('.ctile video')) { st.samples++; if (!(v.isConnected && v.readyState >= 2 && !v.paused && v.videoWidth > 0)) st.blank++; } }, 50);
     window.__vtReset = () => { st.added = st.removed = st.samples = st.blank = 0; st.events = {}; };
     return true; })()`;
-  const tilesOf = n => page(n).ev(`[...document.querySelectorAll('#call-panel .ctile')].map(d => { const v = d.querySelector('video'); if (v && !v.__vid) v.__vid = ++window.__vt.n; return { key: d.dataset.key, label: (d.querySelector('.bar .grow') || d).innerText, id: v ? v.__vid : 0, w: v ? v.videoWidth : 0, playing: !!v && !v.paused && v.readyState >= 2 }; })`);
+  const tilesOf = n => page(n).ev(`[...document.querySelectorAll('#call-stage .ctile')].map(d => { const v = d.querySelector('video'); if (v && !v.__vid) v.__vid = ++window.__vt.n; return { key: d.dataset.key, label: (d.querySelector('.bar .grow') || d).innerText, id: v ? v.__vid : 0, w: v ? v.videoWidth : 0, playing: !!v && !v.paused && v.readyState >= 2 }; })`);
   const isCam = t => /camera/.test(t.label), isScreen = t => /screen/.test(t.label);
   {
     for (const n of ['alice', 'bob']) { await page(n).ev(FAKE_DISPLAY); await page(n).ev(`window.__shareName = ${J(n)}`); }
@@ -89,7 +89,7 @@ try {
     const noShare = await until(async () => { const t = await tilesOf('bob'); return t.length === 1 && isCam(t[0]) ? t : null; }, 8000, 'share gone').catch(async () => tilesOf('bob'));
     check('J8 stopping the share removes only the screen tile', noShare.length === 1 && isCam(noShare[0]) && noShare[0].id === back.find(isCam)?.id, J(noShare));
     await call('alice', `c.setCamera(false)`);
-    for (const n of ['alice', 'bob']) { await call(n, `c.leave()`); await page(n).ev(`(document.querySelector('#c-close')?.click(), true)`); }
+    for (const n of ['alice', 'bob']) await call(n, `c.leave()`);
     await sleep(1000);
   }
   if (process.env.CALL_E2E_ONLY === 'video') throw Object.assign(new Error('CALL_E2E_ONLY=video: the other sections are skipped'), { only: true });
@@ -338,17 +338,19 @@ try {
   // ---------------------------------------------------------------- I. the real UI
   const ui = page('dave');
   await call('dave', `c.leave()`);
-  await ui.ev(`document.querySelector('#btn-call').click()`);
-  await ui.waitFor(`!document.querySelector('#call-panel').hidden && document.querySelector('#c-join')`, 8000, 'panel');
-  await ui.ev(`document.querySelector('#c-join').click()`);
-  await ui.waitFor(`document.querySelector('.call-enc.ok')`, 20000, 'encrypted badge');
+  await ui.ev(`document.querySelector('#btn-call').click()`);   // the room header's Call button joins this room's call
+  await ui.waitFor(`!document.querySelector('#call-dock').hidden`, 8000, 'call dock');
+  await ui.waitFor(`!!document.querySelector('#call-dock .call-enc.ok')`, 20000, 'encrypted badge');
+  // The people are the ones under the room in the rail, not a list in the dock.
+  const peersShown = await until(async () => { const n = await ui.ev(`document.querySelectorAll('#rooms .room-live .live-p').length`); return n >= 3 ? n : 0; }, 20000, 'people under the room').catch(() => 0);
   await ui.ev(`document.querySelector('#c-set').click()`); await sleep(800);
-  const badge = await ui.ev(`document.querySelector('.call-enc').innerText`);
-  const peersShown = await ui.ev(`document.querySelectorAll('.cp').length`);
-  check('I1 UI: Call button opens the panel, Join voice connects, the badge says Encrypted', /Encrypted/.test(badge) && peersShown >= 3, `${badge}; ${peersShown} people listed`);
-  await ui.send('Page.bringToFront');
+  const settingsOpen = await ui.ev(`!document.querySelector('#call-settings').hidden && !!document.querySelector('#c-jf-url')`);
+  const badge = await ui.ev(`document.querySelector('#call-dock .call-enc').innerText`);
+  check('I1 UI: the Call button joins, the rail dock shows Encrypted and Settings, and the people under the room are listed', /Encrypted/.test(badge) && peersShown >= 3 && settingsOpen, `${badge}; ${peersShown} people in the rail; settings ${settingsOpen}`);
+  await ui.ev(`document.querySelector('#cs-close').click()`); await sleep(300);
+  await ui.send('Page.bringToFront'); await sleep(250);
   const shotRes = await ui.send('Page.captureScreenshot', { format: 'png' });
-  fs.writeFileSync(path.join(out, 'call-panel.png'), Buffer.from(shotRes.result.data, 'base64'));
+  fs.writeFileSync(path.join(out, 'call-dock.png'), Buffer.from(shotRes.result.data, 'base64'));
   await ui.ev(`document.querySelector('#c-leave')?.click()`);
 } catch (e) { if (e.only) console.log(e.message); else { console.error('TEST RUN ABORTED:', e); failed++; results.push({ name: 'run', ok: false, detail: String(e.stack || e) }); } }
 finally {
