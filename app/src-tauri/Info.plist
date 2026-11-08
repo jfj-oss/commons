@@ -6,5 +6,9 @@
   <string>Commons uses the microphone for voice rooms. Calls are end-to-end encrypted.</string>
   <key>NSCameraUsageDescription</key>
   <string>Commons uses the camera when you turn it on in a call. Calls are end-to-end encrypted.</string>
+  <key>NSPhotoLibraryUsageDescription</key>
+  <string>Commons opens your photo library when you attach a picture to a message.</string>
+  <key>NSPhotoLibraryAddUsageDescription</key>
+  <string>Commons saves pictures you download from a chat to your photo library.</string>
 </dict>
 </plist>

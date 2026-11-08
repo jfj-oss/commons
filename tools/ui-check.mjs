@@ -221,6 +221,25 @@ try {
   await A.ev(`document.querySelector('.room-live .live-p').click()`);
   if (!(await A.ev(`!!window.__joined && window.__joined[0] === ${JSON.stringify(gid)}`))) throw new Error('clicking a person did not join that room call');
   await A.shot('09-call-presence');
+  // Phone-width layout: the rail folds away, the composer stays on screen, and desktop-only settings are gone.
+  const P = await open('http://127.0.0.1:7101/');
+  await P.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+  await P.waitFor(`!document.querySelector('#app').hidden`, 20000);
+  await P.waitFor(`document.querySelectorAll('.room').length>=1`, 20000);
+  if (await P.ev(`document.querySelector('#composer').hidden`)) { await P.ev(`document.querySelectorAll('.room')[0].click()`); }
+  await P.waitFor(`!document.querySelector('#composer').hidden`, 10000); await sleep(500);
+  const phone = await P.ev(`(() => { const r = document.querySelector('#rail').getBoundingClientRect(), c = document.querySelector('#composer').getBoundingClientRect(); return { w: innerWidth, railAway: r.right <= 1, composerIn: c.height > 0 && c.top > 0 && c.bottom <= innerHeight + 1 }; })()`);
+  if (phone.w > 760 || !phone.railAway || !phone.composerIn) throw new Error('narrow layout is wrong: ' + JSON.stringify(phone));
+  await P.shot('09-phone');
+  // The iOS build tells the UI it is on a phone; the game-key settings must not be offered there.
+  await P.ev(`window.__commonsPlatform = 'mobile'; document.body.dataset.platform = 'mobile'; document.querySelector('#btn-settings').click()`);
+  await P.waitFor(`document.querySelector('.modal')`, 5000);
+  if (await P.ev(`!!document.querySelector('#set-gamekeys')`)) throw new Error('game keys are offered on the phone layout');
+  await click(P, '.modal .acts button'); await sleep(300);
+  for (const [sel, why] of [['#main', 'main'], ['#composer', 'composer'], ['#head', 'header']]) {
+    const box = await P.ev(`(() => { const b = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { l: b.left, r: b.right, w: innerWidth }; })()`);
+    if (box.l < -1 || box.r > box.w + 1) throw new Error(`${why} overflows the phone screen: ${JSON.stringify(box)}`);
+  }
   console.log('UI check OK; screenshots in', out);
 } catch (e) { console.error('UI check FAILED:', e.message); process.exitCode = 1; }
 finally { runeSrv.close(); procs.forEach(p => { try { p.kill(); } catch { } }); }

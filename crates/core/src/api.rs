@@ -27,9 +27,12 @@ pub struct App {
     /// The last answer to each read-only call. The UI asks twice a second, and gets this if the client is busy.
     seen: Mutex<HashMap<String, Value>>,
     files: Mutex<Vec<(String, Arc<Vec<u8>>)>>,
-    /// loopback server for "open this call in my browser" (started on first use)
+    /// loopback server for "open this call in my browser" (started on first use). Desktops only: a phone has no
+    /// second browser to hand a call to.
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     bridge: Mutex<Option<crate::callbridge::CallBridge>>,
     /// Per-game push-to-mute. Runs only while a call keeps asking.
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     game: commons_gamekeys::Service,
     /// When a call last asked the core for something (its key poll, token, or game-key heartbeat), from this window or
     /// from a call handed off to the browser. The updater waits while this is recent: `call_active`.
@@ -84,8 +87,16 @@ pub fn bridge_request_ok(host: Option<&str>, origin: Option<&str>, port: u16) ->
 impl App {
     pub fn new(dir: PathBuf, default_relay: &str) -> Arc<App> { Self::with_kdf(dir, default_relay, KdfParams::STRONG) }
     pub fn with_kdf(dir: PathBuf, default_relay: &str, kdf: KdfParams) -> Arc<App> {
-        Arc::new_cyclic(|me| App { me: me.clone(), call_seen: Mutex::new(None), bridge: Mutex::new(None), game: commons_gamekeys::Service::new(), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None), wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), files: Mutex::new(vec![]) })
+        Arc::new_cyclic(|me| App {
+            me: me.clone(), call_seen: Mutex::new(None), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None),
+            wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), files: Mutex::new(vec![]),
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
+            bridge: Mutex::new(None),
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
+            game: commons_gamekeys::Service::new(),
+        })
     }
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     fn open_call_in_browser(&self, gid: &str, name: &str, launch: bool) -> R {
         self.with(|c| c.call_state(gid).map(|_| ()).map_err(e))?;      // only for rooms we are really in
         let me = self.me.upgrade().ok_or("app is shutting down")?;
@@ -101,14 +112,18 @@ impl App {
         *self.stop.lock().unwrap() = true;
         self.nudge();
         // The browser bridge's listener thread holds the app alive, so it has to be ended here.
-        let bridge = self.bridge.lock().unwrap().take();
-        if let Some(b) = bridge { b.stop(); }
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        {
+            let bridge = self.bridge.lock().unwrap().take();
+            if let Some(b) = bridge { b.stop(); }
+        }
     }
     fn saw_call(&self) { *self.call_seen.lock().unwrap_or_else(|p| p.into_inner()) = Some(std::time::Instant::now()); }
     /// True while a call on this device is running (in this window or in the browser): an update must not restart the app now.
     pub fn call_active(&self) -> bool {
         self.call_seen.lock().unwrap_or_else(|p| p.into_inner()).is_some_and(|t| t.elapsed() < CALL_QUIET)
     }
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     #[doc(hidden)]
     pub fn bridge_running(&self) -> bool { self.bridge.lock().unwrap().as_ref().is_some_and(|b| !b.is_stopped()) }
     fn nudge(&self) { *self.wake.0.lock().unwrap() = true; self.wake.1.notify_all(); }
@@ -246,10 +261,12 @@ impl App {
     fn dispatch(&self, m: &str, a: Value) -> R {
         match m {
             "state" => {
+                // Told before unlocking, so the UI can leave out what a phone cannot do (game keys, updates).
+                let mobile = cfg!(any(target_os = "ios", target_os = "android"));
                 let g = self.lock();
                 match g.as_ref() {
-                    None => Ok(json!({"locked": true, "exists": Client::exists(&self.dir), "default_relay": self.default_relay})),
-                    Some(c) => Ok(json!({"locked": false, "has_identity": c.has_identity(), "relay": c.st.relay})),
+                    None => Ok(json!({"locked": true, "exists": Client::exists(&self.dir), "default_relay": self.default_relay, "mobile": mobile})),
+                    Some(c) => Ok(json!({"locked": false, "has_identity": c.has_identity(), "relay": c.st.relay, "mobile": mobile})),
                 }
             }
             // What a pasted invite says, before anything is created. Never needs an account.
@@ -440,11 +457,13 @@ impl App {
                 Ok(json!({"epoch": st.epoch, "me": st.my_device, "keys": keys,
                           "members": st.members.iter().map(|m| json!({"device": m.device, "account": m.account, "name": m.name, "me": m.is_me})).collect::<Vec<_>>()}))
             }),
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
             "game_keys_get" => {
                 let settings = self.with(|c| Ok(c.st.game_keys.clone()))?;
                 let i = commons_gamekeys::backend::info(&settings);
                 Ok(json!({"settings": serde_json::to_value(&settings).map_err(e)?, "backend": i.backend, "hold": i.hold, "toggle": i.toggle, "mouse": i.mouse, "note": i.note, "permission": i.permission, "portal_possible": cfg!(target_os = "linux"), "error": self.game.status().error}))
             }
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
             "game_keys_set" => {
                 let settings: commons_gamekeys::Settings = serde_json::from_value(a.clone()).map_err(|_| "Those settings could not be read.".to_string())?;
                 settings.check()?;
@@ -453,17 +472,29 @@ impl App {
                 Ok(json!({}))
             }
             // Names only, for the picker. It goes no further than this device's own settings page.
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
             "running_programs" => Ok(json!(commons_gamekeys::backend::processes())),
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
             "game_keys_allow" => Ok(json!({"allowed": commons_gamekeys::backend::request_permission()})),
             // A call's heartbeat and its news. It waits outside the client lock: this must not hold anything up, or be held up.
+            // A phone has no keyboard for a game to read: the call still asks, and is told nothing is muted.
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
             "game_mute_wait" => {
                 if let Ok(g) = self.client.try_lock() { self.game.set_settings(g.as_ref().map(|c| c.st.game_keys.clone()).unwrap_or_default()); }
                 let since = a.get("since").and_then(|x| x.as_u64()).unwrap_or(0);
                 let st = self.game.wait(since, Duration::from_secs(4));
                 Ok(json!({"seq": st.seq, "muted": st.muted, "game": st.game, "running": st.running, "error": st.error}))
             }
+            #[cfg(any(target_os = "ios", target_os = "android"))]
+            "game_mute_wait" => Ok(json!({"seq": 0, "muted": false, "game": null, "running": false, "error": null})),
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
             "game_mute_clear" => { self.game.user_unmute(); Ok(json!({})) }
+            #[cfg(any(target_os = "ios", target_os = "android"))]
+            "game_mute_clear" => Ok(json!({})),
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
             "open_call_in_browser" => self.open_call_in_browser(&s(&a, "gid"), &s(&a, "name"), a["launch"].as_bool().unwrap_or(true)),
+            #[cfg(any(target_os = "ios", target_os = "android"))]
+            "open_call_in_browser" => Err("Calls run in this app on your phone; there is no browser to hand them to.".into()),
             // A link someone posted, opened in the system browser when clicked. Only plain http(s) addresses.
             "open_link" => { let u = s(&a, "url"); if !link_ok(&u) { return Err("that is not a web address this app opens".into()); } Ok(json!({"opened": crate::callbridge::open_in_browser(&u)})) }
             // the relay round trip happens with the client free, like file downloads
@@ -516,7 +547,7 @@ fn snapshot(c: &Client) -> Value {
     json!({"me": {"account": me, "name": c.st.name, "device": c.my_device()}, "relay": c.st.relay, "relay_secret": !c.st.relay_invite.is_empty(), "communities": comms, "joining": joining, "refused": refused,
            "typing_enabled": c.st.typing_enabled, "share_listening": c.st.share_listening, "rune_url": c.rune_url(), "listening": listening,
            "outbox": c.st.outbox.len(), "problems": problems, "net": net, "net_detail": c.net.detail, "revoked": c.st.self_revoked,
-           "version": c.activity})
+           "mobile": cfg!(any(target_os = "ios", target_os = "android")), "version": c.activity})
 }
 
 /// A web address from a message that may be handed to the system browser: http or https, a host, and only the characters

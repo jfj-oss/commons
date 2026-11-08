@@ -221,8 +221,23 @@ $('#modal-root').addEventListener('click', e => {
 
 // ---- boot / onboarding ----
 const BRAND = `<div class="brand"><svg viewBox="0 0 40 46" aria-hidden="true"><use href="#crest"/></svg><svg class="hole" viewBox="0 0 12 14" aria-hidden="true"><use href="#i-keyhole"/></svg></div>`;
+// "mobile" is the iOS app: a few things a phone cannot do (game keys, updates) are left out there. A narrow desktop
+// window is still a desktop, so this is not the same question as isPhone().
+const mobileApp = () => window.__commonsPlatform === 'mobile';
+// iOS draws the keyboard over the page and leaves it at full height. Follow the visual viewport instead, so the
+// message box (and whatever is being typed) stays above the keyboard.
+(function fitKeyboard() {
+  const vv = window.visualViewport; if (!vv) return;
+  const fit = () => { if (mobileApp()) document.documentElement.style.setProperty('--app-h', vv.height + 'px'); };
+  vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit);
+  window.addEventListener('orientationchange', fit);
+  window.__fitKeyboard = fit;
+})();
 async function boot() {
   const st = await rpc('state');
+  window.__commonsPlatform = st.mobile ? 'mobile' : 'desktop';
+  document.body.dataset.platform = window.__commonsPlatform;
+  if (window.__fitKeyboard) window.__fitKeyboard();
   if (!st.locked) return st.has_identity ? startApp() : pairScreen(await rpc('pairing_resume'));
   const el = $('#boot'); el.hidden = false; $('#app').hidden = true;
   if (st.exists) {
@@ -1074,7 +1089,7 @@ $('#btn-settings').onclick = () => {
   <label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints (the relay can see that a message-sized packet was sent at that moment)</span></label>
   <label class="check"><input type="checkbox" id="lstr" ${S.snap.share_listening ? 'checked' : ''}><span>Share what I'm listening to</span></label>
   <label for="rune">rune address</label><input type="text" id="rune" value="${esc(S.snap.rune_url)}" spellcheck="false"><p class="muted small">Where rune, the music player on this computer, answers. The song title and artist go to the people in your communities, end to end encrypted, and stop showing when playback stops (ten minutes at most if the app closes). Nothing else is read or sent.</p>
-  <label>Calls</label><button type="button" class="btn ghost" id="set-gamekeys">Game keys…</button><p class="muted small">Mute yourself in Megatron while you talk to your game team.</p>
+  ${mobileApp() ? '' : '<label>Calls</label><button type="button" class="btn ghost" id="set-gamekeys">Game keys…</button><p class="muted small">Mute yourself in Megatron while you talk to your game team.</p>'}
   <label for="rl">Relay address</label><input type="text" id="rl" value="${esc(S.snap.relay)}" spellcheck="false"><p class="muted small">Change this only if your relay moved. A different relay does not have your communities.<br>Your account id: <span class="mono">${esc(S.snap.me.account.slice(0, 16))}…</span></p>
   <label for="rs">This server's sign-up secret</label><input type="password" id="rs" value="" spellcheck="false" autocomplete="off" placeholder="${S.snap.relay_secret ? 'Saved on this device — leave empty to keep it' : 'Not saved on this device — paste it here if you have it'}"><p class="muted small">A device added by pairing or recovery may not have it; without it, invite links from this device only work for people who already have an account here. It is checked with the relay and never shown again once saved.</p>`,
   [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => {

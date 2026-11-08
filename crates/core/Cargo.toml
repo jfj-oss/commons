@@ -6,7 +6,6 @@ publish = false
 
 [dependencies]
 commons-proto = { path = "../proto" }
-commons-gamekeys = { path = "../gamekeys" }
 openmls = "0.9"
 openmls_rust_crypto = "0.6"
 openmls_basic_credential = "0.6"
@@ -27,6 +26,9 @@ thiserror = "2"
 anyhow = "1"
 log = "0.4"
 
+# Game keys read a desktop's keyboard state. Phones have no such thing, and the crate has no mobile backend.
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+commons-gamekeys = { path = "../gamekeys" }
 
 [features]
 devbridge = []

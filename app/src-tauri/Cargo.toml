@@ -3,17 +3,30 @@ name = "commons-app"
 version = "0.2.3"
 edition = "2021"
 publish = false
-description = "Megatron: private end-to-end encrypted group chat (desktop)"
+description = "Megatron: private end-to-end encrypted group chat"
+
+# The desktop binary is thin (src/main.rs); this is the same app as a library, which is how Tauri starts it on iOS.
+[lib]
+name = "commons_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-tauri-plugin-single-instance = "2"
 commons-core = { path = "../../crates/core" }
 serde_json = "1"
+
+# Desktop only: a second launch brings the open window forward, and signed updates restart the app.
+# Neither exists on a phone (iOS starts one instance, and SideStore does the updating).
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+tauri-plugin-single-instance = "2"
 # Pinned to a minor version: configure_client hands us its reqwest builder (redirects are switched off there).
 tauri-plugin-updater = "~2.14"
 reqwest = { version = "0.13", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# iOS has no process to start a browser with; the official opener plugin hands a link to Safari instead.
+[target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
+tauri-plugin-opener = "2"
