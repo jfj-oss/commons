@@ -75,7 +75,7 @@ async fn main() {
             if api_secret.starts_with("REPLACE") { eprintln!("refusing to start: the LiveKit API secret is still the REPLACE placeholder from the template"); std::process::exit(2) }
             if api_secret.len() < 32 { eprintln!("refusing to start: the LiveKit API secret must be at least 32 characters"); std::process::exit(2) }
             tracing::info!("call tokens enabled for {url}");
-            Some(commons_relay::LiveKitCfg { api_key, api_secret, url, token_ttl_secs: lk_ttl, turn_port })
+            Some(commons_relay::LiveKitCfg { api_key, api_secret, url, token_ttl_secs: lk_ttl, turn_port, api_url: front_lk.map(|a| format!("http://{a}")) })
         }
         (None, None, None) => None,
         _ => { eprintln!("call support needs all of: livekit url, key and secret"); std::process::exit(2) }
