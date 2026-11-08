@@ -5,7 +5,7 @@ use crate::envelope::{check_name, safe_file_name, InviteLink, RelayLink};
 use crate::state::*;
 use crate::transport::{Api, HttpTransport};
 use crate::vault::KdfParams;
-use commons_proto::{b64, unb64};
+use commons_proto::{b64, unb64, LargeBeginReq};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -386,6 +386,79 @@ impl App {
                 let at = a.get("offset").and_then(|x| x.as_u64()).unwrap_or(0).min(d.len() as u64) as usize;
                 Ok(json!({"data": b64(&d[at..(at + FILE_CHUNK).min(d.len())])}))
             }
+            // Large files: the UI hands over one chunk of the File at a time; the core encrypts and uploads it with
+            // the client free, and never holds more than that chunk. The relay remembers what arrived, so offering
+            // the same file again (after a drop or a restart) continues instead of starting over.
+            "file_upload_begin" => {
+                let (gid, name, mime, caption) = (s(&a, "gid"), s(&a, "name"), s(&a, "mime"), s(&a, "caption"));
+                let size = a.get("size").and_then(|x| x.as_u64()).ok_or("missing file size")?;
+                let lm = a.get("last_modified").and_then(|x| x.as_u64()).unwrap_or(0);
+                let (u, (api, k)) = self.with(|c| Ok((c.large_upload_begin(&gid, &name, &mime, size, lm, &caption).map_err(e)?, c.net_handle().map_err(e)?)))?;
+                let resp = api.large_begin(&k, &u.id, &LargeBeginReq { gid: gid.clone(), size, chunk_size: u.chunk_size }).map_err(e)?;
+                let u = self.with(|c| c.large_upload_started(&u.id, &resp).map_err(e))?;
+                Ok(json!({"id": u.id, "chunk_size": u.chunk_size, "chunks": u.chunks, "uploaded": u.uploaded, "expires": u.expires, "complete": u.complete, "name": u.name}))
+            }
+            "file_upload_chunk" => {
+                let id = s(&a, "id");
+                let index = a.get("index").and_then(|x| x.as_u64()).ok_or("missing chunk index")?;
+                let plain = unb64(&s(&a, "data")).map_err(e)?;
+                let prep = self.with(|c| c.large_chunk_prepare(&id, index, &plain).map_err(e))?;
+                if prep.needed {
+                    let (api, k, blob) = self.with(|c| {
+                        let blob = c.st.large_uploads.get(&id).map(|u| u.blob.clone()).ok_or("no such upload")?;
+                        let (api, k) = c.net_handle().map_err(e)?;
+                        Ok((api, k, blob))
+                    })?;
+                    api.large_put_chunk(&k, &blob, index, &prep.ct).map_err(e)?; // slow part, client free
+                }
+                self.with(|c| { c.large_chunk_done(&id, index); Ok(json!({"sent": prep.needed})) })
+            }
+            "file_upload_finish" => {
+                let id = s(&a, "id");
+                let (blob, root, (api, k)) = self.with(|c| {
+                    let (b, r) = c.large_finish_prepare(&id).map_err(e)?;
+                    Ok((b, r, c.net_handle().map_err(e)?))
+                })?;
+                api.large_finish(&k, &blob, &root).map_err(e)?;
+                self.with(|c| c.large_finish_done(&id).map(|mid| json!({"id": mid})).map_err(e))
+            }
+            "file_upload_cancel" => {
+                let id = s(&a, "id");
+                let blob = self.with(|c| c.large_upload_cancel(&id).map_err(e))?;
+                if let Some(b) = blob {
+                    // Best effort: a relay that cannot be reached now will remove the orphan when it expires.
+                    if let Ok((api, k)) = self.with(|c| c.net_handle().map_err(e)) { let _ = api.large_delete(&k, &b); }
+                }
+                Ok(json!({}))
+            }
+            "file_download_begin" => {
+                let d = self.with(|c| c.large_download_begin(&s(&a, "gid"), &s(&a, "id")).map_err(e))?;
+                Ok(json!({"done": d.done, "chunks": d.chunks, "size": d.size, "chunk_size": d.chunk_size, "save_name": d.save_name, "finished": d.finished, "path": d.path}))
+            }
+            "file_download_chunk" => {
+                let (gid, id) = (s(&a, "gid"), s(&a, "id"));
+                let st = self.with(|c| c.large_download_state(&id).ok_or_else(|| "no download in progress".to_string()))?;
+                if st.finished { return Ok(json!({"done": st.done, "chunks": st.chunks, "size": st.size, "finished": true, "path": st.path, "save_name": st.save_name})); }
+                let (api, k) = self.with(|c| c.net_handle().map_err(e))?;
+                let ct = api.large_get_chunk(&k, &st.blob, st.done).map_err(e)?; // slow part, client free
+                let step = self.with(|c| c.large_download_write(&gid, &id, &ct).map_err(e))?;
+                Ok(json!({"done": step.done, "chunks": step.chunks, "size": step.size, "finished": step.finished, "path": step.path, "save_name": st.save_name}))
+            }
+            "file_download_cancel" => self.with(|c| c.large_download_cancel(&s(&a, "id")).map(|_| json!({})).map_err(e)),
+            "file_show_in_folder" => self.with(|c| c.show_download_in_folder(&s(&a, "id")).map(|opened| json!({"opened": opened})).map_err(e)),
+            // Only the sender's account may do this, and only after the relay really let go of the bytes.
+            "file_delete" => {
+                let (gid, id) = (s(&a, "gid"), s(&a, "id"));
+                let blob = self.with(|c| c.large_delete_prepare(&gid, &id).map_err(e))?;
+                let (api, k) = self.with(|c| c.net_handle().map_err(e))?;
+                match api.large_delete(&k, &blob) {
+                    Ok(()) => {}
+                    Err(err) if crate::transport::relay_status(&err) == Some(404) => {}
+                    Err(err) => return Err(e(err)),
+                }
+                self.with(|c| c.large_delete_done(&gid, &id).map(|_| json!({})).map_err(e))
+            }
+            "set_download_dir" => self.with(|c| c.set_download_dir(&s(&a, "dir")).map(|dir| json!({"dir": dir})).map_err(e)),
             "create_community" => self.with(|c| c.create_community(&s(&a, "name")).map(|id| json!({"id": id})).map_err(e)),
             "create_channel" => self.with(|c| c.create_channel(&s(&a, "cid"), &s(&a, "name")).map(|id| json!({"id": id})).map_err(e)),
             "create_invite" => self.with(|c| {
@@ -547,6 +620,7 @@ fn snapshot(c: &Client) -> Value {
     json!({"me": {"account": me, "name": c.st.name, "device": c.my_device()}, "relay": c.st.relay, "relay_secret": !c.st.relay_invite.is_empty(), "communities": comms, "joining": joining, "refused": refused,
            "typing_enabled": c.st.typing_enabled, "share_listening": c.st.share_listening, "rune_url": c.rune_url(), "listening": listening,
            "outbox": c.st.outbox.len(), "problems": problems, "net": net, "net_detail": c.net.detail, "revoked": c.st.self_revoked,
+           "download_dir": c.download_dir().display().to_string(),
            "mobile": cfg!(any(target_os = "ios", target_os = "android")), "version": c.activity})
 }
 
@@ -575,7 +649,16 @@ fn messages(c: &Client, gid: &str, limit: usize, around: &str) -> Value {
     let out: Vec<Value> = all[start..].iter().map(|m| {
         let (kind, text, file) = match &m.body {
             MsgBody::Text(t) => ("text", t.clone(), Value::Null),
-            MsgBody::File { name, mime, size, caption, .. } => ("file", caption.clone(), json!({"name": name, "mime": mime, "size": size})),
+            MsgBody::File { name, mime, size, caption, large, .. } => {
+                let mut f = json!({"name": name, "mime": mime, "size": large.as_ref().map(|l| l.size).unwrap_or(*size)});
+                if let Some(l) = large {
+                    f["large"] = json!({"size": l.size, "chunks": l.chunks, "chunk_size": l.chunk_size, "sha256": l.sha256, "expires": l.expires});
+                    if let Some(d) = c.large_download_state(&m.id) {
+                        f["download"] = json!({"done": d.done, "chunks": d.chunks, "size": d.size, "finished": d.finished, "path": d.path, "save_name": d.save_name});
+                    }
+                }
+                ("file", caption.clone(), f)
+            }
             MsgBody::Notice(t) => match member_line(c, t) { Some(line) => ("member", line, Value::Null), None => ("notice", t.clone(), Value::Null) },
         };
         let reply = m.reply.as_deref().and_then(|id| find.get(id)).map(|r| json!({"id": r.id, "name": c.display_name(&r.sender), "text": match &r.body { MsgBody::Text(t) if !r.deleted => t.chars().take(120).collect::<String>(), MsgBody::File { name, .. } => format!("[file] {name}"), _ => "(deleted)".into() }}));

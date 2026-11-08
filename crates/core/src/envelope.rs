@@ -73,6 +73,43 @@ pub const LISTENING_TTL_SECS: u64 = 600;
 pub const LISTENING_REFRESH_SECS: u64 = 300;
 pub const MAX_LISTEN_LINE: usize = 160;
 
+/// A file that travels in chunks because it is far too large for one encrypted blob. The key and nonce in the
+/// enclosing `File` are the file's key material; each chunk's key and nonce are derived from them and its index, and
+/// every chunk is authenticated with the chunk index and plaintext length as additional data. `sha256` commits to the
+/// whole file: see `crate::large::root_hash`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct LargeFile {
+    /// The real size, which `File::size` is not (that one stays inside an old app's 25 MB limit).
+    pub size: u64,
+    pub chunks: u64,
+    pub chunk_size: u64,
+    /// Hex of the whole-file root hash.
+    pub sha256: String,
+    /// When the relay removes it, so the chat can say so.
+    pub expires: u64,
+}
+impl LargeFile {
+    pub fn chunk_count(size: u64, chunk_size: u64) -> u64 {
+        if chunk_size == 0 { return 0; }
+        size / chunk_size + u64::from(size % chunk_size != 0)
+    }
+    /// The length of one chunk's plaintext, given the file size.
+    pub fn plain_len(&self, index: u64) -> Option<u64> {
+        if index >= self.chunks { return None; }
+        Some(if index + 1 == self.chunks { self.size - self.chunk_size * (self.chunks - 1) } else { self.chunk_size })
+    }
+    pub fn validate(&self, outer_size: u64) -> Result<(), ParseError> {
+        if self.size <= commons_proto::LARGE_FILE_THRESHOLD { return bad("a large file must be above the large-file threshold"); }
+        if self.chunk_size < commons_proto::MIN_LARGE_CHUNK_BYTES || self.chunk_size > commons_proto::MAX_LARGE_CHUNK_BYTES { return bad("bad large-file chunk size"); }
+        if self.chunks == 0 || self.chunks > 1_000_000 || self.chunks != Self::chunk_count(self.size, self.chunk_size) { return bad("bad large-file chunk count"); }
+        if !is_key(&self.sha256) || commons_proto::unhex32(&self.sha256).is_err() { return bad("bad large-file hash"); }
+        if self.expires == 0 { return bad("bad large-file expiry"); }
+        // Old apps check this one, so it has to stay plausible to them.
+        if outer_size != self.size.min(commons_proto::MAX_BLOB_BYTES as u64) { return bad("bad large-file size"); }
+        Ok(())
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "t")]
 pub enum Envelope {
@@ -80,7 +117,17 @@ pub enum Envelope {
     Edit { target: String, text: String, ts: u64 },
     Delete { target: String },
     React { target: String, emoji: String, on: bool },
-    File { id: String, name: String, mime: String, size: u64, blob: String, key: String, nonce: String, #[serde(default)] caption: String, #[serde(default)] reply: Option<String>, ts: u64 },
+    File {
+        id: String, name: String, mime: String, size: u64, blob: String, key: String, nonce: String,
+        #[serde(default)] caption: String,
+        #[serde(default)] reply: Option<String>,
+        ts: u64,
+        /// Present only for a file too large for one blob. An app from 0.2.x parses this message as the ordinary
+        /// `File` it already knows (serde ignores the field), so it gets no "unknown kind" notice: it just cannot
+        /// download the bytes. `size` above then says `min(real size, MAX_BLOB_BYTES)` so that old validation passes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        large: Option<LargeFile>,
+    },
     Typing,
     /// A person's profile refresh. Extra fields ride on it rather than new kinds: an older Megatron parses this as the
     /// `Profile` it already knows and serde ignores the rest, so nothing new ever reaches an old app's `Unknown` notice.
@@ -126,8 +173,7 @@ pub enum Envelope {
 /// Where one profile picture is, and how to open it. The bytes themselves travel as a blob, encrypted the same way an
 /// attachment's are, with this key and nonce; the relay only ever holds the ciphertext.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct AvatarRef {
-    pub blob: String,
+pub struct AvatarRef {    pub blob: String,
     pub key: String,
     pub nonce: String,
     pub mime: String,
@@ -173,10 +219,11 @@ impl Envelope {
                 let emojiish = emoji.chars().all(|c| !c.is_ascii() || c.is_ascii_digit() || c == '#' || c == '*') && emoji.chars().any(|c| !c.is_ascii());
                 if !is_id(target) || emoji.is_empty() || emoji.chars().count() > 16 || !short(emoji, 32) || !emojiish { return bad("bad reaction"); }
             }
-            File { id, name, mime, size, blob, key, nonce, caption, reply, .. } => {
+            File { id, name, mime, size, blob, key, nonce, caption, reply, large, .. } => {
                 if !is_id(id) || !is_id(blob) || !short(name, 255) || !valid_mime(mime) || *size > commons_proto::MAX_BLOB_BYTES as u64 || caption.len() > MAX_TEXT { return bad("bad file"); }
                 if key.len() != 64 || nonce.len() != 24 || hex::decode(key).is_err() || hex::decode(nonce).is_err() { return bad("bad file key"); }
                 if reply.as_deref().is_some_and(|r| !is_id(r)) { return bad("bad reply"); }
+                if let Some(l) = large { l.validate(*size)?; }
             }
             Typing | Leave | Unknown => {}
             Profile { name, listen, avatar, avatar_cleared, .. } => {
@@ -531,6 +578,57 @@ mod compat_tests {
         let plain = Envelope::Profile { name: "Ana".into(), ts: 5, listen: None, avatar: None, avatar_cleared: false };
         // (listen is always written, as null when there is none: 0.2.x ignores it, and null clears a shown status)
         assert_eq!(plain.to_bytes(), br#"{"t":"Profile","name":"Ana","ts":5,"listen":null}"#);
+    }
+
+    #[test]
+    fn an_older_app_reads_a_large_file_as_an_ordinary_file() {
+        let size = 28u64 << 30;
+        let chunk_size = commons_proto::LARGE_CHUNK_BYTES;
+        let large = LargeFile { size, chunks: LargeFile::chunk_count(size, chunk_size), chunk_size, sha256: "ab".repeat(32), expires: commons_proto::now_secs() + 7 * 86400 };
+        let env = Envelope::File {
+            id: "00112233445566778899aabbccddeeff".into(), name: "movie.mkv".into(), mime: "video/x-matroska".into(),
+            size: size.min(commons_proto::MAX_BLOB_BYTES as u64), blob: "ffeeddccbbaa99887766554433221100".into(),
+            key: "00".repeat(32), nonce: "11".repeat(12), caption: String::new(), reply: None, ts: 5, large: Some(large.clone()),
+        };
+        let bytes = env.to_bytes();
+        assert_eq!(Envelope::parse(&bytes).unwrap(), env);
+        assert_ne!(Envelope::parse(&bytes).unwrap(), Envelope::Unknown);
+
+        // What a 0.2.x app parses: no `large` field, and it checks that size is within its own blob limit.
+        #[derive(Deserialize, Debug)]
+        #[serde(tag = "t")]
+        enum OldEnvelope {
+            File { id: String, name: String, mime: String, size: u64, blob: String, key: String, nonce: String, #[serde(default)] caption: String, #[serde(default)] reply: Option<String>, ts: u64 },
+            #[serde(other)]
+            Unknown,
+        }
+        let old: OldEnvelope = serde_json::from_slice(&bytes).unwrap();
+        match old {
+            OldEnvelope::File { size: outer, name, .. } => {
+                assert_eq!(name, "movie.mkv");
+                assert!(outer <= commons_proto::MAX_BLOB_BYTES as u64, "an old app would refuse the message");
+            }
+            OldEnvelope::Unknown => panic!("a large file must never look like an unknown kind"),
+        }
+
+        // A small file is byte-for-byte what this version always sent: no empty extra field.
+        let plain = Envelope::File { id: "00112233445566778899aabbccddeeff".into(), name: "a.txt".into(), mime: "text/plain".into(), size: 3, blob: "ffeeddccbbaa99887766554433221100".into(), key: "00".repeat(32), nonce: "11".repeat(12), caption: String::new(), reply: None, ts: 5, large: None };
+        assert!(!String::from_utf8(plain.to_bytes()).unwrap().contains("large"));
+
+        // A mismatched outer size, chunk count or hash is refused by this version.
+        let bad = |f: &dyn Fn(&mut LargeFile)| {
+            let mut e = env.clone();
+            let Envelope::File { large: Some(ref mut l), .. } = e else { unreachable!() };
+            f(l);
+            assert!(Envelope::parse(&serde_json::to_vec(&e).unwrap()).is_err());
+        };
+        bad(&|l| l.size += 1);
+        bad(&|l| l.chunks += 1);
+        bad(&|l| l.chunk_size = 1024);
+        bad(&|l| l.sha256 = "zz".repeat(32));
+        let mut small_outer = env.clone();
+        if let Envelope::File { ref mut size, .. } = small_outer { *size = 1; }
+        assert!(Envelope::parse(&serde_json::to_vec(&small_outer).unwrap()).is_err());
     }
 
     #[test]

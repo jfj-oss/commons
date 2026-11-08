@@ -376,7 +376,7 @@ impl Client {
         self.st.outbox.push(OutItem { id: if matches!(env, Envelope::Text { .. } | Envelope::File { .. }) { rand_hex(16) } else { id }, gid: gid.into(), env, cipher: None, tries: 0 });
         self.activity += 1;
     }
-    fn check_chan(&self, gid: &str) -> Result<()> {
+    pub(crate) fn check_chan(&self, gid: &str) -> Result<()> {
         if self.st.self_revoked { bail!("this device has been revoked, so it can no longer send"); }
         match self.st.groups.get(gid) { Some(g) if g.kind == Kind::Channel && !g.removed => Ok(()), _ => bail!("not a channel you are in") }
     }
@@ -423,7 +423,7 @@ impl Client {
         let ct = ChaCha20Poly1305::new((&key).into()).encrypt(Nonce::from_slice(&nonce), data).map_err(|_| anyhow!("encrypt"))?;
         let safe: String = name.chars().filter(|c| !c.is_control()).collect();
         let safe = cut_name(safe.trim(), 200);
-        let env = Envelope::File { id: rand_hex(16), name: if safe.is_empty() { "file".into() } else { safe }, mime: clean_mime(mime), size: data.len() as u64, blob: rand_hex(16), key: hex::encode(key), nonce: hex::encode(nonce), caption: caption.into(), reply: None, ts: now_secs() };
+        let env = Envelope::File { id: rand_hex(16), name: if safe.is_empty() { "file".into() } else { safe }, mime: clean_mime(mime), size: data.len() as u64, blob: rand_hex(16), key: hex::encode(key), nonce: hex::encode(nonce), caption: caption.into(), reply: None, ts: now_secs(), large: None };
         env.validate().map_err(|e| anyhow!("{e}"))?;
         Ok(OutFile { gid: gid.into(), env, ct })
     }

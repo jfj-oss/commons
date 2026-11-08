@@ -672,3 +672,23 @@ label.check input { accent-color: var(--accent); margin: 3px 0 0; flex: none; }
   background: repeating-conic-gradient(rgba(255,255,255,.06) 0 25%, transparent 0 50%) 0 0 / 18px 18px; box-shadow: 0 6px 22px rgba(0,0,0,.28); }
 .crop-stage canvas:active { cursor: grabbing; }
 .crop-modal input[type=range] { width: 100%; }
+
+/* ---- large files: transfers, with their own progress and a way out ---- */
+button.dl { background: none; border: 0; padding: 0; cursor: pointer; font-family: inherit; }
+.file .dl.again { margin-left: 10px; opacity: .85; }
+#transfers { position: fixed; right: 18px; bottom: 86px; width: min(340px, calc(100vw - 24px)); z-index: 40;
+  background: var(--raise); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 10px 12px; }
+#transfers[hidden] { display: none; }
+.xfer-title { font: 600 12px var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); padding-bottom: 4px; }
+.xfer { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }
+.xfer:first-of-type { border-top: 0; }
+.xfer-head { display: flex; align-items: center; gap: 8px; }
+.xfer-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 13.5px var(--sans); color: var(--ink); }
+.xfer-bar { height: 6px; margin-top: 7px; background: var(--page-sunk); border-radius: 99px; overflow: hidden; }
+.xfer-bar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width .25s var(--ease); }
+.xfer-note { margin-top: 4px; color: var(--ink-3); }
+.xfer-state { margin-top: 1px; color: var(--ink-3); }
+.xfer-inline { max-width: 400px; margin-top: 4px; }
+.saved-line { display: flex; align-items: center; gap: 5px; color: var(--ok); margin-top: 4px; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.saved-line .ic { width: 14px; height: 14px; flex: none; }
+@media (max-width: 640px) { #transfers { right: 10px; bottom: 76px; } }

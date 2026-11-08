@@ -156,6 +156,28 @@ impl Api {
     pub fn get_blob(&self, k: &SigningKey, id: &str) -> Result<Vec<u8>> {
         Ok(ok(self.t.request(Some(k), "GET", &format!("/v1/blobs/{id}"), &[], Duration::from_secs(300))?, "blob get")?.body)
     }
+    // ---- large files: one chunk per request, so neither side ever holds the whole file ----
+    pub fn large_begin(&self, k: &SigningKey, id: &str, req: &LargeBeginReq) -> Result<LargeInfoResp> {
+        let r = self.post(k, &format!("/v1/large-files/{id}/begin"), req)?;
+        Ok(serde_json::from_slice(&r.body)?)
+    }
+    pub fn large_info(&self, k: &SigningKey, id: &str) -> Result<LargeInfoResp> {
+        let r = ok(self.t.request(Some(k), "GET", &format!("/v1/large-files/{id}/info"), &[], T)?, "large info")?;
+        Ok(serde_json::from_slice(&r.body)?)
+    }
+    pub fn large_put_chunk(&self, k: &SigningKey, id: &str, index: u64, data: &[u8]) -> Result<()> {
+        ok(self.t.request(Some(k), "PUT", &format!("/v1/large-files/{id}/chunks/{index}"), data, Duration::from_secs(300))?, "large chunk put").map(|_| ())
+    }
+    pub fn large_get_chunk(&self, k: &SigningKey, id: &str, index: u64) -> Result<Vec<u8>> {
+        Ok(ok(self.t.request(Some(k), "GET", &format!("/v1/large-files/{id}/chunks/{index}"), &[], Duration::from_secs(300))?, "large chunk get")?.body)
+    }
+    pub fn large_finish(&self, k: &SigningKey, id: &str, sha256: &str) -> Result<LargeInfoResp> {
+        let r = self.post(k, &format!("/v1/large-files/{id}/finish"), &LargeFinishReq { sha256: sha256.into() })?;
+        Ok(serde_json::from_slice(&r.body)?)
+    }
+    pub fn large_delete(&self, k: &SigningKey, id: &str) -> Result<()> {
+        ok(self.t.request(Some(k), "DELETE", &format!("/v1/large-files/{id}"), &[], T)?, "large delete").map(|_| ())
+    }
     pub fn rv_put(&self, k: &SigningKey, rid: &str, slot: &str, data: &[u8]) -> Result<()> {
         ok(self.t.request(Some(k), "PUT", &format!("/v1/rendezvous/{rid}/{slot}"), data, T)?, "rv put").map(|_| ())
     }
