@@ -9,6 +9,7 @@ Type=simple
 # Install it first: see packaging/megatron-bot/README.md (or enable.sh here).
 ExecStart=%h/.local/bin/megatron-bot run
 Environment=MEGATRON_BOT_DATA=%h/.local/share/megatron-bot
+Environment=MEGATRON_BOT_MODEL=hf.co/OBLITERATUS/Ornith-1.5-9B-OBLITERATED:Q6_K
 
 # A hard ceiling the owner asked for. Answers are local by default; only a community admin can switch one room to
 # DeepSeek, and those answers say so in the room.
