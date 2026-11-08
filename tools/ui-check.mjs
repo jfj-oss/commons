@@ -221,6 +221,50 @@ try {
   await A.ev(`document.querySelector('.room-live .live-p').click()`);
   if (!(await A.ev(`!!window.__joined && window.__joined[0] === ${JSON.stringify(gid)}`))) throw new Error('clicking a person did not join that room call');
   await A.shot('09-call-presence');
+  // ---- voice rooms ----
+  // One new choice in the + dialog. A voice room sits in its own group under the text rooms, wears a speaker
+  // instead of the keyhole, lists the people in its call for every member, and one click joins that call without
+  // taking the conversation away.
+  await click(A, '#add-room'); await type(A, '#n', 'lounge');
+  await A.ev(`document.querySelector('.modal .seg[data-for="kind"] button[data-v=voice]').click()`);
+  await A.ev(`document.querySelector('.modal .acts button:last-child').click()`);
+  await A.waitFor(`[...document.querySelectorAll('#rooms .room')].some(r => (r.getAttribute('aria-label')||'').startsWith('lounge, voice room'))`, 20000);
+  const vr = await A.ev(`(() => {
+    const rooms = [...document.querySelectorAll('#rooms .room')];
+    const room = rooms.find(r => (r.getAttribute('aria-label')||'').startsWith('lounge, voice room'));
+    const label = document.querySelector('#rooms .rail-label.voice-label');
+    const after = !!label && !!room && !!(label.compareDocumentPosition(room) & Node.DOCUMENT_POSITION_FOLLOWING);
+    return { ok: !!room && !!label && label.textContent.trim() === 'Voice' && after && !!room.querySelector('.kh.speaker use[href="#i-speaker"]'), label: label && label.textContent, after };
+  })()`);
+  if (!vr.ok) throw new Error('a voice room is not in a Voice group with a speaker icon: ' + JSON.stringify(vr));
+  const vgid = await A.ev(`S.snap.communities[0].channels.find(c => c.name === 'lounge').gid`);
+  await A.ev(`(()=>{ window.__joined=null;
+    S.presence.set(${JSON.stringify(vgid)}, [
+      { account:'ann', name:'Ann', me:false, speaking:true, muted:false, deafened:false },
+      { account:'ben', name:'Ben', me:false, speaking:false, muted:true, deafened:false },
+      { account:'cal', name:'Cal', me:true, speaking:false, muted:true, deafened:true }]);
+    S.presenceSig='voice-stub'; S.presenceBackoff=Date.now()+60000; renderRail(); })()`);
+  const vs = await A.ev(`(() => {
+    const room = [...document.querySelectorAll('#rooms .room')].find(r => r.dataset.g === ${JSON.stringify(vgid)});
+    const wrap = room && room.closest('.room-wrap');
+    const rows = wrap ? [...wrap.querySelectorAll('.room-live.voice .live-p')] : [];
+    const by = n => rows.find(r => r.textContent.includes(n));
+    const ring = e => e ? getComputedStyle(e.querySelector('.seal')).boxShadow : '';
+    const cal = rows.find(r => r.classList.contains('deafened'));
+    return { rows: rows.length, names: rows.map(r => r.querySelector('.live-n').textContent),
+      ann: (by('Ann')||{}).className, ben: (by('Ben')||{}).className, cal: (cal||{}).className,
+      rings: [ring(by('Ann')), ring(by('Ben')), ring(cal)] };
+  })()`);
+  if (vs.rows !== 3) throw new Error('a voice room does not list everyone in its call: ' + JSON.stringify(vs));
+  if (!vs.names.includes('You')) throw new Error('your own row under a voice room should read You');
+  if (!/speaking/.test(vs.ann) || !/muted/.test(vs.ben) || !/deafened/.test(vs.cal)) throw new Error('voice-room people lost their speaking/mute/deafen state: ' + JSON.stringify(vs));
+  if (vs.rings.some(r => !r || r === 'none')) throw new Error('voice-room people lost their speaking/mute/deafen ring: ' + JSON.stringify(vs.rings));
+  const chatBefore = await A.ev(`S.gid`);
+  await A.ev(`[...document.querySelectorAll('#rooms .room')].find(r => r.dataset.g === ${JSON.stringify(vgid)}).click()`);
+  await sleep(150);
+  if (!(await A.ev(`!!window.__joined && window.__joined[0] === ${JSON.stringify(vgid)}`))) throw new Error('clicking a voice room did not join its call');
+  if ((await A.ev(`S.gid`)) !== chatBefore) throw new Error('opening a voice room replaced the chat with a room screen');
+  await A.shot('09-voice-room');
   // Phone-width layout: the rail folds away, the composer stays on screen, and desktop-only settings are gone.
   const P = await open('http://127.0.0.1:7101/');
   await P.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });

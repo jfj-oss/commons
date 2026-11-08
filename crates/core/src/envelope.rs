@@ -293,8 +293,23 @@ impl GroupExt {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct ChanMeta { pub id: String, pub name: String }
+/// How a room is used. Empty is an ordinary text room and is what an app from before voice rooms writes (and
+/// reads); `"voice"` is a room whose call is the room itself. The field is additive on purpose: an older app's
+/// `ChanMeta` ignores it, so a voice room simply appears there as a normal room and nothing reaches `Envelope`.
+pub const ROOM_VOICE: &str = "voice";
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct ChanMeta {
+    pub id: String,
+    pub name: String,
+    /// Empty for a text room. Kept as a small token, not an enum, so a kind from a newer app is carried and ignored
+    /// (shown as a text room) rather than making the whole table unreadable.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+}
+impl ChanMeta {
+    fn valid_kind(k: &str) -> bool { k.len() <= 32 && k.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') }
+}
 
 /// Stored in the group-context extension of every group, so it is authenticated by MLS
 /// and handed to a joining device inside the Welcome.
@@ -319,7 +334,7 @@ impl GroupExt {
                 if consents.len() > MAX_CONSENTS || consents.iter().any(|c| !is_key(&c.account) || c.sig.len() != 128) { return bad("bad consents"); }
                 if name.is_empty() || !short(name, 64) || !is_key(owner) || nonce.len() != 32 || admins.len() > 512 || channels.len() > 500 || invites.len() > 200 { return bad("bad control ext"); }
                 // A channel id goes into URLs and into markup: hex only, whoever wrote this table.
-                for c in channels { if !is_gid(&c.id) || !short(&c.name, 64) || c.name.is_empty() { return bad("bad channel"); } }
+                for c in channels { if !is_gid(&c.id) || !short(&c.name, 64) || c.name.is_empty() || !ChanMeta::valid_kind(&c.kind) { return bad("bad channel"); } }
                 for i in invites { if !is_id(&i.id) || !is_key(&i.pk) { return bad("bad invite"); } }
             }
             GroupExt::Channel { community, name, owner, nonce, admins, transfers } => if !is_gid(community) || !short(name, 64) || !is_key(owner) || nonce.len() != 32 || admins.len() > 512 || transfers.len() > 200 { return bad("bad channel ext"); },
@@ -531,6 +546,52 @@ mod compat_tests {
         let plain = Envelope::Profile { name: "Ana".into(), ts: 5, listen: None, avatar: None, avatar_cleared: false };
         // (listen is always written, as null when there is none: 0.2.x ignores it, and null clears a shown status)
         assert_eq!(plain.to_bytes(), br#"{"t":"Profile","name":"Ana","ts":5,"listen":null}"#);
+    }
+
+    /// What a 0.2.x app parses: the channel table it already knew, with no `kind` on a room.
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct OldChanMeta { id: String, name: String }
+    #[derive(Deserialize, Debug, PartialEq)]
+    #[serde(tag = "k")]
+    enum OldGroupExt {
+        Control { name: String, owner: String, nonce: String, admins: Vec<AdminGrant>, channels: Vec<OldChanMeta>, invites: Vec<InviteMeta> },
+        Channel { community: String, name: String, owner: String, nonce: String, admins: Vec<AdminGrant> },
+    }
+
+    #[test]
+    fn a_voice_room_is_only_a_field_old_apps_ignore() {
+        let (general, lobby) = ("ab".repeat(16), "cd".repeat(16));
+        let ext = GroupExt::Control {
+            name: "club".into(), owner: "e".repeat(64), nonce: "f".repeat(32), admins: vec![],
+            channels: vec![
+                ChanMeta { id: general.clone(), name: "general".into(), kind: String::new() },
+                ChanMeta { id: lobby.clone(), name: "lobby".into(), kind: ROOM_VOICE.into() },
+            ],
+            invites: vec![], banned: vec![], transfers: vec![], consents: vec![],
+        };
+        let bytes = ext.to_bytes();
+        // This version reads the kind back.
+        assert_eq!(GroupExt::parse(&bytes).unwrap(), ext);
+        // A 0.2.x app reads the very same bytes as two ordinary rooms: the extra field is ignored, not an error.
+        let OldGroupExt::Control { channels, .. } = serde_json::from_slice::<OldGroupExt>(&bytes).unwrap() else { panic!("must read as a control table") };
+        assert_eq!(channels, vec![
+            OldChanMeta { id: general.clone(), name: "general".into() },
+            OldChanMeta { id: lobby.clone(), name: "lobby".into() },
+        ]);
+        // The kind lives in group-context metadata, never in an `Envelope`: an old app syncing this table has no
+        // message to parse, so nothing can reach its `Envelope::Unknown` notice.
+        assert!(!String::from_utf8(bytes.clone()).unwrap().contains("\"t\":"));
+        // A text room is still written exactly as 0.2.x wrote it: no empty field, no new spelling.
+        let plain = ChanMeta { id: general.clone(), name: "general".into(), kind: String::new() };
+        assert_eq!(serde_json::to_string(&plain).unwrap(), format!(r#"{{"id":"{id}","name":"general"}}"#, id = general));
+        // A kind is a small lower-case token; a table that claims otherwise is refused.
+        let mut bad = ext.clone();
+        if let GroupExt::Control { channels, .. } = &mut bad { channels[1].kind = "Voice!".into(); }
+        assert!(GroupExt::parse(&bad.to_bytes()).is_err());
+        // A kind from a newer app is carried and shown as a text room here, rather than making the table unreadable.
+        let mut later = ext;
+        if let GroupExt::Control { channels, .. } = &mut later { channels[1].kind = "stage".into(); }
+        assert_eq!(GroupExt::parse(&later.to_bytes()).unwrap(), later);
     }
 
     #[test]

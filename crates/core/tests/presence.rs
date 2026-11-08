@@ -21,10 +21,25 @@ use std::time::{Duration, Instant};
 
 const SECRET: &str = "presence-test-secret-0123456789abcdef";
 
+/// What one fake LiveKit participant reports. `mic`: Some(muted) = a published microphone track with that mute
+/// state; None = no microphone track at all, which the relay must count as muted.
+#[derive(Clone)]
+struct Part {
+    id: String,
+    state: String,
+    mic: Option<bool>,
+    deaf: bool,
+    speaking: bool,
+}
+impl Part {
+    fn active(id: &str) -> Part { Part { id: id.into(), state: "ACTIVE".into(), mic: Some(false), deaf: false, speaking: false } }
+    fn mic(id: &str, muted: bool) -> Part { Part { mic: Some(muted), ..Part::active(id) } }
+}
+
 #[derive(Default)]
 struct Fake {
-    /// room name -> [(identity, LiveKit participant state)]
-    rooms: Mutex<HashMap<String, Vec<(String, String)>>>,
+    /// room name -> LiveKit participants
+    rooms: Mutex<HashMap<String, Vec<Part>>>,
     /// every request the relay made to the media server: (path, authorization header)
     requests: Mutex<Vec<(String, String)>>,
 }
@@ -75,7 +90,17 @@ fn serve(mut s: TcpStream, fake: Arc<Fake>) {
     let room = serde_json::from_slice::<serde_json::Value>(&body).ok()
         .and_then(|v| v["room"].as_str().map(str::to_string)).unwrap_or_default();
     let parts = fake.rooms.lock().unwrap().get(&room).cloned().unwrap_or_default();
-    let list: Vec<serde_json::Value> = parts.iter().map(|(id, st)| serde_json::json!({"identity": id, "state": st})).collect();
+    let list: Vec<serde_json::Value> = parts.iter().map(|p| {
+        let mut v = serde_json::json!({"identity": p.id, "state": p.state});
+        if let Some(muted) = p.mic {
+            v["tracks"] = serde_json::json!([{ "type": "AUDIO", "source": "MICROPHONE", "muted": muted }]);
+        }
+        let mut attrs = serde_json::Map::new();
+        if p.deaf { attrs.insert("deaf".into(), "1".into()); }
+        if p.speaking { attrs.insert("speaking".into(), "1".into()); }
+        if !attrs.is_empty() { v["attributes"] = attrs.into(); }
+        v
+    }).collect();
     let out = serde_json::json!({"participants": list}).to_string();
     let _ = s.write_all(format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{out}", out.len()).as_bytes());
 }
@@ -114,11 +139,11 @@ fn the_relay_asks_livekit_with_a_room_scoped_admin_token_and_returns_devices_onl
     let (mut a, mut b) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"));
     let (_cid, gid) = { let mut r: Vec<&mut Peer> = vec![&mut b]; community_with(&net, &mut a, &mut r) };
     fake.rooms.lock().unwrap().insert(call_room(&gid), vec![
-        (a.c.my_device(), "ACTIVE".into()),
-        (b.c.my_device(), "ACTIVE".into()),
+        Part::active(&a.c.my_device()),
+        Part::active(&b.c.my_device()),
         // not ours, or gone: neither is shown
-        ("not-a-device-id".into(), "ACTIVE".into()),
-        ("ab".repeat(32), "DISCONNECTED".into()),
+        Part::active("not-a-device-id"),
+        Part { state: "DISCONNECTED".into(), ..Part::active(&"ab".repeat(32)) },
     ]);
     let r = ask(&net, &a, &[gid.clone()]);
     assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
@@ -161,7 +186,7 @@ fn only_current_members_who_are_not_cut_off_from_calls_learn_anything() {
     let net = net_with(&format!("http://127.0.0.1:{port}"));
     let (mut a, mut b, c) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"), Peer::new(&net, "carol"));
     let (cid, gid) = { let mut r: Vec<&mut Peer> = vec![&mut b]; community_with(&net, &mut a, &mut r) };
-    fake.rooms.lock().unwrap().insert(call_room(&gid), vec![(a.c.my_device(), "ACTIVE".into()), (b.c.my_device(), "ACTIVE".into())]);
+    fake.rooms.lock().unwrap().insert(call_room(&gid), vec![Part::active(&a.c.my_device()), Part::active(&b.c.my_device())]);
     // a registered stranger who is in no room of this relay gets an empty answer (and cannot tell that apart
     // from a room where nobody is calling)
     let r = ask_ok(&net, &c, &[gid.clone()]);
@@ -191,10 +216,10 @@ fn joins_and_leaves_show_up_after_the_short_cache() {
     let (mut a, mut b) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"));
     let (_cid, gid) = { let mut r: Vec<&mut Peer> = vec![&mut b]; community_with(&net, &mut a, &mut r) };
     let devs = |r: &CallPresenceResp| r.rooms.get(&gid).cloned().unwrap_or_default();
-    fake.rooms.lock().unwrap().insert(call_room(&gid), vec![(a.c.my_device(), "ACTIVE".into())]);
+    fake.rooms.lock().unwrap().insert(call_room(&gid), vec![Part::active(&a.c.my_device())]);
     assert_eq!(devs(&ask_ok(&net, &a, &[gid.clone()])), vec![a.c.my_device()]);
     // bob joins the call
-    fake.rooms.lock().unwrap().get_mut(&call_room(&gid)).unwrap().push((b.c.my_device(), "ACTIVE".into()));
+    fake.rooms.lock().unwrap().get_mut(&call_room(&gid)).unwrap().push(Part::active(&b.c.my_device()));
     let t = Instant::now();
     loop {
         if devs(&ask_ok(&net, &a, &[gid.clone()])).len() == 2 { break; }
@@ -202,7 +227,7 @@ fn joins_and_leaves_show_up_after_the_short_cache() {
         std::thread::sleep(Duration::from_millis(250));
     }
     // bob's client crashes: LiveKit drops the participant, and the rail follows after the cache expires
-    fake.rooms.lock().unwrap().get_mut(&call_room(&gid)).unwrap().retain(|(d, _)| d != &b.c.my_device());
+    fake.rooms.lock().unwrap().get_mut(&call_room(&gid)).unwrap().retain(|p| p.id != b.c.my_device());
     let t = Instant::now();
     loop {
         let now = devs(&ask_ok(&net, &a, &[gid.clone()]));
@@ -223,12 +248,15 @@ fn the_app_maps_device_ids_to_names_for_the_open_community() {
     let snap = app.call("snapshot", serde_json::json!({})).unwrap();
     let gid = snap["communities"][0]["channels"][0]["gid"].as_str().unwrap().to_string();
     let dev = snap["me"]["device"].as_str().unwrap().to_string();
-    fake.rooms.lock().unwrap().insert(call_room(&gid), vec![(dev, "ACTIVE".into())]);
+    fake.rooms.lock().unwrap().insert(call_room(&gid), vec![Part::mic(&dev, true)]);
     let r = app.call("call_presence", serde_json::json!({"cid": cid})).unwrap();
     let list = r["rooms"][&gid].as_array().expect("the room is in the answer");
     assert_eq!(list.len(), 1);
     assert_eq!(list[0]["name"], "A", "the name comes from this device's own state");
     assert_eq!(list[0]["me"], true);
+    assert_eq!(list[0]["muted"], true, "the rail can tint a muted microphone");
+    assert_eq!(list[0]["deafened"], false);
+    assert_eq!(list[0]["speaking"], false);
     assert!(app.call("call_presence", serde_json::json!({"cid": "00".repeat(16)})).unwrap()["rooms"].as_object().unwrap().is_empty(), "not a community we know: nothing to ask");
     // a relay with no media server says so; the UI treats that as "no calls", not as an error page
     let plain = Net::new();
@@ -237,12 +265,41 @@ fn the_app_maps_device_ids_to_names_for_the_open_community() {
 }
 
 #[test]
+fn presence_carries_mic_deafen_and_speaking_per_device() {
+    let (port, fake) = fake_livekit();
+    let net = net_with(&format!("http://127.0.0.1:{port}"));
+    let (mut a, mut b, mut c) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"), Peer::new(&net, "carol"));
+    let (_cid, gid) = { let mut r: Vec<&mut Peer> = vec![&mut b, &mut c]; community_with(&net, &mut a, &mut r) };
+    fake.rooms.lock().unwrap().insert(call_room(&gid), vec![
+        Part::mic(&a.c.my_device(), false),                                            // plain
+        Part { mic: Some(true), deaf: true, ..Part::active(&b.c.my_device()) },        // muted and deafened
+        Part { mic: None, speaking: true, ..Part::active(&c.c.my_device()) },          // no mic (muted), speaking
+    ]);
+    let resp = ask_ok(&net, &a, &[gid.clone()]);
+    let st = &resp.state[&gid];
+    assert_eq!(st.get(&a.c.my_device()), None, "a plain device needs no entry");
+    assert_eq!(st[&b.c.my_device()], CallPeerState { muted: true, deafened: true, speaking: false });
+    assert_eq!(st[&c.c.my_device()], CallPeerState { muted: true, deafened: false, speaking: true });
+    assert!(!String::from_utf8_lossy(&serde_json::to_vec(&resp).unwrap()).contains("alice"), "still device ids only");
+    let people = a.c.call_presence(&resp);
+    let by = |p: &Peer| people[&gid].iter().find(|x| x.account == p.acct()).cloned().unwrap();
+    let (pa, pb, pc) = (by(&a), by(&b), by(&c));
+    assert_eq!((pa.muted, pa.deafened, pa.speaking), (false, false, false));
+    assert_eq!((pb.muted, pb.deafened, pb.speaking), (true, true, false));
+    assert_eq!((pc.muted, pc.deafened, pc.speaking), (true, false, true));
+    // An older relay has no state map. Its answer still reads, and nobody is tinted.
+    let old = CallPresenceResp { rooms: resp.rooms.clone(), ..Default::default() };
+    let people = a.c.call_presence(&old);
+    assert!(people[&gid].iter().all(|p| !p.muted && !p.deafened && !p.speaking));
+}
+
+#[test]
 fn presence_never_reaches_the_log_and_older_clients_see_nothing() {
     let (port, fake) = fake_livekit();
     let net = net_with(&format!("http://127.0.0.1:{port}"));
     let (mut a, mut b) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"));
     let (cid, gid) = { let mut r: Vec<&mut Peer> = vec![&mut b]; community_with(&net, &mut a, &mut r) };
-    fake.rooms.lock().unwrap().insert(call_room(&gid), vec![(a.c.my_device(), "ACTIVE".into()), (b.c.my_device(), "ACTIVE".into())]);
+    fake.rooms.lock().unwrap().insert(call_room(&gid), vec![Part::active(&a.c.my_device()), Part::active(&b.c.my_device())]);
     settle(&mut [&mut a, &mut b]);
     let before_chan = relay_entries(&net, &gid).len();
     let before_ctrl = relay_entries(&net, &cid).len();

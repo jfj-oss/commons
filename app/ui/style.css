@@ -197,6 +197,20 @@ body[data-platform="mobile"] input, body[data-platform="mobile"] textarea, body[
 .live-join { margin-left: auto; border: 1px solid var(--rail-line); border-radius: 999px; background: none; color: var(--rail-mute); font: 600 11.5px/1.5 var(--sans); padding: 1px 9px; }
 .live-join:hover { color: var(--rail-ink); border-color: var(--accent); background: var(--rail-2); }
 .live-you { margin-left: auto; font-size: 11.5px; color: var(--accent); white-space: nowrap; }
+/* A voice room's people: a compact vertical list, wearing the call panel's speaking ring and microphone/deafen
+   tints. The ring sits on the seal itself; a round picture gets a round ring. */
+.rail-label.voice-label { margin-top: 10px; }
+.room .kh.speaker { width: 13px; height: 13px; }
+.room-live.voice { flex-direction: column; align-items: stretch; gap: 1px; padding: 0 10px 5px 30px; }
+.room-live.voice .live-p { max-width: none; padding: 2px 5px; }
+.room-live.voice .live-p .seal { --s: 18px; border-radius: 5px; }
+.room-live.voice .live-p .seal:has(img.av-img.round) { border-radius: 50%; }
+.room-live.voice .live-p .seal::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 2; }
+.room-live.voice .live-p.speaking .seal { box-shadow: 0 0 0 2px var(--accent); }
+.room-live.voice .live-p.muted .seal { box-shadow: 0 0 0 2px #e5484d; }
+.room-live.voice .live-p.muted .seal::after { background: rgba(229, 72, 77, .5); }
+.room-live.voice .live-p.deafened .seal { box-shadow: 0 0 0 2px #7a1418; }
+.room-live.voice .live-p.deafened .seal::after { background: rgba(110, 10, 16, .68); }
 
 .sync { font: 400 11.5px var(--mono); color: var(--rail-mute); padding: 8px 18px 8px; display: flex; align-items: center; gap: 7px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .sync::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--rail-mute); flex: none; opacity: .7; }

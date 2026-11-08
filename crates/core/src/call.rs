@@ -27,9 +27,19 @@ pub struct CallState {
 }
 
 /// One person in a room's call, as the rail shows them. `devices` is how many of that account's current devices
-/// the media server reports; the name comes from this device's own state, never from the relay.
+/// the media server reports; the name comes from this device's own state, never from the relay. `muted` and
+/// `deafened` describe the person: they hold only when every device of theirs is in that state (one unmuted device
+/// means they can still be heard), while `speaking` holds when any device is speaking.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CallPerson { pub account: String, pub name: String, pub devices: Vec<String>, pub is_me: bool }
+pub struct CallPerson {
+    pub account: String,
+    pub name: String,
+    pub devices: Vec<String>,
+    pub is_me: bool,
+    pub muted: bool,
+    pub deafened: bool,
+    pub speaking: bool,
+}
 
 impl Client {
     /// The call keys of this room at the epoch this device is at. Fails if this device is no longer in the room.
@@ -68,13 +78,20 @@ impl Client {
             let Some(g) = self.load_group(gid) else { continue };
             if !g.is_active() { continue; }
             let wanted: BTreeSet<&str> = devices.iter().map(String::as_str).collect();
+            let states = resp.state.get(gid);
             let mut people: BTreeMap<String, CallPerson> = BTreeMap::new();
             for (_, c) in mls::members_of(&g) {
                 if !wanted.contains(c.device.as_str()) { continue; }
+                // A relay from before this field sends none: then nobody is shown tinted.
+                let st = states.and_then(|m| m.get(&c.device)).copied().unwrap_or_default();
                 let e = people.entry(c.account.clone()).or_insert_with(|| CallPerson {
                     account: c.account.clone(), name: self.display_name(&c.account), devices: vec![], is_me: c.account == me,
+                    muted: true, deafened: true, speaking: false,
                 });
                 e.devices.push(c.device.clone());
+                e.muted &= st.muted;
+                e.deafened &= st.deafened;
+                e.speaking |= st.speaking;
             }
             if people.is_empty() { continue; }
             let mut v: Vec<CallPerson> = people.into_values().collect();

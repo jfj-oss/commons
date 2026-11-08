@@ -65,7 +65,14 @@ pub enum NetState { #[default] Connecting, Online, Offline }
 pub struct NetStatus { pub state: NetState, pub detail: String }
 
 #[derive(Debug, Clone)]
-pub struct ChannelInfo { pub gid: String, pub name: String, pub joined: bool, pub unread: usize }
+pub struct ChannelInfo {
+    pub gid: String,
+    pub name: String,
+    /// Empty for a text room, `"voice"` for a voice room (see `envelope::ROOM_VOICE`).
+    pub kind: String,
+    pub joined: bool,
+    pub unread: usize,
+}
 #[derive(Debug, Clone)]
 pub struct MemberInfo { pub account: String, pub name: String, pub role: Role, pub devices: usize, pub verified: bool, pub is_me: bool, pub tag: String, pub same_name: bool, pub listening: Option<NowPlaying> }
 

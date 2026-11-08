@@ -387,7 +387,11 @@ impl App {
                 Ok(json!({"data": b64(&d[at..(at + FILE_CHUNK).min(d.len())])}))
             }
             "create_community" => self.with(|c| c.create_community(&s(&a, "name")).map(|id| json!({"id": id})).map_err(e)),
-            "create_channel" => self.with(|c| c.create_channel(&s(&a, "cid"), &s(&a, "name")).map(|id| json!({"id": id})).map_err(e)),
+            "create_channel" => self.with(|c| {
+                // `kind` is optional: an app from before voice rooms sends none, and "" is a text room.
+                let kind = a.get("kind").and_then(|x| x.as_str()).unwrap_or("");
+                c.create_channel_kind(&s(&a, "cid"), &s(&a, "name"), kind).map(|id| json!({"id": id})).map_err(e)
+            }),
             "create_invite" => self.with(|c| {
                 let uses = a.get("uses").and_then(|x| x.as_u64()).map(|x| x as u32);
                 let ttl = a.get("ttl").and_then(|x| x.as_u64()).unwrap_or(7 * 86400);
@@ -519,7 +523,8 @@ impl App {
                 let people = self.with(|c| Ok(c.call_presence(&resp))).map_err(e)?;
                 let mut rooms = serde_json::Map::new();
                 for (gid, list) in people {
-                    rooms.insert(gid, json!(list.iter().map(|p| json!({"account": p.account, "name": p.name, "me": p.is_me})).collect::<Vec<_>>()));
+                    rooms.insert(gid, json!(list.iter().map(|p| json!({"account": p.account, "name": p.name, "me": p.is_me,
+                        "muted": p.muted, "deafened": p.deafened, "speaking": p.speaking})).collect::<Vec<_>>()));
                 }
                 Ok(json!({"rooms": rooms}))
             }
@@ -534,7 +539,7 @@ fn snapshot(c: &Client) -> Value {
         let role = co.role_of(&me).unwrap_or(Role::Member);
         let list = c.channels_of(&co.id);
         let unread: usize = list.iter().map(|x| x.unread).sum();
-        let chans: Vec<Value> = list.into_iter().map(|ch| json!({"gid": ch.gid, "name": ch.name, "joined": ch.joined, "unread": ch.unread, "status": c.group_status(&ch.gid)})).collect();
+        let chans: Vec<Value> = list.into_iter().map(|ch| json!({"gid": ch.gid, "name": ch.name, "kind": ch.kind, "joined": ch.joined, "unread": ch.unread, "status": c.group_status(&ch.gid)})).collect();
         json!({"id": co.id, "name": if co.name.is_empty() { "…".to_string() } else { co.name.clone() }, "role": role.name(), "removed": co.removed, "removed_reason": co.removed_reason, "channels": chans, "unread": unread,
                "invites": co.invites.iter().map(|i| json!({"id": i.id, "expires": i.expires, "uses_left": i.uses_left, "mine": co.invite_sks.contains_key(&i.id)})).collect::<Vec<_>>(),
                "status": c.group_status(&co.id)})

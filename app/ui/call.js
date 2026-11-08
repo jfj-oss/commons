@@ -100,6 +100,7 @@
       this.keyState = null; this.appliedEpoch = null; this._keyed = new Set(); this.members = new Map(); this.byAccount = new Map();
       this.muted = false; this.gameMuted = false; this.gameName = null; this.gameError = ''; this.deafened = false; this.pttHeld = false; this.sharing = false; this.camera = false;
       this.blocked = new Map(); this.decryptFail = new Map(); this.tracks = new Map(); this.audioEls = new Map(); this.speaking = new Set();
+      this._speakingSent = null; this._wantSpeaking = '0'; this._speakTimer = null; this._speakAt = 0;   // what the rail reads back, via the relay
       this.play = null; this.playHost = null;
       this.viewQuality = new Map(); this.attempt = 0; this.rotations = 0; this.lastRotation = 0; this.events = [];
       this._leaving = false; this._token = null;
@@ -144,7 +145,7 @@
           if (this._gameWatch !== mine) return;
           seq = st.seq;
           this.gameName = st.game || null; this.gameError = st.error || '';
-          if (st.muted !== this.gameMuted) { this.gameMuted = !!st.muted; this.log(st.muted ? 'muted by game key' : 'game key let go'); await this.gate.setGame(st.muted).catch(e => this.log('mic: ' + e.message)); }
+          if (st.muted !== this.gameMuted) { this.gameMuted = !!st.muted; this.log(st.muted ? 'muted by game key' : 'game key let go'); await this.gate.setGame(st.muted).catch(e => this.log('mic: ' + e.message)); this._announceSpeaking(true); }
           this.changed();
         } catch (e) {
           if (this._gameWatch !== mine) return;
@@ -208,6 +209,7 @@
       if (!room.isE2EEEnabled) throw new CallError('no-e2ee', 'The call connected but frame encryption did not start, so it was closed. Nothing was sent.');
       this.phase = 'connected'; this.log('connected, epoch ' + st.epoch);
       if (this.deafened) this._announceDeafened();
+      this._announceSpeaking(true);
       // microphone: join muted when push-to-talk is on
       this.muted = p.ptt ? true : this.muted;
       this.gate.manual = this.muted; this.gate.game = this.gameMuted;
@@ -233,6 +235,7 @@
     }
 
     async _teardown() {
+      clearTimeout(this._speakTimer); this._speakTimer = null; this._speakingSent = null;
       this.gate.close();
       this._releasePlayback();                 // stop the movie's capture, audio graph and preview, even if the room is already gone
       const room = this.room; this.room = null;
@@ -344,7 +347,7 @@
       room.on(E.TrackUnpublished, (pub, rp) => { const k = rp.identity + '/' + pub.trackSid; this.tracks.delete(k); this.blocked.delete(k); this.viewQuality.delete(pub.trackSid); this._dropAudio(rp.identity, pub.trackSid); this.changed(); });
       room.on(E.TrackMuted, () => this.changed()); room.on(E.TrackUnmuted, () => this.changed());
       if (E.ParticipantAttributesChanged) room.on(E.ParticipantAttributesChanged, () => this.changed());
-      room.on(E.ActiveSpeakersChanged, sp => { this.speaking = new Set(sp.map(s => s.identity)); this.changed(); });
+      room.on(E.ActiveSpeakersChanged, sp => { this.speaking = new Set(sp.map(s => s.identity)); this.changed(); this._announceSpeaking(); });
       room.on(E.Reconnecting, () => { this.phase = 'reconnecting'; this.log('connection lost; reconnecting'); this.changed(); });
       room.on(E.Reconnected, () => { this.phase = 'connected'; this.log('reconnected'); this._pollNow(); this.changed(); });
       room.on(E.SignalReconnecting, () => { this.log('signal reconnecting'); });
@@ -421,6 +424,7 @@
     async setMuted(m) {
       this.muted = m;
       try { await this.gate.setManual(m); } catch (e) { this.muted = true; this.gate.manual = true; const ce = this._explain(e); this.fail(ce.kind, ce.message); }
+      this._announceSpeaking(true);   // someone who is muted is not "speaking" to the rail, whatever the audio meter says
       this.changed();
     }
     async setDeafened(d) {
@@ -434,6 +438,27 @@
     _announceDeafened() {
       const lp = this.room && this.room.localParticipant;
       if (lp && lp.setAttributes) lp.setAttributes({ deaf: this.deafened ? '1' : '0' }).catch(e => this.log('could not share deafened state: ' + (e && e.message || e)));
+    }
+    // The media server's participant list has no speaker flag, so each call client publishes its own (the relay
+    // reads it back for members who are not in the call). Active-speaker events are chatty, so send at most one
+    // change per ~600 ms; mute changes the meaning of "speaking", so that one goes at once.
+    _announceSpeaking(now = false) {
+      const lp = this.room && this.room.localParticipant;
+      if (!lp || !lp.setAttributes || !this.me) return;
+      this._wantSpeaking = this.speaking.has(this.me) && !this.muted && !this.gameMuted ? '1' : '0';
+      if (this._wantSpeaking === this._speakingSent) return;
+      const send = () => {
+        this._speakTimer = null;
+        const v = this._wantSpeaking;
+        if (v === this._speakingSent) return;
+        const p = this.room && this.room.localParticipant;
+        if (!p || !p.setAttributes) return;
+        this._speakingSent = v; this._speakAt = Date.now();
+        p.setAttributes({ speaking: v }).catch(e => this.log('could not share speaking state: ' + (e && e.message || e)));
+      };
+      const wait = now ? 0 : 600 - (Date.now() - this._speakAt);
+      if (wait <= 0) send();
+      else if (!this._speakTimer) this._speakTimer = setTimeout(send, wait);
     }
     setPtt(on) { this.prefs.ptt = on; this.savePrefs(); if (on) this.setMuted(true); this.changed(); }
     setPttKey(code) { this.prefs.pttKey = code; this.savePrefs(); this.changed(); }
