@@ -2,13 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleDisplayName</key>
+  <string>mega</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Megatron uses the microphone for voice rooms. Calls are end-to-end encrypted.</string>
+  <string>mega uses the microphone for voice rooms. Calls are end-to-end encrypted.</string>
   <key>NSCameraUsageDescription</key>
-  <string>Megatron uses the camera when you turn it on in a call. Calls are end-to-end encrypted.</string>
+  <string>mega uses the camera when you turn it on in a call. Calls are end-to-end encrypted.</string>
   <key>NSPhotoLibraryUsageDescription</key>
-  <string>Megatron opens your photo library when you attach a picture to a message.</string>
+  <string>mega opens your photo library when you attach a picture to a message.</string>
   <key>NSPhotoLibraryAddUsageDescription</key>
-  <string>Megatron saves pictures you download from a chat to your photo library.</string>
+  <string>mega saves pictures you download from a chat to your photo library.</string>
 </dict>
 </plist>
