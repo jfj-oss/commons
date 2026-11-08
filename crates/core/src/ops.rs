@@ -99,7 +99,14 @@ impl Client {
     }
 
     pub fn create_channel(&mut self, cid: &str, name: &str) -> Result<String> {
+        self.create_channel_kind(cid, name, "")
+    }
+
+    /// `kind` is empty for a text room or [`ROOM_VOICE`] for a voice room. Only those two are accepted here:
+    /// anything else would be a new kind this version does not know how to run.
+    pub fn create_channel_kind(&mut self, cid: &str, name: &str, kind: &str) -> Result<String> {
         if self.my_role(cid) < Role::Admin { bail!("only admins can create channels"); }
+        let kind = match kind { "" | "text" => String::new(), ROOM_VOICE => ROOM_VOICE.to_string(), _ => bail!("unknown room kind {kind}") };
         let name = name.trim().to_lowercase().replace(' ', "-");
         check_name("a room name", &name).map_err(|e| anyhow!(e))?;
         if self.st.communities[cid].channels.iter().any(|c| name_key(&c.name) == name_key(&name)) { bail!("there is already a room called {name}"); }
@@ -136,7 +143,7 @@ impl Client {
         let mut listed = Err(anyhow!("another admin changed the community at the same time; try again"));
         for _ in 0..3 {
             let mut t = self.ctl_ext(cid)?;
-            if let GroupExt::Control { channels, .. } = &mut t { channels.push(ChanMeta { id: gid.clone(), name: name.clone() }); }
+            if let GroupExt::Control { channels, .. } = &mut t { channels.push(ChanMeta { id: gid.clone(), name: name.clone(), kind: kind.clone() }); }
             let mut plan = Plan::empty("create channel");
             plan.gce = Some(t);
             match self.run_commit(cid, plan) {
@@ -927,7 +934,7 @@ impl Client {
         let Some(c) = self.st.communities.get(cid) else { return vec![] };
         c.channels.iter().map(|ch| {
             let joined = self.st.groups.get(&ch.id).is_some_and(|g| !g.removed);
-            ChannelInfo { gid: ch.id.clone(), name: ch.name.clone(), joined, unread: self.unread(&ch.id) }
+            ChannelInfo { gid: ch.id.clone(), name: ch.name.clone(), kind: ch.kind.clone(), joined, unread: self.unread(&ch.id) }
         }).collect()
     }
     pub fn unread(&self, gid: &str) -> usize {

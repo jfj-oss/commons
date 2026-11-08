@@ -90,7 +90,7 @@ fn hostile_mime_and_channel_ids_are_refused() {
     for bad in ["image/png\" onerror=\"x", "image/png;base64,AAAA", "IMAGE/PNG", "image", "/png", "image/", "a/b/c", "image/png ", ""] {
         assert!(Envelope::parse(&f(bad)).is_err(), "{bad:?}");
     }
-    let tbl = |cid: &str| GroupExt::Control { name: "n".into(), owner: "a".repeat(64), nonce: id.clone(), admins: vec![], channels: vec![ChanMeta { id: cid.into(), name: "c".into() }], invites: vec![], banned: vec![], transfers: vec![], consents: vec![] }.to_bytes();
+    let tbl = |cid: &str| GroupExt::Control { name: "n".into(), owner: "a".repeat(64), nonce: id.clone(), admins: vec![], channels: vec![ChanMeta { id: cid.into(), name: "c".into(), ..Default::default() }], invites: vec![], banned: vec![], transfers: vec![], consents: vec![] }.to_bytes();
     assert!(GroupExt::parse(&tbl("abcdef0123")).is_ok());
     assert!(GroupExt::parse(&tbl("\"><img src=x onerror=alert(1)>")).is_err());
 }

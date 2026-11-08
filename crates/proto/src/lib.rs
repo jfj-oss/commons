@@ -223,10 +223,32 @@ pub fn call_room(gid: &str) -> String { hex::encode(sha256(&[b"commons/livekit-r
 /// its own MLS group, so no name ever leaves a member's device for this.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct CallPresenceReq { pub gids: Vec<String> }
+/// What one device's microphone and flags are doing. All false is the safe default (an older relay sends no state,
+/// and nothing is tinted). `speaking` is the participant's own attribute, refreshed by its call client from LiveKit's
+/// active-speaker events; the media server's participant list itself has no speaker flag.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CallPeerState {
+    #[serde(default)]
+    pub muted: bool,
+    #[serde(default)]
+    pub deafened: bool,
+    #[serde(default)]
+    pub speaking: bool,
+}
+impl CallPeerState {
+    pub fn is_plain(&self) -> bool { !self.muted && !self.deafened && !self.speaking }
+}
 /// Reply of `POST /v1/call-presence`: group id -> device ids in that room's call. A gid that is absent means
 /// nobody there (or the caller is not a current member of it). See `CallPresenceReq`.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct CallPresenceResp { pub rooms: std::collections::BTreeMap<String, Vec<String>> }
+pub struct CallPresenceResp {
+    pub rooms: std::collections::BTreeMap<String, Vec<String>>,
+    /// Per room, per device: microphone muted, deafened and speaking. Kept beside `rooms` rather than changing its
+    /// shape, so a client from before this field still reads the answer, and a newer client of an older relay sees
+    /// who is there with no tints.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub state: std::collections::BTreeMap<String, std::collections::BTreeMap<String, CallPeerState>>,
+}
 /// One link of the chain of owners: `from` hands the community to `to` as step `seq` (1 = from the founder).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct OwnerStep { pub seq: u64, pub from: String, pub to: String, pub sig: String }

@@ -150,12 +150,45 @@ fn livekit_http_url(url: &str) -> Option<String> {
 #[derive(serde::Deserialize)]
 struct LkParticipants { #[serde(default)] participants: Vec<LkParticipant> }
 #[derive(serde::Deserialize)]
-struct LkParticipant { identity: String, #[serde(default)] state: serde_json::Value }
+struct LkTrack {
+    /// Protojson writes the TrackType enum as `"type"`; the source says which audio track is the microphone.
+    #[serde(default, rename = "type")]
+    kind: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    muted: bool,
+}
+#[derive(serde::Deserialize)]
+struct LkParticipant {
+    identity: String,
+    #[serde(default)]
+    state: serde_json::Value,
+    #[serde(default)]
+    tracks: Vec<LkTrack>,
+    #[serde(default)]
+    attributes: HashMap<String, String>,
+}
 
-/// Ask LiveKit who is connected to one room. A 404 (a room nobody has ever called in) means nobody there.
-/// A transport error is reported, so the caller can keep its last answer instead of showing an empty call just
-/// because the media server was briefly unreachable.
-fn livekit_participants(cfg: &LiveKitCfg, gid: &str) -> Result<Vec<String>, String> {
+/// What one LiveKit participant reports about itself. Microphone muted comes from the media server's own track
+/// state; the `deaf` and `speaking` flags are small participant attributes the call client sets (see call.js).
+/// No microphone published counts as muted, which is what a listener sees and matches the call panel.
+fn lk_state(p: &LkParticipant) -> CallPeerState {
+    let mic = p.tracks.iter().find(|t| {
+        let source = t.source.to_ascii_uppercase();
+        source == "MICROPHONE" || (t.kind.eq_ignore_ascii_case("AUDIO") && source != "SCREEN_SHARE_AUDIO")
+    });
+    CallPeerState {
+        muted: mic.map_or(true, |t| t.muted),
+        deafened: p.attributes.get("deaf").is_some_and(|v| v == "1"),
+        speaking: p.attributes.get("speaking").is_some_and(|v| v == "1"),
+    }
+}
+
+/// Ask LiveKit who is connected to one room, and what each device reports about its microphone and flags. A 404
+/// (a room nobody has ever called in) means nobody there. A transport error is reported, so the caller can keep its
+/// last answer instead of showing an empty call just because the media server was briefly unreachable.
+fn livekit_participants(cfg: &LiveKitCfg, gid: &str) -> Result<Vec<(String, CallPeerState)>, String> {
     let url = livekit_http_url(&cfg.url).ok_or_else(|| "the call server's address is not a websocket or http URL".to_string())?;
     let room = call_room(gid);
     let token = mint_livekit_admin_token(cfg, &room, now_secs()).map_err(|_| "cannot sign a call server request".to_string())?;
@@ -170,7 +203,7 @@ fn livekit_participants(cfg: &LiveKitCfg, gid: &str) -> Result<Vec<String>, Stri
             // Identities here are device ids: this relay minted every join token, and nothing else can join its rooms.
             Ok(p.participants.into_iter()
                 .filter(|x| is_hex(&x.identity, 64) && x.state.as_str() != Some("DISCONNECTED"))
-                .map(|x| x.identity).collect())
+                .map(|x| { let s = lk_state(&x); (x.identity, s) }).collect())
         }
         Err(ureq::Error::Status(404, _)) => Ok(vec![]),
         Err(ureq::Error::Status(c, _)) => Err(format!("call server said {c}")),
@@ -189,7 +222,7 @@ pub struct RelayState {
     big_bodies: Arc<Semaphore>,
     /// Who LiveKit last said is in each room's call, kept for a couple of seconds so that all members' rail
     /// refreshes share one query to the media server instead of each asking it.
-    presence: Mutex<HashMap<String, (u64, Vec<String>)>>,
+    presence: Mutex<HashMap<String, (u64, Vec<(String, CallPeerState)>)>>,
 }
 
 type Resp = Response<Body>;
@@ -420,12 +453,13 @@ async fn call_presence(st: Arc<RelayState>, headers: HeaderMap, path: &str, body
     };
     let now = now_secs();
     let mut rooms = std::collections::BTreeMap::new();
+    let mut state = std::collections::BTreeMap::new();
     let mut ask = vec![];
     {
         let cache = st.presence.lock().unwrap();
         for gid in gids {
             match cache.get(&gid) {
-                Some((at, v)) if now.saturating_sub(*at) < PRESENCE_TTL_SECS => { if !v.is_empty() { rooms.insert(gid, v.clone()); } }
+                Some((at, v)) if now.saturating_sub(*at) < PRESENCE_TTL_SECS => add_presence(&mut rooms, &mut state, &gid, v),
                 _ => ask.push(gid),
             }
         }
@@ -441,7 +475,7 @@ async fn call_presence(st: Arc<RelayState>, headers: HeaderMap, path: &str, body
     for (gid, h) in handles {
         match h.await {
             Ok(Ok(devs)) => {
-                if !devs.is_empty() { rooms.insert(gid.clone(), devs.clone()); }
+                add_presence(&mut rooms, &mut state, &gid, &devs);
                 let mut c = st.presence.lock().unwrap();
                 if c.len() > 4096 { c.retain(|_, (at, _)| now.saturating_sub(*at) < 60); }
                 c.insert(gid, (now, devs));
@@ -453,7 +487,22 @@ async fn call_presence(st: Arc<RelayState>, headers: HeaderMap, path: &str, body
     // If any room could not be asked, say so for the whole request: a client then keeps the list it already had
     // instead of briefly emptying the call of a room the media server was too busy to describe.
     if failed { return Err(status(StatusCode::BAD_GATEWAY, &format!("the call server did not answer: {last_err}"))); }
-    Ok(json(&CallPresenceResp { rooms }))
+    Ok(json(&CallPresenceResp { rooms, state }))
+}
+
+/// Put one room's devices (and only the non-default flags) into the two answer maps. An empty room is omitted from
+/// both, exactly as before: it cannot be told apart from a room the caller may not see.
+fn add_presence(
+    rooms: &mut std::collections::BTreeMap<String, Vec<String>>,
+    state: &mut std::collections::BTreeMap<String, std::collections::BTreeMap<String, CallPeerState>>,
+    gid: &str,
+    entries: &[(String, CallPeerState)],
+) {
+    if entries.is_empty() { return; }
+    rooms.insert(gid.to_string(), entries.iter().map(|(d, _)| d.clone()).collect());
+    let mut m = std::collections::BTreeMap::new();
+    for (d, s) in entries { if !s.is_plain() { m.insert(d.clone(), *s); } }
+    if !m.is_empty() { state.insert(gid.to_string(), m); }
 }
 
 async fn handle(State(st): State<Arc<RelayState>>, req: Request<Body>) -> Resp {

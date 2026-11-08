@@ -431,7 +431,9 @@ $('#rooms').addEventListener('click', async e => {
   if (cj) {
     const gid = cj.dataset.call;
     const ch = ((currentCommunity() || {}).channels || []).find(x => x.gid === gid);
-    if (gid !== S.gid) openRoom(gid); else railOpen(false);
+    // A voice room has no chat screen: a click joins its call and leaves the conversation where it was.
+    if (!ch || ch.kind !== 'voice') { if (gid !== S.gid) openRoom(gid); else railOpen(false); }
+    else railOpen(false);
     try {
       if (window.__callUI && window.__callUI.joinRoom) window.__callUI.joinRoom(gid, ch ? ch.name : '');
       else toast('Calls are not available in this window.');
@@ -440,7 +442,17 @@ $('#rooms').addEventListener('click', async e => {
   }
   const x = e.target.closest('[data-join]');
   if (x) { try { await rpc('cancel_join', { id: x.dataset.join }); tick(); } catch (er) { toast(er.message); } return; }
-  const b = e.target.closest('.room'); if (b) openRoom(b.dataset.g);
+  const b = e.target.closest('.room');
+  if (b) {
+    const ch = ((currentCommunity() || {}).channels || []).find(x => x.gid === b.dataset.g);
+    if (ch && ch.kind === 'voice') {
+      railOpen(false);
+      try {
+        if (window.__callUI && window.__callUI.joinRoom) window.__callUI.joinRoom(ch.gid, ch.name);
+        else toast('Calls are not available in this window.');
+      } catch (er) { toast(er.message); }
+    } else openRoom(b.dataset.g);
+  }
 });
 
 // What friends' names carry while they share music. Two short lines from rune, nothing else.
@@ -449,17 +461,27 @@ const gone = new Set();
 const LIVE_SHOWN = 3;   // names under a room before the rest become a count
 // The people in a room's call: seals and names, then a count, and a Join. Each row is a button of its own (a
 // button may not hold other buttons), so the room's own row stays exactly as it was.
+//
+// A voice room is the call, so its people get a quiet vertical list under it for every member to see, with the
+// same speaking ring and microphone/deafen tint as the call panel. The whole room joins on a click, so there is
+// no separate Join button here.
 function liveRow(ch) {
   const list = callPeople(ch.gid);
   if (!list || !list.length) return '';
-  const n = list.length, shown = list.slice(0, LIVE_SHOWN), extra = n - shown.length;
-  const names = list.map(p => p.name).join(', ');
-  const people = shown.map(p => `<button type="button" class="live-p" data-call="${esc(ch.gid)}" title="${esc(p.name)}${p.me ? ' (you)' : ''}" aria-label="Join the call in ${esc(ch.name)}; ${p.me ? 'you are' : esc(p.name) + ' is'} in it">${seal(p.account, p.name, 'tiny')}<span class="live-n">${esc(p.me ? 'You' : p.name)}</span></button>`).join('');
+  const n = list.length, names = list.map(p => p.name).join(', ');
+  const title = esc(n === 1 ? list[0].name + ' is in the call' : humanCount(n, 'person', 'people') + ' in the call: ' + names);
+  const person = p => `${seal(p.account, p.name, 'tiny')}<span class="live-n">${esc(p.me ? 'You' : p.name)}</span>`;
+  if (ch.kind === 'voice') {
+    const rows = list.map(p => `<button type="button" class="live-p vp${p.speaking ? ' speaking' : ''}${p.muted ? ' muted' : ''}${p.deafened ? ' deafened' : ''}" data-call="${esc(ch.gid)}" title="${esc(p.name)}${p.me ? ' (you)' : ''}" aria-label="Join the call in ${esc(ch.name)}; ${p.me ? 'you are' : esc(p.name) + ' is'} in it">${person(p)}</button>`).join('');
+    return `<div class="room-live voice" title="${title}">${rows}</div>`;
+  }
+  const shown = list.slice(0, LIVE_SHOWN), extra = n - shown.length;
+  const people = shown.map(p => `<button type="button" class="live-p" data-call="${esc(ch.gid)}" title="${esc(p.name)}${p.me ? ' (you)' : ''}" aria-label="Join the call in ${esc(ch.name)}; ${p.me ? 'you are' : esc(p.name) + ' is'} in it">${person(p)}</button>`).join('');
   const more = extra ? `<span class="live-more" title="${esc(names)}">+${extra}</span>` : '';
   const act = inCallHere(ch.gid)
     ? '<span class="live-you">you are in the call</span>'
     : `<button type="button" class="live-join" data-call="${esc(ch.gid)}" aria-label="Join the call in ${esc(ch.name)}">Join</button>`;
-  return `<div class="room-live"${inCallHere(ch.gid) ? ' data-in="1"' : ''} title="${esc(n === 1 ? list[0].name + ' is in the call' : humanCount(n, 'person', 'people') + ' in the call: ' + names)}">${people}${more}${act}</div>`;
+  return `<div class="room-live"${inCallHere(ch.gid) ? ' data-in="1"' : ''} title="${title}">${people}${more}${act}</div>`;
 }
 function renderRail() {
   const sn = S.snap;
@@ -478,16 +500,33 @@ function renderRail() {
   const isAdmin = c && (c.role === 'admin' || c.role === 'owner');
   $('#add-room').hidden = !isAdmin; $('#btn-invite').hidden = !isAdmin; $('#btn-people').hidden = !c;
   $('.search-wrap').hidden = !c; $('#btn-search').hidden = !c;
-  if (c && !c.channels.find(x => x.gid === S.gid)) { const first = c.channels.find(x => x.joined) || c.channels[0]; S.gid = first ? first.gid : null; resetRoom(); }
+  if (c && !c.channels.find(x => x.gid === S.gid)) {
+    // The chat pane is never a voice room: those open their call instead.
+    const first = c.channels.find(x => x.joined && x.kind !== 'voice') || c.channels.find(x => x.kind !== 'voice')
+      || c.channels.find(x => x.joined) || c.channels[0];
+    S.gid = first ? first.gid : null; resetRoom();
+  }
   if (!c) { S.gid = null; }
   const seen = document.visibilityState === 'visible';
-  patch($('#rooms'), (c ? c.channels.map(ch => {
+  const roomRow = ch => {
+    const voice = ch.kind === 'voice';
     const active = ch.gid === S.gid, un = (active && seen) || c.removed ? 0 : ch.unread, at = active ? 0 : (S.mention.get(ch.gid) || 0);
     const call = callPeople(ch.gid), inCall = call ? call.length : 0;
-    const said = [ch.name, inCall ? humanCount(inCall, 'person', 'people') + ' in the call' : '', un ? `${un} unread` : '', at ? `${at} mention${at === 1 ? '' : 's'} of you` : '', ch.joined ? '' : 'waiting for keys'].filter(Boolean).join(', ');
-    const speaker = inCall ? '<svg class="ic live-ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-wave"/></svg>' : '';
-    return { k: ch.gid, h: `<div class="room-wrap"><button class="room ${inCall ? 'live' : ''} ${active ? 'active' : ''} ${ch.joined ? '' : 'pending'} ${un ? 'unread' : ''} ${at ? 'mention' : ''}" data-g="${esc(ch.gid)}" aria-label="${esc(said)}"${active ? ' aria-current="true"' : ''}><svg class="kh" viewBox="0 0 12 14" aria-hidden="true"><use href="#i-keyhole"/></svg><span class="nm">${esc(ch.name)}</span>${speaker}${at ? '<span class="at-mark">@</span>' : ''}${un ? `<span class="pill">${un}</span>` : ''}</button>${liveRow(ch)}</div>` };
-  }) : []).concat(joinNotes(sn)), roomCache);
+    const said = [ch.name, voice ? 'voice room' : '', inCall ? humanCount(inCall, 'person', 'people') + ' in the call' : '', un ? `${un} unread` : '', at ? `${at} mention${at === 1 ? '' : 's'} of you` : '', ch.joined ? '' : 'waiting for keys'].filter(Boolean).join(', ');
+    // A voice room's icon is the speaker; a text room keeps the keyhole, and shows the wave only while people are in.
+    const icon = voice
+      ? '<svg class="kh speaker" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-speaker"/></svg>'
+      : '<svg class="kh" viewBox="0 0 12 14" aria-hidden="true"><use href="#i-keyhole"/></svg>';
+    const speaker = inCall && !voice ? '<svg class="ic live-ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-wave"/></svg>' : '';
+    return { k: ch.gid, h: `<div class="room-wrap"><button class="room ${inCall ? 'live' : ''} ${active ? 'active' : ''} ${ch.joined ? '' : 'pending'} ${un ? 'unread' : ''} ${at ? 'mention' : ''}" data-g="${esc(ch.gid)}" aria-label="${esc(said)}"${active ? ' aria-current="true"' : ''}>${icon}<span class="nm">${esc(ch.name)}</span>${speaker}${at ? '<span class="at-mark">@</span>' : ''}${un ? `<span class="pill">${un}</span>` : ''}</button>${liveRow(ch)}</div>` };
+  };
+  const chans = c ? c.channels : [];
+  const voice = chans.filter(ch => ch.kind === 'voice');
+  const rows = chans.filter(ch => ch.kind !== 'voice').map(roomRow);
+  // Voice rooms live in their own group under the text rooms.
+  if (voice.length) rows.push({ k: 'rail:voice', h: '<div class="rail-label voice-label"><span>Voice</span></div>' });
+  for (const ch of voice) rows.push(roomRow(ch));
+  patch($('#rooms'), rows.concat(joinNotes(sn)), roomCache);
   const ch = currentChannel();
   $('#chan-title').textContent = ch ? ch.name : (c ? c.name : 'Welcome');
   const people = S.membersFor === S.cid && S.members.length ? `${S.members.length} ${S.members.length === 1 ? 'person' : 'people'}` : '';
@@ -964,7 +1003,7 @@ $('#switcher').onclick = e => {
 };
 document.addEventListener('click', e => { $('#sw-menu').hidden = true; closePop(); if (!e.target.closest('.search-wrap, #btn-search')) closeSearch(); });
 document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; closePop(); closeSearch(); $('#sw-menu').hidden = true; railOpen(false); });
-$('#add-room').onclick = () => modal('New room', `<label for="n">Name</label><input type="text" id="n" placeholder="e.g. music">`, [{ label: 'Cancel', primary: false }, { label: 'Create', run: async w => { const r = await rpc('create_channel', { cid: S.cid, name: val(w, 'n') }); S.gid = r.id; resetRoom(); } }]).then(() => tick());
+$('#add-room').onclick = () => modal('New room', `<label for="n">Name</label><input type="text" id="n" placeholder="e.g. music"><label>Kind</label>${seg('kind', [['text', 'Text'], ['voice', 'Voice']], 'text')}<p class="muted small">A voice room opens its call when you click it. Its people are always shown under it in the rail.</p>`, [{ label: 'Cancel', primary: false }, { label: 'Create', run: async w => { const kind = val(w, 'kind'); const r = await rpc('create_channel', { cid: S.cid, name: val(w, 'n'), kind }); if (kind === 'voice') railOpen(false); else { S.gid = r.id; resetRoom(); } } }]).then(() => tick());
 $('#btn-invite').onclick = () => {
   const c = currentCommunity(); let link = null;
   const open = (c.invites || []).filter(i => i.mine && i.expires > Date.now() / 1000);
