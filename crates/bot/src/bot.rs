@@ -54,6 +54,8 @@ pub struct Line {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum JobKind {
+    /// "/reset": forget this room's conversation (the context starts after the /reset message).
+    Reset,
     /// Somebody mentioned the bot or replied to it. `deepseek` is the room's mode at the moment of the mention.
     Answer { deepseek: bool },
     /// An admin switched the room's model.
@@ -99,6 +101,10 @@ fn history_of(c: &Client, gid: &str, limit: usize) -> Vec<Line> {
         let mine = m.sender == me;
         out.push(Line { mine, name: if mine { c.st.name.clone() } else { c.display_name(&m.sender) }, text });
     }
+    // "/reset" draws a line: nothing before it (and not the bot's own "memory wiped" reply) is context any more
+    let name = c.st.name.clone();
+    if let Some(i) = out.iter().rposition(|l| is_reset(&l.text, &name)) { out.drain(..=i); }
+    out.retain(|l| !(l.mine && l.text == RESET_REPLY));
     let start = out.len().saturating_sub(limit);
     out.split_off(start)
 }
@@ -147,6 +153,13 @@ pub fn mentions(text: &str, name: &str) -> bool {
 }
 
 /// The one and only way chat text can change the bot's behaviour: the exact admin phrase, nothing around it.
+/// "/reset" on its own, or "@Name /reset".
+pub fn is_reset(text: &str, name: &str) -> bool {
+    let t = text.trim().to_lowercase();
+    t == "/reset" || t == format!("@{} /reset", name.to_lowercase())
+}
+pub const RESET_REPLY: &str = "🧹 Memory wiped. Fresh start.";
+
 pub fn admin_command(text: &str, name: &str) -> Option<bool> {
     let said: String = text.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
     let said = said.trim_end_matches(['.', '!', '?', ' ', '\n', '\t']);
@@ -287,6 +300,7 @@ impl Bot {
                 if m.seq > 0 { max_seq = max_seq.max(m.seq); }
                 if m.seq <= start || m.deleted || m.sender.is_empty() || m.sender == me { continue; }
                 let MsgBody::Text(text) = &m.body else { continue };
+                if is_reset(text, &self.cfg.name) { found.push(Job { gid: gid.clone(), trigger: m.id.clone(), kind: JobKind::Reset }); continue; }
                 if !mentions(text, &self.cfg.name) && !m.reply.as_deref().is_some_and(|id| own.contains(id)) { continue; }
                 let kind = match admin_command(text, &self.cfg.name) {
                     Some(on) => {
@@ -314,6 +328,7 @@ impl Bot {
         let (text, deepseek, sources) = match &job.kind {
             JobKind::SetDeepSeek { on: true } => ("DeepSeek mode is on for this room. Answers here are written by DeepSeek, and the text of each question and answer leaves this computer.".to_string(), false, vec![]),
             JobKind::SetDeepSeek { on: false } => ("DeepSeek mode is off for this room. Answers stay on this computer.".to_string(), false, vec![]),
+            JobKind::Reset => (RESET_REPLY.to_string(), false, vec![]),
             JobKind::NotAllowed => ("Only an admin of this community can change how I answer.".to_string(), false, vec![]),
             JobKind::Answer { deepseek } => {
                 // A game or Studio owns the GPU: say so at once, without loading the model and without queueing the
@@ -556,6 +571,15 @@ fn strip_search_lines(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_is_exact() {
+        assert!(is_reset("/reset", "Oracle"));
+        assert!(is_reset("  /RESET ", "Oracle"));
+        assert!(is_reset("@Oracle /reset", "Oracle"));
+        assert!(!is_reset("/reset everything please", "Oracle"));
+        assert!(!is_reset("please /reset", "Oracle"));
+    }
 
     #[test]
     fn mentions_need_the_at_sign_and_a_boundary() {

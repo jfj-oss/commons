@@ -245,7 +245,9 @@ impl Llm for Ollama {
             "keep_alive": KEEP_ALIVE,
             // thinking models (qwen3.x) otherwise spend the whole budget reasoning and return no answer
             "think": false,
-            "options": {"temperature": 0.7, "num_predict": 1200},
+            // small uncensored models loop on the same words without a repetition penalty (every answer ran to the cap)
+            "options": {"temperature": 0.85, "top_p": 0.9, "top_k": 40, "repeat_penalty": 1.18, "repeat_last_n": 256,
+                        "presence_penalty": 0.5, "num_predict": 700},
         });
         if self.tool_mode() == ToolMode::FunctionCalling && !tools.is_empty() {
             body["tools"] = tool_specs_json(tools);
