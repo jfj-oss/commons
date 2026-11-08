@@ -3,6 +3,7 @@
 //! DeepSeek. The real services are never contacted.
 use commons_bot::gpu::{GpuCheck, Pause};
 use commons_bot::search::{SearchResult, WebSearch};
+use commons_bot::studio::{JobState, State, StudioApi};
 use commons_core::client::Client;
 use commons_core::state::MsgBody;
 use commons_core::transport::HttpTransport;
@@ -231,6 +232,17 @@ impl WebSearch for DeadSearch {
 pub struct NoGpu;
 impl GpuCheck for NoGpu {
     fn blocked(&self) -> Option<Pause> { None }
+}
+
+/// A Studio that is never contacted: tests that are not about Studio use it.
+pub struct DeadStudio;
+impl StudioApi for DeadStudio {
+    fn state(&self) -> Result<State, String> { Err("the test bot must not use Studio".into()) }
+    fn submit(&self, _req: &commons_bot::studio::Request) -> Result<u64, String> { Err("the test bot must not use Studio".into()) }
+    fn status(&self, _id: u64) -> Result<JobState, String> { Err("the test bot must not use Studio".into()) }
+    fn download(&self, _kind: commons_bot::studio::Kind, _id: u64) -> Result<Vec<u8>, String> {
+        Err("the test bot must not use Studio".into())
+    }
 }
 
 /// A fake DeepSeek that answers every completion with `answer`.

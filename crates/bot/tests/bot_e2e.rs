@@ -17,6 +17,7 @@ fn make_bot(cfg: Config, state: &Path, ollama_url: &str, deepseek_url: &str) -> 
         Box::new(Ollama::new(ollama_url, None, Duration::from_secs(5))),
         Box::new(DeepSeek::new(deepseek_url, key, "deepseek-chat", Duration::from_secs(5))),
         Arc::new(DeadSearch),
+        Arc::new(DeadStudio),
         Arc::new(NoGpu),
         state,
     )

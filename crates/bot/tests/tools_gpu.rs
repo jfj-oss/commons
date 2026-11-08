@@ -17,9 +17,10 @@ use std::time::{Duration, SystemTime};
 struct MemChat {
     lines: Vec<Line>,
     sent: Vec<(String, Option<String>)>,
+    files: Vec<(String, String, usize, String)>,
 }
 impl MemChat {
-    fn new(lines: Vec<Line>) -> MemChat { MemChat { lines, sent: Vec::new() } }
+    fn new(lines: Vec<Line>) -> MemChat { MemChat { lines, sent: Vec::new(), files: Vec::new() } }
 }
 impl Chat for MemChat {
     fn my_account(&self) -> String { "bot".into() }
@@ -32,13 +33,17 @@ impl Chat for MemChat {
         self.sent.push((text.to_string(), reply));
         Ok(format!("m{}", self.sent.len()))
     }
+    fn send_file(&mut self, _gid: &str, name: &str, mime: &str, data: &[u8], caption: &str) -> Result<String, String> {
+        self.files.push((name.to_string(), mime.to_string(), data.len(), caption.to_string()));
+        Ok(format!("f{}", self.files.len()))
+    }
 }
 
 fn question() -> Vec<Line> {
     vec![Line { mine: false, name: "alice".into(), text: "@Oracle what's a good pasta recipe?".into() }]
 }
 fn job(trigger: &str) -> Job {
-    Job { gid: "room".into(), trigger: trigger.into(), kind: JobKind::Answer { deepseek: false } }
+    Job { gid: "room".into(), trigger: trigger.into(), from: "alice".into(), text: String::new(), kind: JobKind::Answer { deepseek: false } }
 }
 
 fn make_bot(
@@ -57,6 +62,7 @@ fn make_bot(
         Box::new(Ollama::new(ollama_url, None, Duration::from_secs(5))),
         Box::new(DeepSeek::new(deepseek_url, key, "deepseek-chat", Duration::from_secs(5))),
         search,
+        Arc::new(DeadStudio),
         gpu,
         dir.join("state.json"),
     )
@@ -124,9 +130,9 @@ const SEARCH_PAGE: &str = r##"
 // ---------------------------------------------------------------- web search, the only tool
 
 #[test]
-fn the_tool_list_is_exactly_web_search() {
+fn the_tool_list_is_exactly_web_search_and_studio_make() {
     let tools = bot::tools();
-    assert_eq!(tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), vec!["web_search"]);
+    assert_eq!(tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), vec!["web_search", "studio_make"]);
 }
 
 #[test]
@@ -147,14 +153,15 @@ fn a_question_can_search_once_and_the_reply_ends_with_sources() {
     assert!(sent.text.contains("https://other.example/wine") && sent.text.contains("https://third.example/olio"), "{}", sent.text);
     assert!(!sent.text.contains("https://fourth.example/extra"), "only three source links: {}", sent.text);
 
-    // The request carries exactly one tool, with a five-minute keep-alive.
+    // The request carries exactly the two tools, with a five-minute keep-alive.
     let chats: Vec<_> = ollama.requests().into_iter().filter(|r| r.path == "/api/chat").collect();
     assert_eq!(chats.len(), 2, "one call to search, one to answer");
     let first = chats[0].json();
     let tools = first["tools"].as_array().expect("tools were offered");
-    assert_eq!(tools.len(), 1);
+    assert_eq!(tools.len(), 2);
     assert_eq!(tools[0]["type"], "function");
     assert_eq!(tools[0]["function"]["name"], "web_search");
+    assert_eq!(tools[1]["function"]["name"], "studio_make");
     assert_eq!(first["keep_alive"], "5m");
 
     // The results reached the model as quoted untrusted data, and the search went to DuckDuckGo's HTML endpoint.
@@ -243,7 +250,7 @@ fn a_model_without_tool_calling_gets_a_text_protocol_for_the_same_single_search(
 }
 
 #[test]
-fn deepseek_mode_gets_the_same_one_tool() {
+fn deepseek_mode_gets_the_same_two_tools() {
     let dir = tempfile::tempdir().unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let deepseek = FakeHttp::start({
@@ -265,13 +272,14 @@ fn deepseek_mode_gets_the_same_one_tool() {
     let bot = make_bot(dir.path(), "http://127.0.0.1:1", &deepseek.url(), Arc::new(DuckDuckGo::new(&web.url(), Duration::from_secs(5))), Arc::new(NoGpu));
 
     let mut chat = MemChat::new(question());
-    let job = Job { gid: "room".into(), trigger: "m1".into(), kind: JobKind::Answer { deepseek: true } };
+    let job = Job { gid: "room".into(), trigger: "m1".into(), from: "alice".into(), text: String::new(), kind: JobKind::Answer { deepseek: true } };
     let sent = bot.answer(&mut chat, &job).expect("an answer");
     assert!(sent.text.contains("Pasta is Italian.") && sent.text.contains("Sources:"));
     let calls: Vec<_> = deepseek.requests();
     let first = calls[0].json();
-    assert_eq!(first["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(first["tools"].as_array().unwrap().len(), 2);
     assert_eq!(first["tools"][0]["function"]["name"], "web_search");
+    assert_eq!(first["tools"][1]["function"]["name"], "studio_make");
     let second = calls[1].json();
     let tool = second["messages"].as_array().unwrap().iter().find(|m| m["role"] == "tool").expect("a tool result");
     assert_eq!(tool["tool_call_id"], "call_1");
@@ -390,7 +398,7 @@ fn a_studio_pause_says_so_and_a_deepseek_room_still_answers() {
     assert_eq!(ollama.hits("/api/chat"), 0);
 
     // DeepSeek does not touch this computer's GPU, so a DeepSeek room is answered.
-    let ds_job = Job { gid: "room".into(), trigger: "m2".into(), kind: JobKind::Answer { deepseek: true } };
+    let ds_job = Job { gid: "room".into(), trigger: "m2".into(), from: "alice".into(), text: String::new(), kind: JobKind::Answer { deepseek: true } };
     let sent = bot.answer(&mut chat, &ds_job).expect("an answer");
     assert!(sent.text.contains("remote answer"), "{}", sent.text);
     assert_eq!(deepseek.hits("/chat/completions"), 1);

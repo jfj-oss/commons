@@ -9,6 +9,7 @@ use commons_bot::bot::{Bot, Config, Job, SharedClient, DEFAULT_NAME};
 use commons_bot::gpu::{GpuGate, Pause};
 use commons_bot::llm::{DeepSeek, Ollama, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DEFAULT_OLLAMA};
 use commons_bot::search::{DuckDuckGo, WebSearch, DEFAULT_SEARCH_URL, SEARCH_TIMEOUT};
+use commons_bot::studio::{HttpStudio, StudioApi, DEFAULT_STUDIO_URL};
 use commons_core::client::Client;
 use commons_core::envelope::InviteLink;
 use commons_core::transport::{Api, HttpTransport};
@@ -32,6 +33,11 @@ fn deepseek_key_file() -> PathBuf {
     std::env::var_os("MEGATRON_BOT_DEEPSEEK_KEY_FILE").map(PathBuf::from).unwrap_or_else(|| home().join(".config/deepseek-key"))
 }
 
+/// Studio's shared token. Read once by `HttpStudio`; never logged.
+fn studio_token_file() -> PathBuf {
+    std::env::var_os("MEGATRON_BOT_STUDIO_TOKEN_FILE").map(PathBuf::from).unwrap_or_else(|| home().join(".config/homebase/token"))
+}
+
 fn env_string(name: &str) -> Option<String> { std::env::var(name).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) }
 fn env_usize(name: &str, default: usize) -> usize { env_string(name).and_then(|s| s.parse().ok()).unwrap_or(default) }
 
@@ -42,6 +48,10 @@ fn config() -> Config {
     cfg.context_messages = env_usize("MEGATRON_BOT_CONTEXT_MESSAGES", cfg.context_messages).clamp(2, 100);
     cfg.max_per_minute = env_usize("MEGATRON_BOT_MAX_PER_MINUTE", cfg.max_per_minute).max(1);
     cfg.max_queue = env_usize("MEGATRON_BOT_MAX_QUEUE", cfg.max_queue).max(1);
+    cfg.studio_daily_cap = env_usize("MEGATRON_BOT_STUDIO_DAILY_CAP", cfg.studio_daily_cap);
+    cfg.studio_daily_video_cap = env_usize("MEGATRON_BOT_STUDIO_DAILY_VIDEO_CAP", cfg.studio_daily_video_cap)
+        .min(cfg.studio_daily_cap);
+    cfg.studio_queue_max = env_usize("MEGATRON_BOT_STUDIO_QUEUE_MAX", cfg.studio_queue_max);
     cfg
 }
 
@@ -89,7 +99,9 @@ fn usage() -> ! {
         \n  MEGATRON_BOT_OLLAMA_URL (default {DEFAULT_OLLAMA}), MEGATRON_BOT_DEEPSEEK_URL, MEGATRON_BOT_DEEPSEEK_MODEL,\
         \n  MEGATRON_BOT_DEEPSEEK_KEY_FILE (default ~/.config/deepseek-key), MEGATRON_BOT_SEARCH_URL (default {DEFAULT_SEARCH_URL}),\
         \n  MEGATRON_BOT_STUDIO_URL (default http://127.0.0.1:4576), MEGATRON_BOT_COMFY_URL (default http://127.0.0.1:8188),\
-        \n  MEGATRON_BOT_STUDIO_LOCK, MEGATRON_BOT_STUDIO_TOKEN_FILE, MEGATRON_BOT_VOICE_SETTINGS,\
+        \n  MEGATRON_BOT_STUDIO_LOCK, MEGATRON_BOT_STUDIO_TOKEN_FILE (default ~/.config/homebase/token),\
+        \n  MEGATRON_BOT_STUDIO_DAILY_CAP (default 10), MEGATRON_BOT_STUDIO_DAILY_VIDEO_CAP (default 2),\
+        \n  MEGATRON_BOT_STUDIO_QUEUE_MAX (default 3), MEGATRON_BOT_VOICE_SETTINGS,\
         \n  MEGATRON_BOT_MAX_PER_MINUTE, MEGATRON_BOT_MAX_REPLY_CHARS");
     std::process::exit(2)
 }
@@ -174,6 +186,8 @@ fn run() -> Result<(), String> {
     let deepseek = DeepSeek::new(&ds_url, deepseek_key_file(), &ds_model, timeout);
     let search_url = env_string("MEGATRON_BOT_SEARCH_URL").unwrap_or_else(|| DEFAULT_SEARCH_URL.into());
     let searcher: Arc<dyn WebSearch> = Arc::new(DuckDuckGo::new(&search_url, SEARCH_TIMEOUT));
+    let studio_url = env_string("MEGATRON_BOT_STUDIO_URL").unwrap_or_else(|| DEFAULT_STUDIO_URL.into());
+    let studio: Arc<dyn StudioApi> = Arc::new(HttpStudio::new(&studio_url, &studio_token_file()));
     let gate = Arc::new(GpuGate::from_env());
 
     let bot = Arc::new(Bot::new(
@@ -181,6 +195,7 @@ fn run() -> Result<(), String> {
         Box::new(local),
         Box::new(deepseek),
         searcher,
+        studio,
         gate,
         dir.join("bot-state.json"),
     ));
