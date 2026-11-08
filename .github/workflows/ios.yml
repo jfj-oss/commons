@@ -112,7 +112,7 @@ jobs:
           set -euo pipefail
           # gen/apple/Assets.xcassets now exists, so tauri icon writes AppIcon.appiconset into it. The
           # --ios-color background is what removes the source's transparency; iOS icons must be opaque.
-          ../../tools/node_modules/.bin/tauri icon icons/icon.png --ios-color "#ffffff"
+          ../../tools/node_modules/.bin/tauri icon icons/ios-1024.png --ios-color "#3f7fb4"
 
           icons=gen/apple/Assets.xcassets/AppIcon.appiconset
           if [ ! -f "$icons/AppIcon-512@2x.png" ]; then
@@ -120,14 +120,14 @@ jobs:
             exit 1
           fi
 
-          # tauri icon composites onto --ios-color but still saves RGBA PNGs (alpha is just 255 everywhere).
-          # iOS wants no alpha channel at all. BMP has none, so an image -> BMP -> PNG round trip drops it
-          # without touching a pixel.
+          # tauri icon still saves RGBA PNGs, and iOS wants no alpha channel at all. sips keeps alpha through a BMP
+          # round trip (32-bit BMP), so go through JPEG at full quality, which cannot carry alpha.
+          # The source (icons/ios-1024.png) is the opaque full-bleed bull; iOS rounds the corners itself.
           for f in "$icons"/*.png; do
-            bmp="$RUNNER_TEMP/$(basename "$f").bmp"
-            sips -s format bmp "$f" --out "$bmp" >/dev/null
-            sips -s format png "$bmp" --out "$f" >/dev/null
-            rm -f "$bmp"
+            jpg="$RUNNER_TEMP/$(basename "$f").jpg"
+            sips -s format jpeg -s formatOptions 100 "$f" --out "$jpg" >/dev/null
+            sips -s format png "$jpg" --out "$f" >/dev/null
+            rm -f "$jpg"
           done
 
           for f in "$icons"/*.png; do
