@@ -40,6 +40,12 @@ fn handle(mut s: TcpStream, app: Arc<App>, ui: Arc<PathBuf>, port: u16) {
         if let Some(v) = low.strip_prefix("origin:") { origin = Some(v.trim().to_string()); }
     }
     if !bridge_request_ok(host.as_deref(), origin.as_deref(), port) { return reply(&mut s, 403, "text/plain", b"forbidden"); }
+    if method == "GET" && url == "/update-note" {
+        // What the launcher's update check left for the page (packaging/linux-browser/megatron). Read once, then gone.
+        let note = ui.parent().and_then(commons_core::browser_update::take_note);
+        let body = note.map(|n| n.to_string()).unwrap_or_else(|| "{}".into());
+        return reply(&mut s, 200, "application/json", body.as_bytes());
+    }
     if method == "POST" && url == "/rpc" {
         let mut body = vec![0u8; len.min(40 << 20)];
         if r.read_exact(&mut body).is_err() { return reply(&mut s, 400, "text/plain", b"bad body"); }
@@ -61,7 +67,31 @@ fn handle(mut s: TcpStream, app: Arc<App>, ui: Arc<PathBuf>, port: u16) {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let port: u16 = args.next().and_then(|p| p.parse().ok()).unwrap_or(7001);
+    let first = args.next();
+    if first.as_deref() == Some("--update") {
+        // The browser version's launcher runs this before starting the page (packaging/linux-browser/megatron):
+        // it checks, verifies, installs, and leaves a note for the page. It never starts the server or opens the account.
+        let (Some(relay), Some(install)) = (args.next(), args.next()) else {
+            eprintln!("usage: bridge --update <relay> <install-dir>");
+            std::process::exit(2);
+        };
+        let install = PathBuf::from(install);
+        let out = commons_core::browser_update::run(
+            &relay,
+            &install,
+            commons_core::browser_update::version(),
+            commons_core::browser_update::public_key().unwrap_or(""),
+        );
+        match out {
+            Ok(o) => println!("{}", commons_core::browser_update::describe(&o)),
+            Err(e) => {
+                eprintln!("update check failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    let port: u16 = first.and_then(|p| p.parse().ok()).unwrap_or(7001);
     let ui = Arc::new(PathBuf::from(args.next().unwrap_or_else(|| "app/ui".into())));
     let data = std::env::var("COMMONS_DATA").unwrap_or_else(|_| format!("./dev-data-{port}"));
     let relay = std::env::var("COMMONS_RELAY").unwrap_or_else(|_| "http://127.0.0.1:8787".into());
@@ -69,6 +99,11 @@ fn main() {
     let app = App::with_kdf(data.into(), &relay, kdf);
     app.start_background();
     let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
+    // The port is ours: an update that was installed before this start left the previous copy in .update-previous.
+    // It is no longer needed (rollback happens in the launcher only if the new bridge fails to start).
+    if let Some(dir) = ui.parent() {
+        commons_core::browser_update::cleanup_previous(dir);
+    }
     eprintln!("dev bridge on http://127.0.0.1:{port}  (ui: {})", ui.display());
     for conn in listener.incoming().flatten() {
         let (app, ui) = (app.clone(), ui.clone());

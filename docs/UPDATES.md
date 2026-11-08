@@ -51,6 +51,32 @@ How it installs: Linux replaces the AppImage file in place (keep it where it was
 new installer (per user, no administrator rights) and the app restarts. macOS swaps the `Megatron.app` bundle (works when
 it was dragged to Applications; not from inside the dmg). The app then restarts, and asks for the passphrase as after any start.
 
+## The Linux browser version
+
+`Megatron-linux-browser.tar.gz` (the core as a local bridge plus `app/ui`, opened in Brave/Chrome) is published and
+signed by the same script, listed in the same manifest as its own platform, **`linux-browser-x86_64`**. No Tauri updater
+target has that name (desktop apps look for `linux-x86_64`, `darwin-aarch64`, `windows-x86_64`), so the desktop apps
+ignore the entry, and the browser bridge looks only for it.
+
+The launcher (`packaging/linux-browser/megatron`) runs `bridge --update <relay> <install-dir>` before it starts the
+page, with a five-second cap: offline, or a relay that does not answer, only delays the window a moment. The bridge:
+
+1. fetches `<relay>/update/latest.json` and localizes it exactly as the desktop app does (`crates/core/src/update.rs`:
+   the account's relay only, https or loopback http, no redirects);
+2. takes the `linux-browser-x86_64` entry, downloads it without following redirects, with timeouts and a size cap;
+3. verifies the tarball with the minisign public key embedded in the bridge at build time — the same key as the desktop
+   app — and requires the signature's trusted comment to name exactly the manifest's version; an unsigned, wrongly
+   signed, or legacy (non-pre-hashed) file is refused;
+4. installs only a strictly newer version (a downgrade is refused);
+5. unpacks into a temporary folder next to the install (plain files and directories only, no symlinks or `..`), then
+   renames `ui/` and `bridge` into place. The previous copy stays in `.update-previous` until the new bridge has bound
+   its port; if the new bridge does not start, the launcher puts the previous one back.
+
+The page shows a small note from that check: "Updated to x.y.z" after an install, or "Update available" and the reason
+if a newer version exists but could not be installed. Nothing runs while the page is already open: the next start checks
+again. `crates/core/src/browser_update.rs` has the code and its tests; `tools/browser-update-test.sh` exercises the
+launcher end to end with a throwaway key and a loopback relay.
+
 ## The signing key
 
 `~/.config/commons/updater.key` (the private key, encrypted with its password), `~/.config/commons/updater.key.password`

@@ -25,6 +25,9 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 thiserror = "2"
 anyhow = "1"
 log = "0.4"
+minisign-verify = "0.3"
+tar = "0.4"
+flate2 = "1"
 
 # Game keys read a desktop's keyboard state. Phones have no such thing, and the crate has no mobile backend.
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
@@ -42,6 +45,8 @@ required-features = ["devbridge"]
 
 [dev-dependencies]
 commons-core = { path = ".", features = ["test-hooks"] }
+# Only the throwaway test signer (examples/minisign-test-sign.rs) and the browser-update tests need it.
+blake2 = "0.10"
 ureq = "2"
 commons-relay = { path = "../relay" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
