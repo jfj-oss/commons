@@ -138,7 +138,7 @@ impl App {
         if in_call { self.saw_call(); }
         let r = self.dispatch(method, a);
         if in_call && r.is_ok() { self.saw_call(); }
-        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "pairing_status" | "game_mute_wait") { self.nudge(); }
+        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "pairing_status" | "game_mute_wait" | "call_presence") { self.nudge(); }
         r
     }
 
@@ -408,6 +408,25 @@ impl App {
                 self.with(|c| c.call_state(&gid).map(|_| ()).map_err(e))?;
                 let (api, k) = self.with(|c| c.net_handle().map_err(e))?;
                 api.call_token(&k, &gid).map(|t| json!({"url": t.url, "token": t.token, "room": t.room, "identity": t.identity, "expires": t.expires, "turn_port": t.turn_port})).map_err(e)
+            }
+            // Who is in each room's call. Ask the relay, which asks LiveKit (the authoritative list); then map the
+            // device ids it returns to names from this device's own group state. Only this community's joined
+            // rooms are asked about, and all in one relay request, so a refresh is not one request per room.
+            "call_presence" => {
+                let cid = s(&a, "cid");
+                let (api, k, gids) = self.with(|c| {
+                    let gids: Vec<String> = c.channels_of(&cid).into_iter().filter(|ch| ch.joined).map(|ch| ch.gid).collect();
+                    let (api, k) = c.net_handle().map_err(e)?;
+                    Ok((api, k, gids))
+                })?;
+                if gids.is_empty() { return Ok(json!({"rooms": {}})); }
+                let resp = api.call_presence(&k, &gids).map_err(e)?;
+                let people = self.with(|c| Ok(c.call_presence(&resp))).map_err(e)?;
+                let mut rooms = serde_json::Map::new();
+                for (gid, list) in people {
+                    rooms.insert(gid, json!(list.iter().map(|p| json!({"account": p.account, "name": p.name, "me": p.is_me})).collect::<Vec<_>>()));
+                }
+                Ok(json!({"rooms": rooms}))
             }
             _ => Err(format!("unknown method {m}")),
         }

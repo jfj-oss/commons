@@ -12,7 +12,7 @@ use axum::{
 use commons_proto::*;
 use rand::Rng;
 use rusqlite::{params, Connection, OptionalExtension};
-use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::{Arc, Mutex}, time::Duration};
+use std::{collections::{BTreeSet, HashMap}, net::SocketAddr, path::PathBuf, sync::{Arc, Mutex}, time::Duration};
 use tokio::sync::{watch, Semaphore};
 
 /// Who may use this relay and how much of it. The defaults suit a few friends on one small server; every limit
@@ -28,6 +28,8 @@ pub struct Limits {
     pub min_app_version: Option<String>,
     /// Call tokens one device may fetch per window (reconnects need a few, loops should not).
     pub call_tokens_per_window: u32,
+    /// Presence checks one device may make per window. One check asks about all the rooms on screen.
+    pub call_presence_per_window: u32,
     /// When set, a new account needs this secret to register (a device of an existing account does not).
     pub invite_secret: Option<String>,
     pub max_accounts: u64,
@@ -67,6 +69,7 @@ impl Default for Limits {
             site_dir: None,
             min_app_version: None,
             call_tokens_per_window: 60,
+            call_presence_per_window: 1200,
             max_accounts: 1000,
             max_devices_per_account: 32,
             max_entry_bytes_per_account: 4 << 30,
@@ -120,6 +123,59 @@ pub fn mint_livekit_token(cfg: &LiveKitCfg, identity: &str, room: &str, now: u64
     Ok((tok, exp))
 }
 
+#[derive(serde::Serialize)]
+struct LkAdminGrant { room: String, #[serde(rename = "roomAdmin")] room_admin: bool }
+#[derive(serde::Serialize)]
+struct LkAdminClaims { iss: String, sub: String, nbf: u64, exp: u64, video: LkAdminGrant }
+
+/// A short-lived token for LiveKit's server API (`RoomService.ListParticipants`). It never leaves the relay.
+fn mint_livekit_admin_token(cfg: &LiveKitCfg, room: &str, now: u64) -> Result<String, jsonwebtoken::errors::Error> {
+    let claims = LkAdminClaims { iss: cfg.api_key.clone(), sub: cfg.api_key.clone(), nbf: now.saturating_sub(10), exp: now + 60,
+        video: LkAdminGrant { room: room.into(), room_admin: true } };
+    jsonwebtoken::encode(&jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256), &claims, &jsonwebtoken::EncodingKey::from_secret(cfg.api_secret.as_bytes()))
+}
+
+/// LiveKit's media URL is a websocket URL; the server API is the same host over HTTP.
+fn livekit_http_url(url: &str) -> Option<String> {
+    let u = url.trim_end_matches('/');
+    let base = if let Some(r) = u.strip_prefix("wss://") { format!("https://{r}") }
+        else if let Some(r) = u.strip_prefix("ws://") { format!("http://{r}") }
+        else if u.starts_with("https://") || u.starts_with("http://") { u.to_string() }
+        else { return None };
+    Some(format!("{base}/twirp/livekit.RoomService/ListParticipants"))
+}
+
+#[derive(serde::Deserialize)]
+struct LkParticipants { #[serde(default)] participants: Vec<LkParticipant> }
+#[derive(serde::Deserialize)]
+struct LkParticipant { identity: String, #[serde(default)] state: serde_json::Value }
+
+/// Ask LiveKit who is connected to one room. A 404 (a room nobody has ever called in) means nobody there.
+/// A transport error is reported, so the caller can keep its last answer instead of showing an empty call just
+/// because the media server was briefly unreachable.
+fn livekit_participants(cfg: &LiveKitCfg, gid: &str) -> Result<Vec<String>, String> {
+    let url = livekit_http_url(&cfg.url).ok_or_else(|| "the call server's address is not a websocket or http URL".to_string())?;
+    let room = call_room(gid);
+    let token = mint_livekit_admin_token(cfg, &room, now_secs()).map_err(|_| "cannot sign a call server request".to_string())?;
+    let body = serde_json::json!({ "room": room }).to_string();
+    let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(2)).build();
+    let answer = agent.post(&url).timeout(Duration::from_secs(4))
+        .set("authorization", &format!("Bearer {token}")).set("content-type", "application/json").send_string(&body);
+    match answer {
+        Ok(r) => {
+            let text = r.into_string().map_err(|e| format!("call server: {e}"))?;
+            let p: LkParticipants = serde_json::from_str(&text).map_err(|_| "call server sent an answer this relay cannot read".to_string())?;
+            // Identities here are device ids: this relay minted every join token, and nothing else can join its rooms.
+            Ok(p.participants.into_iter()
+                .filter(|x| is_hex(&x.identity, 64) && x.state.as_str() != Some("DISCONNECTED"))
+                .map(|x| x.identity).collect())
+        }
+        Err(ureq::Error::Status(404, _)) => Ok(vec![]),
+        Err(ureq::Error::Status(c, _)) => Err(format!("call server said {c}")),
+        Err(e) => Err(format!("call server: {e}")),
+    }
+}
+
 pub struct RelayState {
     db: Mutex<Connection>,
     blob_dir: PathBuf,
@@ -129,6 +185,9 @@ pub struct RelayState {
     rates: Mutex<HashMap<String, (u64, u32)>>,
     /// A 25 MB body is held in memory while it is checked: only a few at a time.
     big_bodies: Arc<Semaphore>,
+    /// Who LiveKit last said is in each room's call, kept for a couple of seconds so that all members' rail
+    /// refreshes share one query to the media server instead of each asking it.
+    presence: Mutex<HashMap<String, (u64, Vec<String>)>>,
 }
 
 type Resp = Response<Body>;
@@ -187,7 +246,7 @@ pub async fn start_with(bind: SocketAddr, data_dir: PathBuf, limits: Limits) -> 
     std::fs::create_dir_all(data_dir.join("blobs"))?;
     let db = open_db(data_dir.join("relay.db").to_str().unwrap()).map_err(|e| std::io::Error::other(e.to_string()))?;
     let (tick, _) = watch::channel(0u64);
-    let st = Arc::new(RelayState { db: Mutex::new(db), blob_dir: data_dir.join("blobs"), tick, limits, rates: Mutex::new(HashMap::new()), big_bodies: Arc::new(Semaphore::new(4)) });
+    let st = Arc::new(RelayState { db: Mutex::new(db), blob_dir: data_dir.join("blobs"), tick, limits, rates: Mutex::new(HashMap::new()), big_bodies: Arc::new(Semaphore::new(4)), presence: Mutex::new(HashMap::new()) });
     let app = Router::new().fallback(handle).with_state(st);
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let addr = listener.local_addr()?;
@@ -319,6 +378,74 @@ async fn site(dir: &std::path::Path, path: &str, min: Option<&str>) -> Option<Re
     Some(send_file(dir, name).await)
 }
 
+const MAX_PRESENCE_GIDS: usize = 64;
+const PRESENCE_TTL_SECS: u64 = 2;
+
+/// `POST /v1/call-presence`: who the media server says is connected to these rooms' calls.
+///
+/// LiveKit is the source of truth: it drops a participant when its connection goes away (a crashed client falls
+/// off after the server's ping timeout), so clients never have to announce themselves and nothing new is ever
+/// put into a room's log. Members on older versions of Megatron therefore see exactly the same bytes as before;
+/// this endpoint is only called by newer UIs. Privacy: an account only gets answers about rooms it is a current
+/// member of and has not been cut off from calls in, the answer carries device ids (never names), and each
+/// client maps those ids to its own contacts from the room's MLS group. The media server still sees only a hash
+/// of the group id, as with call tokens.
+async fn call_presence(st: Arc<RelayState>, headers: HeaderMap, path: &str, body: &[u8]) -> Result<Resp, Resp> {
+    let Some(cfg) = st.limits.livekit.clone() else { return Err(status(StatusCode::NOT_FOUND, "this relay has no call server configured")) };
+    let req: CallPresenceReq = parse(body)?;
+    let wanted: BTreeSet<String> = req.gids.into_iter().filter(|g| valid_gid(g)).collect();
+    if wanted.len() > MAX_PRESENCE_GIDS { return Err(status(StatusCode::PAYLOAD_TOO_LARGE, "too many rooms at once")); }
+    let gids: Vec<String> = {
+        let db = st.db.lock().unwrap();
+        let a = authenticate(&db, &headers, "POST", path, body, true)?.1.unwrap();
+        st.limited(format!("presence:{}", a.device), st.limits.call_presence_per_window, "too many presence checks, wait a little")?;
+        let mut out = vec![];
+        for gid in wanted {
+            if !is_member(&db, &gid, &a.account)? { continue; }
+            let denied: i64 = db.query_row("SELECT COUNT(*) FROM call_denied WHERE gid=?1 AND account=?2", params![&gid, &a.account], |r| r.get(0)).map_err(dberr)?;
+            if denied > 0 { continue; }
+            out.push(gid);
+        }
+        out
+    };
+    let now = now_secs();
+    let mut rooms = std::collections::BTreeMap::new();
+    let mut ask = vec![];
+    {
+        let cache = st.presence.lock().unwrap();
+        for gid in gids {
+            match cache.get(&gid) {
+                Some((at, v)) if now.saturating_sub(*at) < PRESENCE_TTL_SECS => { if !v.is_empty() { rooms.insert(gid, v.clone()); } }
+                _ => ask.push(gid),
+            }
+        }
+    }
+    let mut handles = vec![];
+    for gid in ask {
+        let cfg = cfg.clone();
+        let arg = gid.clone();
+        handles.push((gid, tokio::task::spawn_blocking(move || livekit_participants(&cfg, &arg))));
+    }
+    let mut failed = false;
+    let mut last_err = String::new();
+    for (gid, h) in handles {
+        match h.await {
+            Ok(Ok(devs)) => {
+                if !devs.is_empty() { rooms.insert(gid.clone(), devs.clone()); }
+                let mut c = st.presence.lock().unwrap();
+                if c.len() > 4096 { c.retain(|_, (at, _)| now.saturating_sub(*at) < 60); }
+                c.insert(gid, (now, devs));
+            }
+            Ok(Err(e)) => { failed = true; last_err = e; }
+            Err(_) => { failed = true; last_err = "the call server task failed".into(); }
+        }
+    }
+    // If any room could not be asked, say so for the whole request: a client then keeps the list it already had
+    // instead of briefly emptying the call of a room the media server was too busy to describe.
+    if failed { return Err(status(StatusCode::BAD_GATEWAY, &format!("the call server did not answer: {last_err}"))); }
+    Ok(json(&CallPresenceResp { rooms }))
+}
+
 async fn handle(State(st): State<Arc<RelayState>>, req: Request<Body>) -> Resp {
     let (parts, body) = req.into_parts();
     let path = parts.uri.path().to_string();
@@ -345,6 +472,10 @@ async fn handle(State(st): State<Arc<RelayState>>, req: Request<Body>) -> Resp {
     // The long-poll endpoint must not hold the DB lock while waiting.
     if m == Method::POST && path == "/v1/sync" {
         return sync(st, &parts.headers, &path, &body).await;
+    }
+    // Asking the media server must not hold the database (it may take a moment), so this runs on the async side.
+    if m == Method::POST && path == "/v1/call-presence" {
+        return call_presence(st, parts.headers.clone(), &path, &body).await.unwrap_or_else(|r| r);
     }
     let seg: Vec<String> = path.trim_matches('/').split('/').map(String::from).collect();
     // Blob bytes go to and from the disk with no database lock held, and downloads are streamed.

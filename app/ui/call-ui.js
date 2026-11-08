@@ -291,5 +291,16 @@
   call.addEventListener('change', () => { if (call.phase === 'connected' || call.phase === 'error' || call.phase === 'idle' || call.phase === 'reconnecting' || call.phase === 'connecting') render(); });
   setInterval(() => { ensureButton(); updateButton(); }, 700);
   ensurePanel();
-  window.__callUI = { open() { open = true; ensurePanel(); render(); }, render };
+  // Also used by the rail's call strip: open the panel and join this room's call. If this device is already in that
+  // call (its own row was clicked), just reveal the panel rather than leaving and joining again.
+  window.__callUI = {
+    open() { open = true; ensurePanel(); render(); },
+    render,
+    joinRoom(gid, name) {
+      open = true; ensurePanel();
+      if (call.gid === gid && call.phase !== 'idle') { render(); return; }
+      call.join(gid, name).catch(() => { });
+      render();
+    },
+  };
 })();

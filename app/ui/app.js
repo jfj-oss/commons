@@ -94,6 +94,7 @@ const S = {
   mention: new Map(), mentionSig: new Map(),   // gid -> unread messages that name me, gid -> unread count it was computed for
   outgoing: [],   // sent but not yet back from the core: shown at once, so pressing Send never looks like nothing happened
   first: true, painted: 0, firstNew: null, newCount: 0, jumpTo: null, pinned: true, below: 0, drafts: new Map(),
+  presence: new Map(), presenceCid: null, presenceSig: '', presenceAt: 0, presenceBackoff: 0,   // gid -> people in that room's call (from the relay)
 };
 const rowCache = new Map(), roomCache = new Map();
 
@@ -284,7 +285,10 @@ function mentionNews() {
 
 // ---- main app ----
 let polling = false;
-function startApp() { $('#app').hidden = false; $('#boot').hidden = true; if (!polling) { polling = true; tick(); setInterval(tick, 500); } }
+function startApp() {
+  $('#app').hidden = false; $('#boot').hidden = true;
+  if (!polling) { polling = true; tick(); setInterval(tick, 500); setInterval(presenceTick, 2000); }
+}
 // One look at a time; a look asked for while one runs happens right after it.
 async function tick() {
   if (tick.busy) { tick.again = true; return; }
@@ -313,6 +317,37 @@ async function tickOnce() {
 const currentCommunity = () => S.snap && S.snap.communities.find(c => c.id === S.cid);
 const currentChannel = () => { const c = currentCommunity(); return c && c.channels.find(x => x.gid === S.gid); };
 const isPhone = () => matchMedia('(max-width: 760px)').matches;
+const humanCount = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+// The call in this room, as reported by the relay (which asks LiveKit). Absent means nobody, or a relay that
+// does not do calls: either way the rail simply shows nothing. Names were mapped from device ids by the core.
+const callPeople = gid => { const v = S.presence.get(gid); return Array.isArray(v) ? v : null; };
+const inCallHere = gid => { try { const c = window.__commonsCall; return !!(c && c.gid === gid && c.phase !== 'idle'); } catch { return false; } };
+// Refresh at most every ~2 s; the relay keeps its own two-second cache, so several open windows ask LiveKit once.
+async function presenceTick() {
+  if (presenceTick.busy || !S.snap || !S.cid || document.visibilityState !== 'visible') return;
+  const cid = S.cid;
+  if (cid !== S.presenceCid) { S.presenceCid = cid; S.presence = new Map(); S.presenceSig = ''; S.presenceAt = 0; S.presenceBackoff = 0; renderRail(); }
+  if (Date.now() < S.presenceBackoff || Date.now() - S.presenceAt < 1800) return;
+  S.presenceAt = Date.now();
+  presenceTick.busy = true;
+  try {
+    const r = await rpc('call_presence', { cid });
+    if (S.cid !== cid) return;
+    S.presenceBackoff = 0;
+    const rooms = (r && r.rooms) || {};
+    const sig = JSON.stringify(rooms);
+    if (sig === S.presenceSig) return;
+    S.presenceSig = sig;
+    S.presence = new Map(Object.entries(rooms).filter(([, v]) => Array.isArray(v) && v.length));
+    renderRail();
+  } catch (e) {
+    // Keep what we last knew. A relay with no calls configured keeps saying so, so ask it rarely; a passing
+    // network error just gets a short rest and the next ticks try again.
+    const msg = String((e && e.message) || e);
+    S.presenceBackoff = Date.now() + (/no call server/.test(msg) ? 60000 : 8000);
+  }
+  finally { presenceTick.busy = false; }
+}
 const railOpen = on => $('#app').classList.toggle('rail-open', on);
 
 function resetRoom() {
@@ -325,12 +360,40 @@ function openRoom(gid, jumpTo = null) {
   S.jumpTo = jumpTo; railOpen(false); renderRail(); tick();
 }
 $('#rooms').addEventListener('click', async e => {
+  // A person in a call, or the small Join beside them: open that room and join its call (one click, one gesture for
+  // the microphone prompt). The strip is inside #rooms but outside the room's own button, so it is checked first.
+  const cj = e.target.closest('[data-call]');
+  if (cj) {
+    const gid = cj.dataset.call;
+    const ch = ((currentCommunity() || {}).channels || []).find(x => x.gid === gid);
+    if (gid !== S.gid) openRoom(gid); else railOpen(false);
+    try {
+      if (window.__callUI && window.__callUI.joinRoom) window.__callUI.joinRoom(gid, ch ? ch.name : '');
+      else toast('Calls are not available in this window.');
+    } catch (er) { toast(er.message); }
+    return;
+  }
   const x = e.target.closest('[data-join]');
   if (x) { try { await rpc('cancel_join', { id: x.dataset.join }); tick(); } catch (er) { toast(er.message); } return; }
   const b = e.target.closest('.room'); if (b) openRoom(b.dataset.g);
 });
 
 const gone = new Set();
+const LIVE_SHOWN = 3;   // names under a room before the rest become a count
+// The people in a room's call: seals and names, then a count, and a Join. Each row is a button of its own (a
+// button may not hold other buttons), so the room's own row stays exactly as it was.
+function liveRow(ch) {
+  const list = callPeople(ch.gid);
+  if (!list || !list.length) return '';
+  const n = list.length, shown = list.slice(0, LIVE_SHOWN), extra = n - shown.length;
+  const names = list.map(p => p.name).join(', ');
+  const people = shown.map(p => `<button type="button" class="live-p" data-call="${esc(ch.gid)}" title="${esc(p.name)}${p.me ? ' (you)' : ''}" aria-label="Join the call in ${esc(ch.name)}; ${p.me ? 'you are' : esc(p.name) + ' is'} in it">${seal(p.account, p.name, 'tiny')}<span class="live-n">${esc(p.me ? 'You' : p.name)}</span></button>`).join('');
+  const more = extra ? `<span class="live-more" title="${esc(names)}">+${extra}</span>` : '';
+  const act = inCallHere(ch.gid)
+    ? '<span class="live-you">you are in the call</span>'
+    : `<button type="button" class="live-join" data-call="${esc(ch.gid)}" aria-label="Join the call in ${esc(ch.name)}">Join</button>`;
+  return `<div class="room-live"${inCallHere(ch.gid) ? ' data-in="1"' : ''} title="${esc(n === 1 ? list[0].name + ' is in the call' : humanCount(n, 'person', 'people') + ' in the call: ' + names)}">${people}${more}${act}</div>`;
+}
 function renderRail() {
   const sn = S.snap;
   $('#me-name').textContent = sn.me.name;
@@ -351,8 +414,10 @@ function renderRail() {
   const seen = document.visibilityState === 'visible';
   patch($('#rooms'), (c ? c.channels.map(ch => {
     const active = ch.gid === S.gid, un = (active && seen) || c.removed ? 0 : ch.unread, at = active ? 0 : (S.mention.get(ch.gid) || 0);
-    const said = [ch.name, un ? `${un} unread` : '', at ? `${at} mention${at === 1 ? '' : 's'} of you` : '', ch.joined ? '' : 'waiting for keys'].filter(Boolean).join(', ');
-    return { k: ch.gid, h: `<button class="room ${active ? 'active' : ''} ${ch.joined ? '' : 'pending'} ${un ? 'unread' : ''} ${at ? 'mention' : ''}" data-g="${esc(ch.gid)}" aria-label="${esc(said)}"${active ? ' aria-current="true"' : ''}><svg class="kh" viewBox="0 0 12 14" aria-hidden="true"><use href="#i-keyhole"/></svg><span class="nm">${esc(ch.name)}</span>${at ? '<span class="at-mark">@</span>' : ''}${un ? `<span class="pill">${un}</span>` : ''}</button>` };
+    const call = callPeople(ch.gid), inCall = call ? call.length : 0;
+    const said = [ch.name, inCall ? humanCount(inCall, 'person', 'people') + ' in the call' : '', un ? `${un} unread` : '', at ? `${at} mention${at === 1 ? '' : 's'} of you` : '', ch.joined ? '' : 'waiting for keys'].filter(Boolean).join(', ');
+    const speaker = inCall ? '<svg class="ic live-ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-wave"/></svg>' : '';
+    return { k: ch.gid, h: `<div class="room-wrap"><button class="room ${inCall ? 'live' : ''} ${active ? 'active' : ''} ${ch.joined ? '' : 'pending'} ${un ? 'unread' : ''} ${at ? 'mention' : ''}" data-g="${esc(ch.gid)}" aria-label="${esc(said)}"${active ? ' aria-current="true"' : ''}><svg class="kh" viewBox="0 0 12 14" aria-hidden="true"><use href="#i-keyhole"/></svg><span class="nm">${esc(ch.name)}</span>${speaker}${at ? '<span class="at-mark">@</span>' : ''}${un ? `<span class="pill">${un}</span>` : ''}</button>${liveRow(ch)}</div>` };
   }) : []).concat(joinNotes(sn)), roomCache);
   const ch = currentChannel();
   $('#chan-title').textContent = ch ? ch.name : (c ? c.name : 'Welcome');
