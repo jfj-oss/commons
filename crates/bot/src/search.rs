@@ -1,8 +1,8 @@
-//! The bot's only tool: a DuckDuckGo HTML search, and the single specification the model is ever offered.
+//! The bot's first tool: a DuckDuckGo HTML search, and the specification the model is offered for it.
 //!
-//! There is exactly one tool in this program — [`web_search_tool`]. No URL fetching, file access or shell lives here
-//! or is reachable from a tool call; a search is the only thing [`DuckDuckGo`] can do. The results are untrusted text
-//! from the internet, so they are always wrapped in a clearly quoted block before the model sees them.
+//! Together with [`crate::studio::TOOL_NAME`] these are the only two tools in the program. No URL fetching, file access
+//! or shell lives here or is reachable from a tool call; a search is the only thing [`DuckDuckGo`] can do. The results
+//! are untrusted text from the internet, so they are always wrapped in a clearly quoted block before the model sees them.
 use crate::llm::ToolSpec;
 use serde_json::json;
 use std::collections::VecDeque;

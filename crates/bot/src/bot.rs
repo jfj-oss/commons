@@ -2,20 +2,23 @@
 //! back through the client's ordinary encrypted send path.
 //!
 //! Two rules shape everything here. It speaks only when spoken to (an @mention, or a reply to one of its messages), and
-//! the only words in chat that change what it does are the two admin phrases, accepted only from a community admin.
+//! the only words in chat that change what it does are the admin phrases, accepted only from a community admin.
 //!
-//! The model has exactly one tool — [`crate::search::TOOL_NAME`], the web search. `tools()` is the whole list, and
-//! `run_tool` is the only executor: any other name is refused without touching anything.
+//! The model has exactly two tools — [`crate::search::TOOL_NAME`] (web search) and [`crate::studio::TOOL_NAME`] (make a
+//! picture, song, sound or video in the owner's Studio). `tools()` is the whole list, and `run_tool` is the only
+//! executor: any other name is refused without touching anything.
 use crate::gpu::{GpuCheck, Pause};
 use crate::llm::{AskError, Llm, ModelReply, Msg, ToolCall, ToolMode, ToolSpec};
+use crate::safety;
 use crate::search::{self, SearchResult, WebSearch, MAX_SEARCHES_PER_QUESTION};
+use crate::studio::{self, JobState, StudioApi};
 use commons_core::client::Client;
 use commons_core::state::{MsgBody, Role};
 use commons_proto::now_secs;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_NAME: &str = "Oracle";
@@ -37,10 +40,19 @@ pub struct Config {
     pub max_per_minute: usize,
     /// Requests waiting behind the answer being written in one room. More than this are dropped.
     pub max_queue: usize,
+    /// Studio jobs one person may start per day, all kinds together.
+    pub studio_daily_cap: usize,
+    /// Of those, how many may be videos.
+    pub studio_daily_video_cap: usize,
+    /// Studio jobs allowed to wait behind the one being made. More are told "busy".
+    pub studio_queue_max: usize,
 }
 impl Default for Config {
     fn default() -> Self {
-        Config { name: DEFAULT_NAME.into(), max_reply_chars: 1200, context_messages: 20, max_per_minute: 6, max_queue: 4 }
+        Config {
+            name: DEFAULT_NAME.into(), max_reply_chars: 1200, context_messages: 20, max_per_minute: 6, max_queue: 4,
+            studio_daily_cap: 10, studio_daily_video_cap: 2, studio_queue_max: 3,
+        }
     }
 }
 
@@ -62,12 +74,20 @@ pub enum JobKind {
     SetDeepSeek { on: bool },
     /// Someone who is not an admin tried one of the admin phrases.
     NotAllowed,
+    /// An admin turned Studio on or off for this room, or on for one account.
+    SetStudio { on: bool, person: Option<String> },
+    /// "@Oracle allow studio for <name>" where nobody in the room has that name (or more than one does).
+    StudioUnknownPerson(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Job {
     pub gid: String,
     pub trigger: String,
+    /// The account that spoke. Empty for a job made up by a test or by the bot itself.
+    pub from: String,
+    /// The words that triggered it (the person's request, which the hard block also reads).
+    pub text: String,
     pub kind: JobKind,
 }
 
@@ -85,6 +105,14 @@ pub trait Chat {
     fn history(&self, gid: &str, limit: usize) -> Vec<Line>;
     fn typing(&mut self, gid: &str);
     fn send(&mut self, gid: &str, text: &str, reply: Option<String>) -> Result<String, String>;
+    /// Post an encrypted attachment through the core's ordinary file path.
+    fn send_file(&mut self, gid: &str, name: &str, mime: &str, data: &[u8], caption: &str) -> Result<String, String>;
+    /// The role of an account in the community that owns this room.
+    fn role_of(&self, _gid: &str, _account: &str) -> Role { Role::Member }
+    /// The display name of an account.
+    fn name_of(&self, account: &str) -> String { account.to_string() }
+    /// The display name of the community owner, when this chat knows it.
+    fn owner_of(&self, _gid: &str) -> Option<String> { None }
 }
 
 fn history_of(c: &Client, gid: &str, limit: usize) -> Vec<Line> {
@@ -109,6 +137,18 @@ fn history_of(c: &Client, gid: &str, limit: usize) -> Vec<Line> {
     out.split_off(start)
 }
 
+fn role_in(c: &Client, gid: &str, account: &str) -> Role {
+    let Some(g) = c.st.groups.get(gid) else { return Role::Member };
+    let Some(co) = c.st.communities.get(&g.community) else { return Role::Member };
+    co.role_of(account).unwrap_or(Role::Member)
+}
+
+fn owner_in(c: &Client, gid: &str) -> Option<String> {
+    let g = c.st.groups.get(gid)?;
+    let co = c.st.communities.get(&g.community)?;
+    if co.owner.is_empty() { None } else { Some(c.display_name(&co.owner)) }
+}
+
 impl Chat for Client {
     fn my_account(&self) -> String { Client::my_account(self) }
     fn history(&self, gid: &str, limit: usize) -> Vec<Line> { history_of(self, gid, limit) }
@@ -116,6 +156,12 @@ impl Chat for Client {
     fn send(&mut self, gid: &str, text: &str, reply: Option<String>) -> Result<String, String> {
         self.send_text(gid, text, reply).map_err(|e| format!("{e:#}"))
     }
+    fn send_file(&mut self, gid: &str, name: &str, mime: &str, data: &[u8], caption: &str) -> Result<String, String> {
+        Client::send_file(self, gid, name, mime, data, caption).map_err(|e| format!("{e:#}"))
+    }
+    fn role_of(&self, gid: &str, account: &str) -> Role { role_in(self, gid, account) }
+    fn name_of(&self, account: &str) -> String { self.display_name(account) }
+    fn owner_of(&self, gid: &str) -> Option<String> { owner_in(self, gid) }
 }
 
 /// A client shared with the background sync thread. Every call is a separate short lock, so a model answering for a
@@ -131,6 +177,12 @@ impl Chat for SharedClient<'_> {
     fn send(&mut self, gid: &str, text: &str, reply: Option<String>) -> Result<String, String> {
         self.lock().send_text(gid, text, reply).map_err(|e| format!("{e:#}"))
     }
+    fn send_file(&mut self, gid: &str, name: &str, mime: &str, data: &[u8], caption: &str) -> Result<String, String> {
+        Client::send_file(&mut self.lock(), gid, name, mime, data, caption).map_err(|e| format!("{e:#}"))
+    }
+    fn role_of(&self, gid: &str, account: &str) -> Role { role_in(&self.lock(), gid, account) }
+    fn name_of(&self, account: &str) -> String { self.lock().display_name(account) }
+    fn owner_of(&self, gid: &str) -> Option<String> { owner_in(&self.lock(), gid) }
 }
 
 /// A mention of the bot's name: "@Oracle", anywhere in the text, touching no letters on its ends (so "@Oracle's" counts
@@ -167,6 +219,46 @@ pub fn admin_command(text: &str, name: &str) -> Option<bool> {
     if said == phrase("use deepseek") { Some(true) } else if said == phrase("use local") { Some(false) } else { None }
 }
 
+/// A Studio permission phrase. Like the model switch, only the exact words count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StudioCommand {
+    /// "@Oracle allow studio": everybody in this room may use Studio.
+    AllowAll,
+    /// "@Oracle disallow studio": back to the owner only.
+    DisallowAll,
+    /// "@Oracle allow studio for <name>": one person may use it.
+    AllowPerson(String),
+}
+
+pub fn studio_command(text: &str, name: &str) -> Option<StudioCommand> {
+    let said: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let said = said.trim_end_matches(['.', '!', '?', ' ', '\n', '\t']);
+    let low = said.to_lowercase();
+    let prefix = format!("@{} ", name.to_lowercase());
+    if !low.starts_with(&prefix) { return None; }
+    let rest = said.get(prefix.len()..)?.trim();
+    let low_rest = rest.to_lowercase();
+    match low_rest.as_str() {
+        "allow studio" => Some(StudioCommand::AllowAll),
+        "disallow studio" => Some(StudioCommand::DisallowAll),
+        _ => {
+            let head = "allow studio for ";
+            if !low_rest.starts_with(head) { return None; }
+            let person = rest.get(head.len()..)?.trim().trim_start_matches('@').trim();
+            if person.is_empty() { None } else { Some(StudioCommand::AllowPerson(person.to_string())) }
+        }
+    }
+}
+
+/// The one account in the room whose display name is `wanted` (case-insensitive). Two people with the same name are
+/// ambiguous and count as nobody, so the admin is told rather than the wrong person being allowed.
+fn resolve_person(roles: &BTreeMap<String, (Role, bool)>, c: &Client, wanted: &str) -> Option<String> {
+    let mut found = roles.keys().filter(|a| c.display_name(a).eq_ignore_ascii_case(wanted));
+    let first = found.next()?;
+    if found.next().is_some() { return None; }
+    Some(first.clone())
+}
+
 /// Cut an answer to a hard limit on a word boundary, so one runaway generation cannot flood the room.
 pub fn cap(text: &str, max_chars: usize) -> String {
     let t = text.trim();
@@ -191,6 +283,17 @@ impl RateLimit {
     }
 }
 
+/// Who may use Studio in one room. The community owner always may; everyone else only when an admin has allowed it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StudioPerm {
+    /// Everybody in the room.
+    #[serde(default)]
+    pub everyone: bool,
+    /// Accounts named with "@Oracle allow studio for <name>".
+    #[serde(default)]
+    pub people: BTreeSet<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RoomState {
     #[serde(default)]
@@ -198,11 +301,28 @@ pub struct RoomState {
     /// Highest relay sequence number considered. Anything newer is still to be looked at.
     #[serde(default)]
     pub last_seq: u64,
+    /// Studio permission for this room.
+    #[serde(default)]
+    pub studio: StudioPerm,
 }
+
+/// One person's Studio use for one day (days are counted in whole UTC days from the epoch).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DailyUse {
+    #[serde(default)]
+    pub day: u64,
+    #[serde(default)]
+    pub total: u32,
+    #[serde(default)]
+    pub video: u32,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BotState {
     #[serde(default)]
     pub rooms: BTreeMap<String, RoomState>,
+    #[serde(default)]
+    pub studio_use: BTreeMap<String, DailyUse>,
 }
 
 struct Store {
@@ -223,17 +343,51 @@ impl Store {
     }
 }
 
-/// The complete list of tools the model may use. Exactly one; there is no other tool anywhere in this crate.
-pub fn tools() -> Vec<ToolSpec> { search::tools() }
+/// The complete list of tools the model may use. Exactly two; there is no other tool anywhere in this crate.
+pub fn tools() -> Vec<ToolSpec> { vec![search::web_search_tool(), studio::studio_tool()] }
+
+/// One Studio job from the bot at a time. Up to `studio_queue_max` more may wait; beyond that the bot says it is busy.
+/// The gate is held for the whole job (submit, poll, download), so the polling has no lock of the bot's own model or
+/// client to deadlock on.
+struct StudioQueue {
+    gate: Mutex<()>,
+    taken: Mutex<usize>,
+    max: usize,
+}
+
+impl StudioQueue {
+    fn enter(&self) -> Option<StudioTicket<'_>> {
+        {
+            let mut taken = self.taken.lock().unwrap_or_else(|p| p.into_inner());
+            if *taken >= self.max { return None; }
+            *taken += 1;
+        }
+        let gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
+        Some(StudioTicket { _gate: gate, taken: &self.taken })
+    }
+}
+
+struct StudioTicket<'a> {
+    _gate: MutexGuard<'a, ()>,
+    taken: &'a Mutex<usize>,
+}
+impl Drop for StudioTicket<'_> {
+    fn drop(&mut self) {
+        let mut taken = self.taken.lock().unwrap_or_else(|p| p.into_inner());
+        *taken = taken.saturating_sub(1);
+    }
+}
 
 pub struct Bot {
     pub cfg: Config,
     local: Box<dyn Llm>,
     deepseek: Box<dyn Llm>,
     search: Arc<dyn WebSearch>,
+    studio: Arc<dyn StudioApi>,
     gpu: Arc<dyn GpuCheck>,
     store: Mutex<Store>,
     rate: Mutex<RateLimit>,
+    studio_queue: StudioQueue,
 }
 
 impl Bot {
@@ -242,11 +396,16 @@ impl Bot {
         local: Box<dyn Llm>,
         deepseek: Box<dyn Llm>,
         search: Arc<dyn WebSearch>,
+        studio: Arc<dyn StudioApi>,
         gpu: Arc<dyn GpuCheck>,
         state_path: impl AsRef<Path>,
     ) -> Bot {
         let rate = RateLimit::new(cfg.max_per_minute);
-        Bot { cfg, local, deepseek, search, gpu, store: Mutex::new(Store::load(state_path.as_ref().to_path_buf())), rate: Mutex::new(rate) }
+        let studio_queue = StudioQueue { gate: Mutex::new(()), taken: Mutex::new(0), max: cfg.studio_queue_max + 1 };
+        Bot {
+            cfg, local, deepseek, search, studio, gpu, store: Mutex::new(Store::load(state_path.as_ref().to_path_buf())),
+            rate: Mutex::new(rate), studio_queue,
+        }
     }
 
     pub fn deepseek_on(&self, gid: &str) -> bool { self.store.lock().unwrap_or_else(|p| p.into_inner()).data.rooms.get(gid).is_some_and(|r| r.deepseek) }
@@ -300,17 +459,44 @@ impl Bot {
                 if m.seq > 0 { max_seq = max_seq.max(m.seq); }
                 if m.seq <= start || m.deleted || m.sender.is_empty() || m.sender == me { continue; }
                 let MsgBody::Text(text) = &m.body else { continue };
-                if is_reset(text, &self.cfg.name) { found.push(Job { gid: gid.clone(), trigger: m.id.clone(), kind: JobKind::Reset }); continue; }
+                if is_reset(text, &self.cfg.name) {
+                    found.push(Job { gid: gid.clone(), trigger: m.id.clone(), from: m.sender.clone(), text: text.clone(), kind: JobKind::Reset });
+                    continue;
+                }
                 if !mentions(text, &self.cfg.name) && !m.reply.as_deref().is_some_and(|id| own.contains(id)) { continue; }
+                let role = roles.get(&m.sender).map(|(r, _)| *r).unwrap_or(Role::Member);
                 let kind = match admin_command(text, &self.cfg.name) {
                     Some(on) => {
-                        let role = roles.get(&m.sender).map(|(r, _)| *r).unwrap_or(Role::Member);
                         if role >= Role::Admin { deepseek_now = on; JobKind::SetDeepSeek { on } }
                         else { JobKind::NotAllowed }
                     }
-                    None => JobKind::Answer { deepseek: deepseek_now },
+                    None => match studio_command(text, &self.cfg.name) {
+                        Some(_) if role < Role::Admin => JobKind::NotAllowed,
+                        Some(StudioCommand::AllowAll) => {
+                            let room = store.data.rooms.entry(gid.clone()).or_default();
+                            if !room.studio.everyone { room.studio.everyone = true; dirty = true; }
+                            JobKind::SetStudio { on: true, person: None }
+                        }
+                        Some(StudioCommand::DisallowAll) => {
+                            let room = store.data.rooms.entry(gid.clone()).or_default();
+                            if room.studio.everyone || !room.studio.people.is_empty() {
+                                room.studio = StudioPerm::default();
+                                dirty = true;
+                            }
+                            JobKind::SetStudio { on: false, person: None }
+                        }
+                        Some(StudioCommand::AllowPerson(wanted)) => match resolve_person(&roles, c, &wanted) {
+                            Some(acct) => {
+                                let room = store.data.rooms.entry(gid.clone()).or_default();
+                                if !room.studio.people.contains(&acct) { room.studio.people.insert(acct.clone()); dirty = true; }
+                                JobKind::SetStudio { on: true, person: Some(acct) }
+                            }
+                            None => JobKind::StudioUnknownPerson(wanted),
+                        },
+                        None => JobKind::Answer { deepseek: deepseek_now },
+                    },
                 };
-                found.push(Job { gid: gid.clone(), trigger: m.id.clone(), kind });
+                found.push(Job { gid: gid.clone(), trigger: m.id.clone(), from: m.sender.clone(), text: text.clone(), kind });
             }
             let entry = store.data.rooms.entry(gid.clone()).or_default();
             if entry.last_seq != max_seq { entry.last_seq = max_seq; dirty = true; }
@@ -330,6 +516,19 @@ impl Bot {
             JobKind::SetDeepSeek { on: false } => ("DeepSeek mode is off for this room. Answers stay on this computer.".to_string(), false, vec![]),
             JobKind::Reset => (RESET_REPLY.to_string(), false, vec![]),
             JobKind::NotAllowed => ("Only an admin of this community can change how I answer.".to_string(), false, vec![]),
+            JobKind::SetStudio { on: true, person: None } => (
+                "Studio is on for everyone in this room. Anyone here can ask me for pictures, songs and sounds; video is only for the owner."
+                    .to_string(), false, vec![],
+            ),
+            JobKind::SetStudio { on: false, .. } => (
+                "Studio is off in this room. Only the community owner can use it.".to_string(), false, vec![],
+            ),
+            JobKind::SetStudio { on: true, person: Some(acct) } => (
+                format!("Studio is on for {} in this room.", c.name_of(acct)), false, vec![],
+            ),
+            JobKind::StudioUnknownPerson(name) => (
+                format!("I don't see anyone called \"{name}\" in this room, so nobody was allowed."), false, vec![],
+            ),
             JobKind::Answer { deepseek } => {
                 // A game or Studio owns the GPU: say so at once, without loading the model and without queueing the
                 // question for later. DeepSeek runs elsewhere, so it is not held back.
@@ -341,7 +540,7 @@ impl Bot {
                 let history = c.history(&job.gid, self.cfg.context_messages);
                 if history.is_empty() { return None; }
                 let llm: &dyn Llm = if *deepseek { self.deepseek.as_ref() } else { self.local.as_ref() };
-                match self.ask_with_typing(c, &job.gid, llm, &history) {
+                match self.ask_with_typing(c, job, llm, &history) {
                     Ok((t, sources)) => (t, *deepseek, sources),
                     Err(e) => (self.error_text(&e, *deepseek), *deepseek, vec![]),
                 }
@@ -386,13 +585,17 @@ impl Bot {
     fn system_prompt(&self, mode: ToolMode) -> String {
         let tool = match mode {
             ToolMode::FunctionCalling =>
-                "You have exactly one tool: web_search(query). Use it only when a question needs current or factual \
-                 information you do not have, and at most twice per question. You cannot open URLs, read files, run \
-                 commands, or use any other tool.",
+                "You have exactly two tools. web_search(query): use it only when a question needs current or factual \
+                 information you do not have, and at most twice per question. studio_make(kind, prompt, ...): use it \
+                 only when someone asks you to make a picture, song, sound effect or video; write a rich, detailed \
+                 prompt yourself from what they asked for, and put the style, lyrics, length and size in the matching \
+                 fields. Video is only for the community owner. You cannot open URLs, read files, run commands, or use \
+                 any other tool.",
             ToolMode::TextProtocol =>
                 "You have exactly one way to find things out: when you need current facts, reply with a single line \
-                 \"SEARCH: your query\" and nothing else. You may do that at most twice per question. You cannot open \
-                 URLs, read files, run commands, or use any other tool.",
+                 \"SEARCH: your query\" and nothing else. You may do that at most twice per question. This model cannot \
+                 make pictures, songs, sounds or videos. You cannot open URLs, read files, run commands, or use any \
+                 other tool.",
         };
         format!(
             "You are {name}, a member of a private group chat among friends, and the wildest one there: unhinged, \
@@ -414,8 +617,9 @@ impl Bot {
         )
     }
 
-    /// Ask the model, running its (one) tool when it asks for it. Returns the answer and the results it saw.
-    fn ask_with_typing(&self, c: &mut dyn Chat, gid: &str, llm: &dyn Llm, history: &[Line]) -> Result<(String, Vec<SearchResult>), AskError> {
+    /// Ask the model, running the tools it asks for. Returns the answer and the search results it saw.
+    fn ask_with_typing(&self, c: &mut dyn Chat, job: &Job, llm: &dyn Llm, history: &[Line]) -> Result<(String, Vec<SearchResult>), AskError> {
+        let gid = job.gid.as_str();
         let mode = llm.tool_mode();
         let tool_specs = tools();
         let system = self.system_prompt(mode);
@@ -424,6 +628,7 @@ impl Bot {
             else { Msg::User(format!("{}: {}", l.name, l.text)) }
         }).collect();
         let mut searches = 0usize;
+        let mut studios = 0usize;
         let mut sources: Vec<SearchResult> = Vec::new();
         let mut last_text = String::new();
 
@@ -441,7 +646,7 @@ impl Bot {
                     let calls = reply.tool_calls.clone();
                     messages.push(Msg::Assistant { content: reply.content, tool_calls: calls.clone() });
                     for call in calls {
-                        let out = self.run_tool(&call, &mut searches, &mut sources);
+                        let out = self.run_tool(&call, c, job, &mut searches, &mut sources, &mut studios);
                         messages.push(Msg::Tool { call_id: call.id, name: call.name, content: out });
                     }
                 }
@@ -475,18 +680,232 @@ impl Bot {
         Ok((last, sources))
     }
 
-    /// The only executor there is. A name that is not the one tool is refused without touching anything.
-    fn run_tool(&self, call: &ToolCall, searches: &mut usize, sources: &mut Vec<SearchResult>) -> String {
-        if call.name != search::TOOL_NAME {
-            return format!("There is no tool called \"{}\". The only tool available is {}.", call.name, search::TOOL_NAME);
+    /// The only executor there is. A name that is not one of the two tools is refused without touching anything.
+    fn run_tool(
+        &self,
+        call: &ToolCall,
+        c: &mut dyn Chat,
+        job: &Job,
+        searches: &mut usize,
+        sources: &mut Vec<SearchResult>,
+        studios: &mut usize,
+    ) -> String {
+        match call.name.as_str() {
+            search::TOOL_NAME => {
+                if *searches >= MAX_SEARCHES_PER_QUESTION {
+                    return "You have used both web searches for this question. Answer with what you have, without searching again.".to_string();
+                }
+                let Some(query) = parse_query(&call.arguments) else {
+                    return "The web_search tool needs a non-empty query.".to_string();
+                };
+                self.search_text(&query, searches, sources)
+            }
+            studio::TOOL_NAME => {
+                if *studios >= 1 {
+                    return "You have already made one thing for this question. Do not make another; tell the person what you made."
+                        .to_string();
+                }
+                *studios += 1;
+                self.studio_make(call, c, job)
+            }
+            other => format!(
+                "There is no tool called \"{other}\". The only tools available are {} and {}.",
+                search::TOOL_NAME, studio::TOOL_NAME
+            ),
         }
-        if *searches >= MAX_SEARCHES_PER_QUESTION {
-            return "You have used both web searches for this question. Answer with what you have, without searching again.".to_string();
-        }
-        let Some(query) = parse_query(&call.arguments) else {
-            return "The web_search tool needs a non-empty query.".to_string();
+    }
+
+    /// Make one picture, song, sound or video for the person who asked, then post it into the room.
+    ///
+    /// Order matters, and none of it can be reached by anything but the model's own tool call: the hard block runs
+    /// first on the person's words and on the prompt the model wrote, then permission, then Studio's own readiness,
+    /// then the daily cap, then the one-job queue. Studio is not contacted at all until every check has passed.
+    fn studio_make(&self, call: &ToolCall, c: &mut dyn Chat, job: &Job) -> String {
+        let req = match studio::Request::from_args(&call.arguments) {
+            Ok(r) => r,
+            Err(e) => return e,
         };
-        self.search_text(&query, searches, sources)
+        // The hard block. Both the person's own request and the model-written prompt (and lyrics) are read.
+        for text in [job.text.as_str(), req.prompt.as_str(), req.lyrics.as_str()] {
+            if safety::blocked(text) {
+                return self.studio_notice(
+                    c, job, safety::REFUSAL,
+                    "A hard rule refused this request. Do not try again, do not rephrase it, and do not describe it.",
+                );
+            }
+        }
+
+        let role = c.role_of(&job.gid, &job.from);
+        let owner = role == Role::Owner;
+        let allowed_here = {
+            let store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            store.data.rooms.get(&job.gid).is_some_and(|r| {
+                r.studio.everyone || (!job.from.is_empty() && r.studio.people.contains(&job.from))
+            })
+        };
+        if !owner && !allowed_here {
+            let who = c.owner_of(&job.gid).unwrap_or_else(|| "The community owner".to_string());
+            let name = &self.cfg.name;
+            let text = format!(
+                "Studio is only for the community owner here. {who} can turn it on for everyone with \"@{name} allow studio\"."
+            );
+            return self.studio_notice(
+                c, job, &text,
+                "Only the community owner may use Studio here. The person has been told who can enable it; do not offer to try anyway.",
+            );
+        }
+        if req.kind == studio::Kind::Video && !owner {
+            return self.studio_notice(
+                c, job,
+                "Video is only for the community owner. I can make a picture, song or sound instead.",
+                "Video is owner-only. The person has been told; offer a picture, song or sound instead if they want one.",
+            );
+        }
+
+        // Studio must be free right now. A game or a pause is never queued for later.
+        match self.studio.state() {
+            Err(_) => return self.studio_notice(
+                c, job,
+                "I can't reach Studio on this computer right now, so I couldn't make that.",
+                "Studio could not be reached, so nothing was started. The person has been told.",
+            ),
+            Ok(state) if state.game => return self.studio_notice(
+                c, job,
+                "A game is running on this computer right now, so Studio is staying out of the way. Try again after the game.",
+                "A game is using the GPU, so no Studio job was started or queued. The person has been told.",
+            ),
+            Ok(state) if !state.paused.is_empty() => return self.studio_notice(
+                c, job,
+                &format!("Studio is paused right now ({}), so I can't start anything. Try again when it's resumed.", state.paused),
+                "Studio is paused, so no job was started or queued. The person has been told.",
+            ),
+            Ok(_) => {}
+        }
+
+        let day = now_secs() / 86_400;
+        {
+            let store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            let used = store.data.studio_use.get(&job.from);
+            let (total, video) = match used {
+                Some(u) if u.day == day => (u.total, u.video),
+                _ => (0, 0),
+            };
+            if total as usize >= self.cfg.studio_daily_cap {
+                return self.studio_notice(
+                    c, job,
+                    &format!("You have used all {} Studio requests for today. Try again tomorrow.", self.cfg.studio_daily_cap),
+                    "The daily Studio limit has been reached, so nothing was started. The person has been told.",
+                );
+            }
+            if req.kind == studio::Kind::Video && video as usize >= self.cfg.studio_daily_video_cap {
+                return self.studio_notice(
+                    c, job,
+                    &format!("You have used all {} videos for today. Try again tomorrow.", self.cfg.studio_daily_video_cap),
+                    "The daily video limit has been reached, so nothing was started. The person has been told.",
+                );
+            }
+        }
+
+        // One job at a time, with a short queue behind it. The ticket (and the gate inside it) is held until the file is
+        // posted; it touches neither the client mutex nor the model, so the GPU watcher can free the model meanwhile.
+        let Some(_ticket) = self.studio_queue.enter() else {
+            return self.studio_notice(
+                c, job,
+                "I'm already making something in Studio and the queue is full. Try again when it's done.",
+                "The Studio queue is full, so nothing was started. The person has been told.",
+            );
+        };
+
+        let id = match self.studio.submit(&req) {
+            Ok(id) => id,
+            Err(e) => return self.studio_notice(
+                c, job,
+                &format!("Studio couldn't start that: {e}"),
+                "Studio refused or failed to start the job, so nothing was made. The person has been told.",
+            ),
+        };
+
+        // Count it against today's cap only once Studio has actually accepted it.
+        {
+            let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            let used = store.data.studio_use.entry(job.from.clone()).or_default();
+            if used.day != day { *used = DailyUse { day, ..DailyUse::default() }; }
+            used.total = used.total.saturating_add(1);
+            if req.kind == studio::Kind::Video { used.video = used.video.saturating_add(1); }
+            store.save();
+        }
+
+        if let Err(e) = c.send(&job.gid, "Making it…", Some(job.trigger.clone())) {
+            eprintln!("[bot] could not post a Studio notice: {e}");
+        }
+        c.typing(&job.gid);
+
+        let deadline = Instant::now() + studio::JOB_TIMEOUT;
+        let mut last_typing = Instant::now();
+        let mut misses = 0u32;
+        loop {
+            match self.studio.status(id) {
+                Ok(JobState::Done) => break,
+                Ok(JobState::Failed(msg)) => return self.studio_notice(
+                    c, job,
+                    &format!("Studio couldn't make that: {msg}"),
+                    "Studio reported that the job failed. The person has been told.",
+                ),
+                Ok(JobState::Cancelled) => return self.studio_notice(
+                    c, job,
+                    "That Studio job was cancelled.",
+                    "Studio reported that the job was cancelled. The person has been told.",
+                ),
+                Ok(JobState::Waiting) => misses = 0,
+                Err(_) => {
+                    misses += 1;
+                    if misses >= 5 {
+                        return self.studio_notice(
+                            c, job,
+                            "Studio stopped answering while it was making that, so I gave up waiting.",
+                            "Studio stopped answering during the job. The person has been told; do not say it finished.",
+                        );
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                return self.studio_notice(
+                    c, job,
+                    "Studio is taking too long (over 15 minutes), so I stopped waiting for that one.",
+                    "The Studio job timed out. The person has been told.",
+                );
+            }
+            if last_typing.elapsed() >= Duration::from_secs(3) { c.typing(&job.gid); last_typing = Instant::now(); }
+            std::thread::sleep(studio::POLL_EVERY);
+        }
+
+        let data = match self.studio.download(req.kind, id) {
+            Ok(d) => d,
+            Err(e) => return self.studio_notice(
+                c, job,
+                &format!("Studio finished, but I couldn't fetch the result: {e}"),
+                "The finished file could not be fetched or posted. The person has been told.",
+            ),
+        };
+        match c.send_file(&job.gid, &req.file_name(id), req.kind.mime(), &data, &req.prompt) {
+            Ok(_) => format!(
+                "Studio made the {} and it has been posted in the chat with the prompt as its caption. Tell the person \
+                 in one short sentence that it's there; do not claim to see or hear it in detail.",
+                req.kind.name()
+            ),
+            Err(e) => {
+                eprintln!("[bot] could not post a Studio result: {e}");
+                "The result was made but could not be posted here. The person has been told.".to_string()
+            }
+        }
+    }
+
+    /// Post a short, fixed notice from the bot itself (never model-written) and tell the model what already happened.
+    fn studio_notice(&self, c: &mut dyn Chat, job: &Job, notice: &str, for_model: &str) -> String {
+        if let Err(e) = c.send(&job.gid, notice, Some(job.trigger.clone())) {
+            eprintln!("[bot] could not post a Studio notice: {e}");
+        }
+        format!("{for_model} The person has already been told; do not repeat the notice.")
     }
 
     /// Run one search and turn what came back into a quoted block for the model.
@@ -622,8 +1041,50 @@ mod tests {
     }
 
     #[test]
-    fn the_tool_list_is_exactly_web_search() {
-        assert_eq!(tools().iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), vec!["web_search"]);
+    fn studio_permission_phrases_are_exact() {
+        assert_eq!(studio_command("@Oracle allow studio", "Oracle"), Some(StudioCommand::AllowAll));
+        assert_eq!(studio_command("  @oracle   DISALLOW   studio.  ", "Oracle"), Some(StudioCommand::DisallowAll));
+        assert_eq!(
+            studio_command("@Oracle allow studio for Bob", "Oracle"),
+            Some(StudioCommand::AllowPerson("Bob".into()))
+        );
+        assert_eq!(
+            studio_command("@Oracle allow studio for @Alice", "Oracle"),
+            Some(StudioCommand::AllowPerson("Alice".into()))
+        );
+        assert_eq!(studio_command("@Oracle allow studio for", "Oracle"), None);
+        assert_eq!(studio_command("@Oracle allow studio for everyone here", "Oracle"), Some(StudioCommand::AllowPerson("everyone here".into())));
+        assert_eq!(studio_command("allow studio", "Oracle"), None);
+        assert_eq!(studio_command("@Oracle please allow studio", "Oracle"), None);
+        assert_eq!(studio_command("@Oracle use local", "Oracle"), None);
+    }
+
+    #[test]
+    fn the_studio_queue_takes_one_running_and_three_waiting() {
+        let q = Arc::new(StudioQueue { gate: Mutex::new(()), taken: Mutex::new(0), max: 4 });
+        let gate = q.gate.lock().unwrap();
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let q = q.clone();
+            handles.push(std::thread::spawn(move || {
+                let _ticket = q.enter().expect("within the queue");
+            }));
+        }
+        for _ in 0..200 {
+            if *q.taken.lock().unwrap() == 4 { break; }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(*q.taken.lock().unwrap(), 4, "one running and three waiting");
+        assert!(q.enter().is_none(), "a fifth request is told the queue is full");
+        drop(gate);
+        for h in handles { h.join().unwrap(); }
+        assert_eq!(*q.taken.lock().unwrap(), 0, "the count comes back down");
+        assert!(q.enter().is_some(), "there is room again");
+    }
+
+    #[test]
+    fn the_tool_list_is_exactly_web_search_and_studio_make() {
+        assert_eq!(tools().iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), vec!["web_search", "studio_make"]);
     }
 
     #[test]
