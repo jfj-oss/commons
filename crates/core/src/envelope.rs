@@ -11,6 +11,8 @@ pub fn is_id(s: &str) -> bool { s.len() == 32 && s.bytes().all(|c| c.is_ascii_he
 fn is_gid(s: &str) -> bool { s.len() >= 8 && s.len() <= 128 && s.bytes().all(|c| c.is_ascii_hexdigit()) }
 fn is_key(s: &str) -> bool { s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()) }
 fn short(s: &str, n: usize) -> bool { s.len() <= n && !s.chars().any(|c| c.is_control() && c != '\n' && c != '\t') }
+/// One line of text with no control characters at all: what a shared song title or artist may be.
+fn one_line(s: &str, n: usize) -> bool { s.len() <= n && !s.chars().any(char::is_control) }
 /// Most distinct reactions on one message, and most from one account: enough for any real conversation, and it
 /// stops one member from growing everybody's state and timeline without end.
 pub const MAX_REACTIONS: usize = 32;
@@ -58,6 +60,15 @@ pub fn cut_name(n: &str, max: usize) -> String {
 }
 
 fn is_false(b: &bool) -> bool { !*b }
+/// What someone is listening to in rune. Only two short lines of text: the same whether the track came from
+/// Spotify or from the local library.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct NowPlaying { pub title: String, #[serde(default)] pub artist: String }
+/// How long a shared status lasts without a fresh one, and how often a playing sender renews it. The gap leaves
+/// room for a missed refresh before friends stop believing the last one.
+pub const LISTENING_TTL_SECS: u64 = 600;
+pub const LISTENING_REFRESH_SECS: u64 = 300;
+pub const MAX_LISTEN_LINE: usize = 160;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "t")]
@@ -68,7 +79,10 @@ pub enum Envelope {
     React { target: String, emoji: String, on: bool },
     File { id: String, name: String, mime: String, size: u64, blob: String, key: String, nonce: String, #[serde(default)] caption: String, #[serde(default)] reply: Option<String>, ts: u64 },
     Typing,
-    Profile { name: String, ts: u64 },
+    /// A profile refresh. `listen` rides along as an extension field: an older Megatron reads this as the profile
+    /// update it has always been and ignores the field, so a shared status never becomes a message kind it does not
+    /// know (which would put a notice in the room every time the song changed). `None` means "nothing to share".
+    Profile { name: String, ts: u64, #[serde(default)] listen: Option<NowPlaying> },
     /// "I am leaving" (the leaver cannot remove itself in MLS; an admin commits the removal).
     Leave,
     /// Account-signed device revocation, so members can drop the leaf even if the relay hides it.
@@ -130,7 +144,10 @@ impl Envelope {
                 if reply.as_deref().is_some_and(|r| !is_id(r)) { return bad("bad reply"); }
             }
             Typing | Leave | Unknown => {}
-            Profile { name, .. } => if name.is_empty() || !short(name, 64) { return bad("bad profile"); },
+            Profile { name, listen, .. } => {
+                if name.is_empty() || !short(name, 64) { return bad("bad profile"); }
+                if let Some(l) = listen { if l.title.is_empty() || !one_line(&l.title, MAX_LISTEN_LINE) || !one_line(&l.artist, MAX_LISTEN_LINE) { return bad("bad listening status"); } }
+            }
             Revoked { account, device, sig } => if !is_key(account) || !is_key(device) || sig.len() != 128 { return bad("bad revocation"); },
             Consent { sig, relay_secret, .. } => {
                 if sig.len() != 128 { return bad("bad consent"); }
@@ -439,5 +456,15 @@ mod compat_tests {
         assert_eq!(plain.to_bytes(), format!(r#"{{"t":"Consent","ts":7,"sig":"{sig}"}}"#).into_bytes());
         // And an old consent, with neither field, still reads.
         assert_eq!(Envelope::parse(format!(r#"{{"t":"Consent","ts":7,"sig":"{sig}"}}"#).as_bytes()).unwrap(), plain);
+    }
+
+    #[test]
+    fn a_profile_may_carry_a_listening_status() {
+        let e = Envelope::parse(br#"{"t":"Profile","name":"Ann","ts":5,"listen":{"title":"A song","artist":"A band"}}"#).unwrap();
+        assert!(matches!(e, Envelope::Profile { listen: Some(ref l), .. } if l.title == "A song" && l.artist == "A band"));
+        // The profile an older version sends has no such field, and still reads.
+        assert!(matches!(Envelope::parse(br#"{"t":"Profile","name":"Ann","ts":5}"#).unwrap(), Envelope::Profile { listen: None, .. }));
+        // What one sends, an older version can read as a profile: nothing in it may be unprintable.
+        assert!(Envelope::parse(br#"{"t":"Profile","name":"Ann","ts":5,"listen":{"title":"two\nlines"}}"#).is_err());
     }
 }

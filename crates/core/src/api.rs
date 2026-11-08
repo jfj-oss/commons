@@ -41,6 +41,10 @@ pub struct App {
 /// at most 4 s apart), so this much silence means no call is running on this device.
 pub const CALL_QUIET: Duration = Duration::from_secs(20);
 
+/// How often the core looks at rune while sharing is on. This is not the send rate: a shared status goes out only
+/// when it changes, plus a renewal every `LISTENING_REFRESH_SECS` while it keeps playing.
+const RUNE_POLL_SECS: u64 = 15;
+
 fn s(v: &Value, k: &str) -> String { v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string() }
 type R = Result<Value, String>;
 fn e<T: std::fmt::Display>(x: T) -> String { format!("{x}") }
@@ -131,6 +135,41 @@ impl App {
                 if !c.more { break; }
             }
         });
+        // Its own thread, because asking rune is a network wait that must not hold up the relay loop or the UI.
+        let app = self.clone();
+        std::thread::spawn(move || {
+            let mut due = 0u64;
+            loop {
+                if *app.stop.lock().unwrap() { break; }
+                let on = app.rune_settings().is_some_and(|(on, _)| on);
+                if !on { due = 0; std::thread::sleep(Duration::from_millis(500)); continue; }
+                let now = commons_proto::now_secs();
+                if now >= due { due = now + RUNE_POLL_SECS; app.poll_rune(); }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        });
+    }
+
+    /// What the poller needs, without keeping the client while rune is asked.
+    fn rune_settings(&self) -> Option<(bool, String)> {
+        let g = self.lock();
+        let c = g.as_ref()?;
+        Some((c.st.share_listening, c.rune_url()))
+    }
+
+    /// One look at rune. A failure leaves the last known status alone: rune may just be busy, and the receivers'
+    /// TTL ends a status whose sender has really gone quiet.
+    fn poll_rune(&self) {
+        let Some((on, url)) = self.rune_settings() else { return };
+        if !on { return; }
+        let got = crate::rune::now_playing(&url);
+        let mut g = self.lock();
+        let Some(c) = g.as_mut() else { return };
+        if !c.st.share_listening { return; } // turned off while we were asking
+        match got {
+            Ok(now) => { let _ = c.update_listening(now); }
+            Err(e) => log::info!("rune at {url}: {e}"),
+        }
     }
 
     pub fn call(&self, method: &str, a: Value) -> R {
@@ -287,6 +326,7 @@ impl App {
             "delete" => self.with(|c| c.delete_message(&s(&a, "gid"), &s(&a, "id")).map(|_| json!({})).map_err(e)),
             "react" => self.with(|c| c.react(&s(&a, "gid"), &s(&a, "id"), &s(&a, "emoji"), a["on"].as_bool().unwrap_or(true)).map(|_| json!({})).map_err(e)),
             "typing" => self.with(|c| { c.send_typing(&s(&a, "gid")); Ok(json!({})) }),
+            "set_listening_sharing" => self.with(|c| c.set_listening_sharing(a["on"].as_bool().unwrap_or(false), &s(&a, "rune")).map(|_| json!({})).map_err(e)),
             "send_file" => {
                 let data = unb64(&s(&a, "data")).map_err(e)?;
                 let (f, (api, k)) = self.with(|c| Ok((c.file_prepare(&s(&a, "gid"), &s(&a, "name"), &s(&a, "mime"), &data, &s(&a, "caption")).map_err(e)?, c.net_handle().map_err(e)?)))?;
@@ -324,7 +364,7 @@ impl App {
             "leave" => self.with(|c| c.leave(&s(&a, "cid")).map(|_| json!({})).map_err(e)),
             "rename_community" => self.with(|c| c.rename_community(&s(&a, "cid"), &s(&a, "name")).map(|_| json!({})).map_err(e)),
             "revoke_invite" => self.with(|c| c.revoke_invite(&s(&a, "cid"), &s(&a, "id")).map(|_| json!({})).map_err(e)),
-            "members" => { let cid = s(&a, "cid"); self.read(format!("members/{cid}"), |c| json!(c.members(&cid).into_iter().map(|m| json!({"account": m.account, "name": m.name, "role": m.role.name(), "devices": m.devices, "verified": m.verified, "me": m.is_me, "tag": m.tag, "same_name": m.same_name})).collect::<Vec<_>>())) }
+            "members" => { let cid = s(&a, "cid"); self.read(format!("members/{cid}"), |c| json!(c.members(&cid).into_iter().map(|m| json!({"account": m.account, "name": m.name, "role": m.role.name(), "devices": m.devices, "verified": m.verified, "me": m.is_me, "tag": m.tag, "same_name": m.same_name, "listening": m.listening.map(|l| json!({"title": l.title, "artist": l.artist}))})).collect::<Vec<_>>())) }
             "safety" => self.with(|c| {
                 let acct = s(&a, "account");
                 let num = safety_number(&c.my_account(), &acct);
@@ -431,8 +471,10 @@ fn snapshot(c: &Client) -> Value {
     let refused: Vec<Value> = c.st.join_refused.iter().map(|(id, r)| json!({"id": id, "name": r.name, "reason": r.reason, "ts": r.ts})).collect();
     let problems: Vec<Value> = c.st.notices.iter().rev().filter(|n| matches!(n.kind.as_str(), "decrypt" | "broken" | "rollback" | "reject" | "gap" | "welcome" | "relay" | "state" | "clock" | "revoked")).take(5).map(|n| json!({"ts": n.ts, "kind": n.kind, "text": n.text})).collect();
     let net = match c.net.state { NetState::Connecting => "connecting", NetState::Online => "online", NetState::Offline => "offline" };
+    let listening = c.listening_of(&me).map(|l| json!({"title": l.title, "artist": l.artist}));
     json!({"me": {"account": me, "name": c.st.name, "device": c.my_device()}, "relay": c.st.relay, "relay_secret": !c.st.relay_invite.is_empty(), "communities": comms, "joining": joining, "refused": refused,
-           "typing_enabled": c.st.typing_enabled, "outbox": c.st.outbox.len(), "problems": problems, "net": net, "net_detail": c.net.detail, "revoked": c.st.self_revoked,
+           "typing_enabled": c.st.typing_enabled, "share_listening": c.st.share_listening, "rune_url": c.rune_url(), "listening": listening,
+           "outbox": c.st.outbox.len(), "problems": problems, "net": net, "net_detail": c.net.detail, "revoked": c.st.self_revoked,
            "version": c.activity})
 }
 

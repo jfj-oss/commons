@@ -2,6 +2,7 @@
 // No window is ever shown. Usage: node tools/ui-check.mjs <outdir>
 import { spawn, execSync } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 
 const out = process.argv[2] || '/tmp/commons-ui';
@@ -12,6 +13,16 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const procs = [];
 const run = (cmd, args, env = {}) => { const p = spawn(cmd, args, { env: { ...process.env, ...env }, stdio: ['ignore', 'inherit', 'inherit'] }); procs.push(p); return p; };
 process.on('exit', () => procs.forEach(p => { try { p.kill(); } catch { } }));
+
+// A fake rune on a test port (never the real one on 4545), so the status can be exercised end to end.
+const runeSong = { status: 'playing', index: 0, queue: [{ track: { title: 'Detective Arriving on the Scene', artists: [{ name: 'Sea Power' }] } }] };
+const runeSrv = http.createServer((req, res) => {
+  const body = req.url === '/api/zones' ? JSON.stringify([{ id: 'pc', name: 'Linux PC speakers', kind: 'pc' }]) : req.url === '/api/player/pc' ? JSON.stringify(runeSong) : null;
+  if (!body) { res.writeHead(404); res.end('{}'); return; }
+  res.writeHead(200, { 'content-type': 'application/json' }); res.end(body);
+});
+await new Promise(r => runeSrv.listen(0, '127.0.0.1', r));
+const runeUrl = `http://127.0.0.1:${runeSrv.address().port}`;
 
 const RELAY = 'http://127.0.0.1:18787';
 fs.rmSync(path.join(out, 'data'), { recursive: true, force: true });
@@ -95,6 +106,18 @@ try {
   await A.ev(`document.querySelector('#people button[data-a=verify]').click()`); await A.waitFor(`document.querySelector('.safety')`); await sleep(300);
   await A.shot('07-safety-number'); await click(A, '.modal .acts button'); await sleep(300);
   await click(A, '#btn-activity'); await sleep(500); await A.shot('08-activity'); await click(A, '.modal .acts button');
+  // "Listening to" from rune: one switch in Settings, the account strip, and under the name in the People drawer.
+  await click(A, '#btn-settings'); await A.waitFor(`document.querySelector('#lstr')`);
+  await type(A, '#rune', runeUrl);
+  await A.ev(`(()=>{document.querySelector('#lstr').checked=true;})()`);
+  await click(A, '.modal .acts button:last-child');
+  await A.waitFor(`(()=>{const e=document.querySelector('#me-listen');return !!e&&!e.hidden&&e.innerText.includes('Detective Arriving on the Scene')&&e.innerText.includes('Sea Power')})()`, 20000);
+  await B.ev(`(()=>{ if (!S.people) document.querySelector('#btn-people').click(); })()`);
+  await B.waitFor(`[...document.querySelectorAll('.person .listen')].some(e=>e.innerText.includes('Detective Arriving on the Scene')&&e.innerText.includes('Sea Power'))`, 20000);
+  await A.shot('09-listening-own'); await B.shot('10-listening-people');
+  // Playback stops in rune: friends stop seeing it at once, not when the ten-minute TTL runs out.
+  runeSong.status = 'stopped'; runeSong.index = -1; runeSong.queue = [];
+  await B.waitFor(`![...document.querySelectorAll('.person .listen')].some(e=>e.innerText.includes('Detective'))`, 30000);
   console.log('UI check OK; screenshots in', out);
 } catch (e) { console.error('UI check FAILED:', e.message); process.exitCode = 1; }
-finally { procs.forEach(p => { try { p.kill(); } catch { } }); }
+finally { runeSrv.close(); procs.forEach(p => { try { p.kill(); } catch { } }); }

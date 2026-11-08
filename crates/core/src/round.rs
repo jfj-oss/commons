@@ -222,8 +222,10 @@ impl Client {
         if self.st.profile_dirty && !self.st.name.is_empty() {
             self.st.profile_dirty = false;
             let name = self.st.name.clone();
+            // A name change is still a profile refresh: carry the status along, or say plainly there is none.
+            let listen = if self.st.share_listening { self.listening_of(&self.my_account()).cloned() } else { None };
             let ctls: Vec<String> = self.st.groups.values().filter(|g| g.kind == Kind::Control && !g.removed && !g.broken).map(|g| g.gid.clone()).collect();
-            for g in ctls { self.queue_env(&g, Envelope::Profile { name: name.clone(), ts: now_secs() }); }
+            for g in ctls { self.queue_env(&g, Envelope::Profile { name: name.clone(), ts: now_secs(), listen: listen.clone() }); }
         }
         self.reconcile();
         self.plan_relay_secret();

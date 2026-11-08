@@ -575,10 +575,16 @@ impl Client {
         let comm = self.st.groups[gid].community.clone();
         let acct = cert.account.clone();
         match (&kind, env) {
-            (Kind::Control, Envelope::Profile { name, ts }) => {
+            (Kind::Control, Envelope::Profile { name, ts, listen }) => {
                 let ts = sane_ts(ts);
-                let p = self.st.profiles.entry(acct).or_default();
-                if ts >= p.ts { p.name = name; p.ts = ts; }
+                let newer = { let p = self.st.profiles.entry(acct.clone()).or_default(); if ts >= p.ts { p.name = name; p.ts = ts; true } else { false } };
+                // A status is only as good as the profile it rode in on: an older one, arriving late, changes nothing.
+                if newer {
+                    match listen {
+                        Some(l) => { self.st.listening.insert(acct, Heard { what: l, ts: now_secs() }); }
+                        None => { self.st.listening.remove(&acct); }
+                    }
+                }
             }
             (Kind::Control, Envelope::Leave) => {
                 if let Some(c) = self.st.communities.get_mut(&comm) {

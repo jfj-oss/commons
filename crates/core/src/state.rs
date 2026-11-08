@@ -26,6 +26,20 @@ pub struct State {
     pub groups: BTreeMap<String, GroupState>,
     pub chans: BTreeMap<String, ChannelLog>,
     pub profiles: BTreeMap<String, Profile>,
+    /// What each account said it is listening to, when we heard it. Expires by itself (see `NowPlaying`'s TTL).
+    #[serde(default)]
+    pub listening: BTreeMap<String, Heard>,
+    /// Share what rune plays with the people in our communities. Off unless the person turns it on.
+    #[serde(default)]
+    pub share_listening: bool,
+    /// Where rune answers. Empty means the default.
+    #[serde(default)]
+    pub rune_url: String,
+    /// What friends were last told, and when. A change is sent at once; a still-playing status is renewed now and then.
+    #[serde(default)]
+    pub listening_sent: Option<NowPlaying>,
+    #[serde(default)]
+    pub listening_sent_ts: u64,
     pub outbox: Vec<OutItem>,
     pub welcome_out: Vec<WelcomeOut>,
     pub acl_jobs: Vec<AclJob>,
@@ -72,6 +86,11 @@ pub struct JoinRefused { pub name: String, pub reason: String, pub ts: u64 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct Profile { pub name: String, pub ts: u64 }
+
+/// A status someone shared, and the local time it arrived: a sender that goes quiet (playback stops, the app
+/// closes) stops being shown by itself.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Heard { pub what: NowPlaying, pub ts: u64 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Notice { pub ts: u64, pub kind: String, pub text: String }

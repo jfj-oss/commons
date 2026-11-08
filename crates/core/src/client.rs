@@ -67,7 +67,7 @@ pub struct NetStatus { pub state: NetState, pub detail: String }
 #[derive(Debug, Clone)]
 pub struct ChannelInfo { pub gid: String, pub name: String, pub joined: bool, pub unread: usize }
 #[derive(Debug, Clone)]
-pub struct MemberInfo { pub account: String, pub name: String, pub role: Role, pub devices: usize, pub verified: bool, pub is_me: bool, pub tag: String, pub same_name: bool }
+pub struct MemberInfo { pub account: String, pub name: String, pub role: Role, pub devices: usize, pub verified: bool, pub is_me: bool, pub tag: String, pub same_name: bool, pub listening: Option<NowPlaying> }
 
 fn base32_enc(data: &[u8]) -> String {
     const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";

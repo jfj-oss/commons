@@ -360,7 +360,7 @@ impl Client {
         let id = match &env { Envelope::Text { id, .. } | Envelope::File { id, .. } => id.clone(), _ => rand_hex(16) };
         if let Ok(cert) = self.cert() {
             match &env {
-                Envelope::Profile { name, ts } => { let p = self.st.profiles.entry(cert.account.clone()).or_default(); if *ts >= p.ts { p.name = name.clone(); p.ts = *ts; } }
+                Envelope::Profile { name, ts, .. } => { let p = self.st.profiles.entry(cert.account.clone()).or_default(); if *ts >= p.ts { p.name = name.clone(); p.ts = *ts; } }
                 Envelope::Leave | Envelope::Revoked { .. } => {}
                 _ => self.apply_chat(gid, 0, &cert, env.clone(), true),
             }
@@ -871,6 +871,7 @@ impl Client {
             account: a.clone(), name: self.display_name(a), role: c.role_of(a).unwrap_or(Role::Member),
             devices: all.iter().filter(|(_, m)| &m.account == a).count(), verified: self.st.verified.contains(a), is_me: *a == me,
             tag: account_tag(a), same_name: keys.iter().filter(|k| **k == keys[i]).count() > 1,
+            listening: self.listening_of(a).cloned(),
         }).collect()
     }
     pub fn search(&self, q: &str) -> Vec<(String, String, Msg)> {
@@ -890,6 +891,61 @@ impl Client {
         out
     }
     pub fn set_verified(&mut self, acct: &str, v: bool) -> Result<()> { if v { self.st.verified.insert(acct.into()); } else { self.st.verified.remove(acct); } self.save() }
+
+    // ------------------------------------------------------------------ what rune is playing
+    /// Where rune answers on this device (the default until the person changes it).
+    pub fn rune_url(&self) -> String { if self.st.rune_url.is_empty() { crate::rune::DEFAULT_URL.into() } else { self.st.rune_url.clone() } }
+
+    /// Turn sharing on or off. Turning it off tells friends at once, so nothing lingers for the TTL.
+    pub fn set_listening_sharing(&mut self, on: bool, url: &str) -> Result<()> {
+        let url = if url.trim().is_empty() { crate::rune::DEFAULT_URL.to_string() } else { crate::rune::clean_url(url).map_err(|e| anyhow!(e))? };
+        self.st.rune_url = url;
+        if self.st.share_listening == on { return self.save(); }
+        self.st.share_listening = on;
+        if !on {
+            self.st.listening.remove(&self.my_account());
+            if self.st.listening_sent.is_some() { self.send_listening(None); }
+        }
+        // Either way, the next status is news: turning sharing back on must not look like a renewal.
+        self.st.listening_sent = None;
+        self.st.listening_sent_ts = 0;
+        self.save()
+    }
+
+    /// rune's latest answer. Sent only when it changes, or when a status that is still playing is due for renewal;
+    /// the background poll calls this every few seconds, so nothing may be sent per poll.
+    pub fn update_listening(&mut self, current: Option<NowPlaying>) -> Result<()> {
+        if !self.st.share_listening { return Ok(()); }
+        let current = current.filter(|n| !n.title.is_empty());
+        let me = self.my_account();
+        match &current {
+            Some(n) => { self.st.listening.insert(me, Heard { what: n.clone(), ts: now_secs() }); }
+            None => { self.st.listening.remove(&me); }
+        }
+        let changed = current.as_ref() != self.st.listening_sent.as_ref();
+        let renew = current.is_some() && now_secs() >= self.st.listening_sent_ts.saturating_add(LISTENING_REFRESH_SECS);
+        if changed || renew { self.send_listening(current); }
+        self.save()
+    }
+
+    /// Put the status in every community's control group, where a profile already travels. Returns true if it went
+    /// into at least one community.
+    fn send_listening(&mut self, value: Option<NowPlaying>) -> bool {
+        let name = self.st.name.clone();
+        if name.is_empty() { return false; }
+        let ctls: Vec<String> = self.st.groups.values().filter(|g| g.kind == Kind::Control && !g.removed && !g.broken && !g.tainted).map(|g| g.gid.clone()).collect();
+        let ts = now_secs();
+        for gid in &ctls { self.queue_env(gid, Envelope::Profile { name: name.clone(), ts, listen: value.clone() }); }
+        if ctls.is_empty() { return false; }
+        self.st.listening_sent = value;
+        self.st.listening_sent_ts = ts;
+        true
+    }
+
+    /// What this account is listening to, if it was heard recently enough to still be true.
+    pub fn listening_of(&self, acct: &str) -> Option<&NowPlaying> {
+        self.st.listening.get(acct).filter(|h| now_secs() < h.ts.saturating_add(LISTENING_TTL_SECS)).map(|h| &h.what)
+    }
     pub fn typing_now(&self, gid: &str) -> Vec<String> {
         let now = now_secs();
         self.typing.iter().filter(|(k, t)| k.starts_with(&format!("{gid}|")) && !k.ends_with("|me") && now < **t + 6).map(|(k, _)| self.display_name(k.split('|').nth(1).unwrap_or(""))).collect()
