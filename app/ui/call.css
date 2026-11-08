@@ -14,6 +14,10 @@
 .cp { display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; align-items: center; }
 .cp .av { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 600; box-shadow: 0 0 0 2px transparent; transition: box-shadow .12s; }
 .cp.speaking .av { box-shadow: 0 0 0 3px var(--accent); }
+/* A square profile picture gets a square speaking ring (rounded to match the picture) instead of a circle that its
+   corners poke through. */
+.cp .av:has(img.av-img:not(.round)) { border-radius: 6px; }
+.cp .av img.av-img:not(.round) { border-radius: 6px; }
 .cp .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp .tags { font-size: 12px; color: var(--ink-3); }
 .cp .tags .w { color: var(--hot); }
