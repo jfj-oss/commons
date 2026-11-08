@@ -42,7 +42,7 @@ impl Kind {
         match self { Kind::Picture => "picture", Kind::Song => "song", Kind::Sound => "sound", Kind::Video => "video" }
     }
     fn model(self) -> &'static str {
-        match self { Kind::Picture => "krea2", Kind::Song => "ace15xl", Kind::Sound => "sfx", Kind::Video => "wan_t2v" }
+        match self { Kind::Picture => "krea2", Kind::Song => "yue2", Kind::Sound => "sfx", Kind::Video => "wan_t2v" }
     }
     fn endpoint(self) -> &'static str {
         match self { Kind::Picture => "img", Kind::Song | Kind::Sound => "aud", Kind::Video => "vid" }
@@ -390,7 +390,7 @@ mod tests {
 
         let s = Request::from_args(r#"{"kind":"song","prompt":"warm reggae","lyrics":"la la","length":"60"}"#).unwrap();
         assert_eq!(s.length, "60");
-        assert_eq!(s.body()["model"], "ace15xl");
+        assert_eq!(s.body()["model"], "yue2");
         assert_eq!(s.body()["lyrics"], "la la");
 
         let f = Request::from_args(r#"{"kind":"sound","prompt":"a door slam"}"#).unwrap();

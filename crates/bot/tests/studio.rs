@@ -360,7 +360,7 @@ fn asking_for_more_than_ten_songs_makes_ten() {
 #[test]
 fn songs_and_sounds_use_the_audio_route_and_their_own_lengths() {
     let cases = [
-        (json!({"kind": "song", "prompt": "warm reggae", "lyrics": "la la", "length": "60"}), "ace15xl", "60"),
+        (json!({"kind": "song", "prompt": "warm reggae", "lyrics": "la la", "length": "60"}), "yue2", "60"),
         (json!({"kind": "sound", "prompt": "a door slam", "length": "6"}), "sfx", "6"),
     ];
     for (args, model, length) in cases {
