@@ -10,7 +10,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 // Same policy as the desktop shell, widened only for what calls need: the LiveKit signalling socket, the frame-encryption worker, media streams.
-const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws: wss:; worker-src 'self' blob:; media-src 'self' blob: mediastream:; base-uri 'none'; form-action 'none'; object-src 'none'";
+// http:/https: on img-src, connect-src and media-src are for the owner's Jellyfin server, configured per device at an arbitrary
+// address (often plain http on the LAN or Tailscale). A CSP cannot name a runtime-configured host, and Jellyfin media must be
+// fetched and played by <video> directly (never proxied through the relay), so the widest part of the policy is limited to those
+// three destinations. Scripts, workers and styles stay 'self'.
+const CSP: &str = "default-src 'self'; img-src 'self' data: blob: http: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws: wss: http: https:; worker-src 'self' blob:; media-src 'self' blob: mediastream: http: https:; base-uri 'none'; form-action 'none'; object-src 'none'";
 
 fn reply(s: &mut TcpStream, code: u16, ct: &str, body: &[u8]) {
     let reason = match code { 200 => "OK", 403 => "Forbidden", 400 => "Bad Request", 404 => "Not Found", _ => "Error" };

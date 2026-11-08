@@ -24,6 +24,7 @@ app/src-tauri     Tauri 2 desktop shell (Linux, macOS arm64)
 app/ui            HTML/CSS/JS front end (no build step)
 app/ui/call*.js, vendor/  voice rooms and screen share (LiveKit client, frame encryption keys from MLS)
 tools/call-e2e.mjs  end-to-end call tests (local LiveKit + relay + Chrome with fake devices), tools/webkit-probe.py
+tools/call-play-e2e.mjs  playing a video into a call: a local file, the canvas fallback, a stand-in Jellyfin, two clients
 tools/ui-check.mjs  headless UI check (Chromium on the GPU via ANGLE/Vulkan, no window)
 tools/hosting-e2e.mjs  the hosted path on loopback: go-online.sh, a TLS terminator standing in for Funnel, media forced through TURN over TLS
 tools/packaged-e2e.mjs the AppImage on a clean Ubuntu in Docker, through to a call
@@ -88,6 +89,7 @@ scripts/get-livekit.sh          # livekit-server 1.13.11 into tools/bin/ (git-ig
 cd tools && npm ci && cd ..
 cargo build -j2 -p commons-relay && cargo build -j2 -p commons-core --features devbridge --bin dev_bridge && cargo build --release -j2 -p commons-relay
 systemd-run --user --scope -q -p MemoryMax=6G node tools/call-e2e.mjs      # about 8 minutes, one Chrome for Testing, fake media only
+systemd-run --user --scope -q -p MemoryMax=8G node tools/call-play-e2e.mjs # play a video into a call, about 5 minutes
 cargo test -j2 -p commons-core --test calls
 systemd-run --user --scope -q -p MemoryMax=6G node tools/hosting-e2e.mjs    # the hosted path, 2 minutes
 docker build -t commons-e2e-ubuntu -f tools/e2e.Dockerfile tools

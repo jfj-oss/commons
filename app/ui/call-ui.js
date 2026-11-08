@@ -15,6 +15,10 @@
       <symbol id="ci-leave" viewBox="0 0 20 20"><path d="M3.5 12.5c4-3.5 9-3.5 13 0l-1.2 2.2-2.8-.9-.3-2c-1.5-.5-3-.5-4.4 0l-.3 2-2.8.9z"/></symbol>
       <symbol id="ci-gear" viewBox="0 0 20 20"><path d="M3 6h7.5M15.5 6H17M3 14h1.5M9.5 14H17"/><circle cx="13" cy="6" r="2.3"/><circle cx="7" cy="14" r="2.3"/></symbol>
       <symbol id="ci-wave" viewBox="0 0 20 20"><path d="M3 10v0M6 7v6M9 4.5v11M12 7v6M15 8.5v3M18 10v0"/></symbol>
+      <symbol id="ci-film" viewBox="0 0 20 20"><rect x="2.5" y="4" width="15" height="12" rx="1.6"/><path d="M2.5 8h15M6.5 4v4M10 4v4M13.5 4v4"/></symbol>
+      <symbol id="ci-play" viewBox="0 0 20 20"><path d="M7 4.5l8 5.5-8 5.5z"/></symbol>
+      <symbol id="ci-pause" viewBox="0 0 20 20"><path d="M7 4.5v11M13 4.5v11"/></symbol>
+      <symbol id="ci-stop" viewBox="0 0 20 20"><rect x="5.5" y="5.5" width="9" height="9" rx="1"/></symbol>
     </g></svg>`);
   }
   const ic = n => `<svg class="ic"><use href="#${n}"/></svg>`;
@@ -22,6 +26,8 @@
   const $q = (s, r = document) => r.querySelector(s);
   const hue = s => { let h = 0; for (const c of s || 'x') h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
   let panel = null, open = false, showSettings = false, devices = null;
+  let playDlg = null, playItems = null, playBusy = false;
+  const fmtTime = s => { s = Math.max(0, Math.floor(Number(s) || 0)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(x).padStart(2, '0'); };
   // Video tiles live in their own host that no render ever rewrites. Each tile (one per video track: a camera and a screen
   // share of the same person are two tiles) is created once, updated in place, and removed when its track is muted or gone.
   // Moving or re-creating a <video> on every state update made the pictures flicker.
@@ -81,6 +87,77 @@
     return `<label for="${id}">${label}</label><select id="${id}"><option value="">System default</option>${list.map(d => `<option value="${esc(d.deviceId)}" ${d.deviceId === sel ? 'selected' : ''}>${esc(d.label || 'Device')}</option>`).join('')}</select>`;
   }
 
+  // The sender's controls for a movie playing into the call. Viewers get the picture and sound as a normal share tile; only
+  // the sender controls it, as asked.
+  function playBar(p) {
+    const dur = Math.max(1, Math.round(p.duration || 0));
+    return `<div class="cplay"><div class="row"><span class="ttl">${ic('ci-film')}<b>${esc(p.title)}</b></span><span class="muted small">${esc(p.profile)}${p.paused ? ' · paused' : ''}</span></div>
+      <div class="row"><button class="btn ghost" id="c-playtoggle" title="${p.paused ? 'Play' : 'Pause'}">${ic(p.paused ? 'ci-play' : 'ci-pause')}</button>
+      <input type="range" id="c-seek" min="0" max="${dur}" step="1" value="${Math.min(dur, Math.round(p.position || 0))}" aria-label="Seek">
+      <span class="time small muted">${fmtTime(p.position)} / ${fmtTime(p.duration)}</span></div>
+      <div class="row"><span class="small muted">Volume</span><input type="range" id="c-pvol" min="0" max="1" step="0.05" value="${p.volume}" aria-label="Movie volume"><span class="grow" style="flex:1"></span><button class="btn danger" id="c-playstop">${ic('ci-stop')}Stop</button></div></div>`;
+  }
+
+  function ensurePlayDialog() {
+    if (playDlg) return playDlg;
+    playDlg = document.createElement('div'); playDlg.id = 'play-dialog'; playDlg.hidden = true;
+    playDlg.innerHTML = `<div class="pd" role="dialog" aria-label="Play into the call">
+      <div class="ch"><h3>Play into the call</h3><button class="mini" id="pd-close" title="Close">×</button></div>
+      <div class="pd-body">
+        <div class="pd-row"><label class="btn ghost pd-pick">${ic('ci-film')}Choose a video file<input type="file" id="pd-file" accept="video/*" hidden></label>
+          <select id="pd-profile" aria-label="Quality">${Object.entries(call.playbackProfiles()).map(([k, v]) => `<option value="${k}" ${call.prefs.playProfile === k ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select>
+          <span id="pd-status" class="muted small"></span></div>
+        <p class="muted small">The video is streamed from your device straight into the call, encrypted like everything else. Everyone sees and hears it, and you control it.</p>
+        <div class="pd-jf">
+          <div class="pd-row"><input type="search" id="pd-q" placeholder="Search your Jellyfin library" autocomplete="off"><button class="btn" id="pd-go">Search</button></div>
+          <div id="pd-jfnote" class="muted small"></div>
+          <div id="pd-results" class="pd-results"></div>
+        </div>
+      </div></div>`;
+    document.body.appendChild(playDlg);
+    const $ = s => playDlg.querySelector(s);
+    $('#pd-close').onclick = () => closePlayDialog();
+    playDlg.addEventListener('click', e => { if (e.target === playDlg) closePlayDialog(); });
+    $('#pd-q').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); searchJellyfin(); } });
+    $('#pd-go').onclick = () => searchJellyfin();
+    $('#pd-profile').onchange = () => { call.prefs.playProfile = $('#pd-profile').value; call.savePrefs(); };
+    $('#pd-file').onchange = async e => {
+      const f = e.target.files && e.target.files[0]; if (!f) return;
+      $('#pd-status').textContent = 'Opening ' + f.name + '…';
+      try { await call.startFilePlayback(f, { profile: $('#pd-profile').value }); closePlayDialog(); toast('Playing into the call'); }
+      catch (er) { $('#pd-status').textContent = er.message; }
+      e.target.value = '';
+    };
+    return playDlg;
+  }
+  function openPlayDialog() {
+    ensurePlayDialog();
+    playDlg.hidden = false;
+    const jf = call.jellyfinConfig(), note = playDlg.querySelector('#pd-jfnote');
+    if (!jf.url || !jf.key) { note.innerHTML = 'Jellyfin is not set up on this device. Add its address and API key under <b>Settings</b> in the call panel.'; playDlg.querySelector('#pd-results').innerHTML = ''; }
+    else if (!playItems) searchJellyfin();
+  }
+  function closePlayDialog() { if (playDlg) playDlg.hidden = true; }
+  async function searchJellyfin() {
+    const $ = s => playDlg.querySelector(s);
+    const jf = call.jellyfinConfig();
+    if (!jf.url || !jf.key) { $('#pd-jfnote').innerHTML = 'Add your Jellyfin address and API key under <b>Settings</b> first.'; return; }
+    if (playBusy) return;
+    playBusy = true; $('#pd-go').disabled = true; $('#pd-jfnote').textContent = 'Searching…'; $('#pd-results').innerHTML = '';
+    try {
+      playItems = await call.jellyfinSearch($('#pd-q').value);
+      $('#pd-jfnote').textContent = playItems.length ? playItems.length + ' found. Pick one to play into the call.' : 'Nothing found.';
+      $('#pd-results').innerHTML = playItems.map((it, i) => `<button class="pd-item" data-i="${i}" title="${esc(it.name)}"><span class="pos">${it.hasImage ? `<img src="${esc(call.jellyfinImageUrl(it))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="noposter">${ic('ci-film')}</span>`}</span><span class="nm">${esc(it.name)}</span><span class="sub">${esc([it.series, it.year].filter(Boolean).join(' · '))}</span></button>`).join('');
+      $('#pd-results').querySelectorAll('[data-i]').forEach(b => b.onclick = async () => {
+        const it = playItems[Number(b.dataset.i)]; if (!it) return;
+        b.disabled = true; $('#pd-jfnote').textContent = 'Opening ' + it.name + '…';
+        try { await call.startJellyfinPlayback(it, { profile: $('#pd-profile').value }); closePlayDialog(); toast('Playing into the call'); }
+        catch (er) { $('#pd-jfnote').textContent = er.message; b.disabled = false; }
+      });
+    } catch (er) { $('#pd-jfnote').textContent = er.message; }
+    finally { playBusy = false; if (playDlg) $('#pd-go').disabled = false; }
+  }
+
   function render() {
     updateButton();
     if (!panel) return;
@@ -91,7 +168,7 @@
     const room = currentRoom();
     const inThis = room && s.gid === room.gid && s.phase !== 'idle';
     syncTiles(s.shares);   // before the guard below, so a focused quality picker never keeps a stopped video on screen
-    if (panel.contains(document.activeElement) && document.activeElement.matches('input[type=range],select')) return;   // do not fight a drag in progress
+    if (panel.contains(document.activeElement) && document.activeElement.matches('input,select,textarea')) return;   // do not fight a drag or typing in progress
     let h = `<div class="ch"><h3>${esc(inThis || s.phase !== 'idle' ? (s.roomName || 'Call') : (room ? room.name : 'Call'))}</h3>${encBadge(s)}<button class="mini" id="c-close" title="Hide (the call keeps running)">×</button></div>`;
     if (!sup.ok) {
       const why = `<details class="cnote"><summary>Why?</summary>${sup.reasons.map(esc).join('<br>')}</details>`;
@@ -115,12 +192,14 @@
     else if (s.gameError) h += `<div class="cinfo wrapall">Game keys are not working: ${esc(s.gameError)}</div>`;
     const top = h; h = '';
     h += `<div class="cpeople">${s.peers.map(peerRow).join('')}</div>`;
+    if (s.playback) h += playBar(s.playback);
     const ptt = s.ptt;
     h += `<div class="cbar">
       <button class="btn ${s.muted || s.gameMuted ? 'on' : 'ghost'}" id="c-mute">${ic(s.muted || s.gameMuted ? 'ci-micoff' : 'ci-mic')}${s.muted ? 'Unmute' : s.gameMuted ? 'Muted by game key' : 'Mute'}</button>
       <button class="btn ${s.deafened ? 'on' : 'ghost'}" id="c-deaf">${ic('ci-phones')}${s.deafened ? 'Undeafen' : 'Deafen'}</button>
       ${ptt ? `<button class="btn ${s.pttHeld ? '' : 'ghost'}" id="c-ptt">Hold to talk</button>` : ''}
       <button class="btn ${s.sharing ? 'on' : 'ghost'}" id="c-share" ${sup.canShareScreen ? '' : 'disabled title="This browser or webview cannot share a screen"'}>${ic('ci-screen')}${s.sharing ? 'Stop sharing' : 'Share screen'}</button>
+      ${s.playback ? '' : `<button class="btn ghost" id="c-playopen" ${s.sharing ? 'disabled title="Stop sharing your screen first"' : ''}>${ic('ci-film')}Play video</button>`}
       <button class="btn ${s.camera ? 'on' : 'ghost'}" id="c-cam">${ic('ci-cam')}${s.camera ? 'Camera off' : 'Camera'}</button>
       <button class="btn ghost" id="c-set">${ic('ci-gear')}Settings</button>
       <span class="grow" style="flex:1"></span>
@@ -131,7 +210,12 @@
         <label class="full"><input type="checkbox" id="c-ns" ${s.prefs.noiseSuppression ? 'checked' : ''}> Noise suppression and echo cancellation (the browser's own)</label>
         <label class="full"><input type="checkbox" id="c-pttc" ${s.prefs.ptt ? 'checked' : ''}> Push to talk (hold <b>${esc(s.pttKey.replace('Key', '').replace('Backquote', '` (backtick)'))}</b> while this window is focused) <button class="mini" id="c-pttkey">Change key</button></label>
         <label class="full"><input type="checkbox" id="c-sa" ${s.prefs.shareAudio ? 'checked' : ''}> Include audio when sharing a screen or window, where the system allows it</label>
-        <label for="c-prof">Share as</label><select id="c-prof">${Object.entries(call.shareProfiles()).map(([k, v]) => `<option value="${k}" ${s.prefs.shareProfile === k ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select></div>`;
+        <label for="c-prof">Share as</label><select id="c-prof">${Object.entries(call.shareProfiles()).map(([k, v]) => `<option value="${k}" ${s.prefs.shareProfile === k ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select>
+        <div class="full jfset"><b>Jellyfin library</b> <span class="muted small">(for playing films and episodes into the call)</span></div>
+        <label for="c-jf-url">Address</label><input type="text" id="c-jf-url" placeholder="http://192.168.1.10:8096" spellcheck="false" value="${esc(call.jellyfinConfig().url)}">
+        <label for="c-jf-key">API key</label><input type="password" id="c-jf-key" placeholder="Dashboard → API Keys" autocomplete="off" value="${esc(call.jellyfinConfig().key)}">
+        <span></span><button type="button" class="btn ghost" id="c-jfsave">Save Jellyfin settings</button>
+        <div class="full muted small">Kept on this device only: never synced and never sent to the relay. The address and key go straight to your Jellyfin server from this page. Jellyfin must allow this page's origin (CORS).</div></div>`;
     }
     h += `<details class="cnote"><summary>What the call server can see</summary>Your IP address, when you join and leave, how much you send, and who is speaking. It cannot hear or see anything. Keys: ${s.encryption.devices ?? '?'} device keys from the room, epoch ${s.encryption.epoch ?? '?'}, rotated ${s.encryption.rotations} time(s) this call.</details>`;
     paint(top, h);
@@ -151,7 +235,7 @@
       let t = tiles.get(sh.key);
       if (!t) t = makeTile(sh);
       else if (t.track !== sh.track) { try { t.track.detach(t.video); } catch { } sh.track.attach(t.video); t.track = sh.track; t.video.play().catch(() => { }); }
-      const label = `${sh.name} · ${sh.source === 'camera' ? 'camera' : 'screen'}`;
+      const label = `${sh.name} · ${sh.movie ? 'movie' : sh.source === 'camera' ? 'camera' : 'screen'}`;
       if (t.label.textContent !== label) t.label.textContent = label;
       if (t.sel && document.activeElement !== t.sel && t.sel.value !== sh.quality) t.sel.value = sh.quality;
       if (host.children[i] !== t.el) host.insertBefore(t.el, host.children[i] || null);   // only new or reordered tiles move
@@ -177,13 +261,18 @@
 
   function wireBasic() {
     const on = (id, fn) => { const el = $q('#' + id, panel); if (el) el.onclick = fn; };
-    on('c-close', () => { open = false; render(); });
+    on('c-close', () => { open = false; closePlayDialog(); render(); });
     on('c-join', async () => { const room = currentRoom(); if (!room) return; try { await call.join(room.gid, room.name); } catch { } render(); });
     on('c-browser', async () => { const room = currentRoom(); try { const r = await rpc('open_call_in_browser', { gid: room.gid, name: room.name }); if (r.opened) toast('Opened in your browser'); call.fail(r.opened ? 'handoff' : 'browser', (r.opened ? 'The call should now be open in your browser. If nothing appeared, open' : 'Could not start a browser automatically. Open') + ' this link in Chrome, Brave, Edge or Firefox on this computer: ' + r.url);  } catch (e) { call.fail('browser', e.message); } });
-    on('c-leave', () => call.leave());
+    on('c-leave', () => { closePlayDialog(); call.leave(); });
     on('c-mute', () => { if (call.gameMuted && !call.muted) call.clearGameKey(); else { const m = !call.muted; call.setMuted(m); if (!m) call.clearGameKey(); } });
     on('c-deaf', () => call.setDeafened(!call.deafened));
     on('c-share', async () => { try { call.sharing ? await call.stopShare() : await call.startShare(); } catch { } });
+    on('c-playopen', () => openPlayDialog());
+    on('c-playtoggle', () => call.togglePlayback());
+    on('c-playstop', () => call.stopPlayback());
+    const sk = $q('#c-seek', panel); if (sk) sk.onchange = () => call.seekPlayback(Number(sk.value));
+    const pv = $q('#c-pvol', panel); if (pv) pv.oninput = () => call.setPlaybackVolume(Number(pv.value));
     on('c-cam', () => call.setCamera(!call.camera));
     on('c-set', async () => { showSettings = !showSettings; if (showSettings) devices = await call.listDevices(); render(); });
     const p = $q('#c-ptt', panel); if (p) { p.onmousedown = () => call.pttButton(true); p.onmouseup = p.onmouseleave = () => call.pttButton(false); }
@@ -194,6 +283,8 @@
     const pc = $q('#c-pttc', panel); if (pc) pc.onchange = () => call.setPtt(pc.checked);
     const sa = $q('#c-sa', panel); if (sa) sa.onchange = () => { call.prefs.shareAudio = sa.checked; call.savePrefs(); };
     const pr = $q('#c-prof', panel); if (pr) pr.onchange = () => { call.prefs.shareProfile = pr.value; call.savePrefs(); };
+    const jfs = $q('#c-jfsave', panel);
+    if (jfs) jfs.onclick = () => { call.saveJellyfinConfig($q('#c-jf-url', panel).value, $q('#c-jf-key', panel).value); jfs.textContent = 'Saved'; toast('Jellyfin settings saved on this device'); };
     const pk = $q('#c-pttkey', panel); if (pk) pk.onclick = () => { pk.textContent = 'Press a key…'; const h = e => { e.preventDefault(); document.removeEventListener('keydown', h, true); pk.textContent = 'Change key'; call.setPttKey(e.code); }; document.addEventListener('keydown', h, true); };
   }
 

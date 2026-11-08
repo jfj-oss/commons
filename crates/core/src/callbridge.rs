@@ -24,7 +24,10 @@ const FILES: &[(&str, &str, &[u8])] = &[
 /// A secret stops working after this long (a call that runs longer is re-opened from the app).
 const SECRET_TTL: std::time::Duration = std::time::Duration::from_secs(12 * 3600);
 /// The page loads only its own files and may talk to the relay's call server; nothing inline, nothing framed.
-const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws: wss: https:; worker-src 'self' blob:; media-src 'self' blob: mediastream:; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'";
+/// http:/https: on img-src, connect-src and media-src exist for Jellyfin: its address is configured per device at runtime
+/// (often plain http on the LAN or Tailscale), so it cannot be named here, and its media has to be fetched and played by
+/// <video> directly (never proxied through the relay). Scripts, workers, styles and frames stay locked down.
+const CSP: &str = "default-src 'self'; img-src 'self' data: blob: http: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws: wss: https: http:; worker-src 'self' blob:; media-src 'self' blob: mediastream: http: https:; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'";
 
 struct Grant { secret: String, gid: String, issued: std::time::Instant }
 impl Default for Grant { fn default() -> Self { Grant { secret: String::new(), gid: String::new(), issued: std::time::Instant::now() } } }

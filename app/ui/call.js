@@ -16,6 +16,20 @@
   const POLL_MS = 1500;              // how often the Rust core is asked for the current epoch
   const TOKEN_REFRESH_MARGIN = 60;   // seconds
 
+  // "Play into the call": a movie is captured on the sender and published as the same screen-share sources as a real
+  // screen share, so the existing tiled view shows it and every frame goes through the same E2EE pipeline. These are the
+  // sender's quality choices. The top layer is the source; the others are simulcast layers so viewers on weaker links
+  // still get a picture. Audio is stereo Opus at music quality (192 kbit/s), with no voice processing at all: the
+  // audio never touches getUserMedia, it is captured with Web Audio from the <video> element.
+  const PLAY_PROFILES = {
+    '1080p30': { label: '1080p, 30 fps', width: 1920, height: 1080, fps: 30, bitrate: 7_000_000, layers: [[640, 360, 400_000, 15], [1280, 720, 2_500_000, 30]] },
+    '1080p60': { label: '1080p, 60 fps', width: 1920, height: 1080, fps: 60, bitrate: 8_000_000, layers: [[640, 360, 400_000, 15], [1280, 720, 2_500_000, 30]] },
+    '4k': { label: '4K, 30 fps', width: 3840, height: 2160, fps: 30, bitrate: 16_000_000, layers: [[640, 360, 400_000, 15], [1920, 1080, 5_000_000, 30]] },
+  };
+  const PLAY_AUDIO_BITRATE = 192_000;
+  const PLAY_HOST_ID = 'call-media-host';
+  const PLAY_MAX_LOAD_MS = 25000;    // a Jellyfin transcode may take a moment to produce its first frames
+
   const b64d = s => { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; const bin = atob(s); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; };
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } };
@@ -76,7 +90,7 @@
       this.LK = opts.LK || window.LivekitClient;
       this.audioHost = null;
       this.reset();
-      this.prefs = Object.assign({ noiseSuppression: true, echoCancellation: true, autoGainControl: true, ptt: false, pttKey: 'Backquote', shareAudio: true, shareProfile: 'text', micId: '', outId: '', camId: '' }, lsGet('commons.call.prefs', {}));
+      this.prefs = Object.assign({ noiseSuppression: true, echoCancellation: true, autoGainControl: true, ptt: false, pttKey: 'Backquote', shareAudio: true, shareProfile: 'text', playProfile: '1080p30', forceCanvasPlayback: false, micId: '', outId: '', camId: '' }, lsGet('commons.call.prefs', {}));
       this.volumes = lsGet('commons.call.volumes', {});
       this._keydown = e => this._onKey(e, true); this._keyup = e => this._onKey(e, false);
     }
@@ -86,6 +100,7 @@
       this.keyState = null; this.appliedEpoch = null; this._keyed = new Set(); this.members = new Map(); this.byAccount = new Map();
       this.muted = false; this.gameMuted = false; this.gameName = null; this.gameError = ''; this.deafened = false; this.pttHeld = false; this.sharing = false; this.camera = false;
       this.blocked = new Map(); this.decryptFail = new Map(); this.tracks = new Map(); this.audioEls = new Map(); this.speaking = new Set();
+      this.play = null; this.playHost = null;
       this.viewQuality = new Map(); this.attempt = 0; this.rotations = 0; this.lastRotation = 0; this.events = [];
       this._leaving = false; this._token = null;
     }
@@ -218,6 +233,7 @@
 
     async _teardown() {
       this.gate.close();
+      this._releasePlayback();                 // stop the movie's capture, audio graph and preview, even if the room is already gone
       const room = this.room; this.room = null;
       for (const el of this.audioEls.values()) { try { el.remove(); } catch { } }
       this.audioEls.clear(); this.tracks.clear();
@@ -454,6 +470,7 @@
     shareProfiles() { const P = this.LK.ScreenSharePresets; return { text: { label: 'Sharp text (1080p, low frame rate)', preset: P.h1080fps15, layers: [P.h360fps15, P.h720fps15] }, motion: { label: 'Smooth motion (720p, 30 fps)', preset: P.h720fps30, layers: [P.h360fps15] } }; }
     async startShare(opts = {}) {
       if (!this.room) throw new CallError('idle', 'Join the call first.');
+      if (this.play) { const m = 'Stop playing the video before sharing your screen.'; this.fail('busy', m); throw new CallError('busy', m); }
       const sup = describeSupport();
       if (!sup.getDisplayMedia) { const m = 'This browser or webview cannot share a screen (no getDisplayMedia). Open the call in a Chromium or Firefox browser tab instead.'; this.fail('no-screen', m); throw new CallError('no-screen', m); }
       const prof = this.shareProfiles()[opts.profile || this.prefs.shareProfile] || this.shareProfiles().text;
@@ -488,6 +505,279 @@
       } catch (e) { this.camera = false; const ce = e instanceof CallError ? e : this._explain(e); this.fail(ce.kind === 'other' ? 'camera' : ce.kind, ce.message.replace('microphone', 'camera')); }
       this.changed();
     }
+    // ------------------------------------------------------------------ play into the call (a video with sound, for everyone)
+    // One movie at a time per device, and never at the same time as a screen share: both use the screen-share source slots.
+    playbackProfiles() { return PLAY_PROFILES; }
+    playbackState() {
+      const p = this.play; if (!p) return null;
+      const v = p.video;
+      return {
+        title: p.title, kind: p.kind, profile: p.profile, paused: p.paused, volume: p.volume,
+        position: v && isFinite(v.currentTime) ? v.currentTime : 0,
+        duration: v && isFinite(v.duration) ? v.duration : 0,
+        capture: p.capture, width: p.width || 0, height: p.height || 0,
+      };
+    }
+    _playHostEl() {
+      let host = document.getElementById(PLAY_HOST_ID);
+      if (!host) {
+        host = document.createElement('div'); host.id = PLAY_HOST_ID;
+        // kept in the page (not display:none) so Chromium keeps decoding and captureStream keeps producing frames
+        host.style.cssText = 'position:fixed;left:-10000px;top:0;width:320px;height:180px;overflow:hidden;pointer-events:none;opacity:.01';
+        document.body.appendChild(host);
+      }
+      return host;
+    }
+
+    // ---- Jellyfin: configured per device, in this browser's localStorage only. The key never leaves this device.
+    jellyfinConfig() {
+      const c = lsGet('commons.call.jellyfin', null) || {};
+      return { url: String(c.url || '').trim().replace(/\/+$/, ''), key: String(c.key || '').trim() };
+    }
+    saveJellyfinConfig(url, key) {
+      lsSet('commons.call.jellyfin', { url: String(url || '').trim().replace(/\/+$/, ''), key: String(key || '').trim() });
+      this.log('Jellyfin settings saved on this device');
+      this.changed();
+    }
+    async jellyfinSearch(term) {
+      const c = this.jellyfinConfig();
+      if (!c.url) throw new CallError('jellyfin', 'Set your Jellyfin address in call Settings first.');
+      if (!c.key) throw new CallError('jellyfin', 'Set your Jellyfin API key in call Settings first.');
+      let u; try { u = new URL(c.url + '/Items'); } catch { throw new CallError('jellyfin', 'The Jellyfin address is not a valid URL.'); }
+      if (!/^https?:$/.test(u.protocol)) throw new CallError('jellyfin', 'The Jellyfin address must start with http:// or https://.');
+      u.searchParams.set('IncludeItemTypes', 'Movie,Episode');
+      u.searchParams.set('Recursive', 'true');
+      u.searchParams.set('Limit', '40');
+      u.searchParams.set('Fields', 'ProductionYear,RunTimeTicks,PrimaryImageAspectRatio,SeriesName');
+      const t = String(term || '').trim();
+      if (t) { u.searchParams.set('searchTerm', t); u.searchParams.set('SortBy', 'SortName'); u.searchParams.set('SortOrder', 'Ascending'); }
+      else { u.searchParams.set('SortBy', 'DateCreated,SortName'); u.searchParams.set('SortOrder', 'Descending'); }
+      let r;
+      try { r = await fetch(u.href, { headers: { 'X-Emby-Token': c.key }, mode: 'cors', credentials: 'omit' }); }
+      catch (e) { throw new CallError('jellyfin', 'Could not reach Jellyfin at ' + c.url + '. Check the address and that Jellyfin is running, and that Jellyfin allows this page\'s origin (CORS). (' + (e.message || e) + ')'); }
+      if (r.status === 401 || r.status === 403) throw new CallError('jellyfin', 'Jellyfin refused the API key. Check the key in call Settings.');
+      if (!r.ok) throw new CallError('jellyfin', 'Jellyfin answered ' + r.status + ' ' + r.statusText + '.');
+      let j; try { j = await r.json(); } catch { throw new CallError('jellyfin', 'Jellyfin sent an answer that is not JSON. Is the address really a Jellyfin server?'); }
+      const items = (j && Array.isArray(j.Items)) ? j.Items : null;
+      if (!items) throw new CallError('jellyfin', 'Jellyfin sent an unexpected answer.');
+      return items.map(it => ({
+        id: it.Id, name: it.Name || 'Untitled', type: it.Type || '', year: it.ProductionYear || null,
+        series: it.SeriesName || '', ticks: it.RunTimeTicks || 0, hasImage: !!(it.ImageTags && it.ImageTags.Primary),
+      }));
+    }
+    jellyfinImageUrl(item) {
+      const c = this.jellyfinConfig();
+      if (!c.url || !item || !item.hasImage) return '';
+      // images cannot carry the X-Emby-Token header, so the key goes in the query; Jellyfin accepts api_key there
+      return c.url + '/Items/' + encodeURIComponent(item.id) + '/Images/Primary?maxHeight=360&quality=80&api_key=' + encodeURIComponent(c.key);
+    }
+    async startJellyfinPlayback(item, opts = {}) {
+      const c = this.jellyfinConfig();
+      if (!c.url || !c.key) throw new CallError('jellyfin', 'Set up Jellyfin in call Settings first.');
+      const prof = PLAY_PROFILES[opts.profile || this.prefs.playProfile] || PLAY_PROFILES['1080p30'];
+      const q = encodeURIComponent;
+      const urls = [
+        // direct play first: no transcoding load on the server and the best picture
+        c.url + '/Videos/' + q(item.id) + '/stream?static=true&api_key=' + q(c.key),
+        // h264/aac mp4 transcode when the container or codec will not play in this browser (MKV/HEVC/DTS and friends)
+        c.url + '/Videos/' + q(item.id) + '/stream.mp4?Static=false&VideoCodec=h264&AudioCodec=aac&AudioChannels=2&Container=mp4&MaxWidth=' + prof.width + '&MaxHeight=' + prof.height + '&api_key=' + q(c.key),
+      ];
+      return this._startPlayback({ title: item.name || 'Video', kind: 'jellyfin', urls, crossOrigin: true, profile: opts.profile });
+    }
+    async startFilePlayback(file, opts = {}) {
+      const url = URL.createObjectURL(file);
+      try { return await this._startPlayback({ title: file.name || 'Video file', kind: 'file', urls: [url], revoke: url, crossOrigin: false, profile: opts.profile }); }
+      catch (e) { try { URL.revokeObjectURL(url); } catch { } throw e; }
+    }
+    async togglePlayback() { return this.play && this.play.paused ? this.resumePlayback() : this.pausePlayback(); }
+
+    async _startPlayback(o) {
+      if (!this.room) throw new CallError('idle', 'Join the call first.');
+      if (this.sharing) throw new CallError('busy', 'Stop sharing your screen before playing a video into the call.');
+      if (this.play) throw new CallError('busy', 'A video is already playing into the call. Stop it first.');
+      const LK = this.LK;
+      const profKey = PLAY_PROFILES[o.profile || this.prefs.playProfile] ? (o.profile || this.prefs.playProfile) : '1080p30';
+      const prof = PLAY_PROFILES[profKey];
+      const video = document.createElement('video');
+      video.playsInline = true; video.preload = 'auto'; video.volume = 1;
+      if (o.crossOrigin) video.crossOrigin = 'anonymous';   // Jellyfin: needed or the canvas is tainted and Web Audio goes silent
+      this._playHostEl().appendChild(video);
+      const done = [];
+      let actx = null, vpub = null, apub = null, canvasStop = null;
+      try {
+        actx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'playback' });
+        // The movie's audio never goes through getUserMedia, so echo cancellation, noise suppression and AGC cannot touch it.
+        // One gain feeds both the published stereo track and the sender's own speakers.
+        const srcNode = actx.createMediaElementSource(video);
+        const gain = actx.createGain(); gain.gain.value = 1;
+        const dest = actx.createMediaStreamDestination();
+        dest.channelCount = 2; dest.channelCountMode = 'explicit'; dest.channelInterpretation = 'speakers';
+        srcNode.connect(gain); gain.connect(dest); gain.connect(actx.destination);
+        await actx.resume().catch(() => { });
+        await this._openMedia(video, o.urls, o.crossOrigin);
+        // Capture: the fast native path when the webview has HTMLMediaElement.captureStream and the source is not larger
+        // than the chosen top layer; otherwise draw into a canvas (WebKit has no element capture). Large sources are
+        // downscaled by the canvas path so the default really means 1080p.
+        let vtrack = null, capture = 'element';
+        const native = typeof video.captureStream === 'function' && !this.prefs.forceCanvasPlayback;
+        const tooBig = (video.videoWidth || 0) > prof.width + 8 || (video.videoHeight || 0) > prof.height + 8;
+        if (!native || tooBig) {
+          capture = 'canvas';
+          const vw = video.videoWidth || prof.width, vh = video.videoHeight || prof.height;
+          let w = Math.min(prof.width, vw), h = Math.round(w * vh / vw);
+          if (h > prof.height) { h = prof.height; w = Math.round(h * vw / vh); }
+          w = Math.max(2, w - (w % 2)); h = Math.max(2, h - (h % 2));
+          const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+          const g2d = canvas.getContext('2d', { alpha: false, desynchronized: true });
+          const draw = () => { if (video.readyState >= 2) { try { g2d.drawImage(video, 0, 0, w, h); } catch { } } };
+          draw();
+          // requestVideoFrameCallback fires once per decoded frame and stops while paused, so a paused movie costs nothing;
+          // rAF is the WebKit fallback (a paused movie keeps repeating its last frame, which is what viewers should see).
+          if (typeof video.requestVideoFrameCallback === 'function') {
+            let id = 0, stopped = false;
+            const tick = () => { if (stopped) return; draw(); id = video.requestVideoFrameCallback(tick); };
+            id = video.requestVideoFrameCallback(tick);
+            canvasStop = () => { stopped = true; try { video.cancelVideoFrameCallback(id); } catch { } };
+          } else {
+            let raf = 0, stopped = false;
+            const tick = () => { if (stopped) return; draw(); raf = requestAnimationFrame(tick); };
+            raf = requestAnimationFrame(tick);
+            canvasStop = () => { stopped = true; try { cancelAnimationFrame(raf); } catch { } };
+          }
+          const vstream = canvas.captureStream(prof.fps);
+          vtrack = vstream.getVideoTracks()[0];
+          done.push(...vstream.getTracks());
+          this._playCanvas = canvas;
+        } else {
+          const vstream = video.captureStream();
+          vtrack = vstream.getVideoTracks()[0];
+          vstream.getAudioTracks().forEach(t => { try { t.stop(); } catch { } });   // audio comes from Web Audio, not the element's stream
+          if (vtrack) done.push(vtrack);
+        }
+        if (!vtrack) throw new CallError('play', 'This video could not be captured as a stream in this browser.');
+        vtrack.contentHint = 'motion';
+        const atrack = dest.stream.getAudioTracks()[0];
+        if (!atrack) throw new CallError('play', 'The audio of this video could not be captured.');
+        atrack.contentHint = 'music';
+        done.push(atrack);
+        await video.play();
+        const layers = prof.layers.map(([w, h, maxBitrate, maxFramerate]) => new LK.VideoPreset({ width: w, height: h, maxBitrate, maxFramerate }));
+        vpub = await this.room.localParticipant.publishTrack(vtrack, {
+          name: 'movie', source: LK.Track.Source.ScreenShare, simulcast: true,
+          screenShareEncoding: { maxBitrate: prof.bitrate, maxFramerate: prof.fps },
+          screenShareSimulcastLayers: layers, videoCodec: 'vp8', degradationPreference: 'maintain-framerate',
+        });
+        apub = await this.room.localParticipant.publishTrack(atrack, {
+          name: 'movie-audio', source: LK.Track.Source.ScreenShareAudio,
+          audioPreset: { maxBitrate: PLAY_AUDIO_BITRATE, priority: 'high' },
+          forceStereo: true, dtx: false, red: true,     // no DTX: a quiet passage must not be gated away
+        });
+        for (const pub of [vpub, apub]) {
+          if (!pub || !pub.isEncrypted) {
+            throw new CallError('no-e2ee', 'The movie was not encrypted, so it was stopped. Nothing was sent.');
+          }
+        }
+        const st = {
+          title: o.title || 'Video', kind: o.kind || 'file', profile: profKey, paused: false, volume: 1,
+          video, actx, gain, dest, vpub, apub, vtrack, atrack, capture, revoke: o.revoke || null, width: video.videoWidth, height: video.videoHeight,
+        };
+        this.play = st;
+        this._playCanvas = capture === 'canvas' ? this._playCanvas : null;
+        this._playCanvasStop = canvasStop;
+        video.addEventListener('timeupdate', () => { const now = Date.now(); if (now - (this._playPaintAt || 0) >= 500) { this._playPaintAt = now; this.changed(); } });
+        video.addEventListener('ended', () => { if (this.play && this.play.video === video) this.pausePlayback(); });
+        video.addEventListener('error', () => { if (this.play && this.play.video === video) { const m = video.error ? ' ' + video.error.message : ''; this.fail('play', 'The video stopped because the browser could not decode it.' + m); this.stopPlayback(); } });
+        this.log('playing "' + st.title + '" into the call (' + capture + ', ' + profKey + ')');
+        this.changed();
+        return this.playbackState();
+      } catch (e) {
+        for (const pub of [apub, vpub]) { try { if (pub && pub.track) await this.room.localParticipant.unpublishTrack(pub.track); } catch { } }
+        for (const t of done) { try { t.stop(); } catch { } }
+        if (canvasStop) { try { canvasStop(); } catch { } }
+        if (actx) { try { actx.close(); } catch { } }
+        this._playCanvas = null; this._playCanvasStop = null;
+        try { video.pause(); video.removeAttribute('src'); video.load(); video.remove(); } catch { }
+        if (o.revoke) { try { URL.revokeObjectURL(o.revoke); } catch { } }
+        const ce = e instanceof CallError ? e : new CallError('play', 'Could not play this video: ' + ((e && e.message) || e));
+        this.fail(ce.kind, ce.message);
+        throw ce;
+      }
+    }
+
+    // Loads the first URL that the browser accepts. Jellyfin's static stream is tried before its transcode.
+    async _openMedia(video, urls, crossOrigin) {
+      let last = null;
+      for (const url of urls) {
+        try {
+          await new Promise((res, rej) => {
+            let timer = 0;
+            const fin = err => { clearTimeout(timer); video.removeEventListener('loadeddata', ok); video.removeEventListener('error', bad); err ? rej(err) : res(); };
+            const ok = () => fin();
+            const bad = () => { const me = video.error; fin(new Error(me ? (me.message || ('media error ' + me.code)) : 'the media could not be loaded')); };
+            timer = setTimeout(() => { this.log('play: no loadeddata after ' + PLAY_MAX_LOAD_MS + ' ms (readyState ' + video.readyState + ', networkState ' + video.networkState + ', src ' + (video.currentSrc || '').slice(0, 40) + ')'); fin(new Error('it took too long to start')); }, PLAY_MAX_LOAD_MS);
+            video.addEventListener('loadeddata', ok);
+            video.addEventListener('error', bad);
+            video.src = url; video.load();
+          });
+          return url;
+        } catch (e) {
+          last = e;
+          this.log('play: a source failed: ' + e.message);
+          try { video.pause(); video.removeAttribute('src'); video.load(); } catch { }
+        }
+      }
+      const hint = crossOrigin ? ' If this is a CORS problem, Jellyfin must allow this page\'s origin (Jellyfin\'s allowed origins / a reverse proxy that adds Access-Control-Allow-Origin).' : '';
+      throw new CallError('play', 'Could not load the video' + (last ? ': ' + last.message : '') + '.' + hint);
+    }
+
+    async pausePlayback() {
+      const p = this.play; if (!p || p.paused) return;
+      p.paused = true;
+      try { p.video.pause(); } catch { }
+      // Video: the track keeps its last frame (no black frame); audio: mute the Opus track, so silence, not stray samples.
+      if (p.apub && p.apub.track && p.apub.track.mute) { try { await p.apub.track.mute(); } catch { } }
+      this.changed();
+    }
+    async resumePlayback() {
+      const p = this.play; if (!p || !p.paused) return;
+      try { await p.video.play(); } catch (e) { this.fail('play', 'Could not resume the video: ' + (e.message || e)); return; }
+      p.paused = false;
+      if (p.actx && p.actx.state === 'suspended') { try { await p.actx.resume(); } catch { } }
+      if (p.apub && p.apub.track && p.apub.track.unmute) { try { await p.apub.track.unmute(); } catch { } }
+      this.changed();
+    }
+    seekPlayback(sec) {
+      const p = this.play; if (!p) return;
+      const d = p.video && isFinite(p.video.duration) ? p.video.duration : sec;
+      try { p.video.currentTime = Math.max(0, Math.min(Number(sec) || 0, d)); } catch { }
+      this.changed();
+    }
+    setPlaybackVolume(v) {
+      const p = this.play; if (!p || !p.gain) return;
+      p.volume = Math.max(0, Math.min(1, Number(v) || 0));
+      try { p.gain.gain.setTargetAtTime(p.volume, p.actx.currentTime, 0.03); } catch { p.gain.gain.value = p.volume; }
+      this.changed();
+    }
+    async stopPlayback() {
+      const p = this.play; this.play = null;
+      const lp = this.room && this.room.localParticipant;
+      for (const pub of [p && p.vpub, p && p.apub]) { try { if (lp && pub && pub.track) await lp.unpublishTrack(pub.track); } catch { } }
+      this._releasePlayback(p);
+      if (p) this.log('stopped playing "' + p.title + '"');
+      this.changed();
+    }
+    // Stops the capture, the audio graph and the hidden preview. Safe to call when nothing is playing.
+    _releasePlayback(p = this.play) {
+      if (!p) return;
+      if (this._playCanvasStop) { try { this._playCanvasStop(); } catch { } this._playCanvasStop = null; }
+      for (const t of [p.vtrack, p.atrack]) { try { t && t.stop(); } catch { } }
+      try { p.actx && p.actx.close(); } catch { }
+      try { if (p.video) { p.video.pause(); p.video.removeAttribute('src'); p.video.load(); p.video.remove(); } } catch { }
+      if (p.revoke) { try { URL.revokeObjectURL(p.revoke); } catch { } }
+      this._playCanvas = null;
+      if (this.play === p) this.play = null;
+    }
+
     // viewer-side quality: 'auto' | 'high' | 'medium' | 'low'
     setViewQuality(trackSid, q) {
       const Q = this.LK.VideoQuality; const v = { high: Q.HIGH, medium: Q.MEDIUM, low: Q.LOW }[q];
@@ -519,13 +809,13 @@
       const shares = [];
       if (this.room) {
         // A muted video (a camera switched off is muted, not unpublished) has no tile: it would only be a black box.
-        for (const t of this.tracks.values()) if (t.track.kind === 'video' && !t.pub.isMuted) shares.push({ key: t.identity + '/' + t.pub.trackSid, sid: t.pub.trackSid, identity: t.identity, name: (this.members.get(t.identity) || {}).name || t.identity.slice(0, 8), source: t.source, track: t.track, quality: this.qualityOf(t.pub.trackSid), local: false });
+        for (const t of this.tracks.values()) if (t.track.kind === 'video' && !t.pub.isMuted) shares.push({ key: t.identity + '/' + t.pub.trackSid, sid: t.pub.trackSid, identity: t.identity, name: (this.members.get(t.identity) || {}).name || t.identity.slice(0, 8), source: t.source, movie: t.pub.trackName === 'movie', track: t.track, quality: this.qualityOf(t.pub.trackSid), local: false });
         const lp = this.room.localParticipant;
-        for (const src of [LK.Track.Source.ScreenShare, LK.Track.Source.Camera]) { const pub = lp.getTrackPublication(src); if (pub && pub.track && !pub.isMuted) shares.push({ key: 'me/' + pub.trackSid, sid: pub.trackSid, identity: this.me, name: 'You', source: src, track: pub.track, quality: 'auto', local: true }); }
+        for (const src of [LK.Track.Source.ScreenShare, LK.Track.Source.Camera]) { const pub = lp.getTrackPublication(src); if (pub && pub.track && !pub.isMuted) shares.push({ key: 'me/' + pub.trackSid, sid: pub.trackSid, identity: this.me, name: 'You', source: src, movie: pub.trackName === 'movie', track: pub.track, quality: 'auto', local: true }); }
       }
       return {
         phase: this.phase, error: this.error, gid: this.gid, roomName: this.roomName, muted: this.muted, gameMuted: this.gameMuted, gameName: this.gameName, gameError: this.gameError, deafened: this.deafened, ptt: this.prefs.ptt, pttKey: this.prefs.pttKey, pttHeld: this.pttHeld,
-        sharing: this.sharing, camera: this.camera, peers, shares, prefs: this.prefs, attempt: this.attempt,
+        sharing: this.sharing, camera: this.camera, playing: !!this.play, playback: this.playbackState(), peers, shares, prefs: this.prefs, attempt: this.attempt,
         encryption: { active: !!(this.room && this.room.isE2EEEnabled), backend: describeSupport().e2ee, epoch: this.keyState && this.keyState.epoch, keyIndex: this.keyState && this.keyState.index, rotations: this.rotations, lastRotation: this.lastRotation, devices: this.keyState && this.keyState.devices },
         blocked: [...this.blocked.values()], events: this.events.slice(-12),
       };

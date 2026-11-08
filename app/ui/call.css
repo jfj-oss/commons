@@ -64,3 +64,39 @@
 /* the panel's two re-rendered parts lay out as if their children were the panel's own; the video tile host between them is never re-rendered */
 #call-panel > .cpart { display: contents; }
 #call-panel .cshares[hidden] { display: none; }
+
+/* ---- play into the call: the sender's controls, and the picker dialog (also used by the stand-alone call page) ---- */
+#call-panel .cplay { padding: 8px 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; background: var(--hover); }
+#call-panel .cplay .row { display: flex; align-items: center; gap: 8px; }
+#call-panel .cplay .ttl { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
+#call-panel .cplay .ttl b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#call-panel .cplay .ttl .ic { width: 15px; height: 15px; color: var(--ink-3); }
+#call-panel .cplay input[type=range] { flex: 1; min-width: 60px; }
+#call-panel .cplay .time { white-space: nowrap; font-variant-numeric: tabular-nums; }
+#call-panel .cset .jfset { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 4px; }
+#call-panel .cset input[type=password] { min-width: 0; width: 100%; }
+
+#play-dialog { position: fixed; inset: 0; z-index: 70; background: rgba(20, 15, 8, .42); display: flex; align-items: center; justify-content: center; padding: 14px; }
+#play-dialog[hidden] { display: none; }
+#play-dialog .pd { width: min(760px, 100%); max-height: min(88vh, 820px); overflow: auto; display: flex; flex-direction: column;
+  background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); font-family: var(--sans); }
+#play-dialog .ch { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--card); z-index: 1; }
+#play-dialog .ch h3 { font: 600 16px var(--display); margin: 0; flex: 1; }
+#play-dialog .pd-body { padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+#play-dialog .pd-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#play-dialog .pd-pick { cursor: pointer; }
+#play-dialog input[type=search] { flex: 1; min-width: 180px; background: var(--page-sunk, var(--card)); color: var(--ink); border: 1px solid var(--line-2, var(--line)); border-radius: 8px; padding: 7px 9px; font: inherit; }
+#play-dialog select { background: var(--page-sunk, var(--card)); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font: inherit; }
+#play-dialog .pd-jf { border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+#play-dialog .pd-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: 8px; }
+#play-dialog .pd-item { display: flex; flex-direction: column; gap: 3px; text-align: left; background: none; color: inherit; border: 1px solid transparent; border-radius: 9px; padding: 5px; cursor: pointer; font: inherit; }
+#play-dialog .pd-item:hover, #play-dialog .pd-item:focus-visible { border-color: var(--line-2, var(--line)); background: var(--hover); }
+#play-dialog .pd-item:disabled { opacity: .5; }
+#play-dialog .pd-item .pos { display: block; aspect-ratio: 2 / 3; border-radius: 6px; overflow: hidden; background: var(--page-sunk, var(--hover)); }
+#play-dialog .pd-item .pos img { width: 100%; height: 100%; object-fit: cover; display: block; }
+#play-dialog .pd-item .noposter { display: grid; place-items: center; width: 100%; height: 100%; color: var(--ink-3); }
+#play-dialog .pd-item .noposter .ic { width: 30px; height: 30px; }
+#play-dialog .pd-item .nm { font-size: 12.5px; line-height: 1.25; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+#play-dialog .pd-item .sub { font-size: 11.5px; color: var(--ink-3); }
+#play-dialog .muted { color: var(--ink-3); }
+#play-dialog .small { font-size: 12.5px; }
