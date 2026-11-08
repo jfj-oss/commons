@@ -110,7 +110,9 @@ impl std::fmt::Debug for LiveKitCfg {
 }
 
 #[derive(serde::Serialize)]
-struct LkVideoGrant { room: String, #[serde(rename = "roomJoin")] room_join: bool, #[serde(rename = "canPublish")] can_publish: bool, #[serde(rename = "canSubscribe")] can_subscribe: bool, #[serde(rename = "canPublishData")] can_publish_data: bool }
+struct LkVideoGrant { room: String, #[serde(rename = "roomJoin")] room_join: bool, #[serde(rename = "canPublish")] can_publish: bool, #[serde(rename = "canSubscribe")] can_subscribe: bool, #[serde(rename = "canPublishData")] can_publish_data: bool,
+    /// Lets a client set small attributes on itself (the call's "deafened" flag); no message content travels this way.
+    #[serde(rename = "canUpdateOwnMetadata")] can_update_own_metadata: bool }
 #[derive(serde::Serialize)]
 struct LkClaims { iss: String, sub: String, jti: String, nbf: u64, exp: u64, video: LkVideoGrant }
 
@@ -118,7 +120,7 @@ struct LkClaims { iss: String, sub: String, jti: String, nbf: u64, exp: u64, vid
 pub fn mint_livekit_token(cfg: &LiveKitCfg, identity: &str, room: &str, now: u64) -> Result<(String, u64), jsonwebtoken::errors::Error> {
     let exp = now + cfg.token_ttl_secs;
     let claims = LkClaims { iss: cfg.api_key.clone(), sub: identity.into(), jti: identity.into(), nbf: now.saturating_sub(30), exp,
-        video: LkVideoGrant { room: room.into(), room_join: true, can_publish: true, can_subscribe: true, can_publish_data: false } };
+        video: LkVideoGrant { room: room.into(), room_join: true, can_publish: true, can_subscribe: true, can_publish_data: false, can_update_own_metadata: true } };
     let tok = jsonwebtoken::encode(&jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256), &claims, &jsonwebtoken::EncodingKey::from_secret(cfg.api_secret.as_bytes()))?;
     Ok((tok, exp))
 }

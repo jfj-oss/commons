@@ -14,6 +14,13 @@
 .cp { display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; align-items: center; }
 .cp .av { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 600; box-shadow: 0 0 0 2px transparent; transition: box-shadow .12s; }
 .cp.speaking .av { box-shadow: 0 0 0 3px var(--accent); }
+/* Muted: the picture turns red. Deafened: dark red. A tint over the picture plus a ring in the same colour. */
+.cp .av { position: relative; }
+.cp.muted .av::after, .cp.deafened .av::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 2; }
+.cp.muted .av { box-shadow: 0 0 0 2px #e5484d; }
+.cp.muted .av::after { background: rgba(229, 72, 77, .5); }
+.cp.deafened .av { box-shadow: 0 0 0 2px #7a1418; }
+.cp.deafened .av::after { background: rgba(110, 10, 16, .68); }
 /* A square profile picture gets a square speaking ring (rounded to match the picture) instead of a circle that its
    corners poke through. */
 .cp .av:has(img.av-img:not(.round)) { border-radius: 6px; }

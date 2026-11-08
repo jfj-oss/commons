@@ -82,10 +82,10 @@
   function peerRow(p) {
     const tags = [];
     if (p.me) tags.push('you');
-    if (p.muted) tags.push('muted');
+    if (p.deafened) tags.push('deafened'); else if (p.muted) tags.push('muted');
     if (!p.member) tags.push('<span class="w">not in this room: blocked</span>');
     if (p.cantDecrypt) tags.push('<span class="w">cannot decrypt (keys out of sync)</span>');
-    return `<div class="cp ${p.speaking ? 'speaking' : ''}" data-id="${esc(p.identity)}">
+    return `<div class="cp ${p.speaking ? 'speaking' : ''}${p.deafened ? ' deafened' : p.muted ? ' muted' : ''}" data-id="${esc(p.identity)}">
       ${typeof seal === 'function' ? `<div class="av sealed">${seal(p.account || p.identity, p.name)}</div>` : `<div class="av" style="background:hsl(${hue(p.account || p.identity)} 50% 38%)">${esc((p.name || '?').slice(0, 1).toUpperCase())}</div>`}
       <div><div class="nm">${esc(p.name)}</div><div class="tags">${tags.join(' · ') || (p.speaking ? 'speaking' : '&nbsp;')}</div></div>
       ${p.me ? '' : `<input type="range" min="0" max="1" step="0.05" value="${p.volume}" aria-label="Volume for ${esc(p.name)}" data-vol="${esc(p.identity)}">`}</div>`;

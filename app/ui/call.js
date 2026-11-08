@@ -207,6 +207,7 @@
       for (let i = 0; i < 50 && !room.isE2EEEnabled; i++) await sleep(100);
       if (!room.isE2EEEnabled) throw new CallError('no-e2ee', 'The call connected but frame encryption did not start, so it was closed. Nothing was sent.');
       this.phase = 'connected'; this.log('connected, epoch ' + st.epoch);
+      if (this.deafened) this._announceDeafened();
       // microphone: join muted when push-to-talk is on
       this.muted = p.ptt ? true : this.muted;
       this.gate.manual = this.muted; this.gate.game = this.gameMuted;
@@ -342,6 +343,7 @@
       room.on(E.TrackUnsubscribed, (track, pub, rp) => { this.tracks.delete(rp.identity + '/' + pub.trackSid); if (track.kind === 'audio') this._dropAudio(rp.identity, pub.trackSid); this.changed(); });
       room.on(E.TrackUnpublished, (pub, rp) => { const k = rp.identity + '/' + pub.trackSid; this.tracks.delete(k); this.blocked.delete(k); this.viewQuality.delete(pub.trackSid); this._dropAudio(rp.identity, pub.trackSid); this.changed(); });
       room.on(E.TrackMuted, () => this.changed()); room.on(E.TrackUnmuted, () => this.changed());
+      if (E.ParticipantAttributesChanged) room.on(E.ParticipantAttributesChanged, () => this.changed());
       room.on(E.ActiveSpeakersChanged, sp => { this.speaking = new Set(sp.map(s => s.identity)); this.changed(); });
       room.on(E.Reconnecting, () => { this.phase = 'reconnecting'; this.log('connection lost; reconnecting'); this.changed(); });
       room.on(E.Reconnected, () => { this.phase = 'connected'; this.log('reconnected'); this._pollNow(); this.changed(); });
@@ -424,8 +426,14 @@
     async setDeafened(d) {
       this.deafened = d;
       this.audioEls.forEach(el => { el.muted = d; });
+      this._announceDeafened();
       if (d) await this.setMuted(true);   // deafen implies mute
       this.changed();
+    }
+    // Others see "deafened" from a participant attribute. An older relay does not grant it; then only we know.
+    _announceDeafened() {
+      const lp = this.room && this.room.localParticipant;
+      if (lp && lp.setAttributes) lp.setAttributes({ deaf: this.deafened ? '1' : '0' }).catch(e => this.log('could not share deafened state: ' + (e && e.message || e)));
     }
     setPtt(on) { this.prefs.ptt = on; this.savePrefs(); if (on) this.setMuted(true); this.changed(); }
     setPttKey(code) { this.prefs.pttKey = code; this.savePrefs(); this.changed(); }
@@ -1180,6 +1188,7 @@
           identity, me, name: m ? m.name : 'Unknown device ' + identity.slice(0, 8), account: m ? m.account : null, member: !!m,
           speaking: me ? this.speaking.has(identity) && !this.muted && !this.gameMuted : this.speaking.has(identity),
           muted: me ? this.muted || this.gameMuted : (p ? !p.isMicrophoneEnabled : true), volume: me ? 1 : this.volumeOf(identity),
+          deafened: me ? this.deafened : !!(p && p.attributes && p.attributes.deaf === '1'),
           cantDecrypt: !!(fail && now - fail.last < 6000), decryptMsg: fail ? fail.msg : '',
           quality: p && !me ? p.connectionQuality : undefined,
         });
