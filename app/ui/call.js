@@ -71,7 +71,7 @@
     if (!r.library) r.reasons.push('The call library (vendor/livekit-client.umd.js) did not load.');
     if (!r.secureContext) r.reasons.push('This page is not a secure context, so the browser hides camera, microphone and encryption APIs. Use https:// or http://127.0.0.1.');
     if (!r.webrtc) r.reasons.push('This browser or webview has no WebRTC (RTCPeerConnection), so it cannot make calls at all.');
-    if (r.webrtc && !r.e2ee) r.reasons.push('This browser or webview cannot encrypt call frames (no insertable streams / RTCRtpScriptTransform). Megatron will not start a call without end-to-end encryption.');
+    if (r.webrtc && !r.e2ee) r.reasons.push('This browser or webview cannot encrypt call frames (no insertable streams / RTCRtpScriptTransform). mega will not start a call without end-to-end encryption.');
     if (!r.worker || !r.subtle) r.reasons.push('This browser lacks Web Workers or WebCrypto, which the frame encryption needs.');
     if (!r.getUserMedia) r.reasons.push('This browser or webview does not offer microphone access (getUserMedia).');
     r.ok = r.reasons.length === 0;
@@ -164,7 +164,7 @@
       const m = (e && e.message) || String(e);
       if (/no call server configured/.test(m)) return new CallError('no-server', 'This relay has no call server configured. Ask whoever runs it to set up LiveKit (docs/DEPLOY.md).');
       if (/not a current member|not in this room|no longer a member/.test(m)) return new CallError('not-member', 'You are not a current member of this room, so you cannot join its call.');
-      if (/NotAllowed|Permission|denied/i.test(m)) return new CallError('permission', 'Microphone permission was denied. Allow microphone access for Megatron in your system or browser settings, then try again.');
+      if (/NotAllowed|Permission|denied/i.test(m)) return new CallError('permission', 'Microphone permission was denied. Allow microphone access for mega in your system or browser settings, then try again.');
       if (/NotFound|Requested device not found/i.test(m)) return new CallError('no-device', 'No microphone was found. Plug one in or pick another device in call settings.');
       if (/websocket|could not establish|signal|timeout|ECONN|Failed to fetch|NetworkError|connect/i.test(m)) return new CallError('network', 'Could not reach the call server. Check your connection; if you run the server, check that its address and ports (TCP 443/7881, UDP 7882 or the TURN ports) are reachable. (' + m + ')');
       return new CallError('other', m);

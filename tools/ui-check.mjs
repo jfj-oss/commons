@@ -147,7 +147,7 @@ try {
   await B.waitFor(`document.querySelectorAll('.room').length>=2`, 20000); await sleep(1500);
   await A.ev(`document.querySelectorAll('.room')[1].click()`); await say(A, 'Anyone seen the new Boards of Canada reissue?');
   await B.waitFor(`document.querySelector('.pill')`, 20000);
-  const titled = await B.ev(`(async () => { for (let i = 0; i < 25; i++) { if (/^[(][0-9]+[)] Megatron$/.test(document.title)) return 'ok'; await new Promise(r => setTimeout(r, 200)); } return document.title + ' ' + JSON.stringify(S.snap.communities.map(c => c.channels.map(x => x.name + ':' + x.unread))); })()`);
+  const titled = await B.ev(`(async () => { for (let i = 0; i < 25; i++) { if (/^[(][0-9]+[)] mega$/.test(document.title)) return 'ok'; await new Promise(r => setTimeout(r, 200)); } return document.title + ' ' + JSON.stringify(S.snap.communities.map(c => c.channels.map(x => x.name + ':' + x.unread))); })()`);
   if (titled !== 'ok') throw new Error('no unread count in the window title: ' + titled);   // the unread count is in the window title
   await B.shot('04-bob-unread');
   await A.ev(`document.querySelectorAll('.room')[0].click()`);

@@ -16,7 +16,7 @@
   const unlocked = () => { const a = document.getElementById('app'); return a && !a.hidden; };
   function show(html, cls = '') { bar.className = cls; bar.innerHTML = html; bar.hidden = false; }
   function hide() { bar.hidden = true; bar.innerHTML = ''; }
-  const offerBar = () => show(`<span>Megatron ${esc(U.offer)} is available.</span><button type="button" class="btn slim" data-u="install">Update now</button>`);
+  const offerBar = () => show(`<span>mega ${esc(U.offer)} is available.</span><button type="button" class="btn slim" data-u="install">Update now</button>`);
   const failedBar = why => show(`<span>The update did not install: ${esc(why)} Nothing was changed.</span><button type="button" class="btn ghost slim" data-u="install">Try again</button>`, 'need');
   const settingsButton = () => document.getElementById('set-update');
 
@@ -37,11 +37,11 @@
 
   // The bridge is gone for a moment while the new one starts; the page reloads from the new one.
   function comeBack(version) {
-    show(`<span>Installed ${esc(version)}. Restarting Megatron…</span>`);
+    show(`<span>Installed ${esc(version)}. Restarting mega…</span>`);
     const end = Date.now() + 30e3;
     const look = () => fetch('/', { cache: 'no-store' }).then(() => location.reload()).catch(() => {
       if (Date.now() < end) setTimeout(look, 500);
-      else { U.busy = false; show('<span>Megatron did not come back. Close it and open it again.</span>', 'need'); }
+      else { U.busy = false; show('<span>mega did not come back. Close it and open it again.</span>', 'need'); }
     });
     setTimeout(look, 1000);
   }
@@ -52,13 +52,13 @@
     show('<span>Downloading the update…</span>');
     let r;
     try { r = await (await fetch('/update-install', { method: 'POST', cache: 'no-store' })).json(); }
-    catch (e) { U.busy = false; failedBar('Megatron stopped answering.'); return; }
+    catch (e) { U.busy = false; failedBar('mega stopped answering.'); return; }
     if (r.restarting) { comeBack(r.version); return; }
     U.busy = false;
     if (r.in_call) { if (U.offer) offerBar(); else hide(); say('Leave the call first, then update.'); }
     else if (r.current) { U.offer = null; hide(); say('You have the newest version.'); }
     else if (r.busy) show('<span>Already updating…</span>');
-    else if (r.packaged === false) { hide(); say('This copy of Megatron cannot update itself.'); }
+    else if (r.packaged === false) { hide(); say('This copy of mega cannot update itself.'); }
     else failedBar(r.error || 'something went wrong.');
   }
 
@@ -71,11 +71,11 @@
     if (b.dataset.version) { b.disabled = true; b.textContent = 'Updating…'; install(); return; }
     b.disabled = true; b.textContent = 'Checking…';
     let r = {};
-    try { r = await check(); } catch { r = { error: 'Megatron stopped answering.' }; }
+    try { r = await check(); } catch { r = { error: 'mega stopped answering.' }; }
     b.disabled = false;
     if (r.available) { b.dataset.version = r.version; b.textContent = 'Update to ' + r.version; return; }
     b.textContent = 'Check for updates';
-    if (r.packaged === false) say('This copy of Megatron cannot update itself.');
+    if (r.packaged === false) say('This copy of mega cannot update itself.');
     else if (r.error) say('Could not check: ' + r.error);
     else say(r.reason ? 'No update for this system yet.' : `You have the newest version (${r.current}).`);
   });

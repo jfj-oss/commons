@@ -255,7 +255,7 @@ async function boot() {
   if (!st.locked) return st.has_identity ? startApp() : pairScreen(await rpc('pairing_resume'));
   const el = $('#boot'); el.hidden = false; $('#app').hidden = true;
   if (st.exists) {
-    el.innerHTML = `<div class="boot-card">${BRAND}<h1>Megatron</h1><div class="tag">Private group chat. Only your devices can read it.</div>
+    el.innerHTML = `<div class="boot-card">${BRAND}<h1>mega</h1><div class="tag">Private group chat. Only your devices can read it.</div>
       <label for="pp">Passphrase for this device</label><input type="password" id="pp" autofocus>
       <div class="err" id="e" role="alert"></div><div class="boot-go"><button class="btn" id="go">Unlock</button></div></div>`;
     const go = async () => { try { await rpc('unlock', { passphrase: $('#pp').value }); if (!(await rpc('state')).has_identity) return pairScreen(await rpc('pairing_resume')); el.hidden = true; startApp(); } catch (e) { $('#e').textContent = e.message; } };
@@ -278,7 +278,7 @@ async function boot() {
     } catch (e) { invited = null; $('#lnk-note').textContent = e.message; throw e; }
   };
   const form = (title, extra, btn, run, links) => {
-    el.innerHTML = `<div class="boot-card">${BRAND}<h1>Megatron</h1><div class="tag">${title}</div>${extra}
+    el.innerHTML = `<div class="boot-card">${BRAND}<h1>mega</h1><div class="tag">${title}</div>${extra}
       <details class="relay-box"><summary>Relay server</summary><input type="text" id="relay" value="${relay}" aria-label="Relay server" spellcheck="false" placeholder="https://chat.example.org"><label for="inv">Invite secret (only if this relay asks for one)</label><input type="password" id="inv" autocomplete="off"></details>
       <div class="err" id="e" role="alert"></div><div class="boot-go"><button class="btn" id="go">${btn}</button></div><div class="boot-links">${links}</div></div>`;
     const pp = $('#pp'); if (pp && $('#pp2')) pp.oninput = () => { $('#pph').textContent = ppStrength(pp.value); };
@@ -304,7 +304,7 @@ async function boot() {
 // Waiting for a device you already use to approve this one. Also where a pairing resumes after a restart, and the way out of one that went nowhere.
 function pairScreen(r) {
   const el = $('#boot'); el.hidden = false; $('#app').hidden = true;
-  el.innerHTML = `<div class="boot-card">${BRAND}<h1>Approve this device</h1><div class="tag">Copy this code to a device where you already use Megatron (send it to yourself, for example). There, open Devices (the ${icon('devices', 'inline')} button at the bottom left), paste it under “Add a device” and press Approve.</div>
+  el.innerHTML = `<div class="boot-card">${BRAND}<h1>Approve this device</h1><div class="tag">Copy this code to a device where you already use mega (send it to yourself, for example). There, open Devices (the ${icon('devices', 'inline')} button at the bottom left), paste it under “Add a device” and press Approve.</div>
     <div class="code small-code">${esc(r.code)}</div><button type="button" class="linkish copy-line" id="cp-pair">${icon('copy')}Copy the code</button><div class="qr">${r.qr}</div><p>Check code <b class="mono">${esc(r.check)}</b>: the other device shows the same four digits when you paste the code. If they differ, do not approve.</p><div class="waiting"><span class="dots"><i></i><i></i><i></i></span> Waiting for approval…</div><div class="boot-links"><button type="button" class="linkish" id="l-over">Start over</button></div></div>`;
   const t = setInterval(async () => { try { const s = await rpc('pairing_status'); if (s.done) { clearInterval(t); el.hidden = true; startApp(); } } catch (e) { } }, 1500);
   $('#cp-pair').onclick = () => copy(r.code, 'Code copied');
@@ -348,7 +348,7 @@ function news(sn) {
   const fresh = seenUnread && [...now].some(([g, n]) => n > (seenUnread.get(g) || 0) && (away() || g !== S.gid));
   seenUnread = now;
   if (fresh && soundPref() === 'all') chime();
-  const t = (total ? `(${total > 99 ? '99+' : total}) ` : '') + 'Megatron';
+  const t = (total ? `(${total > 99 ? '99+' : total}) ` : '') + 'mega';
   if (t !== titleNow) { titleNow = t; document.title = t; try { T && T.window && T.window.getCurrentWindow().setTitle(t).catch(() => { }); } catch { } }
 }
 let seenMentions = 0;
@@ -389,7 +389,7 @@ async function tickOnce() {
       const k2 = JSON.stringify(m);
       if (k2 !== S.lastMsgs) { S.lastMsgs = k2; S.msgs = m; renderStream(); }
       const ch = currentChannel();
-      if (ch && ch.unread > 0 && document.visibilityState === 'visible') { await rpc('mark_read', { gid }); }
+      if (ch && ch.unread > 0 && document.visibilityState === 'visible' && !(window.__megaIdle && window.__megaIdle())) { await rpc('mark_read', { gid }); }   // mega: nothing is read while the cards are showing
     }
   } catch (e) { const st = $('#sync-status'); st.textContent = 'Not reachable: ' + e.message; st.className = 'sync bad down'; }
 }
@@ -450,6 +450,7 @@ function openRoom(gid, jumpTo = null) {
   const inp = $('#input');
   if (gid !== S.gid) { if (S.gid) S.drafts.set(S.gid, inp.value); S.gid = gid; resetRoom(); inp.value = S.drafts.get(gid) || ''; sizeInput(); }
   S.jumpTo = jumpTo; railOpen(false); renderRail(); tick();
+  if (window.__megaOpened) window.__megaOpened(gid);
 }
 $('#rooms').addEventListener('click', async e => {
   // A person in a call, or the small Join beside them: open that room and join its call (one click, one gesture for
@@ -581,6 +582,7 @@ function renderRail() {
   $('#activity-dot').hidden = !sn.problems.some(p => p.ts > seenLog);
   if (S.people) renderPeople();
   fillAvatars();
+  if (window.__megaRender) window.__megaRender();
 }
 // Joins live outside any community, so they show whichever community is open. A refusal stays until it is read.
 const joinNotes = sn => [
@@ -593,7 +595,7 @@ const KEYS_WAIT = emptyState('wait', 'The keys are on their way', 'You are in th
 function paintEmpty(c, sn) {
   S.msgs = null;
   if (c) return paint([{ k: 'e:norooms', h: emptyState('door', 'No rooms to read yet', 'This community has no rooms you can read yet.') }]);
-  if (sn.joining.length) return paint([{ k: 'e:joining', h: emptyState('wait', 'You are on the doorstep', 'You are let in by itself as soon as someone who can let you in has Megatron open. You can close Megatron and come back later.') }]);
+  if (sn.joining.length) return paint([{ k: 'e:joining', h: emptyState('wait', 'You are on the doorstep', 'You are let in by itself as soon as someone who can let you in has mega open. You can close mega and come back later.') }]);
   paint([{ k: 'e:none', h: emptyState('door', 'Come on in', 'Create a community or join one with an invite link.', `<div class="empty-acts"><button class="btn" data-a="new-community">New community</button><button class="btn ghost" data-a="join-community">Join with an invite link</button></div>`) }]);
 }
 function paint(rows, opts) { patch($('#stream'), rows, rowCache, opts); }
@@ -1158,7 +1160,7 @@ async function renderPeople() {
     `<div class="p-foot">${c.role !== 'owner' ? '<button class="btn ghost" id="leave">Leave community</button>' : ''}${iAmAdmin ? '<button class="btn ghost" id="rename">Rename</button>' : ''}</div>`;
   el.querySelectorAll('button[data-a]').forEach(b => b.onclick = () => personAction(b.dataset, c));
   $('#people-close').onclick = () => $('#btn-people').click();
-  const lv = $('#leave'); if (lv) lv.onclick = async () => { if ((await modal('Leave ' + c.name + '?', '<p>You stop getting its messages. What you already received stays readable on this device. To come back later you need a new invite.</p>', [{ label: 'Cancel', primary: false }, { label: 'Leave', danger: true, run: async () => { await rpc('leave', { cid: c.id }); pref.set('left.' + c.id, '1'); } }])) === 1) { toast('Leaving. It is done as soon as an admin has Megatron open.'); tick(); } };
+  const lv = $('#leave'); if (lv) lv.onclick = async () => { if ((await modal('Leave ' + c.name + '?', '<p>You stop getting its messages. What you already received stays readable on this device. To come back later you need a new invite.</p>', [{ label: 'Cancel', primary: false }, { label: 'Leave', danger: true, run: async () => { await rpc('leave', { cid: c.id }); pref.set('left.' + c.id, '1'); } }])) === 1) { toast('Leaving. It is done as soon as an admin has mega open.'); tick(); } };
   const rn = $('#rename'); if (rn) rn.onclick = () => modal('Rename community', `<input type="text" id="n" value="${esc(c.name)}" aria-label="Community name">`, [{ label: 'Cancel', primary: false }, { label: 'Rename', run: async w => { await rpc('rename_community', { cid: c.id, name: val(w, 'n') }); } }]).then(tick);
   fillAvatars(el);
 }
@@ -1331,14 +1333,14 @@ $('#btn-settings').onclick = () => {
   <div id="wave-row" ${pref.get('theme') === 'wave' ? '' : 'hidden'}><label for="wave-pal">Wave colours</label><select id="wave-pal">${(window.__waveDither ? window.__waveDither.palettes : []).map(([k, l]) => `<option value="${k}"${(pref.get('wavePalette') || 'blue') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
   <label>Message font</label>${seg('rd', [['', 'Book'], ['plain', 'Plain']], pref.get('read') || '')}
   <h3 class="set-h">Sound</h3>
-  <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when Megatron is in the background or the message is in another room.</p>
+  <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when mega is in the background or the message is in another room.</p>
   <h3 class="set-h">Advanced</h3>
   <label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints — the relay can see that a message-sized packet was sent at that moment</span></label>
   <label class="check"><input type="checkbox" id="lstr" ${S.snap.share_listening ? 'checked' : ''}><span>Share what I'm listening to</span></label>
   <label for="rune">rune address</label><input type="text" id="rune" value="${esc(S.snap.rune_url)}" spellcheck="false"><p class="muted small">Song title and artist go to your communities, end to end encrypted. Nothing else is read or sent.</p>
   ${mobileApp() ? '' : `<label for="dl-dir">Large-file downloads folder</label><input type="text" id="dl-dir" value="${esc(S.snap.download_dir || '')}" spellcheck="false"><p class="muted small">Written here as they arrive, one verified piece at a time. Leave empty for your usual Downloads folder.</p>`}
   ${window.__TAURI__ ? '' : '<label>Updates</label><button type="button" class="btn ghost" id="set-update">Check for updates</button>'}
-  ${mobileApp() ? '' : '<label>Calls</label><button type="button" class="btn ghost" id="set-gamekeys">Game keys…</button><p class="muted small">Mute yourself in Megatron while you talk to your game team.</p>'}
+  ${mobileApp() ? '' : '<label>Calls</label><button type="button" class="btn ghost" id="set-gamekeys">Game keys…</button><p class="muted small">Mute yourself in mega while you talk to your game team.</p>'}
   <label for="rl">Relay address</label><input type="text" id="rl" value="${esc(S.snap.relay)}" spellcheck="false"><p class="muted small">Change this only if your relay moved. A different relay does not have your communities.<br>Your account id: <span class="mono">${esc(S.snap.me.account.slice(0, 16))}…</span></p>
   <label for="rs">This server's sign-up secret</label><input type="password" id="rs" value="" spellcheck="false" autocomplete="off" placeholder="${S.snap.relay_secret ? 'Saved on this device — leave empty to keep it' : 'Not saved on this device — paste it here if you have it'}"><p class="muted small">A device added by pairing may not have it; without it, invite links from this device only work for people who already have an account here. It is checked with the relay and never shown again once saved.</p>`,
   [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => {
@@ -1375,7 +1377,7 @@ async function gameKeys() {
     $('#gk-pick', w).innerHTML = programs.map(p => `<option value="${esc(p)}"></option>`).join('');
   };
   const note = esc(got.note) + (got.hold ? '' : ' Holding a key cannot be seen here.') + (got.error ? `<br>Last problem: ${esc(got.error)}` : '');
-  const p = modal('Game keys', `<p class="muted small">While the game runs and you hold its key, your mic is off in the Megatron call, so friends do not hear what you say to your team. Set the game's own voice key here too. These settings stay on this device.</p>
+  const p = modal('Game keys', `<p class="muted small">While the game runs and you hold its key, your mic is off in the mega call, so friends do not hear what you say to your team. Set the game's own voice key here too. These settings stay on this device.</p>
     <div id="gk-list"></div>
     <label for="gk-add">Add a game (a running program)</label><div class="gk-add"><input type="text" id="gk-add" list="gk-pick" autocomplete="off" spellcheck="false" placeholder="Start typing, or pick one"><datalist id="gk-pick"></datalist><button type="button" class="btn ghost" id="gk-addb">Add</button></div>
     <p class="muted small" id="gk-note">${note}</p>
@@ -1397,7 +1399,7 @@ async function gameKeys() {
     const onM = ev => { if (ev.button === 3 || ev.button === 4) { ev.preventDefault(); ev.stopPropagation(); done('Mouse' + (ev.button + 1)); } else done(null); };
     setTimeout(() => { document.addEventListener('keydown', onK, true); document.addEventListener('mousedown', onM, true); }, 0);
   });
-  const allow = $('#gk-allow', w); if (allow) allow.onclick = () => rpc('game_keys_allow').then(() => toast('If macOS asked, switch Megatron on, then restart Megatron.')).catch(e => toast(e.message));
+  const allow = $('#gk-allow', w); if (allow) allow.onclick = () => rpc('game_keys_allow').then(() => toast('If macOS asked, switch mega on, then restart mega.')).catch(e => toast(e.message));
   return p;
 }
 
