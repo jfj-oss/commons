@@ -370,6 +370,85 @@ try {
   await A.ev(`[...document.querySelectorAll('#rooms .room')].find(r => r.dataset.g === ${JSON.stringify(textGid)}).click()`);
   await sleep(200);
 
+  // ---- mega: the navigation around the chat ----
+  // The old rail is kept only for its dock; people move through home -> a community's rooms -> the chat with dots.
+  const key = async (P, k, mods = 0, code) => {
+    const vk = k === 'Escape' ? 27 : k === 'Enter' ? 13 : k.length === 1 ? k.toUpperCase().charCodeAt(0) : 0;
+    await P.send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code: code || k, modifiers: mods, windowsVirtualKeyCode: vk });
+    await P.send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code: code || k, modifiers: mods });
+  };
+  const lvl = P => P.ev(`__mega.level`);
+  const need = (cond, why) => { if (!cond) throw new Error('mega: ' + why); };
+  // entering a room shows the dots and the existing stream
+  need(await lvl(A) === 'chat', 'a chat should be open, level is ' + await lvl(A));
+  const chat = await A.ev(`(() => { const r = document.querySelector('#mega-rail'), s = document.querySelector('#stream').getBoundingClientRect(), d = [...document.querySelectorAll('#mega-rail .mitem')];
+    return { rail: !r.hidden && r.getBoundingClientRect().width > 20, dots: d.length, active: d.filter(x => x.classList.contains('active')).length, voice: d.filter(x => x.classList.contains('voice')).length, opt: d.filter(x => x.classList.contains('opt')).length,
+      stream: s.width > 200 && s.left >= r.getBoundingClientRect().right - 1, oldRailGone: document.querySelector('#rooms').getBoundingClientRect().width === 0 }; })()`);
+  need(chat.rail && chat.dots >= 4 && chat.active === 1 && chat.voice >= 1 && chat.opt === 1 && chat.stream && chat.oldRailGone, 'the chat does not show the dots beside the stream: ' + JSON.stringify(chat));
+  await A.shot('mega-1-chat');
+  // wheel over the dots pops them out as small cards; Esc closes that first, leaving the chat where it was
+  await A.ev(`document.querySelector('#mega-rail').dispatchEvent(new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true }))`); await sleep(700);
+  need(await A.ev(`document.querySelector('#mega-rail').classList.contains('open')`), 'wheel over the dots did not pop them out');
+  await A.shot('mega-2-popout');
+  await key(A, 'Escape'); await sleep(500);
+  need(!(await A.ev(`document.querySelector('#mega-rail').classList.contains('open')`)) && await lvl(A) === 'chat', 'Esc should only close the pop-out first');
+  // options room: client-only, with the existing controls and their ids
+  await A.ev(`document.querySelector('#mega-rail .mitem.opt').click()`); await sleep(500);
+  const op = await A.ev(`(() => { const o = document.querySelector('#mega-opts'); return { open: !o.hidden, ids: ['snd', 'th', 'rd', 'ty', 'dl-dir'].filter(i => !o.querySelector('#' + i)), privacy: o.innerText.includes('the relay can see that a message-sized packet was sent at that moment'), noRelay: !o.querySelector('#rl') && !o.querySelector('#n') }; })()`);
+  need(op.open && !op.ids.length && op.privacy && op.noRelay, 'the options room is wrong: ' + JSON.stringify(op));
+  await A.ev(`document.querySelector('#mega-opts #ty').click()`); await sleep(500);
+  need(await A.ev(`S.snap.typing_enabled === true`), 'the typing switch in options did not reach the core');
+  await A.ev(`document.querySelector('#mega-opts #ty').click()`); await sleep(500);
+  await A.shot('mega-3-options');
+  // Esc from chat -> the community's rooms; resting on the voice card never joins, Enter does
+  await key(A, 'Escape'); await sleep(900);
+  need(await lvl(A) === 'server', 'Esc from the chat should show the rooms, level is ' + await lvl(A));
+  const cards = await A.ev(`__mega.list.items.map(x => x.kind + ':' + x.name).join()`);
+  need(/text:general/.test(cards) && /voice:lounge/.test(cards) && /options:options/.test(cards), 'the rooms level lacks cards: ' + cards);
+  await A.ev(`window.__joined = null; __mega.list.go(__mega.list.items.findIndex(x => x.kind === 'voice'), true)`); await sleep(1800);
+  need(await A.ev(`__mega.list.item.kind === 'voice' && document.querySelector('.mslot.settled')`), 'the voice card did not come into focus');
+  need(await A.ev(`window.__joined === null`), 'resting on a voice card joined its call');
+  await A.shot('mega-4-voice-card');
+  await A.ev(`document.querySelector('.mslot.settled .mcard').dispatchEvent(new MouseEvent('click', { bubbles: true }))`); await sleep(300);
+  need(await A.ev(`window.__joined === null`), 'clicking the body of a voice card joined its call');
+  await key(A, 'Enter'); await sleep(300);
+  need(await A.ev(`!!window.__joined && window.__joined[0] === ${JSON.stringify(vgid)}`), 'Enter on a voice card did not join it');
+  // jump to: picking a voice room focuses its card but never joins
+  await A.ev(`window.__joined = null`);
+  await key(A, 'k', 2, 'KeyK'); await sleep(400);
+  need(await A.ev(`!!document.querySelector('#mega-pal')`), 'Ctrl+K did not open jump to');
+  await A.ev(`(() => { const q = document.querySelector('#m-pq'); q.value = 'lounge'; q.dispatchEvent(new Event('input')); })()`);
+  await key(A, 'Enter'); await sleep(900);
+  need(await A.ev(`!document.querySelector('#mega-pal') && __mega.level === 'server' && __mega.list.item.name === 'lounge' && window.__joined === null`), 'jump to a voice room should focus its card without joining');
+  // a second community makes a home; the cards are communities plus the "you" card
+  await A.ev(`__megaNewCommunity()`); await A.waitFor(`document.querySelector('.modal #n')`); await type(A, '#n', 'Second place'); await click(A, '.modal .acts button:last-child');
+  await A.waitFor(`__mega.level === 'server' && __mega.list.items.some(x => x.cid && S.snap.communities.find(c => c.id === x.cid && c.name === 'Second place'))`, 15000);
+  await key(A, 'Escape'); await sleep(900);
+  need(await lvl(A) === 'home', 'Esc from the rooms should show all communities, level is ' + await lvl(A));
+  const home = await A.ev(`__mega.list.items.map(x => x.kind + ':' + x.name).join()`);
+  need(/community:Book club/.test(home) && /community:Second place/.test(home) && /you:you/.test(home), 'home does not show the communities and the you card: ' + home);
+  await A.shot('mega-5-home');
+  await A.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.name === 'Book club'), true)`); await sleep(1500);
+  await key(A, 'Enter'); await sleep(1200);
+  need(await A.ev(`__mega.level === 'server' && S.snap.communities.find(c => c.id === S.cid).name === 'Book club'`), 'Enter on a community card did not open its rooms');
+  await A.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.key === ${JSON.stringify(textGid)}), true)`); await sleep(1500);
+  await key(A, 'Enter'); await sleep(1500);
+  need(await lvl(A) === 'chat' && await A.ev(`S.gid === ${JSON.stringify(textGid)}`), 'Enter on a room card did not open the chat');
+  await key(A, 'Escape'); await sleep(900); await key(A, 'Escape'); await sleep(900);
+  need(await lvl(A) === 'home', 'two Esc from the chat should reach home');
+  // the "you" card opens the existing Settings
+  await A.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.kind === 'you'), true)`); await sleep(1500);
+  await key(A, 'Enter'); await sleep(700);
+  need(await A.ev(`!!document.querySelector('.modal #rl')`), 'the you card did not open Settings');
+  await key(A, 'Escape'); await sleep(500);
+  need(await A.ev(`!document.querySelector('.modal')`), 'Esc did not close Settings');
+  // and back into the club's chat for what follows
+  await A.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.name === 'Book club'), true)`); await sleep(1500);
+  await key(A, 'Enter'); await sleep(1200);
+  await A.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.key === ${JSON.stringify(textGid)}), true)`); await sleep(1500);
+  await key(A, 'Enter'); await sleep(1500);
+  need(await lvl(A) === 'chat', 'could not get back into the chat');
+
   // ---- large files ----
   // Over the 24 MB line the same paperclip takes the chunked path: the page reads 8 MB slices of the picked file,
   // the core encrypts and sends one at a time. Nothing large is ever downloaded unless Download is pressed.
@@ -491,6 +570,22 @@ try {
   const phone = await P.ev(`(() => { const r = document.querySelector('#rail').getBoundingClientRect(), c = document.querySelector('#composer').getBoundingClientRect(); return { w: innerWidth, railAway: r.right <= 1, composerIn: c.height > 0 && c.top > 0 && c.bottom <= innerHeight + 1 }; })()`);
   if (phone.w > 760 || !phone.railAway || !phone.composerIn) throw new Error('narrow layout is wrong: ' + JSON.stringify(phone));
   await P.shot('09-phone');
+  const pdots = await P.ev(`(() => { const r = document.querySelector('#mega-rail').getBoundingClientRect(); return { w: r.width, h: r.height, level: __mega.level }; })()`);
+  if (pdots.level !== 'chat' || pdots.w < 20 || pdots.w > 60) throw new Error('mega: the dots are wrong on a phone: ' + JSON.stringify(pdots));
+  // phones swipe in from the left edge instead of scrolling over the dots
+  await P.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 8, y: 400 }] });
+  await P.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 70, y: 400 }] });
+  await P.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await sleep(700);
+  if (!(await P.ev(`document.querySelector('#mega-rail').classList.contains('open')`))) throw new Error('mega: swiping in from the left edge did not pop the dots out');
+  await P.shot('mega-6-phone-popout');
+  await key(P, 'Escape'); await sleep(500);
+  await key(P, 'Escape'); await sleep(1200);
+  if (await lvl(P) !== 'server' && await lvl(P) !== 'home') throw new Error('mega: Esc on a phone did not step back to the cards: ' + await lvl(P));
+  const pcards = await P.ev(`(() => { const c = document.querySelector('.mslot.settled .msq')?.getBoundingClientRect(); return c ? { l: c.left, r: c.right, w: innerWidth } : null; })()`);
+  if (!pcards || pcards.l < -1 || pcards.r > pcards.w + 1) throw new Error('mega: the cards overflow a phone screen: ' + JSON.stringify(pcards));
+  await P.shot('mega-7-phone-cards');
+  await P.ev(`__mega.list.go(0, true)`); await sleep(1200);
+  await P.ev(`document.querySelectorAll('.room')[0].click()`); await sleep(900);
   // In a call on a phone the dock is a slim bar at the bottom of the chat, not in the (closed) drawer.
   const phDock = await P.ev(`(() => {
     const c = window.__commonsCall, orig = c.snapshot;
