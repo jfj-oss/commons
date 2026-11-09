@@ -12,6 +12,7 @@ pub mod ops;
 mod round;
 pub mod rune;
 pub mod sync;
+pub mod wall;
 pub mod api;
 pub mod update;
 pub mod browser_update;

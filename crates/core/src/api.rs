@@ -355,6 +355,23 @@ impl App {
                 let duo = if main.is_empty() && hi.is_empty() { None } else { Some(crate::envelope::Duo { main, hi }) };
                 c.set_style(&s(&a, "cid"), (!room.is_empty()).then_some(room.as_str()), duo).map(|_| json!({})).map_err(e)
             }),
+            // Owner only: `lock` is "1" / "0" / "" (leave), `clear` is true to start the wall over for everyone.
+            "set_wall" => self.with(|c| {
+                let lock = match s(&a, "lock").as_str() { "1" => Some(true), "0" => Some(false), _ => None };
+                c.set_wall(&s(&a, "cid"), &s(&a, "room"), lock, a["clear"].as_bool().unwrap_or(false)).map(|_| json!({})).map_err(e)
+            }),
+            "wall_draw" => self.with(|c| {
+                let cells: Vec<(u32, u32, u8, u8)> = a["cells"].as_array().map(|v| v.iter().filter_map(|x| { let x = x.as_array()?; Some((x.first()?.as_u64()? as u32, x.get(1)?.as_u64()? as u32, x.get(2)?.as_u64()? as u8, x.get(3)?.as_u64()? as u8)) }).collect()).unwrap_or_default();
+                c.wall_draw(&s(&a, "gid"), &cells).map(|sent| json!({"sent": sent})).map_err(e)
+            }),
+            // The wall as it stands. With `rev` equal to the last answer's, only the small header comes back.
+            "wall_get" => self.with(|c| {
+                let v = c.wall_view(&s(&a, "gid"));
+                let same = a["rev"].as_u64() == Some(v.rev);
+                Ok(json!({"gen": v.gen, "locked": v.locked, "rev": v.rev, "snap_at": v.snap_at, "same": same,
+                    "cells": if same { vec![] } else { v.cells.iter().map(|(p, g, col, by)| json!([p, g, col, by])).collect::<Vec<_>>() }}))
+            }),
+            "wall_snapshot" => self.with(|c| c.wall_snapshot(&s(&a, "gid")).map(|chunks| json!({"chunks": chunks})).map_err(e)),
             "set_listening_sharing" => self.with(|c| c.set_listening_sharing(a["on"].as_bool().unwrap_or(false), &s(&a, "rune")).map(|_| json!({})).map_err(e)),
             "send_file" => {
                 let data = unb64(&s(&a, "data")).map_err(e)?;
@@ -628,6 +645,8 @@ fn snapshot(c: &Client) -> Value {
         let unread: usize = list.iter().map(|x| x.unread).sum();
         let chans: Vec<Value> = list.into_iter().map(|ch| json!({"gid": ch.gid, "name": ch.name, "kind": ch.kind, "joined": ch.joined, "unread": ch.unread, "status": c.group_status(&ch.gid)})).collect();
         let style = co.style.as_ref().map(|d| json!({"ver": d.ver, "ts": d.ts, "by": c.display_name(&co.owner), "community": d.community.as_ref().map(|x| x.lower()).map(|x| json!({"main": x.main, "hi": x.hi})),
+            "locked": d.locked.iter().filter(|g| co.channels.iter().any(|ch| &ch.id == *g)).collect::<Vec<_>>(),
+            "wall": d.wall.iter().filter(|(g, _)| co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, n)| (g.clone(), json!(n))).collect::<serde_json::Map<String, Value>>(),
             "rooms": d.rooms.iter().filter(|(g, _)| co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, x)| { let x = x.lower(); (g.clone(), json!({"main": x.main, "hi": x.hi})) }).collect::<serde_json::Map<String, Value>>()}));
         json!({"id": co.id, "style": style, "name": if co.name.is_empty() { "…".to_string() } else { co.name.clone() }, "role": role.name(), "removed": co.removed, "removed_reason": co.removed_reason, "channels": chans, "unread": unread,
                "invites": co.invites.iter().map(|i| json!({"id": i.id, "expires": i.expires, "uses_left": i.uses_left, "mine": co.invite_sks.contains_key(&i.id)})).collect::<Vec<_>>(),

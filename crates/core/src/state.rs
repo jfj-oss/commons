@@ -58,6 +58,9 @@ pub struct State {
     pub avatar_removed: bool,
     pub lr_published: bool,
     pub typing_enabled: bool,
+    /// The shared walls (drawings on rooms' backdrops), as last saved. Changes reach this copy on a slow debounce; see `Client::flush_walls`.
+    #[serde(default)]
+    pub walls: BTreeMap<String, crate::wall::Wall>,
     /// The relay's invite secret, kept so that we can register again if the relay ever forgets this device.
     pub relay_invite: String,
     /// When this device last passed the relay's sign-up secret on, per community's control group.

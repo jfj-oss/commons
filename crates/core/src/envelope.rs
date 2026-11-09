@@ -754,12 +754,21 @@ pub struct StyleDoc {
     pub community: Option<Duo>,
     #[serde(default)]
     pub rooms: std::collections::BTreeMap<String, Duo>,
+    /// Rooms whose wall (the drawings on the room's backdrop) only the owner may draw on. Absent in older documents: nothing is locked.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub locked: std::collections::BTreeSet<String>,
+    /// Per room, the wall's generation. The owner raising it is "clear": drawings and snapshots of an older generation are ignored by everyone.
+    /// Absent in older documents: every wall is at generation 0.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub wall: std::collections::BTreeMap<String, u64>,
 }
 impl StyleDoc {
     pub fn validate(&self) -> Result<(), ParseError> {
         if self.ver == 0 || self.ver > (1 << 53) { return bad("bad style version"); }
         if self.community.as_ref().is_some_and(|d| !d.valid()) { return bad("bad community colours"); }
         if self.rooms.len() > MAX_STYLE_ROOMS || self.rooms.iter().any(|(g, d)| !is_gid(g) || !d.valid()) { return bad("bad room colours"); }
+        if self.locked.len() > MAX_STYLE_ROOMS || self.locked.iter().any(|g| !is_gid(g)) { return bad("bad locked rooms"); }
+        if self.wall.len() > MAX_STYLE_ROOMS || self.wall.iter().any(|(g, n)| !is_gid(g) || *n > (1 << 53)) { return bad("bad wall generations"); }
         Ok(())
     }
 }

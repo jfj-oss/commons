@@ -375,17 +375,40 @@ impl Client {
         // Rooms that no longer exist drop out, so the document stays small.
         let live: BTreeSet<&String> = c.channels.iter().map(|ch| &ch.id).collect();
         doc.rooms.retain(|g, _| live.contains(g));
+        doc.locked.retain(|g| live.contains(g));
+        doc.wall.retain(|g, _| live.contains(g));
         match (room, duo) {
             (Some(r), Some(d)) => { doc.rooms.insert(r.to_string(), d); }
             (Some(r), None) => { doc.rooms.remove(r); }
             (None, d) => doc.community = d,
         }
-        doc.ver = c.style.as_ref().map_or(0, |s| s.ver) + 1;
+        self.publish_style(cid, doc, "colours")
+    }
+
+    /// Owner only: lock a room's wall (`lock` = Some(true)) or open it again, and/or clear it (`clear`: its generation goes up by one, so every
+    /// drawing and snapshot of the old generation is ignored from now on, by devices that were offline too). Both live in the signed style document.
+    pub fn set_wall(&mut self, cid: &str, room: &str, lock: Option<bool>, clear: bool) -> Result<()> {
+        if self.my_role(cid) != Role::Owner { bail!("only the owner can lock or clear a wall"); }
+        let c = self.st.communities.get(cid).ok_or_else(|| anyhow!("unknown community"))?;
+        if !c.channels.iter().any(|ch| ch.id == room) { bail!("unknown room"); }
+        let mut doc = c.style.clone().unwrap_or_default();
+        let live: BTreeSet<&String> = c.channels.iter().map(|ch| &ch.id).collect();
+        doc.rooms.retain(|g, _| live.contains(g));
+        doc.locked.retain(|g| live.contains(g));
+        doc.wall.retain(|g, _| live.contains(g));
+        match lock { Some(true) => { doc.locked.insert(room.to_string()); } Some(false) => { doc.locked.remove(room); } None => {} }
+        if clear { let n = doc.wall.entry(room.to_string()).or_insert(0); *n += 1; }
+        if lock.is_none() && !clear { return Ok(()); }
+        self.publish_style(cid, doc, "wall")
+    }
+
+    fn publish_style(&mut self, cid: &str, mut doc: StyleDoc, label: &str) -> Result<()> {
+        doc.ver = self.st.communities.get(cid).and_then(|c| c.style.as_ref()).map_or(0, |s| s.ver) + 1;
         doc.ts = now_secs();
         let signed = sign_style(&self.acct_key()?, cid, &doc).map_err(|e| anyhow!(e))?;
         let mut t = self.ctl_ext(cid)?;
         if let GroupExt::Control { style, .. } = &mut t { *style = Some(signed); }
-        let mut plan = Plan::empty("colours");
+        let mut plan = Plan::empty(label);
         plan.gce = Some(t);
         if self.run_commit(cid, plan)? == Outcome::Lost { bail!("the community changed at the same time; try again"); }
         Ok(())
@@ -602,6 +625,13 @@ impl Client {
         q.insert(kind.to_string(), data.to_string());
         self.flush_live();
         Ok(true)
+    }
+    /// Whether a live event of this kind would have to wait (one is already waiting, or the room has sent its four this second), and so
+    /// would be replaced by the next: a sender that must not lose events asks first and tries again later.
+    pub(crate) fn live_would_wait(&self, gid: &str, kind: &str) -> bool {
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        self.live_out.get(gid).is_some_and(|q| q.contains_key(kind))
+            || self.live_sent.get(gid).is_some_and(|w| w.iter().filter(|t| now_ms < **t + 1000).count() >= LIVE_SEND_PER_SEC)
     }
     /// Send what the rate allows. Anything not ready to go out now is dropped, not kept for later.
     pub(crate) fn flush_live(&mut self) {

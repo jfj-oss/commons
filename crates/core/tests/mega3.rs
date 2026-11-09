@@ -37,7 +37,7 @@ fn an_old_client_ignores_live_events_and_reads_a_table_with_colours() {
     let owner = hex::encode(key.verifying_key().to_bytes());
     let nonce = "a".repeat(32);
     let cid = community_id(&owner, &nonce);
-    let doc = StyleDoc { ver: 1, ts: 5, community: Some(duo("#112233", "#445566")), rooms: Default::default() };
+    let doc = StyleDoc { ver: 1, ts: 5, community: Some(duo("#112233", "#445566")), rooms: Default::default(), ..Default::default() };
     let ext = GroupExt::Control { name: "n".into(), owner: owner.clone(), nonce, admins: vec![], channels: vec![], invites: vec![], banned: vec![], transfers: vec![], consents: vec![], style: Some(sign_style(&key, &cid, &doc).unwrap()) };
     match serde_json::from_slice::<OldExt>(&ext.to_bytes()).unwrap() { OldExt::Control { name, .. } => assert_eq!(name, "n"), _ => panic!() }
     let parsed = GroupExt::parse(&ext.to_bytes()).unwrap();
@@ -68,7 +68,7 @@ fn colours_are_validated_strictly_and_only_the_owner_signature_counts() {
     let owner = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
     let other = ed25519_dalek::SigningKey::from_bytes(&[2u8; 32]);
     let ohex = hex::encode(owner.verifying_key().to_bytes());
-    let doc = StyleDoc { ver: 1, ts: 1, community: None, rooms: [("abcdef01".to_string(), duo("#101010", "#202020"))].into() };
+    let doc = StyleDoc { ver: 1, ts: 1, community: None, rooms: [("abcdef01".to_string(), duo("#101010", "#202020"))].into(), ..Default::default() };
     let good = sign_style(&owner, "cc", &doc).unwrap();
     assert_eq!(verify_style(&ohex, "cc", &good).unwrap(), doc);
     assert!(verify_style(&ohex, "other-community", &good).is_err(), "signed for one community only");
@@ -125,7 +125,7 @@ fn only_the_owner_can_set_colours_even_an_admin_and_forgeries_are_ignored() {
 
     // The admin writes colours into the table under his own key: a forgery, ignored by everyone.
     let bkey = b.c.debug_account_key();
-    let forged = sign_style(&bkey, &cid, &StyleDoc { ver: 99, ts: now_secs(), community: None, rooms: [(gen.clone(), duo("#ff0000", "#00ff00"))].into() }).unwrap();
+    let forged = sign_style(&bkey, &cid, &StyleDoc { ver: 99, ts: now_secs(), community: None, rooms: [(gen.clone(), duo("#ff0000", "#00ff00"))].into(), ..Default::default() }).unwrap();
     b.c.debug_plant_style(&cid, Some(forged)).unwrap();
     settle(&mut [&mut a, &mut b, &mut c]);
     for p in [&a, &b, &c] { assert_eq!(room_colours(p, &cid, &gen), Some(duo("#111111", "#222222")), "{} ignored the forgery", p.name); }
