@@ -12,6 +12,6 @@
 .dr-nm small, .dr-note, .dr-none { font: 500 12px/1.35 var(--m-ui, sans-serif); letter-spacing: var(--m-small, -.018em); opacity: .75; }
 .dr-none, .dr-note { margin: 4px 0 0; }
 .dr-btns { display: flex; gap: 6px; }
-.dr-b { padding: 6px 14px; border-radius: 999px; font: 600 13px/1 var(--m-ui, sans-serif); letter-spacing: var(--m-small, -.018em); background: var(--m-speak, #4df0c0); color: #050407; opacity: 1; }
-.dr-b.dim { background: none; color: inherit; box-shadow: inset 0 0 0 1px rgb(255 255 255 / .25); opacity: .85; }
+.dr-area .dr-b { color: #050407; padding: 6px 14px; border-radius: 999px; font: 600 13px/1 var(--m-ui, sans-serif); letter-spacing: var(--m-small, -.018em); background: var(--m-speak, #4df0c0); color: #050407; opacity: 1; }
+.dr-area .dr-b.dim { background: none; color: inherit; box-shadow: inset 0 0 0 1px rgb(255 255 255 / .25); opacity: .85; }
 .dr-b:focus-visible, .dr-open:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }

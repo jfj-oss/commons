@@ -166,12 +166,17 @@ impl Client {
 
     /// Call one person. Finds the direct community with them, or founds one (one voice room, us as owner), and then either rings
     /// them straight away (they are in it) or sends them an offer in a room we share and rings the moment they arrive.
-    pub fn direct_call(&mut self, peer: &str) -> Result<DirectStarted> {
+    pub fn direct_call(&mut self, peer: &str) -> Result<DirectStarted> { self.direct_call_with(peer, true) }
+    /// Test bridge only: call even a person whose app is known to be older, to show what such an app does with the offer.
+    #[cfg(feature = "devbridge")]
+    #[doc(hidden)]
+    pub fn debug_direct_call_anyway(&mut self, peer: &str) -> Result<DirectStarted> { self.direct_call_with(peer, false) }
+    fn direct_call_with(&mut self, peer: &str, check_support: bool) -> Result<DirectStarted> {
         let me = self.my_account();
         if peer == me { bail!("you cannot call yourself"); }
         if peer.len() != 64 || !peer.bytes().all(|b| b.is_ascii_hexdigit()) { bail!("not an account"); }
         if self.st.direct_refused.contains(peer) { bail!("you have stopped calls from this person; allow them again first"); }
-        if self.direct_support(peer) == Some(false) { bail!("{} is using an older Megatron that cannot take direct calls. Ask them to update.", self.display_name(peer)); }
+        if check_support && self.direct_support(peer) == Some(false) { bail!("{} is using an older Megatron that cannot take direct calls. Ask them to update.", self.display_name(peer)); }
         let now = now_secs();
         let key = format!("direct|{peer}");
         if self.ring_sent.get(&key).is_some_and(|t| now < *t + 5) { bail!("you called a moment ago"); }

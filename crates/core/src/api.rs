@@ -414,6 +414,8 @@ impl App {
             "debug_ring" => self.with(|c| c.debug_ring_aged(&s(&a, "gid"), a["age"].as_u64().unwrap_or(0)).map(|id| json!({"id": id})).map_err(e)),
             // One-to-one calls (direct.rs): call a person, and stop (or allow again) calls from one.
             "direct_call" => self.with(|c| c.direct_call(&s(&a, "peer")).map(|d| json!({"cid": d.cid, "room": d.room, "peer": d.peer, "invited": d.invited})).map_err(e)),
+            #[cfg(feature = "devbridge")]
+            "debug_direct_anyway" => self.with(|c| c.debug_direct_call_anyway(&s(&a, "peer")).map(|d| json!({"cid": d.cid, "room": d.room, "invited": d.invited})).map_err(e)),
             "direct_refuse" => self.with(|c| c.direct_refuse(&s(&a, "account"), a["on"].as_bool().unwrap_or(true)).map(|_| json!({})).map_err(e)),
             "ring_poll" => {
                 let since = a["since"].as_u64().unwrap_or(0);

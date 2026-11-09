@@ -811,7 +811,7 @@ try {
     {
       const stub = P => P.ev(`(() => { window.__joined = null; window.__callUI.joinRoom = (g, n) => { window.__joined = [g, n]; }; return 1; })()`);
       for (const P of [A, B, C]) await stub(P);
-      const survey = P => P.ev(`JSON.stringify({ comms: S.snap.communities.map(c => c.name).sort(), dots: document.querySelectorAll('#mega-rail .mitem').length, rooms: document.querySelectorAll('#rooms .room').length, items: __mega.list.items.map(x => x.kind + ':' + x.name).join('|'), news: (typeof __megaNew !== 'undefined' && __megaNew.state) ? JSON.stringify(__megaNew.state().hintState || '') : '' })`);
+      const survey = P => P.ev(`JSON.stringify({ comms: S.snap.communities.map(c => c.name).sort(), dots: document.querySelectorAll('#mega-rail .mitem').length, rooms: document.querySelectorAll('#rooms .room').length, items: __mega.list ? __mega.list.items.map(x => x.kind + ':' + x.name).join('|') : '', news: (typeof __megaNew !== 'undefined' && __megaNew.state) ? JSON.stringify(__megaNew.state().hintState || '') : '' })`);
       const beforeA = await survey(A), beforeB = await survey(B), beforeC = await survey(C);
       const cards = `document.querySelectorAll('#mega-ring .rg-card').length`;
       // A calls Bob from his row in the People list (the row buttons show on hover; the click is the same)
