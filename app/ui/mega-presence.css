@@ -1,0 +1,11 @@
+/* mega: presence dots on the cards. They sit on top of a card, in the corner, and never take the pointer, a click or a scroll. */
+.msq > .mpres { position: absolute; z-index: 4; left: clamp(22px, 3.2cqw, 48px); top: calc(clamp(22px, 3.2cqw, 48px) + 2.6em); display: flex; align-items: center; pointer-events: none; font: 600 12px var(--m-ui, system-ui); }
+.mpd { --fc: #9aa0b0; --s: 16px; width: var(--s); height: var(--s); flex: none; border-radius: 50%; background: var(--fc); box-shadow: 0 0 0 2px rgb(8 8 12 / .6), 0 0 12px color-mix(in srgb, var(--fc) 60%, transparent); margin-right: -4px; animation: mpd-in 1.1s cubic-bezier(.2, .7, .2, 1) both, mpd-bob 5.5s ease-in-out var(--ph, 0s) infinite; pointer-events: none; transition: opacity .6s; }
+.mpd.out { opacity: 0; animation: none; }
+.mpm { margin-left: 10px; color: var(--m-cink, #efedf2); opacity: .8; pointer-events: none; }
+@keyframes mpd-in { from { opacity: 0; transform: translate(var(--dx, 30px), var(--dy, 40px)) scale(.5); } to { opacity: 1; transform: none; } }
+@keyframes mpd-bob { 0%, 100% { translate: 0 0; } 50% { translate: 0 -3px; } }
+#mega-pres-tip { position: fixed; z-index: 90; pointer-events: none; padding: 4px 9px; border-radius: 999px; background: rgb(8 8 12 / .88); color: #efedf2; font: 500 12px var(--m-ui, system-ui); letter-spacing: -.01em; white-space: nowrap; max-width: 60vw; overflow: hidden; text-overflow: ellipsis; }
+#mega-pres-tip[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { .mpd { animation: none; transition: none; } }
+html.fx-lite .mpd { animation: none; transition: none; }
