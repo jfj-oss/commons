@@ -436,3 +436,8 @@ html.mg-drawing-card .mscrub { pointer-events: none; }
 }
 #mega-paint .mp-oracle { width: 100%; margin-top: 8px; padding: 9px 12px; border-radius: 12px; background: rgb(255 255 255 / .08); color: var(--m-paper); font: 12px/1.2 var(--m-ui); letter-spacing: var(--m-small); text-align: left; }
 #mega-paint .mp-oracle[aria-pressed="true"] { background: var(--m-paper); color: #050407; }
+/* who is typing: one word label to the right of the whole row of mascots; #typing stays for screen readers only */
+html.mega .mmascots { gap: 0; }
+html.mega #mega-typing .mtwho { flex: 0 1 auto; min-width: 0; align-self: flex-end; margin: 0 8px 12px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 12px/1.2 var(--m-name); color: var(--m-paper); }
+html.mega #mega-typing .mtwho:empty { display: none; }
+html.mega.mg-room #typing { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
