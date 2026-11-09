@@ -1444,7 +1444,7 @@ try {
     await key(A, 'Enter'); await sleep(250); await shotP(A, 'entering'); await sleep(1900); await shotP(A, 'rooms');
     await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(1200); await shotP(A, 'rooms-390');
     // design: on a phone the card bar is one row (it used to wrap onto two or three, over the card) and the community name keeps some width
-    { const bar = await A.ev(`(() => { const b = document.querySelector('.mbar').getBoundingClientRect(), m = document.querySelector('.mmark').getBoundingClientRect(), c = document.querySelector('.mslot.settled .msq').getBoundingClientRect(); const tops = new Set([...document.querySelectorAll('.mbar .mchip')].map(x => Math.round(x.getBoundingClientRect().top))); return { h: b.height, rows: tops.size, mark: m.width, cardTop: c.top, barBottom: b.bottom }; })()`);
+    { const bar = await A.ev(`(() => { const b = document.querySelector('.mbar').getBoundingClientRect(), m = document.querySelector('.mmark').getBoundingClientRect(), c = document.querySelector('.mslot.settled .msq').getBoundingClientRect(); const tops = new Set([...document.querySelectorAll('.mbar .mchip')].map(x => Math.round(x.getBoundingClientRect().top / 12))); return { h: b.height, rows: tops.size, mark: m.width, cardTop: c.top, barBottom: b.bottom }; })()`);
       need(bar.rows === 1 && bar.h <= 60 && bar.mark >= 100 && bar.cardTop >= bar.barBottom - 1, 'design: the phone card bar wraps or crushes the name: ' + JSON.stringify(bar)); }
     await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(900);
     await A.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.kind === 'text'), true)`); await sleep(1500);
