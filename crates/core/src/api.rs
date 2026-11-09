@@ -808,6 +808,8 @@ impl App {
                 let (api, k, gids) = self.with(|c| {
                     let mut gids: Vec<String> = vec![];
                     for cid in &cids { gids.extend(c.channels_of(cid).into_iter().filter(|ch| ch.joined && ch.kind == "voice").map(|ch| ch.gid)); }
+                    // Older apps can still hold a call in a text room, so those rooms are asked about too, after every voice room.
+                    for cid in &cids { gids.extend(c.channels_of(cid).into_iter().filter(|ch| ch.joined && ch.kind != "voice").map(|ch| ch.gid)); }
                     gids.truncate(64);
                     let (api, k) = c.net_handle().map_err(e)?;
                     Ok((api, k, gids))
