@@ -101,6 +101,24 @@ same checks with no time limit, refuses during a call, then the bridge replaces 
 installed copy with an embedded key can do this. `crates/core/src/browser_update.rs` has the code and its tests; `tools/browser-update-test.sh` exercises the
 Linux launcher end to end with a throwaway key and a loopback relay.
 
+## The per-start key, and updating across it
+
+Since the bridge gained a per-start key (docs/THREAT-MODEL.md, "The browser edition"), an update has to cross three kinds of install
+without locking anyone out. What each gets:
+
+| Install | After the update | Protection |
+| --- | --- | --- |
+| Linux, standard launcher script in the install folder | The new bridge replaces an older `megatron` script (kept as `megatron.old`); the next start with it asks for a key, uses a browser profile of its own, and replaces the open-mode bridge | Full, from the second start after the update. The first start after the update still runs the old launcher: open mode, with a plain notice in the page |
+| Windows, macOS | The update swaps the launcher program in the same transaction as the bridge; the next start restarts an open-mode bridge with a key | Full, from the next start. The window of the start that installed the update is open mode, with the notice |
+| A launcher the update cannot replace (your own script, a systemd unit that starts `bridge 7420 ui`) | Keeps working unchanged: a bridge started without `MEGATRON_SECRET` is open to Host/Origin checks (and, on Linux, the same-user check) only. The page shows a notice. To get the full protection, start the bridge with `MEGATRON_SECRET` set to a random 32+ character string and open the window at `/#s=<that string>` | Host/Origin plus same-user on Linux; nothing against another program of the same user |
+| A new launcher with a bridge that ignores the key (the previous bridge restored after a failed update) | Opens at the plain address, warns once | As the line above |
+
+A launcher that finds something it cannot identify on its port refuses to open it (it never kills a program that is not this install's
+own bridge). The browser profile of the new launcher is separate from the everyday one: nothing of the account is lost (the account
+lives in the data folder), but the window's own preferences (theme, call device choices, Jellyfin address) start fresh once and the
+microphone permission is asked again. The old profile is left untouched. `tools/browser-update-test.sh` and `tools/launcher-test.sh`
+cover these cases.
+
 ## The signing key
 
 `~/.config/commons/updater.key` (the private key, encrypted with its password), `~/.config/commons/updater.key.password`
