@@ -202,7 +202,7 @@ impl App {
         if in_call { self.saw_call(); }
         let r = self.dispatch(method, a);
         if in_call && r.is_ok() { self.saw_call(); }
-        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait" | "call_presence" | "live_poll" | "wall_get" | "pcaudio_status" | "pcaudio_caps" | "pcaudio_streams") { self.nudge(); }
+        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait" | "call_presence" | "live_poll" | "ring_poll" | "wall_get" | "pcaudio_status" | "pcaudio_caps" | "pcaudio_streams") { self.nudge(); }
         r
     }
 
@@ -366,6 +366,12 @@ impl App {
             "react" => self.with(|c| c.react(&s(&a, "gid"), &s(&a, "id"), &s(&a, "emoji"), a["on"].as_bool().unwrap_or(true)).map(|_| json!({})).map_err(e)),
             "typing" => self.with(|c| { c.send_typing(&s(&a, "gid")); Ok(json!({})) }),
             "live_send" => self.with(|c| c.live_send(&s(&a, "gid"), &s(&a, "kind"), &s(&a, "data")).map(|sent| json!({"sent": sent})).map_err(e)),
+            "ring_send" => self.with(|c| { let to = s(&a, "to"); c.ring_send(&s(&a, "gid"), (!to.is_empty()).then_some(to.as_str())).map(|id| json!({"id": id})).map_err(e) }),
+            "ring_end" => self.with(|c| { let to = s(&a, "to"); c.ring_end(&s(&a, "gid"), &s(&a, "id"), (!to.is_empty()).then_some(to.as_str())).map(|_| json!({})).map_err(e) }),
+            "ring_poll" => {
+                let since = a["since"].as_u64().unwrap_or(0);
+                self.try_read(|c| json!({"events": c.ring_poll(since).into_iter().map(|v| json!({"id": v.id, "gid": v.gid, "account": v.account, "ring": v.ring, "ts": v.ts, "end": v.end, "direct": v.direct})).collect::<Vec<_>>(), "head": c.ring_next}))
+            }
             // A poll: it never waits behind a long action (it answers "busy" and is asked again) and never wakes the sync loop.
             "live_poll" => {
                 let (gid, since) = (s(&a, "gid"), a["since"].as_u64().unwrap_or(0));
