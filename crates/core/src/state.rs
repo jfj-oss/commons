@@ -58,6 +58,10 @@ pub struct State {
     pub avatar_removed: bool,
     pub lr_published: bool,
     pub typing_enabled: bool,
+    /// Set once typing hints have been switched on for this account. Older versions stored off for everyone, so one switch-on
+    /// is applied when such an account first opens; after that, turning them off in the options room sticks.
+    #[serde(default)]
+    pub typing_default_applied: bool,
     /// The shared walls (drawings on rooms' backdrops), as last saved. Changes reach this copy on a slow debounce; see `Client::flush_walls`.
     #[serde(default)]
     pub walls: BTreeMap<String, crate::wall::Wall>,

@@ -152,7 +152,8 @@ impl Client {
             Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
         }
     }
-    fn assemble(dir: &Path, vault: Vault, st: State, prov: Prov, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
+    fn assemble(dir: &Path, vault: Vault, mut st: State, prov: Prov, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
+        if !st.typing_default_applied { st.typing_default_applied = true; st.typing_enabled = true; }
         let walls = st.walls.clone();
         Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), wall_peer_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), live_in: Default::default(), live_next: 0, live_out: BTreeMap::new(), live_sent: BTreeMap::new(), live_rate: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new(),
             lock: Some(lock), dir_ttl_secs: 30, acl_check_secs: 60, dir_cache: HashMap::new(), dir_wanted: BTreeSet::new(), kp_cache: HashMap::new(), kp_wanted: BTreeMap::new(), kp_refill: false, seen_welcomes: HashSet::new(), last_parked_try: 0,
@@ -161,8 +162,6 @@ impl Client {
     fn blank(dir: &Path, vault: Vault, relay: &str, name: &str, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
         let mut st = State::default();
         st.v = 1; st.relay = relay.into(); st.name = name.into();
-        // Typing hints are on for a new account (an existing one keeps what it chose); the person can turn them off in the options room.
-        st.typing_enabled = true;
         Self::assemble(dir, vault, st, Prov::default(), t, lock)
     }
 

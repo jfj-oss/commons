@@ -565,8 +565,6 @@
     const th = pref.get('theme') || '';
     return `<div class="mopts-in mrise">${ti('options', '', 'h1')}<p>Only on this device. Nobody else can see these.</p>
       <section><h3>alerts and sound</h3><label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p>Plays when mega is in the background or the message is in another room.</p></section>
-      <section><h3>look</h3><label>Theme</label>${seg('th', [['', 'Match system'], ['light', 'Daylight'], ['solar', 'Solarized'], ['dark', 'After hours'], ['wave', 'Wave']], th)}
-        <div id="wave-row" ${th === 'wave' ? '' : 'hidden'}><label for="wave-pal">Wave colours</label><select id="wave-pal">${wave.map(([k, l]) => `<option value="${k}"${(pref.get('wavePalette') || 'blue') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div></section>
       <section><h3>typing hints</h3><label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints — the relay can see that a message-sized packet was sent at that moment</span></label></section>
       ${mobileApp() ? '' : `<section><h3>large files</h3><label for="dl-dir">Large-file downloads folder</label><input type="text" id="dl-dir" value="${esc(S.snap.download_dir || '')}" spellcheck="false"><p>Written here as they arrive, one verified piece at a time. Leave empty for your usual Downloads folder. Each download still asks where to save it.</p></section>`}
     </div>`;
@@ -1261,6 +1259,8 @@
   }
   function start() {
     M.started = true;
+    // mega has one look: a theme chosen in the old app no longer applies.
+    if (pref.get('theme')) { pref.set('theme', ''); applyPrefs(); }
     const cs = comms();
     if (cs.length === 1) showServer(cs[0].id); else showHome(store.get('last', null), 'news');
     document.fonts.load('500 14px "IBM Plex Mono"').catch(() => { }).then(() => { fontKey = 1; ACTIVE.forEach(a => { a.at = atlasOf(fieldOf(a.x), hiOf(a.x), a.sw, a.sh, a.fs); asciiDraw(a, clock); }); });
