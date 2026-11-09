@@ -448,6 +448,7 @@ function resetRoom() {
 }
 function openRoom(gid, jumpTo = null) {
   const inp = $('#input');
+  { const vc = ((currentCommunity() || {}).channels || []).find(x => x.gid === gid); if (vc && vc.kind === 'voice') { railOpen(false); return; } }   // a voice room has no chat to open
   if (gid !== S.gid) { if (S.gid) S.drafts.set(S.gid, inp.value); S.gid = gid; resetRoom(); inp.value = S.drafts.get(gid) || ''; sizeInput(); }
   S.jumpTo = jumpTo; railOpen(false); renderRail(); tick();
   if (window.__megaOpened) window.__megaOpened(gid);
@@ -524,10 +525,10 @@ function renderRail() {
   const isAdmin = c && (c.role === 'admin' || c.role === 'owner');
   $('#add-room').hidden = !isAdmin; $('#btn-invite').hidden = !isAdmin; $('#btn-people').hidden = !c;
   $('.search-wrap').hidden = !c; $('#btn-search').hidden = !c;
-  if (c && !c.channels.find(x => x.gid === S.gid)) {
-    // The chat pane is never a voice room: those open their call instead.
-    const first = c.channels.find(x => x.joined && x.kind !== 'voice') || c.channels.find(x => x.kind !== 'voice')
-      || c.channels.find(x => x.joined) || c.channels[0];
+  if (c && !c.channels.find(x => x.gid === S.gid && x.kind !== 'voice')) {
+    // The chat pane is never a voice room (it has no message list and no message box): those are their people, their
+    // tiles and the call controls. A community with only voice rooms has no chat to show.
+    const first = c.channels.find(x => x.joined && x.kind !== 'voice') || c.channels.find(x => x.kind !== 'voice');
     S.gid = first ? first.gid : null; resetRoom();
   }
   if (!c) { S.gid = null; }
@@ -555,7 +556,7 @@ function renderRail() {
   $('#chan-title').textContent = ch ? ch.name : (c ? c.name : 'Welcome');
   const people = S.membersFor === S.cid && S.members.length ? `${S.members.length} ${S.members.length === 1 ? 'person' : 'people'}` : '';
   $('#chan-sub').textContent = c ? [c.name, c.removed ? '' : people, ch && ch.status !== 'ok' && !c.removed ? ch.status : ''].filter(Boolean).join(' · ') : '';
-  $('#composer').hidden = !(ch && ch.joined && !(c && c.removed)) || sn.revoked;
+  $('#composer').hidden = !(ch && ch.joined && ch.kind !== 'voice' && !(c && c.removed)) || sn.revoked;
   if (!ch) paintEmpty(c, sn);
   else if (!ch.joined && !S.msgs) paint([{ k: 'e:keys', h: KEYS_WAIT }]);
   const st = $('#sync-status');
@@ -1293,7 +1294,7 @@ async function renderPeople() {
   const iAmOwner = c.role === 'owner', iAmAdmin = iAmOwner || c.role === 'admin';
   const others = ms.filter(m => !m.me), done = others.filter(m => m.verified).length;
   const rank = m => m.role === 'owner' ? 0 : m.role === 'admin' ? 1 : 2;
-  const row = m => `<div class="person"><span class="pseal">${seal(m.account, m.name)}${m.verified ? `<span class="vf-badge" title="Safety number verified">${icon('check')}</span>` : ''}</span><div class="nm"><b><span>${esc(m.name)}</span>${m.me ? '<span class="you">you</span>' : ''}${m.role !== 'member' ? `<span class="chip ok">${m.role}</span>` : ''}</b><span class="small">${m.same_name ? `<span class="tag" title="Someone else here has this name.">${esc(m.tag)}</span> · ` : ''}${m.devices} device${m.devices === 1 ? '' : 's'}${m.me ? '' : m.verified ? ' · <span class="ok">verified</span>' : ' · not verified'}</span>${m.listening ? `<span class="listen" title="${esc(listenLine(m.listening))}">${esc(listenLine(m.listening))}</span>` : ''}</div><span class="p-acts">${m.me ? '' : `<button class="mini" data-a="verify" data-acct="${esc(m.account)}" title="Verify safety number" aria-label="Verify safety number of ${esc(m.name)}">${icon('key')}</button>`}${(iAmOwner && !m.me && m.role !== 'owner') ? `<button class="mini" data-a="role" data-acct="${esc(m.account)}" data-r="${m.role}" title="Change role" aria-label="Change role of ${esc(m.name)}">${icon('star')}</button>` : ''}${(!m.me && m.role !== 'owner' && (iAmOwner || (iAmAdmin && m.role === 'member'))) ? `<button class="mini" data-a="kick" data-acct="${esc(m.account)}" data-n="${esc(m.name)}" title="Remove from community" aria-label="Remove ${esc(m.name)}">${icon('x')}</button>` : ''}</span></div>`;
+  const row = m => `<div class="person"><span class="pseal">${seal(m.account, m.name)}${m.verified ? `<span class="vf-badge" title="Safety number verified">${icon('check')}</span>` : ''}</span><div class="nm"><b><span>${esc(m.name)}</span>${m.me ? '<span class="you">you</span>' : ''}${m.role !== 'member' ? `<span class="chip ok">${m.role}</span>` : ''}</b><span class="small">${m.same_name ? `<span class="tag" title="Someone else here has this name.">${esc(m.tag)}</span> · ` : ''}${m.devices} device${m.devices === 1 ? '' : 's'}${m.me ? '' : m.verified ? ' · <span class="ok">verified</span>' : ' · not verified'}</span>${m.listening ? `<span class="listen" title="${esc(listenLine(m.listening))}">${esc(listenLine(m.listening))}</span>` : ''}</div><span class="p-acts">${window.__megaRing ? __megaRing.rowButton(m) : ''}${m.me ? '' : `<button class="mini" data-a="verify" data-acct="${esc(m.account)}" title="Verify safety number" aria-label="Verify safety number of ${esc(m.name)}">${icon('key')}</button>`}${(iAmOwner && !m.me && m.role !== 'owner') ? `<button class="mini" data-a="role" data-acct="${esc(m.account)}" data-r="${m.role}" title="Change role" aria-label="Change role of ${esc(m.name)}">${icon('star')}</button>` : ''}${(!m.me && m.role !== 'owner' && (iAmOwner || (iAmAdmin && m.role === 'member'))) ? `<button class="mini" data-a="kick" data-acct="${esc(m.account)}" data-n="${esc(m.name)}" title="Remove from community" aria-label="Remove ${esc(m.name)}">${icon('x')}</button>` : ''}</span></div>`;
   el.innerHTML = `<div class="p-head"><h2>People <span class="count">${ms.length}</span></h2><button class="mini" id="people-close" aria-label="Close people" title="Close">${icon('x')}</button></div>
     ${others.length ? `<div class="p-trust"><div class="meter" aria-hidden="true"><i style="width:${others.length ? done / others.length * 100 : 0}%"></i></div><span>${done ? `You have verified ${done} of ${others.length}` : `Nobody verified yet. Compare safety numbers with the ${icon('key', 'inline')}`}</span></div>` : ''}
     <div class="p-list">${[...ms].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)).map(row).join('')}</div>` +
@@ -1305,6 +1306,7 @@ async function renderPeople() {
   fillAvatars(el);
 }
 async function personAction(d, c) {
+  if (d.a === 'ring') { if (window.__megaRing) __megaRing.ringOne(d.acct, d.n); return; }
   if (d.a === 'kick') {
     await modal('Remove ' + d.n + '?', `<p>They are removed from every room and the keys are rotated, so they cannot read anything sent from now on. They can still read what they already received. They cannot rejoin with an old invite.</p>`, [{ label: 'Cancel', primary: false }, { label: 'Remove', danger: true, run: async () => { await rpc('kick', { cid: c.id, account: d.acct }); } }]);
     setTimeout(() => { tick(); renderPeople(); }, 800);

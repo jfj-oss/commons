@@ -24,6 +24,11 @@ pub(crate) fn hex32(s: &str) -> Result<[u8; 32]> { Ok(unhex32(s)?) }
 #[derive(Clone, Debug, PartialEq)]
 pub struct LiveEvent { pub id: u64, pub gid: String, pub account: String, pub kind: String, pub data: String, pub ts: u64 }
 
+/// One ring as the UI sees it. `end` = the caller took it back. `ring` is the ring's own id, so an "end" finds its ring.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RingEvent { pub id: u64, pub gid: String, pub account: String, pub ring: String, pub ts: u64, pub end: bool, pub direct: bool }
+pub const RING_BUFFER: usize = 32;
+
 /// Most live events held for the UI; the oldest go first.
 pub const LIVE_BUFFER: usize = 256;
 /// Most live events sent per room per second, and the most a receiver takes from one sender in a room per second.
@@ -44,6 +49,13 @@ pub struct Client {
     /// Live events received and not yet read by the UI, newest last. Never saved, and capped.
     pub(crate) live_in: std::collections::VecDeque<LiveEvent>,
     pub(crate) live_next: u64,
+    /// Rings received and not yet read by the UI, the ids already taken, per sender the times of recent ones, and per room when we last rang. Never saved.
+    pub(crate) ring_in: std::collections::VecDeque<RingEvent>,
+    pub(crate) ring_next: u64,
+    pub(crate) ring_seen: BTreeMap<String, u64>,
+    pub(crate) ring_rate: BTreeMap<String, std::collections::VecDeque<u64>>,
+    pub(crate) ring_ends: BTreeMap<String, std::collections::VecDeque<u64>>,
+    pub(crate) ring_sent: BTreeMap<String, u64>,
     /// The walls as they are now (a copy goes into the saved state every so often), whether that copy is behind, when it was made,
     /// a counter that rises with every change, and when a snapshot of a room's wall last arrived.
     pub(crate) walls: BTreeMap<String, crate::wall::Wall>,
@@ -155,7 +167,7 @@ impl Client {
     fn assemble(dir: &Path, vault: Vault, mut st: State, prov: Prov, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
         if !st.typing_default_applied { st.typing_default_applied = true; st.typing_enabled = true; }
         let walls = st.walls.clone();
-        Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), wall_peer_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), live_in: Default::default(), live_next: 0, live_out: BTreeMap::new(), live_sent: BTreeMap::new(), live_rate: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new(),
+        Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), wall_peer_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), live_in: Default::default(), live_next: 0, ring_in: Default::default(), ring_next: 0, ring_seen: BTreeMap::new(), ring_rate: BTreeMap::new(), ring_ends: BTreeMap::new(), ring_sent: BTreeMap::new(), live_out: BTreeMap::new(), live_sent: BTreeMap::new(), live_rate: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new(),
             lock: Some(lock), dir_ttl_secs: 30, acl_check_secs: 60, dir_cache: HashMap::new(), dir_wanted: BTreeSet::new(), kp_cache: HashMap::new(), kp_wanted: BTreeMap::new(), kp_refill: false, seen_welcomes: HashSet::new(), last_parked_try: 0,
             more: false, sync_cap: SYNC_MAX_BYTES, pair_ack: None, net: NetStatus::default(), consent_offered: HashMap::new() }
     }

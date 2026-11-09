@@ -420,7 +420,7 @@ impl Client {
                 }
                 self.st.outbox.iter().any(|i| i.cipher.is_some())
             }
-            Err(_) if matches!(self.st.outbox[pos].env, Envelope::Live { .. }) => { self.st.outbox.remove(pos); false } // live data is never retried
+            Err(_) if matches!(self.st.outbox[pos].env, Envelope::Live { .. } | Envelope::Ring { .. }) => { self.st.outbox.remove(pos); false } // live data is never retried
             Err(e) => {
                 match relay_status(&e) {
                     Some(400) | Some(413) => { self.st.outbox.remove(pos); self.notice("outbox", format!("the relay refused an unsent message, so it was dropped: {e}")); }

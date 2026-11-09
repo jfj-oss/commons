@@ -739,6 +739,49 @@ impl Client {
     pub fn live_poll(&self, since: u64, gid: Option<&str>) -> Vec<LiveEvent> {
         self.live_in.iter().filter(|e| e.id > since && gid.is_none_or(|g| g == e.gid) && self.st.groups.get(&e.gid).is_some_and(|g| !g.removed)).cloned().collect()
     }
+    /// Ring a voice room: everyone in it who is not already in the call, or one member (`to`, an account). Best effort like live
+    /// data: it goes only if the room can encrypt right now, is not retried, and is dropped if it waits more than a few seconds.
+    /// Returns the ring's id, which `ring_end` uses to take it back. At most one ring per room every 5 seconds from here.
+    pub fn ring_send(&mut self, gid: &str, to: Option<&str>) -> Result<String> {
+        self.check_chan(gid)?;
+        let comm = self.st.groups.get(gid).map(|g| g.community.clone()).unwrap_or_default();
+        if !self.st.communities.get(&comm).is_some_and(|c| c.channels.iter().any(|ch| ch.id == gid && ch.kind == ROOM_VOICE)) { bail!("only a voice room can be rung"); }
+        if let Some(t) = to {
+            if t == self.my_account() { bail!("you cannot ring yourself"); }
+            if !self.st.groups.get(gid).is_some_and(|g| g.accounts.contains(t)) { bail!("that person is not in this room"); }
+        }
+        if !self.ready_to_encrypt(gid) { bail!("this room is not ready yet (its keys are still being exchanged); try again in a moment"); }
+        let now = now_secs();
+        let key = format!("{gid}|{}", to.unwrap_or(""));
+        if self.ring_sent.get(&key).is_some_and(|t| now < *t + 5) { bail!("you rang a moment ago"); }
+        self.ring_sent.insert(key, now);
+        let id = rand_hex(16);
+        self.queue_env(gid, Envelope::Ring { id: id.clone(), ts: now, to: to.map(String::from), end: false });
+        self.save()?;
+        Ok(id)
+    }
+    /// Take a ring back (the caller joined the answer or gave up). Same best-effort delivery.
+    pub fn ring_end(&mut self, gid: &str, ring: &str, to: Option<&str>) -> Result<()> {
+        self.check_chan(gid)?;
+        if !is_id(ring) { bail!("bad ring id"); }
+        if !self.ready_to_encrypt(gid) { return Ok(()); }
+        self.queue_env(gid, Envelope::Ring { id: ring.to_string(), ts: now_secs(), to: to.map(String::from), end: true });
+        self.save()?;
+        Ok(())
+    }
+    /// Test bridge only: a ring stamped `age` seconds ago, to show that a stale one rings nobody.
+    #[cfg(feature = "devbridge")]
+    #[doc(hidden)]
+    pub fn debug_ring_aged(&mut self, gid: &str, age: u64) -> Result<String> {
+        let id = rand_hex(16);
+        self.queue_env(gid, Envelope::Ring { id: id.clone(), ts: now_secs().saturating_sub(age), to: None, end: false });
+        self.save()?;
+        Ok(id)
+    }
+    /// Rings newer than `since` (0 for all still held), oldest first, from rooms we are still in.
+    pub fn ring_poll(&self, since: u64) -> Vec<RingEvent> {
+        self.ring_in.iter().filter(|e| e.id > since && self.st.groups.get(&e.gid).is_some_and(|g| !g.removed)).cloned().collect()
+    }
     pub(crate) fn ready_to_encrypt(&self, gid: &str) -> bool {
         self.st.groups.get(gid).is_some_and(|g| !g.removed && !g.broken && !g.tainted && g.pending.is_none()) && self.synced.contains(gid)
     }
@@ -765,7 +808,7 @@ impl Client {
         for i in 0..self.st.outbox.len() {
             let (id, gid, ready) = { let it = &self.st.outbox[i]; (it.id.clone(), it.gid.clone(), it.cipher.is_some()) };
             let Some(gs) = self.st.groups.get(&gid).cloned() else { gone.insert(id); continue }; // group gone
-            let live_ts = match &self.st.outbox[i].env { Envelope::Live { ts, .. } => Some(*ts), _ => None };
+            let live_ts = match &self.st.outbox[i].env { Envelope::Live { ts, .. } | Envelope::Ring { ts, .. } => Some(*ts), _ => None };
             // Live data is for now: not kept past a few seconds, never reported when it goes, and never held back by a bad moment.
             if let Some(ts) = live_ts {
                 if gs.removed || ts + 10 < now_secs() || (!ready && !self.ready_to_encrypt(&gid)) { gone.insert(id); continue; }
@@ -787,7 +830,7 @@ impl Client {
                 Err(e) => {
                     let it = &mut self.st.outbox[i];
                     it.tries += 1;
-                    if matches!(it.env, Envelope::Live { .. }) { gone.insert(id); continue; }
+                    if matches!(it.env, Envelope::Live { .. } | Envelope::Ring { .. }) { gone.insert(id); continue; }
                     if it.tries > 20 { gone.insert(id); self.notice("outbox", format!("could not encrypt a message, giving up: {e}")); }
                 }
             }

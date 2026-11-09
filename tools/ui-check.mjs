@@ -442,6 +442,92 @@ try {
   await A.ev(`(() => { const q = document.querySelector('#m-pq'); q.value = 'lounge'; q.dispatchEvent(new Event('input')); })()`);
   await key(A, 'Enter'); await sleep(900);
   need(await A.ev(`!document.querySelector('#mega-pal') && __mega.level === 'server' && __mega.list.item.name === 'lounge' && window.__joined === null`), 'jump to a voice room should focus its card without joining');
+
+  // ---- text rooms and voice rooms are separate; ringing a voice room ----
+  {
+    const VG = JSON.stringify(vgid);
+    await sleep(1500);   // call-ui used to add its Call button on a timer; give it every chance
+    need(await A.ev(`!document.getElementById('btn-call') && ![...document.querySelectorAll('#head button')].some(b => /^\\s*call\\s*$/i.test(b.textContent))`), 'split: a text room still has a Call button');
+    // a voice room has no chat: nothing opens it, and a stale state pointing at one is put right on the next paint
+    await A.ev(`rpc('send_text', { gid: ${VG}, text: 'old voice room words', reply: null })`); await sleep(1500);
+    await A.ev(`openRoom(${VG})`); await sleep(300);
+    need(await A.ev(`S.gid !== ${VG}`), 'split: openRoom() opened a voice room as a chat');
+    await A.ev(`(() => { S.gid = ${VG}; renderRail(); return 1; })()`); await sleep(1200);
+    const sp = await A.ev(`(() => { const c = S.snap.communities.find(x => x.id === S.cid), ch = c.channels.find(x => x.gid === S.gid); return { gid: S.gid === ${VG}, kind: ch && ch.kind, words: document.getElementById('stream').innerText.includes('old voice room words') }; })()`);
+    need(!sp.gid && sp.kind !== 'voice', 'split: the chat pane stayed on a voice room: ' + JSON.stringify(sp));
+    need(await A.ev(`rpc('messages', { gid: ${VG}, limit: 50, around: '' }).then(m => JSON.stringify(m.messages).includes('old voice room words'))`), 'split: messages already in a voice room were lost');
+    need(!sp.words, 'split: a voice room message showed in the chat');
+    // with nothing but a voice room to show, there is no message box at all
+    await A.ev(`(() => { const c = S.snap.communities.find(x => x.id === S.cid); window.__chanBak = c.channels; c.channels = c.channels.filter(x => x.kind === 'voice'); S.gid = null; renderRail(); return 1; })()`); await sleep(300);
+    need(await A.ev(`document.getElementById('composer').hidden === true && S.gid === null`), 'split: a community with only voice rooms shows a message box');
+    await A.ev(`(() => { S.snap.communities.find(x => x.id === S.cid).channels = window.__chanBak; delete window.__chanBak; S.last = ''; return 1; })()`); await sleep(1200);
+    await A.shot('mega-4b-voice-split');
+
+    // ringing: A rings the room; B (whose mega is open) sees a card, and joining goes through the normal join
+    await B.ev(`(() => { window.__joined = null; window.__callUI.joinRoom = (g, n) => { window.__joined = [g, n]; }; window.__fakeOsc = 0; window.__notes = [];
+      chimeCtx = { state: 'running', currentTime: 0, destination: {}, createGain() { return { gain: { setValueAtTime() { }, exponentialRampToValueAtTime() { } }, connect() { } }; }, createOscillator() { window.__fakeOsc++; return { frequency: {}, connect() { }, start() { }, stop() { } }; } };
+      window.Notification = class { constructor(t, o) { window.__notes.push([t, o && o.body]); } close() { } }; window.Notification.permission = 'granted';
+      return 1; })()`);
+    const cards = `document.querySelectorAll('#mega-ring .rg-card').length`;
+    const ringSend = (P, to = '') => P.ev(`rpc('ring_send', { gid: ${VG}, to: ${JSON.stringify(to)} })`);
+    const ring1 = (await ringSend(A)).id, t1 = Date.now();
+    await B.waitFor(`${cards} === 1`, 15000).catch(() => { throw new Error('ring: B never saw the incoming card'); });
+    const cd = await B.ev(`(() => { const c = document.querySelector('#mega-ring .rg-card'), r = c.getBoundingClientRect(), bs = [...c.querySelectorAll('button')].map(b => b.textContent.trim()); return { text: c.textContent, bs, w: Math.round(r.width), vw: innerWidth, hidden: document.getElementById('mega-ring').hidden }; })()`);
+    need(/alice/i.test(cd.text) && /lounge/.test(cd.text) && /Book club/.test(cd.text) && cd.bs.includes('join') && cd.bs.includes('decline') && cd.w >= cd.vw - 24 && !cd.hidden, 'ring: the card is wrong: ' + JSON.stringify(cd));
+    need(await A.ev(`${cards} === 0`), 'ring: the caller was rung');
+    await sleep(1500);
+    need(await B.ev(`__megaRing.stats.sounds >= 1 && __fakeOsc >= 2`), 'ring: no sound with sounds on');
+    await B.shot('mega-4c-ring-card');
+    await B.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(700);
+    await B.shot('mega-4c-ring-card-390');
+    need(await B.ev(`(() => { const c = document.querySelector('#mega-ring .rg-card').getBoundingClientRect(); return c.left >= 0 && c.right <= innerWidth + 1 && [...document.querySelectorAll('#mega-ring .rg-b')].every(b => b.getBoundingClientRect().right <= innerWidth); })()`), 'ring: the card overflows at 390 px');
+    await B.send('Emulation.clearDeviceMetricsOverride'); await sleep(500);
+    await B.ev(`document.querySelector('#mega-ring .rg-b.yes').click()`); await sleep(300);
+    need(await B.ev(`!!window.__joined && window.__joined[0] === ${VG} && ${cards} === 0`), 'ring: join did not take the normal join path or the card stayed');
+    // decline stops it
+    await sleep(5200);
+    await ringSend(A);
+    await B.waitFor(`${cards} === 1`, 15000);
+    await B.ev(`document.querySelector('#mega-ring .rg-b.no').click()`); await sleep(2500);
+    need(await B.ev(`${cards} === 0`), 'ring: decline did not stop the ring');
+    // the caller takes it back
+    await sleep(3000);
+    const ring3 = (await ringSend(A)).id;
+    await B.waitFor(`${cards} === 1`, 15000);
+    await A.ev(`rpc('ring_end', { gid: ${VG}, id: ${JSON.stringify(ring3)}, to: '' })`);
+    await B.waitFor(`${cards} === 0`, 15000).catch(() => { throw new Error('ring: the caller cancelling did not stop it'); });
+    // sounds off: silent. In the background with notifications allowed: a system notification
+    await B.ev(`(() => { pref.set('sound', 'off'); window.__fakeOsc = 0; __megaRing.stats.sounds = 0; __megaRing.stats.notified = 0; window.__notes = []; Object.defineProperty(document, 'visibilityState', { get: () => 'hidden', configurable: true }); return 1; })()`);
+    await sleep(5200);
+    await ringSend(A);
+    await B.waitFor(`${cards} === 1`, 15000);
+    await sleep(3200);
+    const quiet = await B.ev(`({ osc: window.__fakeOsc, sounds: __megaRing.stats.sounds, notes: window.__notes, notified: __megaRing.stats.notified })`);
+    need(quiet.osc === 0 && quiet.sounds === 0, 'ring: it made a sound with sounds off: ' + JSON.stringify(quiet));
+    need(quiet.notified === 1 && /alice/i.test(quiet.notes[0][0]) && /lounge/.test(quiet.notes[0][1]), 'ring: no system notification in the background: ' + JSON.stringify(quiet));
+    // and it ends by itself after its 30 seconds
+    await B.ev(`(() => { for (const c of __megaRing.cards.values()) c.until = Date.now() / 1000 - 1; __megaRing.sweep(); delete document.visibilityState; pref.set('sound', ''); return 1; })()`); await sleep(300);
+    need(await B.ev(`${cards} === 0`), 'ring: it did not end after its time');
+    // a stale ring (a device catching up on an old log) rings nobody
+    await A.ev(`rpc('debug_ring', { gid: ${VG}, age: 100 })`);
+    await sleep(3000);
+    need(await B.ev(`${cards} === 0`), 'ring: a stale ring rang');
+    // the dock button and a person's row: with a (stub) call in the voice room, A can ring everyone or only Bob
+    await sleep(Math.max(0, 62000 - (Date.now() - t1)));   // a receiver takes at most 4 rings a minute from one person
+    await A.ev(`(() => { window.__realCall = window.__commonsCall; window.__commonsCall = { gid: ${VG}, phase: 'connected', room: {}, encryption: { active: true }, snapshot() { return { peers: [{ account: S.snap.me.account, name: 'Alice', me: true }] }; } }; return 1; })()`);
+    need(await A.ev(`__megaRing.dockButton({ phase: 'connected' }).includes('id="c-ring"')`), 'ring: the dock has no ring button in a voice room call');
+    await sleep(2500);
+    await A.ev(`document.getElementById('btn-people').click()`); await sleep(1500);
+    await A.waitFor(`!!document.querySelector('#people .rg-row')`, 10000).catch(() => { throw new Error("ring: no ring button on a person's row"); });
+    need(await A.ev(`document.querySelectorAll('#people .rg-row').length === 1 && !document.querySelector('#people .person:first-child .rg-row')`), 'ring: the ring button is on the wrong rows');
+    await A.shot('mega-4d-people-ring');
+    await A.ev(`document.querySelector('#people .rg-row').click()`);
+    await B.waitFor(`${cards} === 1`, 15000).catch(() => { throw new Error('ring: ringing one person did not reach them'); });
+    need(await B.ev(`/calling you/.test(document.querySelector('#mega-ring .rg-card').textContent)`), 'ring: a direct ring does not say it is for them');
+    await B.ev(`document.querySelector('#mega-ring .rg-b.no').click()`);
+    await A.ev(`(() => { window.__commonsCall = window.__realCall; delete window.__realCall; document.getElementById('btn-people').click(); return 1; })()`); await sleep(600);
+  }
+
   // a second community makes a home; the cards are communities plus the "you" card
   await A.ev(`void __megaNewCommunity(), 0`); await A.waitFor(`document.querySelector('.modal #n')`); await type(A, '#n', 'Second place'); await click(A, '.modal .acts button:last-child');
   await A.waitFor(`__mega.level === 'server' && __mega.list.items.some(x => x.cid && S.snap.communities.find(c => c.id === x.cid && c.name === 'Second place'))`, 60000).catch(async e => { throw new Error(e.message + ' | ' + await A.ev(`JSON.stringify({ level: __mega.level, comms: S.snap.communities.map(c => c.name), modal: !!document.querySelector('.modal'), modalText: (document.querySelector('.modal') || {}).innerText, toast: document.querySelector('#toast').textContent, items: __mega.list && __mega.list.items.map(x => x.kind + ':' + x.name + ':' + String(x.cid).slice(0, 4)), Scid: String(S.cid).slice(0, 4), Mcid: String(__mega.cid).slice(0, 4), ids: S.snap.communities.map(c => c.name + ':' + c.id.slice(0, 4)), busy: __mega.busy, follow: __mega.followMs })`)); });

@@ -54,19 +54,8 @@
     } catch { return null; }
   }
 
-  // ---- the room header's Call button: it joins this room's call (there is no panel to open any more) ----
-  function ensureButton() {
-    const bar = $q('.head-actions');
-    if (!bar || $q('#btn-call')) return;
-    const b = document.createElement('button'); b.id = 'btn-call'; b.className = 'btn ghost'; b.innerHTML = ic('ci-wave') + '<span class="lbl">Call</span>'; b.title = 'Voice and screen share in this room (end-to-end encrypted)';
-    b.onclick = async () => {
-      const room = currentRoom(); if (!room) return;
-      if (call.gid === room.gid && call.phase !== 'idle' && call.phase !== 'error') return;   // already here; the dock is up
-      try { await call.join(room.gid, room.name); } catch { }
-      render();
-    };
-    bar.insertBefore(b, $q('#btn-invite', bar) || bar.firstChild);
-  }
+  // ---- no Call button: a text room has no call, and a voice room's call is the room (its card's join, then the dock) ----
+  function ensureButton() { }
   function updateButton() {
     const b = $q('#btn-call'); if (!b) return;
     const room = currentRoom();
@@ -127,6 +116,7 @@
       ${btn('c-cam', 'ci-cam', s.camera ? 'Turn the camera off' : 'Turn the camera on', s.camera)}
       ${btn('c-set', 'ci-gear', 'Call settings', showSettings)}
       ${s.ptt ? `<button type="button" class="cd-b${s.pttHeld ? ' on' : ''}" id="c-ptt" title="Hold to talk (or hold your push-to-talk key)" aria-label="Hold to talk">${ic('ci-mic')}</button>` : ''}
+      ${window.__megaRing ? __megaRing.dockButton(s) : ''}
       <button type="button" class="cd-b leave" id="c-leave" title="Leave the call" aria-label="Leave the call">${ic('ci-leave')}</button>
     </div>`;
   }
@@ -175,6 +165,7 @@
           render();
           break;
         case 'c-leave': leaveRoom(); break;
+        case 'c-ring': if (window.__megaRing) __megaRing.ringAll(); break;
         case 'c-enc': openExplainer(b); break;
         case 'c-browser': openInBrowser(); break;
       }

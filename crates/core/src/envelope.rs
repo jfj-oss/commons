@@ -15,6 +15,28 @@ pub const MAX_LIVE: usize = 4096;
 pub const LIVE_MAX_AGE: u64 = 30;
 /// How far ahead of our own clock a live event may claim to be.
 pub const LIVE_MAX_AHEAD: u64 = 60;
+/// A ring older than this (by its sender's clock) is dropped on arrival: a device catching up on a log must never ring
+/// for a call that ended long ago. It is longer than a ring lasts, so ordinary delay and a little clock drift still ring.
+pub const RING_MAX_AGE: u64 = 45;
+pub const RING_MAX_AHEAD: u64 = 60;
+/// How long a ring lasts on the receiving screen, unless it is answered, declined or taken back first.
+pub const RING_TTL: u64 = 30;
+/// Most rings one person may start per minute (everywhere), and the most "taken back" messages we count for them.
+pub const RING_PER_MIN: usize = 4;
+pub const RING_ENDS_PER_MIN: usize = 8;
+/// What a receiver does with one ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RingVerdict { Show, Stale, Mine, NotMember, NotForMe, TooMany }
+/// The receiving side's rules for a ring, as one pure function so they can be tested without a network.
+/// `recent` = times (seconds) of rings already taken from this sender in the last minute.
+pub fn ring_check(now: u64, ts: u64, sender: &str, me: &str, to: Option<&str>, sender_is_member: bool, recent: &[u64]) -> RingVerdict {
+    if sender == me { return RingVerdict::Mine; }                       // never ring yourself or your other devices
+    if !sender_is_member { return RingVerdict::NotMember; }
+    if ts + RING_MAX_AGE < now || ts > now + RING_MAX_AHEAD { return RingVerdict::Stale; }
+    if to.is_some_and(|t| t != me) { return RingVerdict::NotForMe; }
+    if recent.iter().filter(|t| **t + 60 > now).count() >= RING_PER_MIN { return RingVerdict::TooMany; }
+    RingVerdict::Show
+}
 pub fn valid_live_kind(k: &str) -> bool { !k.is_empty() && k.len() <= 32 && k.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')) }
 
 pub fn is_id(s: &str) -> bool { s.len() == 32 && s.bytes().all(|c| c.is_ascii_hexdigit()) }
@@ -141,6 +163,19 @@ pub enum Envelope {
     /// sender chose (nothing here is trusted), and `ts` lets a receiver drop what arrives long after it was meant.
     /// An older app has no such kind, parses it as `Unknown` and notes "newer version" once; nothing else happens.
     Live { kind: String, data: String, ts: u64 },
+    /// "Come to this voice room's call": a ring. Sent inside the room's own MLS group, so the relay sees one more
+    /// encrypted message and nothing else. `id` names one ring; `to` is one member's account (absent = everyone in the
+    /// room who is not already in the call); `end` is the caller taking the ring back. Like `Live` it is for now, not
+    /// history: never stored or shown, never retried, and a receiver ignores one that is stale (see `ring_check`).
+    /// An older app has no such kind, parses it as `Unknown` and notes "newer version" once; nothing else happens.
+    Ring {
+        id: String,
+        ts: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        end: bool,
+    },
     /// A person's profile refresh. Extra fields ride on it rather than new kinds: an older Megatron parses this as the
     /// `Profile` it already knows and serde ignores the rest, so nothing new ever reaches an old app's `Unknown` notice.
     /// `listen` is the shared "listening to" status (`None` = nothing to share); `avatar`/`avatar_cleared` the picture.
@@ -239,6 +274,7 @@ impl Envelope {
             }
             Typing | Leave | Unknown => {}
             Live { kind, data, .. } => if !valid_live_kind(kind) || data.len() > MAX_LIVE { return bad("bad live event"); },
+            Ring { id, to, .. } => if !is_id(id) || to.as_deref().is_some_and(|t| !is_key(t)) { return bad("bad ring"); },
             Profile { name, listen, avatar, avatar_cleared, .. } => {
                 if name.is_empty() || !short(name, 64) { return bad("bad profile"); }
                 if let Some(l) = listen { if l.title.is_empty() || !one_line(&l.title, MAX_LISTEN_LINE) || !one_line(&l.artist, MAX_LISTEN_LINE) { return bad("bad listening status"); } }

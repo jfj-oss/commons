@@ -640,6 +640,7 @@ impl Client {
                 }
             }
             (Kind::Channel, Envelope::Live { kind, data, ts }) => self.take_live(gid, &acct, kind, data, ts),
+            (Kind::Channel, Envelope::Ring { id, ts, to, end }) => self.take_ring(gid, &acct, id, ts, to, end),
             (Kind::Channel, Envelope::Typing) => { self.typing.insert(format!("{gid}|{acct}"), now_secs()); }
             (Kind::Channel, env @ (Envelope::Text { .. } | Envelope::File { .. } | Envelope::Edit { .. } | Envelope::Delete { .. } | Envelope::React { .. })) => {
                 self.apply_chat(gid, seq, cert, env, false);
@@ -664,6 +665,44 @@ impl Client {
         self.live_next += 1;
         self.live_in.push_back(LiveEvent { id: self.live_next, gid: gid.to_string(), account: acct.to_string(), kind, data, ts });
         while self.live_in.len() > LIVE_BUFFER { self.live_in.pop_front(); }
+    }
+
+    /// A ring is the sender's claim and nothing else: it must come from a current member of this voice room, be fresh, not be
+    /// for someone else, and not exceed the sender's rate. Never from ourselves (our other devices ring nobody: we know). It is kept
+    /// for the UI to read once; it never touches the history.
+    fn take_ring(&mut self, gid: &str, acct: &str, id: String, ts: u64, to: Option<String>, end: bool) {
+        let now = now_secs();
+        let me = self.my_account();
+        let member = self.st.groups.get(gid).is_some_and(|g| !g.removed && g.accounts.contains(acct));
+        let voice = self.st.groups.get(gid).and_then(|g| self.st.communities.get(&g.community)).is_some_and(|c| c.channels.iter().any(|ch| ch.id == gid && ch.kind == ROOM_VOICE));
+        if !voice { return; }
+        if end {
+            // taking a ring back: same freshness and membership rules, a looser rate, no "for me" (it just ends a ring we may hold)
+            if acct == me || !member || ts + RING_MAX_AGE < now || ts > now + RING_MAX_AHEAD { return; }
+            let q = self.ring_ends.entry(acct.to_string()).or_default();
+            while q.front().is_some_and(|t| *t + 60 <= now) { q.pop_front(); }
+            if q.len() >= RING_ENDS_PER_MIN { return; }
+            q.push_back(now);
+            self.push_ring(RingEvent { id: 0, gid: gid.to_string(), account: acct.to_string(), ring: id, ts, end: true, direct: to.is_some() });
+            return;
+        }
+        let recent: Vec<u64> = self.ring_rate.get(acct).map(|q| q.iter().copied().collect()).unwrap_or_default();
+        if ring_check(now, ts, acct, &me, to.as_deref(), member, &recent) != RingVerdict::Show { return; }
+        if self.ring_seen.contains_key(&id) { return; }
+        self.ring_seen.retain(|_, t| *t + 120 > now);
+        self.ring_seen.insert(id.clone(), now);
+        let q = self.ring_rate.entry(acct.to_string()).or_default();
+        while q.front().is_some_and(|t| *t + 60 <= now) { q.pop_front(); }
+        q.push_back(now);
+        if self.ring_rate.len() > 256 { self.ring_rate.retain(|_, q| !q.is_empty()); }
+        self.push_ring(RingEvent { id: 0, gid: gid.to_string(), account: acct.to_string(), ring: id, ts, end: false, direct: to.is_some() });
+    }
+    fn push_ring(&mut self, mut ev: RingEvent) {
+        self.ring_next += 1;
+        ev.id = self.ring_next;
+        self.ring_in.push_back(ev);
+        while self.ring_in.len() > RING_BUFFER { self.ring_in.pop_front(); }
+        self.activity += 1;
     }
 
     pub(crate) fn apply_chat(&mut self, gid: &str, seq: u64, cert: &DeviceCert, env: Envelope, local: bool) {
