@@ -29,7 +29,11 @@
 /* Wave: the field shows through; panels are solid-looking glass with no live blur, so a moving field stays cheap. */
 :root[data-theme="wave"] body { background: var(--wall); }
 :root[data-theme="wave"] #main { background: transparent; }
-:root[data-theme="wave"] #rail { background: var(--glass); }
+:root[data-theme="wave"] #rail, :root[data-theme="wave"] #people { background: var(--wave-panel); -webkit-backdrop-filter: none; backdrop-filter: none; }
+:root[data-theme="wave"] .me { background: transparent; }
+/* side panels float on the field with soft corners, wherever they sit in the layout rather than sliding over it */
+@media (min-width: 761px) { :root[data-theme="wave"] #rail { margin: var(--s-2) 0 var(--s-2) var(--s-2); border: var(--hair) solid var(--glass-line); border-radius: 24px; overflow: hidden; } }
+@media (min-width: 1181px) { :root[data-theme="wave"] #people { margin: var(--s-2) var(--s-2) var(--s-2) 0; border: var(--hair) solid var(--glass-line); border-radius: 24px; } }
 /* a light veil behind the messages keeps text readable over the brightest crests */
 :root[data-theme="wave"] .modal, :root[data-theme="wave"] .modal-out, :root[data-theme="wave"] .boot-card { background: var(--glass-solid); }
 :root[data-theme="wave"] #stream { background: color-mix(in srgb, var(--wall) 50%, transparent); }
