@@ -1346,7 +1346,7 @@ $('#btn-settings').onclick = () => {
     const secret = val(w, 'rs').trim();
     if (secret) await rpc('set_relay_invite', { secret });
     if (!mobileApp() && val(w, 'dl-dir').trim() !== (S.snap.download_dir || '')) await rpc('set_download_dir', { dir: val(w, 'dl-dir') });
-    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('wavePalette', val(w, 'wave-pal')); pref.set('theme', val(w, 'th')); pref.set('read', val(w, 'rd')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs();
+    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('wavePalette', val(w, 'wave-pal')); pref.set('theme', val(w, 'th')); pref.set('read', val(w, 'rd')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh();
   } }]);
   fillAvatars();
   p.then(tick);

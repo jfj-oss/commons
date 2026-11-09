@@ -31,6 +31,7 @@
 :root[data-theme="wave"] #main { background: transparent; }
 :root[data-theme="wave"] #rail { background: var(--glass); }
 /* a light veil behind the messages keeps text readable over the brightest crests */
+:root[data-theme="wave"] .modal, :root[data-theme="wave"] .modal-out, :root[data-theme="wave"] .boot-card { background: var(--glass-solid); }
 :root[data-theme="wave"] #stream { background: color-mix(in srgb, var(--wall) 50%, transparent); }
 :root[data-theme="wave"] #main::before, :root[data-theme="wave"] #main::after { content: none; }
 :root[data-theme="wave"] #main > #lamp, :root[data-theme="wave"] canvas.rail-dither, :root[data-theme="wave"] canvas.wall-dither { display: none; }
