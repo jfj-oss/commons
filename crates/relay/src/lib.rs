@@ -3,6 +3,7 @@
 //! It assumes it is hostile: it holds no key that decrypts anything. See docs/THREAT-MODEL.md
 //! for the exact list of what it can observe.
 pub mod front;
+pub mod live;
 use axum::{
     body::{to_bytes, Body},
     extract::State,
@@ -84,6 +85,8 @@ pub struct Limits {
     pub pwinvite_misses_per_window: u32,
     /// Longest a sealed copy may stay, whatever its owner asks.
     pub pwinvite_max_ttl_secs: u64,
+    /// The live channel's in-memory buffer (see `live.rs`). Nothing in it is stored.
+    pub live: live::LiveLimits,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -125,6 +128,7 @@ impl Default for Limits {
             pwinvite_lookups_per_id_per_window: 8,
             pwinvite_misses_per_window: 40,
             pwinvite_max_ttl_secs: 30 * 86400,
+            live: live::LiveLimits::default(),
         }
     }
 }
@@ -258,6 +262,10 @@ pub struct RelayState {
     /// Told when the server is stopping, so the expiry sweeper ends with it.
     stop: Arc<std::sync::atomic::AtomicBool>,
     tick: watch::Sender<u64>,
+    /// The live channel: sealed events held in memory for a few seconds (never in the database), and a signal for pollers.
+    live: Mutex<live::LiveHub>,
+    live_tick: watch::Sender<u64>,
+    started: std::time::Instant,
     limits: Limits,
     /// Fixed-window counters. Lost on restart, which only makes a limit briefly more generous.
     rates: Mutex<HashMap<String, (u64, u32)>>,
@@ -335,8 +343,9 @@ pub async fn start_with(bind: SocketAddr, data_dir: PathBuf, limits: Limits) -> 
     std::fs::create_dir_all(data_dir.join("large"))?;
     let db = open_db(data_dir.join("relay.db").to_str().unwrap()).map_err(|e| std::io::Error::other(e.to_string()))?;
     let (tick, _) = watch::channel(0u64);
+    let (live_tick, _) = watch::channel(0u64);
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let st = Arc::new(RelayState { db: Mutex::new(db), blob_dir: data_dir.join("blobs"), large_dir: data_dir.join("large"), stop: stop.clone(), tick, limits, rates: Mutex::new(HashMap::new()), big_bodies: Arc::new(Semaphore::new(4)), presence: Mutex::new(HashMap::new()) });
+    let st = Arc::new(RelayState { db: Mutex::new(db), blob_dir: data_dir.join("blobs"), large_dir: data_dir.join("large"), stop: stop.clone(), tick, live: Mutex::new(live::LiveHub::new(hex::encode(rand::thread_rng().gen::<[u8; 8]>()), limits.live.clone())), live_tick, started: std::time::Instant::now(), limits, rates: Mutex::new(HashMap::new()), big_bodies: Arc::new(Semaphore::new(4)), presence: Mutex::new(HashMap::new()) });
     // A chunk directory with no row is what a crash mid-upload leaves behind; the row is written first, so this is safe.
     {
         let db = st.db.lock().unwrap();
@@ -358,6 +367,18 @@ pub async fn start_with(bind: SocketAddr, data_dir: PathBuf, limits: Limits) -> 
                 if st2.stop.load(std::sync::atomic::Ordering::Relaxed) { break; }
                 let db = st2.db.lock().unwrap();
                 sweep_large_locked(&db, &st2);
+            }
+        });
+    }
+    // The live buffer forgets by itself even when nobody is polling.
+    {
+        let st2 = st.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                if st2.stop.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                let now = st2.live_now();
+                st2.live.lock().unwrap().sweep(now);
             }
         });
     }
@@ -408,6 +429,7 @@ fn same_secret(a: &str, b: &str) -> bool {
 }
 
 impl RelayState {
+    fn live_now(&self) -> u64 { self.started.elapsed().as_millis() as u64 }
     /// Counts one use of `key` and says whether it stays within `limit` for the current window.
     fn allow(&self, key: String, limit: u32) -> bool {
         let w = now_secs() / self.limits.window_secs.max(1);
@@ -617,6 +639,10 @@ async fn handle(State(st): State<Arc<RelayState>>, req: Request<Body>) -> Resp {
     // The long-poll endpoint must not hold the DB lock while waiting.
     if m == Method::POST && path == "/v1/sync" {
         return sync(st, &parts.headers, &path, &body).await;
+    }
+    // The live channel's long-poll must not hold the database lock while it waits either.
+    if m == Method::POST && path == "/v1/live/poll" && st.limits.live.enabled {
+        return live_poll(st, &parts.headers, &path, &body).await;
     }
     // Asking the media server must not hold the database (it may take a moment), so this runs on the async side.
     if m == Method::POST && path == "/v1/call-presence" {
@@ -980,6 +1006,34 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
         }
         // ---- calls: a short-lived LiveKit join token for a current member. The media server is untrusted and never sees
         // the group id (the room name is a one-way hash of it); the media key comes from MLS, not from here.
+        // ---- the live channel: sealed events for the people in the room right now, held in memory and never stored ----
+        (Method::POST, ["v1", "groups", gid, "live"]) if lim.live.enabled => {
+            let a = authenticate(&db, headers, ms, path, body, true)?.1.unwrap();
+            if !valid_gid(gid) { return Err(status(StatusCode::BAD_REQUEST, "bad group")); }
+            let r: LivePostReq = parse(body)?;
+            if r.events.is_empty() || r.events.len() > LIVE_POST_MAX { return Err(status(StatusCode::BAD_REQUEST, "1 to 20 events at a time")); }
+            if !is_member(&db, gid, &a.account)? { return Err(status(StatusCode::FORBIDDEN, "not a member")); }
+            drop(db);
+            let mut blobs = Vec::with_capacity(r.events.len());
+            for e in &r.events { blobs.push(dec(e, LIVE_MAX_BLOB)?); }
+            let (mut taken, mut limited, mut full) = (0u32, 0u32, 0u32);
+            {
+                let now = st.live_now();
+                let mut hub = st.live.lock().unwrap();
+                for b in blobs {
+                    match hub.push(gid, &a.device, b, now) {
+                        live::Push::Taken => taken += 1,
+                        live::Push::RateLimited => limited += 1,
+                        live::Push::Full => full += 1,
+                        live::Push::TooBig => return Err(status(StatusCode::PAYLOAD_TOO_LARGE, "too large")),
+                    }
+                }
+            }
+            if taken > 0 { st.live_tick.send_modify(|v| *v += 1); }
+            if taken == 0 && limited > 0 { return Err(status(StatusCode::TOO_MANY_REQUESTS, "too many live events, slow down")); }
+            if taken == 0 && full > 0 { return Err(status(StatusCode::SERVICE_UNAVAILABLE, "the live buffer is full for now")); }
+            Ok(json(&LivePostResp { accepted: taken }))
+        }
         (Method::POST, ["v1", "groups", gid, "call-token"]) => {
             let a = authenticate(&db, headers, ms, path, body, true)?.1.unwrap();
             let Some(cfg) = lim.livekit.as_ref() else { return Err(status(StatusCode::NOT_FOUND, "this relay has no call server configured")) };
@@ -1271,6 +1325,62 @@ async fn sync(st: Arc<RelayState>, headers: &HeaderMap, path: &str, body: &[u8])
         let res = tokio::task::spawn_blocking(move || collect(&st2, &a2, &r2)).await;
         let out = match res { Ok(Ok(o)) => o, _ => return status(StatusCode::INTERNAL_SERVER_ERROR, "db") };
         if !out.messages.is_empty() || !out.welcomes.is_empty() || tokio::time::Instant::now() >= deadline || req.wait_ms == 0 {
+            return json(&out);
+        }
+        let _ = tokio::time::timeout_at(deadline, rx.changed()).await;
+    }
+}
+
+/// Which of these rooms the account belongs to right now (as the relay's own list says).
+fn live_member_rooms(st: &RelayState, account: &str, gids: impl Iterator<Item = String>) -> Result<BTreeSet<String>, Resp> {
+    let db = st.db.lock().unwrap();
+    let mut out = BTreeSet::new();
+    for g in gids { if valid_gid(&g) && is_member(&db, &g, account)? { out.insert(g); } }
+    Ok(out)
+}
+
+/// `POST /v1/live/poll`: what is new in the caller's rooms, or wait for it. Only the rooms the caller belongs to are
+/// answered; the others are left out without a word. A cursor from another relay run is not trusted: the answer then
+/// holds no events, only where the room is now.
+async fn live_poll(st: Arc<RelayState>, headers: &HeaderMap, path: &str, body: &[u8]) -> Resp {
+    let a = {
+        let db = st.db.lock().unwrap();
+        match authenticate(&db, headers, "POST", path, body, true) { Ok((_, Some(a))) => a, Ok(_) => return status(StatusCode::FORBIDDEN, "x"), Err(r) => return r }
+    };
+    let req: LivePollReq = match parse(body) { Ok(r) => r, Err(r) => return r };
+    if req.cursors.len() > 500 { return status(StatusCode::PAYLOAD_TOO_LARGE, "too many rooms"); }
+    let rooms = match live_member_rooms(&st, &a.account, req.cursors.keys().cloned()) { Ok(r) => r, Err(r) => return r };
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(req.wait_ms.min(25_000));
+    let mut rx = st.live_tick.subscribe();
+    loop {
+        rx.borrow_and_update();
+        let mut out = LivePollResp::default();
+        let mut any = false;
+        {
+            let now = st.live_now();
+            let mut hub = st.live.lock().unwrap();
+            out.boot = hub.boot.clone();
+            let same = req.boot == hub.boot;
+            for (gid, after) in &req.cursors {
+                if !rooms.contains(gid) { continue; }
+                if !same {
+                    // Tell the caller where the room stands now, so it can follow from here.
+                    out.groups.insert(gid.clone(), LiveGroupResp { next: hub.head_of(gid), events: vec![] });
+                    continue;
+                }
+                let (evs, next) = hub.since(gid, *after, &a.device, now);
+                // A room the caller has no position in yet (u64::MAX) is answered at once with where it stands: waiting would
+                // only delay the caller's real polls.
+                any |= !evs.is_empty() || *after == u64::MAX;
+                out.groups.insert(gid.clone(), LiveGroupResp { next, events: evs.into_iter().map(|(seq, from, data)| LiveItem { seq, from, data: b64(&data) }).collect() });
+            }
+        }
+        if any || req.wait_ms == 0 || tokio::time::Instant::now() >= deadline || out.boot != req.boot {
+            // Membership may have changed while we waited: events go only to current members.
+            if any {
+                let still = match live_member_rooms(&st, &a.account, out.groups.keys().cloned()) { Ok(r) => r, Err(r) => return r };
+                out.groups.retain(|g, _| still.contains(g));
+            }
             return json(&out);
         }
         let _ = tokio::time::timeout_at(deadline, rx.changed()).await;

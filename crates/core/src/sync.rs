@@ -652,13 +652,15 @@ impl Client {
 
     /// Nothing in a live event is trusted: the kind and size were checked when it was parsed, the time is the sender's claim,
     /// and one sender cannot fill the buffer. It is kept for the UI to read once and never touches the history.
-    fn take_live(&mut self, gid: &str, acct: &str, kind: String, data: String, ts: u64) {
+    fn take_live(&mut self, gid: &str, acct: &str, kind: String, data: String, ts: u64) { self.take_live_limited(gid, acct, kind, data, ts, LIVE_TAKE_PER_SEC) }
+    /// The same for the unstored channel, whose senders may send more per second (`per_sec` is what we take from one).
+    pub(crate) fn take_live_limited(&mut self, gid: &str, acct: &str, kind: String, data: String, ts: u64, per_sec: u32) {
         let now = now_secs();
         if ts + LIVE_MAX_AGE < now || ts > now + LIVE_MAX_AHEAD { return; }
         if !self.st.groups.get(gid).is_some_and(|g| !g.removed && g.accounts.contains(acct)) { return; }
         let slot = self.live_rate.entry((gid.to_string(), acct.to_string())).or_insert((now, 0));
         if slot.0 != now { *slot = (now, 0); }
-        if slot.1 >= LIVE_TAKE_PER_SEC { return; }
+        if slot.1 >= per_sec { return; }
         slot.1 += 1;
         if matches!(kind.as_str(), "wall.d" | "wall.s" | "cwall.d" | "cwall.s") { self.take_wall(gid, acct, &kind, &data); return; }
         if self.live_rate.len() > 512 { self.live_rate.retain(|_, v| v.0 + 5 >= now); }

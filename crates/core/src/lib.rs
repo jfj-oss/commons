@@ -8,6 +8,7 @@ pub mod mls;
 pub mod state;
 pub mod transport;
 pub mod vault;
+pub mod live;
 pub mod ops;
 pub mod pwinvite;
 mod round;

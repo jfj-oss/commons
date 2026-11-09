@@ -26,6 +26,8 @@ pub struct Faults {
     pub cut_sync_at: Option<usize>,
     /// the relay answers every signed request as if this computer's clock were wrong
     pub skewed_clock: bool,
+    /// the relay is one from before the live channel: its paths answer 404
+    pub no_live: bool,
 }
 
 pub struct FlakyTransport { inner: HttpTransport, pub faults: Arc<Mutex<Faults>> }
@@ -34,6 +36,7 @@ impl Transport for FlakyTransport {
         {
             let f = self.faults.lock().unwrap();
             if f.offline { anyhow::bail!("network: simulated offline"); }
+            if f.no_live && (path.ends_with("/live") || path == "/v1/live/poll") { return Ok(HttpResp { status: 404, body: b"not found".to_vec() }); }
             if f.skewed_clock && key.is_some() { return Ok(HttpResp { status: 401, body: format!("clock skew: relay time is {}", now_secs() + 3000).into_bytes() }); }
         }
         let mut r = self.inner.request(key, method, path, body, timeout)?;

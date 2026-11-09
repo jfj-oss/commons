@@ -299,6 +299,30 @@ pub struct SyncReq {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<u64>,
 }
+// ---- the live channel: short-lived, encrypted, never stored (docs/THREAT-MODEL.md "Live channel") ----
+/// Largest single live blob the relay takes, in bytes (a sealed event is a little over 4.3 KB at most), and most blobs in one post.
+pub const LIVE_MAX_BLOB: usize = 4608;
+pub const LIVE_POST_MAX: usize = 20;
+/// Post sealed live events to a room: `POST /v1/groups/{gid}/live`. The relay cannot read them.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct LivePostReq { pub events: Vec<String> }
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct LivePostResp { pub accepted: u32 }
+/// Ask for what is new in these rooms: `POST /v1/live/poll`. `boot` is the relay run the cursors belong to ("" the first time).
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct LivePollReq {
+    #[serde(default)]
+    pub boot: String,
+    pub cursors: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    pub wait_ms: u64,
+}
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LiveItem { pub seq: u64, pub from: String, pub data: String }
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct LiveGroupResp { pub next: u64, pub events: Vec<LiveItem> }
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct LivePollResp { pub boot: String, pub groups: std::collections::BTreeMap<String, LiveGroupResp> }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Entry { pub seq: u64, pub id: String, pub data: String }
 #[derive(Serialize, Deserialize, Debug, Clone)]

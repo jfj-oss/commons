@@ -150,6 +150,17 @@ impl Api {
         let r = ok(self.t.request(Some(k), "POST", "/v1/sync", &body, to)?, "sync")?;
         Ok(serde_json::from_slice(&r.body)?)
     }
+    /// Post sealed live events (the relay holds them for seconds and never stores them). A relay without the channel says 404.
+    pub fn live_post(&self, k: &SigningKey, gid: &str, blobs: &[Vec<u8>]) -> Result<LivePostResp> {
+        let r = self.post(k, &format!("/v1/groups/{gid}/live"), &LivePostReq { events: blobs.iter().map(|b| b64(b)).collect() })?;
+        Ok(serde_json::from_slice(&r.body)?)
+    }
+    pub fn live_poll(&self, k: &SigningKey, req: &LivePollReq) -> Result<LivePollResp> {
+        let body = serde_json::to_vec(req)?;
+        let to = Duration::from_millis(req.wait_ms + 15_000);
+        let r = ok(self.t.request(Some(k), "POST", "/v1/live/poll", &body, to)?, "live poll")?;
+        Ok(serde_json::from_slice(&r.body)?)
+    }
     pub fn put_blob(&self, k: &SigningKey, id: &str, data: &[u8]) -> Result<()> {
         ok(self.t.request(Some(k), "PUT", &format!("/v1/blobs/{id}"), data, Duration::from_secs(300))?, "blob put").map(|_| ())
     }

@@ -749,7 +749,7 @@ impl Client {
         if !valid_live_kind(kind) { bail!("bad live kind"); }
         if data.len() > MAX_LIVE { bail!("live data is too large (4096 bytes at most)"); }
         self.check_chan(gid)?;
-        if !self.ready_to_encrypt(gid) { return Ok(false); }
+        if !self.live_sendable(gid) { return Ok(false); }
         let q = self.live_out.entry(gid.to_string()).or_default();
         if !q.contains_key(kind) && q.len() >= LIVE_KINDS { return Ok(false); }
         q.insert(kind.to_string(), data.to_string());
@@ -761,25 +761,32 @@ impl Client {
     pub(crate) fn live_would_wait(&self, gid: &str, kind: &str) -> bool {
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
         self.live_out.get(gid).is_some_and(|q| q.contains_key(kind))
-            || self.live_sent.get(gid).is_some_and(|w| w.iter().filter(|t| now_ms < **t + 1000).count() >= LIVE_SEND_PER_SEC)
+            || self.live_sent.get(gid).is_some_and(|w| w.iter().filter(|t| now_ms < **t + 1000).count() >= self.live_send_cap())
     }
+    /// Events a room may send per second: more on the unstored channel (live.rs), the old four through the log.
+    fn live_send_cap(&self) -> usize { if self.live_chan_on() { crate::live::LIVE_CHAN_PER_SEC } else { LIVE_SEND_PER_SEC } }
+    fn live_sendable(&self, gid: &str) -> bool { if self.live_chan_on() { self.live_chan_ready(gid) } else { self.ready_to_encrypt(gid) } }
     /// Send what the rate allows. Anything not ready to go out now is dropped, not kept for later.
     pub(crate) fn flush_live(&mut self) {
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
         let gids: Vec<String> = self.live_out.keys().cloned().collect();
         for gid in gids {
-            if !self.ready_to_encrypt(&gid) { self.live_out.remove(&gid); continue; }
+            if !self.live_sendable(&gid) { self.live_out.remove(&gid); continue; }
+            let (chan, cap) = (self.live_chan_on(), self.live_send_cap());
             let win = self.live_sent.entry(gid.clone()).or_default();
             while win.front().is_some_and(|t| now_ms >= *t + 1000) { win.pop_front(); }
             let mut send = vec![];
-            while win.len() < LIVE_SEND_PER_SEC {
+            while win.len() < cap {
                 let Some(kind) = self.live_out.get(&gid).and_then(|q| q.keys().next().cloned()) else { break };
                 let data = self.live_out.get_mut(&gid).and_then(|q| q.remove(&kind)).unwrap_or_default();
                 win.push_back(now_ms);
                 send.push((kind, data));
             }
             if self.live_out.get(&gid).is_some_and(|q| q.is_empty()) { self.live_out.remove(&gid); }
-            for (kind, data) in send { self.queue_env(&gid, Envelope::Live { kind, data, ts: now_secs() }); }
+            for (kind, data) in send {
+                // The unstored channel when the relay has it (nothing in the log, no MLS state touched); else the log, as before.
+                if chan { self.live_chan_seal(&gid, &kind, &data); } else { self.queue_env(&gid, Envelope::Live { kind, data, ts: now_secs() }); }
+            }
         }
         self.live_sent.retain(|_, w| !w.is_empty());
     }

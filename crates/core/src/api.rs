@@ -23,6 +23,8 @@ pub struct App {
     client: Mutex<Option<Client>>,
     /// Pairing in progress (new device waiting for approval).
     wake: (Mutex<bool>, Condvar),
+    /// Wakes the live channel's sender when something is waiting to go out.
+    live_wake: (Mutex<bool>, Condvar),
     stop: Mutex<bool>,
     /// The last answer to each read-only call. The UI asks twice a second, and gets this if the client is busy.
     seen: Mutex<HashMap<String, Value>>,
@@ -47,6 +49,10 @@ pub const CALL_QUIET: Duration = Duration::from_secs(20);
 /// How often the core looks at rune while sharing is on. This is not the send rate: a shared status goes out only
 /// when it changes, plus a renewal every `LISTENING_REFRESH_SECS` while it keeps playing.
 const RUNE_POLL_SECS: u64 = 15;
+
+/// How long the live poller lets the relay hold a poll for news. A room joined meanwhile is not in the poll in flight, so this
+/// is also the longest a new room waits to be heard.
+const LIVE_POLL_WAIT_MS: u64 = 3000;
 
 fn s(v: &Value, k: &str) -> String { v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string() }
 type R = Result<Value, String>;
@@ -98,7 +104,7 @@ impl App {
     pub fn with_kdf(dir: PathBuf, default_relay: &str, kdf: KdfParams) -> Arc<App> {
         Arc::new_cyclic(|me| App {
             me: me.clone(), call_seen: Mutex::new(None), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None),
-            wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), files: Mutex::new(vec![]),
+            wake: (Mutex::new(false), Condvar::new()), live_wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), files: Mutex::new(vec![]),
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
             bridge: Mutex::new(None),
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
@@ -136,7 +142,10 @@ impl App {
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     #[doc(hidden)]
     pub fn bridge_running(&self) -> bool { self.bridge.lock().unwrap().as_ref().is_some_and(|b| !b.is_stopped()) }
-    fn nudge(&self) { *self.wake.0.lock().unwrap() = true; self.wake.1.notify_all(); }
+    fn nudge(&self) {
+        *self.wake.0.lock().unwrap() = true; self.wake.1.notify_all();
+        *self.live_wake.0.lock().unwrap() = true; self.live_wake.1.notify_all();
+    }
     /// A panic in one call must not take every later call down with it.
     fn lock(&self) -> MutexGuard<'_, Option<Client>> { self.client.lock().unwrap_or_else(|p| p.into_inner()) }
 
@@ -158,6 +167,38 @@ impl App {
                 let Some(c) = g.as_mut() else { break };
                 let _ = c.finish_round(done);
                 if !c.more { break; }
+            }
+        });
+        // The unstored live channel (live.rs) has two threads of its own. The sender posts what is waiting within a tenth
+        // of a second; the poller waits at the relay for news, so an event reaches us as soon as it is posted. Neither
+        // holds the client while it waits. The ordinary round then only sends, so a relay without the channel is
+        // still served by the log, exactly as before.
+        let app = self.clone();
+        std::thread::spawn(move || loop {
+            if *app.stop.lock().unwrap() { break; }
+            let plan = { let mut g = app.lock(); g.as_mut().and_then(|c| { c.set_live_background(true); c.flush_live(); c.live_plan_with(true, false) }) };
+            match plan {
+                Some(p) => { let d = p.run(0); if let Some(c) = app.lock().as_mut() { c.live_finish(d); } }
+                None => {
+                    let g = app.live_wake.0.lock().unwrap();
+                    let mut g = app.live_wake.1.wait_timeout_while(g, Duration::from_millis(100), |w| !*w).unwrap().0;
+                    *g = false;
+                }
+            }
+        });
+        let app = self.clone();
+        std::thread::spawn(move || loop {
+            if *app.stop.lock().unwrap() { break; }
+            let plan = { let mut g = app.lock(); g.as_mut().and_then(|c| { c.set_live_background(true); c.live_plan_with(false, true) }) };
+            match plan {
+                Some(p) => {
+                    let wait = if p.quick() { 400 } else { LIVE_POLL_WAIT_MS };
+                    let d = p.run(wait);
+                    let failed = d.failed();
+                    if let Some(c) = app.lock().as_mut() { c.live_finish(d); }
+                    if failed { std::thread::sleep(Duration::from_millis(1500)); }
+                }
+                None => std::thread::sleep(Duration::from_millis(500)),
             }
         });
         // Its own thread, because asking rune is a network wait that must not hold up the relay loop or the UI.

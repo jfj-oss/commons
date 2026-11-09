@@ -187,10 +187,14 @@ fn a_live_event_reaches_a_friend_and_is_never_history() {
 
 #[test]
 fn live_sending_is_limited_and_coalesced_and_receiving_is_capped() {
+    // A relay from before the unstored channel: live events travel through the log, at four a second.
     let net = Net::new();
     let (mut a, mut b) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"));
     let (_cid, gen) = community_with(&net, &mut a, &mut [&mut b]);
     settle(&mut [&mut a, &mut b]);
+    for p in [&a, &b] { p.faults.lock().unwrap().no_live = true; }
+    settle(&mut [&mut a, &mut b]);
+    assert!(matches!(a.c.live_support(), commons_core::live::Support::No(_)), "the 404 was noticed");
     // Twenty updates of one kind in a burst: the first goes, and while the rest wait only the newest is kept.
     for i in 0..20 { a.c.live_send(&gen, "cursor", &format!("{i}")).unwrap(); }
     assert!(a.c.outbox_len() <= 4, "at most four a second per room, got {}", a.c.outbox_len());

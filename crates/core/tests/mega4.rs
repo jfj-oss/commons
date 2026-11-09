@@ -135,7 +135,7 @@ fn strokes_reach_friends_and_bad_ones_are_dropped_whole() {
     // Strokes are never silently replaced: when one is still waiting or the second's four are used, the next says "later" and changes nothing.
     let mut sent = 0;
     for i in 0..8u32 { let before = a.c.wall_view(&gid).rev; if a.c.wall_draw(&gid, &[(20 + i, 20, 1, 0)]).unwrap() { sent += 1; } else { assert_eq!(a.c.wall_view(&gid).rev, before, "a refused stroke leaves the wall alone"); } }
-    assert!(sent <= 4, "at most four strokes a second leave ({sent})");
+    assert!(sent <= commons_core::live::LIVE_CHAN_PER_SEC, "at most {} strokes a second leave ({sent})", commons_core::live::LIVE_CHAN_PER_SEC);
     // A hostile client sends bad ones straight into the live channel: every one is dropped whole, the good one next to it is kept.
     let me = now_secs();
     let send = |p: &mut Peer, data: String| p.c.debug_send_envelope(&gid, Envelope::Live { kind: "wall.d".into(), data, ts: me }).unwrap();
@@ -317,10 +317,20 @@ fn the_wall_is_saved_with_the_state_on_a_slow_debounce() {
 
 #[test]
 fn what_the_relay_sees_of_a_wall_is_what_it_sees_of_any_message() {
+    // On a relay that carries the unstored live channel a stroke is no log entry at all, and not readable anywhere.
     let (net, mut a, mut b, mut c, _cid, gid) = trio();
     settle(&mut [&mut a, &mut b, &mut c]);
     let before = relay_entries(&net, &gid).len();
     a.c.wall_draw(&gid, &[(1, 1, 1, 0)]).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    assert_eq!(relay_entries(&net, &gid).len(), before, "a stroke is not in the log");
+    assert_eq!(glyphs(&mut b, &gid).len(), 1, "but it arrived");
+    assert!(!contains(&relay_bytes(&net), "wall.d"));
+    // On one from before the channel it is one ordinary encrypted entry, as it was.
+    for p in [&a, &b, &c] { p.faults.lock().unwrap().no_live = true; }
+    settle(&mut [&mut a, &mut b, &mut c]);
+    let before = relay_entries(&net, &gid).len();
+    a.c.wall_draw(&gid, &[(2, 1, 1, 0)]).unwrap();
     settle(&mut [&mut a, &mut b, &mut c]);
     assert_eq!(relay_entries(&net, &gid).len(), before + 1, "one stroke is one ordinary encrypted entry");
     assert!(!contains(&relay_bytes(&net), "wall.d"));
