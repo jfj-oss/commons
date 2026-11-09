@@ -1163,6 +1163,133 @@ try {
     await A.ev(`localStorage.removeItem('commons.dens'); localStorage.removeItem('commons.densAll'); localStorage.removeItem('commons.dens.' + ${g}); localStorage.removeItem('commons.dens.' + ${mg}); __megaNew.room(S.gid); 1`);
     await A.waitFor(`S.snap.communities.every(c => c.channels.every(x => !x.unread))`, 20000).catch(() => { });
   }
+  // ---- mega phase 7: server settings (owners and admins; changes reach the others; members never see it) ----
+  {
+    const cid = await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`);
+    const cidj = JSON.stringify(cid), g = JSON.stringify(textGid), admKey = JSON.stringify('adm:' + cid);
+    const wf = async (P, expr, ms) => { await P.send('Page.bringToFront'); await sleep(250); return P.waitFor(expr, ms); };
+    const toServer = async P => {
+      await P.send('Page.bringToFront');
+      for (let i = 0; i < 5 && await lvl(P) !== 'server'; i++) {
+        await P.ev(`document.activeElement && document.activeElement.blur && document.activeElement.blur()`);
+        if (await lvl(P) === 'home') { await P.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.cid === ${cidj}), true)`); await sleep(1200); await key(P, 'Enter'); await sleep(1400); }
+        else { await key(P, 'Escape'); await sleep(1000); }
+      }
+      need(await lvl(P) === 'server', 'admin: could not reach the rooms level');
+    };
+    const openAdmin = async P => {
+      await toServer(P);
+      await P.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.key === ${admKey}), true)`);
+      await wf(P, `__mega.list.settled && __mega.list.item.key === ${admKey}`, 20000);
+      await P.ev(`document.activeElement && document.activeElement.blur && document.activeElement.blur()`);
+      await key(P, 'Enter'); await wf(P, `__mega.level === 'chat' && !!document.querySelector('#mega-opts .madm section[data-s="name"]')`, 15000); await sleep(900);
+    };
+    const adm = (P, sel) => P.ev(`document.querySelector(${JSON.stringify('#mega-opts .madm ' + sel)}).click()`);
+    const confirm = async (P, label) => { await P.waitFor(`document.querySelector('.modal')`, 5000); need(await P.ev(`document.querySelector('.modal .acts button:last-child').textContent`) === label, 'admin: the confirm button should say ' + label); await click(P, '.modal .acts button:last-child'); await P.waitFor(`!document.querySelector('.modal')`, 15000); };
+    const snapC = (P, expr) => P.ev(`(() => { const c = S.snap.communities.find(c => c.id === ${cidj}); return ${expr}; })()`);
+    const origRoom = await A.ev(`S.snap.communities.find(c => c.id === ${cidj}).channels.find(x => x.gid === ${g}).name`);
+
+    // a plain member is offered nothing: no card, no panel, and the panel's own entry point hands back nothing
+    await toServer(B);
+    need(await B.ev(`!__mega.list.items.some(x => x.kind === 'admin') && !document.querySelector('.madm') && __megaAdmin.html(${cidj}) === ''`), 'admin: a plain member is offered server settings');
+    need(await B.ev(`(() => { const o = document.querySelector('#mega-opts'); return !o || o.hidden || !o.querySelector('.madm'); })()`), 'admin: the panel is in a member\'s page');
+
+    // the owner finds a "server settings" card beside the options card, and it opens the room
+    await toServer(A);
+    need(await A.ev(`__mega.list.items.some(x => x.kind === 'admin' && x.name === 'server settings')`), 'admin: the owner has no server settings card');
+    await A.shot('admin-1-cards');
+    await openAdmin(A);
+    need(await A.ev(`[...document.querySelectorAll('#mega-opts .madm section')].map(s => s.dataset.s).join()`) === 'name,rooms,members,bans,invites,owner', 'admin: the owner should see every section: ' + await A.ev(`[...document.querySelectorAll('#mega-opts .madm section')].map(s => s.dataset.s).join()`));
+    await A.shot('admin-2-panel');
+
+    // rename the server; the other client sees it
+    await type(A, '#ma-name', 'Reading circle'); await adm(A, '[data-a="rename"]');
+    await wf(B, `S.snap.communities.some(c => c.id === ${cidj} && c.name === 'Reading circle')`, 40000).catch(() => { throw new Error('mega: admin: the other client never saw the new server name'); });
+    need(await A.ev(`/Renamed/.test(document.querySelector('#ma-say').textContent)`), 'admin: no confirmation after renaming');
+
+    // rename a room: a clash says why, then it works and the other client sees it
+    await A.ev(`document.querySelector('#mega-opts .madm [data-a="room-rename"][data-id=${g}]').click()`);
+    await A.waitFor(`document.querySelector('.modal #n')`, 5000);
+    const otherRoom = await snapC(A, `c.channels.find(x => x.gid !== ${g} && x.kind !== 'voice') ? c.channels.find(x => x.gid !== ${g} && x.kind !== 'voice').name : c.channels.find(x => x.gid !== ${g}).name`);
+    await type(A, '.modal #n', otherRoom); await click(A, '.modal .acts button:last-child'); await sleep(800);
+    need(await A.ev(`/already a room/.test(document.querySelector('#m-err').textContent)`), 'admin: a clashing room name should say why: ' + await A.ev(`document.querySelector('#m-err').textContent`));
+    await type(A, '.modal #n', 'book-talk'); await click(A, '.modal .acts button:last-child'); await A.waitFor(`!document.querySelector('.modal')`, 15000);
+    await wf(B, `S.snap.communities.find(c => c.id === ${cidj}).channels.some(x => x.gid === ${g} && x.name === 'book-talk')`, 40000).catch(() => { throw new Error('mega: admin: the other client never saw the room rename'); });
+
+    // add a room, then delete it: asks first (cancel keeps it), the other client sees both
+    await type(A, '#ma-room', 'Planning Board'); await adm(A, '[data-a="room-add"]');
+    await wf(A, `S.snap.communities.find(c => c.id === ${cidj}).channels.some(x => x.name === 'planning-board')`, 40000);
+    await wf(B, `S.snap.communities.find(c => c.id === ${cidj}).channels.some(x => x.name === 'planning-board')`, 40000).catch(() => { throw new Error('mega: admin: the other client never saw the new room'); });
+    const planId = await snapC(A, `c.channels.find(x => x.name === 'planning-board').gid`);
+    await A.waitFor(`document.querySelector('#mega-opts .madm [data-a="room-delete"][data-id="${planId}"]')`, 8000);
+    await A.ev(`document.querySelector('#mega-opts .madm [data-a="room-delete"][data-id="${planId}"]').click()`);
+    await A.waitFor(`document.querySelector('.modal')`, 5000);
+    need(await A.ev(`/cannot be undone/.test(document.querySelector('.modal').textContent)`), 'admin: deleting a room does not warn');
+    await click(A, '.modal .acts button:first-child'); await A.waitFor(`!document.querySelector('.modal')`, 5000); await sleep(600);
+    need(await snapC(A, `c.channels.some(x => x.gid === "${planId}")`), 'admin: cancel still deleted the room');
+    await A.ev(`document.querySelector('#mega-opts .madm [data-a="room-delete"][data-id="${planId}"]').click()`);
+    await confirm(A, 'Delete room');
+    await wf(B, `!S.snap.communities.find(c => c.id === ${cidj}).channels.some(x => x.gid === "${planId}")`, 40000).catch(() => { throw new Error('mega: admin: the other client still has the deleted room'); });
+    await A.shot('admin-3-rooms');
+
+    // roles: promote bob; his page gets the card and the panel (without the owner-only parts); then demote him
+    const bobAcct = await B.ev(`S.snap.me.account`);
+    await wf(A, `document.querySelector('#mega-opts .madm [data-a="role"][data-r="admin"][data-acct="${bobAcct}"]')`, 20000);
+    await A.ev(`document.querySelector('#mega-opts .madm [data-a="role"][data-r="admin"][data-acct="${bobAcct}"]').click()`);
+    await wf(B, `S.snap.communities.find(c => c.id === ${cidj}).role === 'admin'`, 40000).catch(() => { throw new Error('mega: admin: the role change never reached the other client'); });
+    await openAdmin(B);
+    need(await B.ev(`[...document.querySelectorAll('#mega-opts .madm section')].map(s => s.dataset.s).join()`) === 'name,rooms,members,bans,invites', 'admin: an admin should not see the owner-only section');
+    need(await B.ev(`!document.querySelector('#mega-opts .madm [data-a="role"], #mega-opts .madm [data-a="transfer"]')`), 'admin: an admin is offered role changes or a hand-over');
+    need(await B.ev(`(async () => { const ms = await rpc('members', { cid: ${cidj} }); return [...document.querySelectorAll('#mega-opts .madm [data-a="ban"]')].every(b => (ms.find(m => m.account === b.dataset.acct) || {}).role === 'member'); })()`), 'admin: an admin is offered removing the owner or another admin');
+    await B.shot('admin-4-as-admin');
+    await wf(A, `document.querySelector('#mega-opts .madm [data-a="role"][data-r="member"][data-acct="${bobAcct}"]')`, 20000);
+    await A.ev(`document.querySelector('#mega-opts .madm [data-a="role"][data-r="member"][data-acct="${bobAcct}"]').click()`);
+    await wf(B, `S.snap.communities.find(c => c.id === ${cidj}).role === 'member'`, 40000).catch(() => { throw new Error('mega: admin: the demotion never reached the other client'); });
+    await wf(B, `!document.querySelector('#mega-opts .madm') && !(__mega.railItems || []).some(x => x.kind === 'admin')`, 15000).catch(() => { throw new Error('mega: admin: a demoted admin kept the panel'); });
+
+    // a member can ban nobody, and the core says so too
+    const refused = await B.ev(`rpc('rename_channel', { cid: ${cidj}, room: ${g}, name: 'sneaky' }).then(() => 'allowed', e => 'refused: ' + e.message)`);
+    need(/^refused/.test(refused), 'admin: the core let a member rename a room: ' + refused);
+
+    // ban and unban a third person when there is one; both lists change on the owner's page
+    const third = await A.ev(`rpc('members', { cid: ${cidj} }).then(ms => { const m = ms.find(m => !m.me && m.name !== 'Bob'); return m ? m.account : ''; })`);
+    if (third) {
+      await wf(A, `document.querySelector('#mega-opts .madm [data-a="ban"][data-acct="${third}"]')`, 20000);
+      await A.ev(`document.querySelector('#mega-opts .madm [data-a="ban"][data-acct="${third}"]').click()`);
+      await confirm(A, 'Remove and ban');
+      await wf(A, `document.querySelector('#mega-opts .madm [data-a="unban"][data-acct="${third}"]')`, 40000).catch(() => { throw new Error('mega: admin: the banned person never showed under banned'); });
+      await A.ev(`document.querySelector('#mega-opts .madm [data-a="unban"][data-acct="${third}"]').click()`);
+      await confirm(A, 'Unban');
+      await wf(A, `!document.querySelector('#mega-opts .madm [data-a="unban"]')`, 40000).catch(() => { throw new Error('mega: admin: the ban was not lifted'); });
+    }
+
+    // invites: the list shows the open ones and revoking asks first
+    const invId = await A.ev(`rpc('create_invite', { cid: ${cidj}, uses: 1 }).then(() => S.snap.communities.find(c => c.id === ${cidj}).invites.length)`);
+    await wf(A, `document.querySelector('#mega-opts .madm [data-a="revoke"]')`, 20000);
+    const nInv = await A.ev(`document.querySelectorAll('#mega-opts .madm [data-a="revoke"]').length`);
+    await A.ev(`document.querySelector('#mega-opts .madm [data-a="revoke"]').click()`);
+    await confirm(A, 'Revoke invite');
+    await wf(A, `document.querySelectorAll('#mega-opts .madm [data-a="revoke"]').length === ${nInv - 1}`, 40000).catch(() => { throw new Error('mega: admin: the invite was not revoked'); });
+    need(await A.ev(`!!document.querySelector('#mega-opts .madm [data-a="invite"]')`), 'admin: no link to the existing invite flow');
+
+    // 390 px: the panel fits
+    await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(900);
+    const fit = await A.ev(`(() => { const o = document.querySelector('#mega-opts'), r = o.querySelector('.madm').getBoundingClientRect(); const wide = [...o.querySelectorAll('.madm *')].filter(e => e.getBoundingClientRect().right > innerWidth + 1).map(e => e.tagName + '.' + e.className).slice(0, 4); return { sw: o.scrollWidth, cw: o.clientWidth, doc: document.documentElement.scrollWidth, w: innerWidth, l: r.left, r: r.right, wide }; })()`);
+    need(fit.sw <= fit.cw + 1 && fit.doc <= fit.w + 1 && fit.r <= fit.w + 1 && !fit.wide.length, 'admin: the panel does not fit at 390 px: ' + JSON.stringify(fit));
+    await A.shot('admin-5-390'); 
+    await A.ev(`document.querySelector('#mega-opts').scrollTop = 600`); await sleep(300); await A.shot('admin-6-390-down');
+    await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(700);
+
+    // put the names back for the phases that follow
+    await type(A, '#ma-name', 'Book club'); await adm(A, '[data-a="rename"]');
+    await A.ev(`document.querySelector('#mega-opts .madm [data-a="room-rename"][data-id=${g}]').click()`);
+    await A.waitFor(`document.querySelector('.modal #n')`, 5000);
+    await type(A, '.modal #n', origRoom); await click(A, '.modal .acts button:last-child'); await A.waitFor(`!document.querySelector('.modal')`, 15000);
+    await wf(B, `S.snap.communities.some(c => c.id === ${cidj} && c.name === 'Book club') && S.snap.communities.find(c => c.id === ${cidj}).channels.some(x => x.gid === ${g} && x.name === ${JSON.stringify(origRoom)})`, 40000);
+    await key(A, 'Escape'); await sleep(700);
+    await toServer(A); await toServer(B);
+  }
+  if (process.env.COMMONS_UI_STOP_AFTER === 'admin') { console.log('UI check stopped after the server settings phase (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
   if (process.env.COMMONS_UI_STOP_AFTER === 'mega6') { console.log('UI check stopped after mega phase 6 (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
 
   // ---- large files ----

@@ -1,0 +1,27 @@
+/* mega: the server settings room. It sits in the options room's place and uses its section cards (mega.css),
+   so only the rows and small buttons are defined here. */
+.madm { grid-template-columns: minmax(0, 1fr); }
+.madm > p { color: var(--ink-2); }
+.madm > p b { color: var(--ink); font-family: var(--m-name); font-weight: 400; }
+.madm section { min-width: 0; }
+.madm-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
+.madm-row input[type=text], .madm-row select { flex: 1 1 160px; min-width: 0; width: auto; }
+.madm select { padding: 9px 12px; border-radius: var(--r-m); border: var(--hair) solid var(--line-2); background: var(--page); color: var(--ink); font: inherit; }
+.madm-item { display: flex; gap: 8px 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 8px 0; border-top: var(--hair) solid var(--line); min-width: 0; }
+.madm h3 + .madm-item { border-top: 0; padding-top: 0; }
+.madm-nm { font: 400 15px/1.2 var(--m-name); letter-spacing: var(--m-small); color: var(--ink); display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; min-width: 0; overflow-wrap: anywhere; }
+.madm-k { font: 600 11px var(--m-ui); letter-spacing: .04em; text-transform: lowercase; padding: 2px 8px; border-radius: 9px; background: rgb(255 255 255 / .08); color: var(--m-mute); }
+.madm-k.on { background: color-mix(in srgb, var(--mg-c, var(--m-speak)) 26%, transparent); color: var(--m-paper); }
+.madm-acts { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.ma { font: 600 12px var(--m-ui); letter-spacing: var(--m-small); text-transform: lowercase; padding: 7px 13px; min-height: 32px; border-radius: 16px; border: var(--hair) solid var(--m-line); background: rgb(255 255 255 / .06); color: var(--m-paper); cursor: pointer; }
+.ma:hover { background: rgb(255 255 255 / .14); }
+.ma:focus-visible, .madm-seg button:focus-visible { outline: 2px solid var(--m-paper); outline-offset: 2px; }
+.ma.bad { color: var(--m-danger); border-color: color-mix(in srgb, var(--m-danger) 50%, transparent); }
+.madm-seg { display: inline-flex; gap: 2px; padding: 3px; border-radius: 16px; background: rgb(255 255 255 / .06); }
+.madm-seg button { font: 600 12px var(--m-ui); padding: 5px 12px; border-radius: 13px; border: 0; background: none; color: var(--m-mute); cursor: pointer; }
+.madm-seg button[aria-checked="true"] { background: var(--m-paper); color: var(--m-void); }
+.madm-say { padding: 10px 14px; border-radius: 16px; background: rgb(255 255 255 / .08); color: var(--m-paper); font-size: var(--t-s); overflow-wrap: anywhere; }
+.madm-say.bad { background: color-mix(in srgb, var(--m-danger) 20%, transparent); color: #ffd4d0; }
+@media (max-width: 760px) { .madm-row input[type=text], .madm-row select { flex-basis: 100%; } .madm-acts { width: 100%; } }
+.mitem.adm { border-radius: 4px; }
+@media (max-width: 760px) { .mopts-in.madm h1 { font-size: round(down, 48px, 12px); } }
