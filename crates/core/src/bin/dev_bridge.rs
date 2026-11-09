@@ -164,9 +164,9 @@ fn handle(mut s: TcpStream, app: Arc<App>, ui: Arc<PathBuf>, port: u16, auth: Au
         let out = match app.call(&m, v["args"].clone()) { Ok(x) => serde_json::json!({"ok": x}), Err(e) => serde_json::json!({"err": e}) };
         return reply(&mut s, 200, "application/json", out.to_string().as_bytes());
     }
-    let path = if url == "/" { "index.html".to_string() } else { url.trim_start_matches('/').split('?').next().unwrap_or("").to_string() };
-    if path.contains("..") { return reply(&mut s, 400, "text/plain", b"bad path"); }
-    match std::fs::read(ui.join(&path)) {
+    let Some(file) = bridge_auth::ui_file(&ui, &url) else { return reply(&mut s, 400, "text/plain", b"bad path") };
+    let path = file.to_string_lossy().to_string();
+    match std::fs::read(&file) {
         Ok(b) => {
             let ct = if path.ends_with(".css") { "text/css" } else if path.ends_with(".js") { "text/javascript" } else if path.ends_with(".svg") { "image/svg+xml" } else { "text/html; charset=utf-8" };
             reply(&mut s, 200, ct, &b)

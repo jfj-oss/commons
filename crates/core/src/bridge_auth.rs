@@ -114,6 +114,25 @@ pub fn peer_is_same_user(peer: std::net::SocketAddr, local: std::net::SocketAddr
 #[cfg(not(target_os = "linux"))]
 pub fn peer_is_same_user(_peer: std::net::SocketAddr, _local: std::net::SocketAddr) -> bool { true }
 
+/// The file a request path names inside the `ui` folder, or None for anything that is not plain names below it. A path with a drive
+/// letter, a backslash, a colon (also an NTFS stream), `..` or an absolute start must never reach `Path::join`: on Windows
+/// `ui.join("C:/x")` replaces the base entirely.
+pub fn ui_file(ui: &Path, url_path: &str) -> Option<std::path::PathBuf> {
+    let p = url_path.split(['?', '#']).next().unwrap_or("");
+    let p = p.strip_prefix('/').unwrap_or(p);
+    let p = if p.is_empty() { "index.html" } else { p };
+    let mut out = ui.to_path_buf();
+    for seg in p.split('/') {
+        if seg.is_empty() || seg == "." || seg == ".." || seg.contains(['\\', ':', '\0']) || seg.ends_with(' ') || seg.ends_with('.') { return None; }
+        out.push(seg);
+    }
+    // Symbolic links inside ui/ must not lead out of it either.
+    if let (Ok(real), Ok(base)) = (out.canonicalize(), ui.canonicalize()) {
+        if !real.starts_with(&base) { return None; }
+    }
+    Some(out)
+}
+
 /// The text of the Linux launcher this build ships, so a new bridge can replace an older launcher script in its own install.
 pub const LINUX_LAUNCHER: &str = include_str!("../../../packaging/linux-browser/megatron");
 /// A launcher that contains this line speaks the secret protocol; an older one does not.
@@ -159,6 +178,25 @@ mod tests {
         let h = Auth::with_secret(&s).hello("n0nce");
         assert_eq!(h["proof"], proof(&s, "n0nce"));
         assert!(Auth::open().hello("n0nce").get("proof").is_none());
+    }
+    #[test]
+    fn the_file_server_only_names_files_below_ui() {
+        let d = tempfile::tempdir().unwrap();
+        let ui = d.path().join("ui");
+        std::fs::create_dir_all(ui.join("vendor")).unwrap();
+        std::fs::write(ui.join("index.html"), "x").unwrap();
+        std::fs::write(ui.join("vendor/a.js"), "x").unwrap();
+        std::fs::write(d.path().join("secret.txt"), "s").unwrap();
+        assert_eq!(ui_file(&ui, "/").unwrap(), ui.join("index.html"));
+        assert_eq!(ui_file(&ui, "/vendor/a.js?v=2").unwrap(), ui.join("vendor/a.js"));
+        for bad in ["/../secret.txt", "/vendor/../../secret.txt", "//etc/passwd", "/C:/Users/x/file", "/c:\\windows\\win.ini", "/..\\secret.txt", "/vendor//a.js", "/a.js:stream", "/index.html.", "/x\0y", "/./index.html"] {
+            assert!(ui_file(&ui, bad).is_none(), "{bad}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(d.path().join("secret.txt"), ui.join("link.txt")).unwrap();
+            assert!(ui_file(&ui, "/link.txt").is_none(), "a link out of ui/ is refused");
+        }
     }
     #[test]
     fn the_shipped_launcher_carries_the_protocol_mark_and_is_valid_shell() {
