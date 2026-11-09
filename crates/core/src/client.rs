@@ -51,6 +51,8 @@ pub struct Client {
     pub(crate) walls_flushed: u64,
     pub(crate) wall_rev: u64,
     pub(crate) wall_snap_seen: BTreeMap<String, u64>,
+    /// When somebody else last sent a stroke or a snapshot piece for a room: somebody is there to see our strokes.
+    pub(crate) wall_peer_seen: BTreeMap<String, u64>,
     /// Newest not-yet-sent data per room and kind, and the times (ms) of what each room sent in the last second.
     pub(crate) live_out: BTreeMap<String, BTreeMap<String, String>>,
     pub(crate) live_sent: BTreeMap<String, std::collections::VecDeque<u128>>,
@@ -155,7 +157,7 @@ impl Client {
     }
     fn assemble(dir: &Path, vault: Vault, st: State, prov: Prov, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
         let walls = st.walls.clone();
-        Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), live_in: Default::default(), live_next: 0, live_out: BTreeMap::new(), live_sent: BTreeMap::new(), live_rate: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new(),
+        Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), wall_peer_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), live_in: Default::default(), live_next: 0, live_out: BTreeMap::new(), live_sent: BTreeMap::new(), live_rate: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new(),
             lock: Some(lock), dir_ttl_secs: 30, acl_check_secs: 60, dir_cache: HashMap::new(), dir_wanted: BTreeSet::new(), kp_cache: HashMap::new(), kp_wanted: BTreeMap::new(), kp_refill: false, seen_welcomes: HashSet::new(), last_parked_try: 0,
             more: false, sync_cap: SYNC_MAX_BYTES, pair_ack: None, net: NetStatus::default(), consent_offered: HashMap::new(), large_hashes: HashMap::new() }
     }

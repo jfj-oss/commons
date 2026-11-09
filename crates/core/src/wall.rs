@@ -13,7 +13,7 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const WALL_COLS: u32 = 96;
+pub const WALL_COLS: u32 = 120;
 pub const WALL_ROWS: u32 = 54;
 pub const WALL_CELLS: u32 = WALL_COLS * WALL_ROWS;
 /// The glyphs a cell may hold, by index; index 0 is "erased". Only ever appended to.
@@ -106,7 +106,7 @@ struct WireD { g: u64, k: u64, c: Vec<[u64; 2]> }
 struct WireS { g: u64, i: u64, n: u64, a: Vec<String>, c: Vec<[u64; 4]> }
 
 /// What the UI reads: the wall as it stands, and the rules in force for it.
-pub struct WallView { pub gen: u64, pub locked: bool, pub rev: u64, pub snap_at: u64, pub cells: Vec<(u16, u8, u8, String)> }
+pub struct WallView { pub gen: u64, pub locked: bool, pub rev: u64, pub snap_at: u64, pub peer_at: u64, pub cells: Vec<(u16, u8, u8, String)> }
 
 impl Client {
     /// (generation, locked, owner account) for a room, from the owner-signed style document of its community. A room we
@@ -131,7 +131,11 @@ impl Client {
     /// events are never retried). Returns `true` when it was applied and offered. `false` means "ask again shortly": either the room cannot send
     /// right now and the cells were kept here only, or a stroke is still waiting to go out and nothing was changed (a second one would replace it).
     /// Refused when the wall is locked and we are not the owner.
-    pub fn wall_draw(&mut self, gid: &str, cells: &[(u32, u32, u8, u8)]) -> Result<bool> {
+    pub fn wall_draw(&mut self, gid: &str, cells: &[(u32, u32, u8, u8)]) -> Result<bool> { self.wall_draw_to(gid, cells, true) }
+
+    /// As `wall_draw`; with `share` false the cells stay on this device (nobody is around to see them, so nothing is sent into the room).
+    /// They reach others later in a snapshot when someone opens the room.
+    pub fn wall_draw_to(&mut self, gid: &str, cells: &[(u32, u32, u8, u8)], share: bool) -> Result<bool> {
         self.check_chan(gid)?;
         if cells.is_empty() || cells.len() > WALL_BATCH { bail!("a stroke has 1 to {WALL_BATCH} cells"); }
         let mut flat = Vec::with_capacity(cells.len());
@@ -142,22 +146,28 @@ impl Client {
         let (_, locked, owner) = self.wall_rules(gid);
         let me = self.my_account();
         if locked && me != owner { bail!("the owner has locked this wall"); }
-        if self.live_would_wait(gid, "wall.d") { return Ok(false); }
+        if share && self.live_would_wait(gid, "wall.d") { return Ok(false); }
         let w = self.wall_mut(gid);
         let (gen, clock) = (w.gen, w.clock + 1);
         for f in &flat { w.put(f[0] as u32, (f[1] / 2) as u8, (f[1] % 2) as u8, clock, &me); }
         self.walls_dirty = true; self.wall_rev += 1;
         let data = format!("{{\"g\":{},\"k\":{},\"c\":[{}]}}", gen, clock, flat.iter().map(|f| format!("[{},{}]", f[0], f[1])).collect::<Vec<_>>().join(","));
+        if !share { return Ok(true); }
         self.live_send(gid, "wall.d", &data)
     }
 
-    /// The wall as it stands (empty if we have none), with the owner's rules for it.
-    pub fn wall_view(&mut self, gid: &str) -> WallView {
-        let (_, locked, _) = self.wall_rules(gid);
-        let rev = self.wall_rev;
+    /// The wall as it stands (empty if we have none), with the owner's rules for it. Reads only, so the UI can poll it without
+    /// waiting behind anything long: a wall whose generation is behind the owner's is shown cleared (it is reset for real the
+    /// next time anything touches it).
+    pub fn wall_view(&self, gid: &str) -> WallView {
+        let (gen, locked, _) = self.wall_rules(gid);
         let snap_at = self.wall_snap_seen.get(gid).copied().unwrap_or(0);
-        let w = self.wall_mut(gid).clone();
-        WallView { gen: w.gen, locked, rev, snap_at, cells: w.cells.iter().map(|(p, c)| (*p, c.0, c.1, w.author(c).to_string())).collect() }
+        let peer_at = self.wall_peer_seen.get(gid).copied().unwrap_or(0);
+        let rev = self.wall_rev + gen;
+        match self.walls.get(gid).filter(|w| w.gen >= gen) {
+            Some(w) => WallView { gen: w.gen, locked, rev, snap_at, peer_at, cells: w.cells.iter().map(|(p, c)| (*p, c.0, c.1, w.author(c).to_string())).collect() },
+            None => WallView { gen, locked, rev, snap_at, peer_at, cells: vec![] },
+        }
     }
     /// Snapshot chunks to hand to a member who asked: up to eight events, to be sent slowly.
     pub fn wall_snapshot(&mut self, gid: &str) -> Result<Vec<String>> {
@@ -169,6 +179,7 @@ impl Client {
     pub(crate) fn take_wall(&mut self, gid: &str, acct: &str, kind: &str, data: &str) {
         let (gen, locked, owner) = self.wall_rules(gid);
         let from_owner = acct == owner;
+        if acct != self.my_account() { self.wall_peer_seen.insert(gid.to_string(), commons_proto::now_secs()); }
         let mut changed = false;
         if kind == "wall.d" {
             let Ok(d) = serde_json::from_str::<WireD>(data) else { return };

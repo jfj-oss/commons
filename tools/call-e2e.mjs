@@ -85,6 +85,85 @@ try {
     await call('alice', `c.setCamera(true)`);
     const back = await until(async () => { const t = await tilesOf('bob'); return t.length === 2 && t.every(x => x.w > 0 && x.playing) ? t : null; }, 20000, 'camera back').catch(async () => tilesOf('bob'));
     check('J7 camera on again: the tile comes back with pictures', back.length === 2 && back.filter(isCam).length === 1 && back.every(x => x.w > 0 && x.playing), J(back));
+    // ---- K. the camera stack (mega phase 4): all tiles in one column, dragging reorders for everyone in the call
+    {
+      const shotOf = async (n, name) => { try { await page(n).send('Page.bringToFront'); await sleep(300); const r = await page(n).send('Page.captureScreenshot', { format: 'png' }); fs.mkdirSync(out, { recursive: true }); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(r.result.data, 'base64')); } catch { } };
+      const deck = (n, expr) => page(n).ev(`(() => { const d = window.__megaDeck; return ${expr}; })()`);
+      const ord = n => deck(n, `d.order()`);
+      const visual = n => page(n).ev(`[...document.querySelectorAll('#c-shares .ctile')].sort((a, b) => (+a.style.order || 0) - (+b.style.order || 0)).map(e => e.dataset.key.slice(e.dataset.key.indexOf('/') + 1))`);
+      const sentDeck = n => page(n).ev(`(window.__megaLive.stats.kinds['deck.m'] || 0) + (window.__megaLive.stats.kinds['deck.q'] || 0)`);
+      // a scripted drag of the first tile to the bottom and back to the middle over `ms`, with a move every ~40 ms
+      const drag = (n, ms, hold) => page(n).ev(`(async () => {
+        const tiles = [...document.querySelectorAll('#c-shares .ctile')].sort((a, b) => (+a.style.order || 0) - (+b.style.order || 0));
+        const el = tiles[0], r = el.getBoundingClientRect(), last = tiles[tiles.length - 1].getBoundingClientRect();
+        const x = r.left + r.width / 2, y0 = r.top + r.height / 3, y1 = last.bottom - 6, id = 11, ev = (t, y) => new PointerEvent(t, { clientX: x, clientY: y, pointerId: id, bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' });
+        el.dispatchEvent(ev('pointerdown', y0));
+        const steps = Math.max(2, Math.round(${ms} / 40));
+        for (let i = 1; i <= steps; i++) { window.dispatchEvent(ev('pointermove', y0 + (y1 - y0) * (i / steps))); await new Promise(r => setTimeout(r, 40)); }
+        ${hold ? 'return true;' : `window.dispatchEvent(ev('pointerup', y1)); return true;`} })()`);
+      const upN = n => page(n).ev(`(window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 11, bubbles: true, button: 0 })), true)`);
+      const same = (a, b) => J(a) === J(b);
+      await call('alice', `c.setCamera(true)`);
+      await until(async () => (await tilesOf('bob')).length === 2 && (await tilesOf('alice')).length === 2, 20000, 'K: two tiles on both sides').catch(() => { });
+      await until(async () => (await deck('alice', `d.tiles().length`)) === 2 && (await deck('bob', `d.tiles().length`)) === 2, 10000, 'K: both decks know both tiles');
+      check('K1 the stack is open on the left for people in the call, and the dots slide right to make room', await page('bob').ev(`(() => { const s = document.querySelector('#call-stage').getBoundingClientRect(), r = document.querySelector('#mega-rail').getBoundingClientRect(); return document.documentElement.classList.contains('deck-open') && s.left <= 1 && s.width > 120 && Math.abs(r.left - s.width) < 3; })()`), J(await page('bob').ev(`[document.querySelector('#call-stage').getBoundingClientRect().width, document.querySelector('#mega-rail').getBoundingClientRect().left]`)));
+      await sleep(600);
+      const base = await ord('bob');
+      check('K2 both sides start from a valid order with every tile once', same([...(await ord('alice'))].sort(), [...base].sort()) && base.length === 2 && same(await visual('bob'), base), J([await ord('alice'), base]));
+      // a 3 second drag by alice: the order changes for bob as well, with at most about 10 events
+      const e0 = await sentDeck('alice');
+      await drag('alice', 3000, false);
+      await sleep(1500);
+      const e1 = await sentDeck('alice');
+      const aOrd = await ord('alice');
+      const moved = !same(aOrd, base);
+      await until(async () => same(await ord('bob'), aOrd), 8000, 'bob follows alice\'s order').catch(() => { });
+      check('K3 dragging a tile reorders it for the other person in the call, and their tiles really moved', moved && same(await ord('bob'), aOrd) && same(await visual('bob'), aOrd) && same(await visual('alice'), aOrd), J([base, aOrd, await ord('bob'), await visual('bob')]));
+      check('K4 a whole 3 second drag is at most about 10 live events (not one per pointer move)', e1 - e0 >= 2 && e1 - e0 <= 10, `${e1 - e0} events for ~75 pointer moves`);
+      const idle0 = await sentDeck('alice'); await sleep(3500);
+      check('K5 nothing is sent while idle', (await sentDeck('alice')) === idle0 && (await sentDeck('bob')) <= 12);
+      await shotOf('bob', 'K-stack-bob'); await shotOf('alice', 'K-stack-alice');
+      // a person who is not in the call cannot reorder anything, however well-formed the message and however high the stamp
+      const callGid = world.gid, rev = [...aOrd].reverse();
+      await rpc(P('carol').port, 'live_send', { gid: callGid, kind: 'deck.m', data: J({ s: '', o: rev, n: 99999, b: '', e: 1 }) });
+      await sleep(3500);
+      check('K6 an order from a member who is not in the call is ignored', same(await ord('bob'), aOrd) && same(await ord('alice'), aOrd), J([await ord('bob'), rev]));
+      // junk from someone who is in the call: unknown tiles, duplicates, wrong types never hide or duplicate a tile
+      const known = aOrd.slice();
+      await rpc(P('alice').port, 'live_send', { gid: callGid, kind: 'deck.m', data: J({ s: '', o: ['nope', known[0], known[0], 'x'.repeat(10)], n: 100000, b: '', e: 1 }) });
+      await sleep(1200);
+      await rpc(P('alice').port, 'live_send', { gid: callGid, kind: 'deck.m', data: '{"o": 5}' });
+      await sleep(3000);
+      const bAfter = await ord('bob'), vAfter = await visual('bob');
+      check('K7 unknown, repeated and malformed entries never hide or duplicate a tile', same([...bAfter].sort(), [...known].sort()) && bAfter.length === known.length && same(vAfter, bAfter) && (await tilesOf('bob')).length === 2, J([bAfter, vAfter]));
+      // first grab holds the tile; it expires by itself after about 3 s of silence
+      await drag('alice', 400, true);   // grabbed and moved, button still down, then silence
+      await until(async () => (await deck('bob', `d.holds().length`)) === 1, 8000, 'bob sees alice\'s hold').catch(() => { });
+      const marked = await page('bob').ev(`(() => { const e = document.querySelector('#c-shares .ctile.held'); return e ? e.dataset.holder : null; })()`);
+      const b0 = await ord('bob');
+      await drag('bob', 400, false);   // bob tries to take the same (first) tile
+      await sleep(600);
+      check('K8 while alice holds a tile bob cannot take it, and her name is on it', marked === 'Alice' && same(await ord('bob'), b0), J([marked, b0, await ord('bob')]));
+      await sleep(3600);
+      const expired = await deck('bob', `d.holds().length`);
+      check('K9 the hold expires by itself after about 3 s of silence', expired === 0 && (await page('bob').ev(`!document.querySelector('#c-shares .ctile.held')`)), J(await deck('bob', `d.holds()`)));
+      await upN('alice');
+      await sleep(800);
+      // a tile leaving: the order stays valid on both sides, and the remaining tile is kept
+      const camKeep = (await visual('bob'))[0];
+      await call('alice', `c.stopShare()`);
+      await until(async () => (await tilesOf('bob')).length === 1 && (await tilesOf('alice')).length === 1, 10000, 'K: one tile left').catch(() => { });
+      await sleep(1200);
+      const [lb, la] = [await ord('bob'), await ord('alice')];
+      check('K10 a reorder survives a tile leaving: one tile left on both sides, each exactly once', lb.length === 1 && la.length === 1 && same(await visual('bob'), lb) && (await tilesOf('bob')).length === 1, J([lb, la]));
+      // the hide control only changes my own view
+      await page('bob').ev(`document.querySelector('#mega-deckhide').click()`); await sleep(900);
+      check('K11 hide collapses my stack and slides everything back, without touching anyone else\'s', await page('bob').ev(`!document.documentElement.classList.contains('deck-open') && getComputedStyle(document.querySelector('#call-stage')).display === 'none' && !document.querySelector('#mega-deckshow').hidden`) && await page('alice').ev(`document.documentElement.classList.contains('deck-open')`));
+      await page('bob').ev(`document.querySelector('#mega-deckshow').click()`); await sleep(900);
+      check('K12 show brings it back', await page('bob').ev(`document.documentElement.classList.contains('deck-open') && document.querySelector('#mega-deckshow').hidden`));
+      await call('alice', `c.startShare({ audio: false, profile: 'motion' })`);
+      await until(async () => (await tilesOf('bob')).length === 2, 20000, 'K: share back').catch(() => { });
+    }
     await call('alice', `c.stopShare()`);
     const noShare = await until(async () => { const t = await tilesOf('bob'); return t.length === 1 && isCam(t[0]) ? t : null; }, 8000, 'share gone').catch(async () => tilesOf('bob'));
     check('J8 stopping the share removes only the screen tile', noShare.length === 1 && isCam(noShare[0]) && noShare[0].id === back.find(isCam)?.id, J(noShare));

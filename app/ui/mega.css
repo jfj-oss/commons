@@ -307,3 +307,68 @@ html.mega #typing .dots { display: none; }
 /* a recolour from someone else fades in on the cards, dots and chat vars (the script steps the values; this smooths the rest) */
 .mitem, .mscrub button { transition: background-color .3s, border-color .3s; }
 @media (max-width: 760px) { #mega-paint { top: auto; bottom: 12px; max-height: 66dvh; } }
+
+/* ---- the camera and screenshare stack (phase 4): one column on the left, the dots and everything else slide over ---- */
+html.mega { --m-deckw: 0px; --m-deckh: 0px; }
+@media (min-width: 761px) {
+  html.mega.deck-open { --m-deckw: min(270px, 24vw); }
+  html.mega #app { transition: padding-left .5s var(--m-spring); }
+  html.mega #mega-rail { left: var(--m-deckw); transition: left .5s var(--m-spring), width .5s var(--m-spring), background .3s; }
+  html.mega #mega { left: var(--m-deckw); transition: left .5s var(--m-spring); }
+  html.mega #mega-opts { left: calc(var(--m-railw) + var(--m-deckw)); transition: left .5s var(--m-spring); }
+  html.mega #app { padding-left: calc(var(--m-railw) + var(--m-deckw)); }
+  html.mega.mg-cards #app { padding-left: var(--m-deckw); }
+  html.mega #rail#rail { left: calc(var(--m-railw) + 10px + var(--m-deckw)); transition: left .5s var(--m-spring); }
+  html.mega.mg-cards #rail#rail { left: calc(12px + var(--m-deckw)); }
+  html.mega #mega-deckshow { left: calc(var(--m-railw) + 10px); }
+}
+html.mega #call-stage { position: fixed; z-index: 24; left: 0; top: 0; bottom: 0; width: min(270px, 24vw); max-height: none; padding: 12px 10px 12px max(10px, env(safe-area-inset-left, 0px)); gap: 8px; background: var(--m-void, #050407); border-right: 1px solid rgb(255 255 255 / .1); overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; transform: translateX(-102%); transition: transform .5s var(--m-spring); }
+html.mega.deck-open #call-stage { transform: none; }
+html.mega #call-stage[hidden], html.mega #call-stage.mega-hid { display: none !important; }
+html.mega #mega-deckhead { display: flex; align-items: center; gap: 8px; min-height: 28px; flex: none; font: 600 12px/1.2 var(--m-ui); letter-spacing: var(--m-small); color: var(--m-paper, #f2f0f6); }
+html.mega #mega-deckhead .mdh-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .75; }
+html.mega #mega-deckhead button, html.mega #mega-deckshow { font: 600 12px/1 var(--m-ui); padding: 6px 12px; border-radius: 999px; background: rgb(255 255 255 / .12); color: var(--m-paper, #f2f0f6); border: 0; cursor: pointer; }
+html.mega #mega-deckhead button:hover, html.mega #mega-deckshow:hover { background: rgb(255 255 255 / .22); }
+html.mega #mega-deckshow { position: fixed; z-index: 24; left: 10px; top: 10px; }
+html.mega #mega-deckshow[hidden] { display: none; }
+html.mega #c-shares { display: flex; flex-direction: column; gap: 8px; position: relative; }
+html.mega #c-shares .ctile { flex: none; width: 100%; border-radius: 14px; cursor: grab; touch-action: pan-y; user-select: none; -webkit-user-select: none; transition: box-shadow .2s, outline-color .2s; outline: 2px solid transparent; outline-offset: 2px; }
+html.mega #c-shares .ctile.dragging { cursor: grabbing; box-shadow: 0 18px 40px rgb(0 0 0 / .6); outline-color: var(--m-paper, #fff); transition: none; touch-action: none; }
+html.mega #c-shares .ctile.held { outline-color: var(--mg-hi, #ffe14d); cursor: not-allowed; }
+html.mega #c-shares .ctile.held::after { content: attr(data-holder) " has this"; position: absolute; left: 6px; top: 6px; max-width: calc(100% - 12px); padding: 3px 9px; border-radius: 999px; background: var(--mg-hi, #ffe14d); color: var(--mg-hi-ink, #0c0d12); font: 600 11px/1.3 var(--m-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+html.mega #c-shares .ctile.busy { animation: mdeckno .35s; }
+@keyframes mdeckno { 30% { transform: translateX(-5px); } 60% { transform: translateX(5px); } }
+html.mega #c-play { flex: none; }
+@media (max-width: 760px) {
+  html.mega.deck-open { --m-deckh: 104px; }
+  html.mega #call-stage { left: 0; right: 0; top: 0; bottom: auto; width: auto; height: var(--m-deckh); padding: 6px 8px 6px max(8px, env(safe-area-inset-left, 0px)); flex-direction: row; align-items: stretch; gap: 8px; border-right: 0; border-bottom: 1px solid rgb(255 255 255 / .1); overflow-x: auto; overflow-y: hidden; transform: translateY(-102%); }
+  html.mega.deck-open #call-stage { transform: none; }
+  html.mega #mega-deckhead { flex-direction: column; justify-content: center; min-width: 52px; }
+  html.mega #mega-deckhead .mdh-t { display: none; }
+  html.mega #c-shares { flex-direction: row; }
+  html.mega #c-shares .ctile { width: auto; height: 100%; aspect-ratio: 16 / 9; }
+  html.mega #c-shares .ctile.local { height: 100%; }
+  html.mega #c-play { min-width: 240px; }
+  html.mega #app { padding-top: var(--m-deckh); }
+  html.mega #mega { top: var(--m-deckh); }
+  html.mega #mega-rail { top: var(--m-deckh); }
+  html.mega #mega-deckshow { top: calc(10px + env(safe-area-inset-top, 0px)); left: auto; right: 10px; }
+}
+@media (prefers-reduced-motion: reduce) { html.mega #call-stage, html.mega #app, html.mega #mega-rail, html.mega #mega, html.mega #mega-opts, html.mega #rail#rail { transition-duration: .01ms !important; } }
+
+/* ---- the shared wall (phase 4) ---- */
+#main > #mega-wall { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+#main > #mega-wallhit { position: absolute; inset: 0; z-index: 9; cursor: crosshair; touch-action: none; user-select: none; -webkit-user-select: none; }
+#main > #mega-wallbar { position: absolute; z-index: 12; left: 50%; top: 58px; transform: translateX(-50%); display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px; max-width: calc(100% - 20px); padding: 8px 12px; border-radius: 26px; background: #17151e; border: 1px solid rgb(255 255 255 / .14); color: var(--m-paper, #f2f0f6); box-shadow: 0 16px 40px rgb(0 0 0 / .6); font: 600 12px/1 var(--m-ui); letter-spacing: var(--m-small); }
+#mega-wallbar .mwb-tag { opacity: .6; font-weight: 500; padding: 0 4px; }
+#mega-wallbar .mwb-g, #mega-wallbar .mwb-c { display: flex; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 999px; background: rgb(255 255 255 / .07); }
+#mega-wallbar button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; min-width: 30px; height: 30px; padding: 0 10px; border-radius: 999px; font-family: var(--m-mono, ui-monospace, monospace); font-weight: 700; font-size: 14px; }
+#mega-wallbar button:hover { background: rgb(255 255 255 / .12); }
+#mega-wallbar button[aria-pressed="true"] { background: var(--m-paper, #f2f0f6); color: var(--m-void, #050407); }
+#mega-wallbar .mwb-c button { min-width: 30px; padding: 0; }
+#mega-wallbar .mwb-c button::before { content: ""; display: block; width: 16px; height: 16px; margin: auto; border-radius: 50%; background: var(--sw); box-shadow: 0 0 0 1px rgb(255 255 255 / .4); }
+#mega-wallbar .mwb-c button[aria-pressed="true"] { background: rgb(255 255 255 / .25); color: inherit; }
+#mega-wallbar .mwb-b { font-family: var(--m-ui); font-size: 12px; background: rgb(255 255 255 / .1); }
+#mega-wallbar :focus-visible { outline: 2px solid var(--m-paper, #fff); outline-offset: 2px; }
+html.mg-drawing #stream { user-select: none; -webkit-user-select: none; }
+@media (max-width: 760px) { #main > #mega-wallbar { top: 52px; } }

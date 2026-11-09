@@ -325,3 +325,18 @@ fn what_the_relay_sees_of_a_wall_is_what_it_sees_of_any_message() {
     assert_eq!(relay_entries(&net, &gid).len(), before + 1, "one stroke is one ordinary encrypted entry");
     assert!(!contains(&relay_bytes(&net), "wall.d"));
 }
+
+#[test]
+fn a_ring_drawn_in_batches_over_four_seconds_arrives_whole() {
+    let (_net, mut a, mut b, mut c, _cid, gid) = trio();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    // what the page does: a stroke every half second, a few dozen cells at a time
+    let ring: Vec<(u32, u32, u8, u8)> = (0..96u32).map(|i| { let t = i as f64 / 96.0 * 6.2832; (60 + (20.0 * t.cos()).round() as u32, 27 + (10.0 * t.sin()).round() as u32, 2, 0) }).collect();
+    let mut sent = 0;
+    for ch in ring.chunks(12) { if a.c.wall_draw(&gid, ch).unwrap() { sent += 1; } settle(&mut [&mut a, &mut b, &mut c]); std::thread::sleep(std::time::Duration::from_millis(520)); }
+    assert_eq!(sent, 8);
+    let mine = glyphs(&mut a, &gid);
+    assert!(mine.len() > 30, "{}", mine.len());
+    assert_eq!(glyphs(&mut b, &gid), mine);
+    assert_eq!(glyphs(&mut c, &gid), mine);
+}

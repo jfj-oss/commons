@@ -192,7 +192,7 @@ impl App {
         if in_call { self.saw_call(); }
         let r = self.dispatch(method, a);
         if in_call && r.is_ok() { self.saw_call(); }
-        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait" | "call_presence") { self.nudge(); }
+        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait" | "call_presence" | "live_poll" | "wall_get") { self.nudge(); }
         r
     }
 
@@ -215,6 +215,16 @@ impl App {
         let v = f(g.as_ref().ok_or("locked")?);
         self.seen.lock().unwrap().insert(key, v.clone());
         Ok(v)
+    }
+
+    /// A poll that does not wait: if the client is busy with something long it says so and the caller asks again a moment later.
+    fn try_read(&self, f: impl FnOnce(&Client) -> Value) -> R {
+        let g = match self.client.try_lock() {
+            Ok(g) => g,
+            Err(TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(TryLockError::WouldBlock) => return Ok(json!({"busy": true, "events": [], "head": 0, "cells": []})),
+        };
+        Ok(f(g.as_ref().ok_or("locked")?))
     }
 
     /// Before anything is created for a relay: is it there, and will it have us?
@@ -344,11 +354,14 @@ impl App {
             "react" => self.with(|c| c.react(&s(&a, "gid"), &s(&a, "id"), &s(&a, "emoji"), a["on"].as_bool().unwrap_or(true)).map(|_| json!({})).map_err(e)),
             "typing" => self.with(|c| { c.send_typing(&s(&a, "gid")); Ok(json!({})) }),
             "live_send" => self.with(|c| c.live_send(&s(&a, "gid"), &s(&a, "kind"), &s(&a, "data")).map(|sent| json!({"sent": sent})).map_err(e)),
-            "live_poll" => self.with(|c| {
-                let gid = s(&a, "gid");
-                let evs = c.live_poll(a["since"].as_u64().unwrap_or(0), (!gid.is_empty()).then_some(gid.as_str()));
-                Ok(json!({"events": evs.into_iter().map(|v| json!({"id": v.id, "gid": v.gid, "account": v.account, "kind": v.kind, "data": v.data, "ts": v.ts})).collect::<Vec<_>>(), "head": c.live_next}))
-            }),
+            // A poll: it never waits behind a long action (it answers "busy" and is asked again) and never wakes the sync loop.
+            "live_poll" => {
+                let (gid, since) = (s(&a, "gid"), a["since"].as_u64().unwrap_or(0));
+                self.try_read(|c| {
+                    let evs = c.live_poll(since, (!gid.is_empty()).then_some(gid.as_str()));
+                    json!({"events": evs.into_iter().map(|v| json!({"id": v.id, "gid": v.gid, "account": v.account, "kind": v.kind, "data": v.data, "ts": v.ts})).collect::<Vec<_>>(), "head": c.live_next})
+                })
+            }
             // Owner only. `room` empty = the community's own card; `main` empty = back to the default colours.
             "set_style" => self.with(|c| {
                 let (room, main, hi) = (s(&a, "room"), s(&a, "main"), s(&a, "hi"));
@@ -362,15 +375,18 @@ impl App {
             }),
             "wall_draw" => self.with(|c| {
                 let cells: Vec<(u32, u32, u8, u8)> = a["cells"].as_array().map(|v| v.iter().filter_map(|x| { let x = x.as_array()?; Some((x.first()?.as_u64()? as u32, x.get(1)?.as_u64()? as u32, x.get(2)?.as_u64()? as u8, x.get(3)?.as_u64()? as u8)) }).collect()).unwrap_or_default();
-                c.wall_draw(&s(&a, "gid"), &cells).map(|sent| json!({"sent": sent})).map_err(e)
+                c.wall_draw_to(&s(&a, "gid"), &cells, a["share"].as_bool().unwrap_or(true)).map(|sent| json!({"sent": sent})).map_err(e)
             }),
             // The wall as it stands. With `rev` equal to the last answer's, only the small header comes back.
-            "wall_get" => self.with(|c| {
-                let v = c.wall_view(&s(&a, "gid"));
-                let same = a["rev"].as_u64() == Some(v.rev);
-                Ok(json!({"gen": v.gen, "locked": v.locked, "rev": v.rev, "snap_at": v.snap_at, "same": same,
-                    "cells": if same { vec![] } else { v.cells.iter().map(|(p, g, col, by)| json!([p, g, col, by])).collect::<Vec<_>>() }}))
-            }),
+            "wall_get" => {
+                let (gid, rev) = (s(&a, "gid"), a["rev"].as_u64());
+                self.try_read(|c| {
+                    let v = c.wall_view(&gid);
+                    let same = rev == Some(v.rev);
+                    json!({"gen": v.gen, "locked": v.locked, "rev": v.rev, "snap_at": v.snap_at, "peer_at": v.peer_at, "same": same,
+                        "cells": if same { vec![] } else { v.cells.iter().map(|(p, g, col, by)| json!([p, g, col, by])).collect::<Vec<_>>() }})
+                })
+            }
             "wall_snapshot" => self.with(|c| c.wall_snapshot(&s(&a, "gid")).map(|chunks| json!({"chunks": chunks})).map_err(e)),
             "set_listening_sharing" => self.with(|c| c.set_listening_sharing(a["on"].as_bool().unwrap_or(false), &s(&a, "rune")).map(|_| json!({})).map_err(e)),
             "send_file" => {

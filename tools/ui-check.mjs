@@ -53,7 +53,7 @@ let ver; for (let i = 0; i < 50; i++) { try { ver = await (await fetch(`http://1
 if (!ver) throw new Error('chromium did not start');
 
 class Page {
-  constructor(ws) { this.id = 0; this.cb = new Map(); this.ws = ws; ws.onmessage = m => { const j = JSON.parse(m.data); if (j.id && this.cb.has(j.id)) { this.cb.get(j.id)(j); this.cb.delete(j.id); } }; }
+  constructor(ws) { this.id = 0; this.cb = new Map(); this.ws = ws; ws.onmessage = m => { const j = JSON.parse(m.data); if (j.id && this.cb.has(j.id)) { this.cb.get(j.id)(j); this.cb.delete(j.id); } else if (j.method === 'Runtime.exceptionThrown') console.log('PAGE ERROR:', JSON.stringify(j.params.exceptionDetails).slice(0, 400)); }; }
   send(method, params = {}) { return new Promise(res => { const id = ++this.id; this.cb.set(id, res); this.ws.send(JSON.stringify({ id, method, params })); }); }
   async ev(expr) { const r = await this.send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 400)); return r.result.result.value; }
   async shot(name) { await this.send('Page.bringToFront'); await sleep(250); const r = await this.send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(r.result.data, 'base64')); }
@@ -73,7 +73,7 @@ class Page {
 async function open(url) {
   const t = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/new?` + encodeURIComponent(url), { method: 'PUT' })).json();
   const ws = new WebSocket(t.webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
-  const p = new Page(ws); await p.send('Page.enable'); await p.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }); return p;
+  const p = new Page(ws); await p.send('Page.enable'); await p.send('Runtime.enable'); await p.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }); return p;
 }
 const type = (p, sel, v) => p.ev(`(()=>{const e=document.querySelector(${JSON.stringify(sel)});e.value=${JSON.stringify(v)};e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
 const click = (p, sel) => p.ev(`document.querySelector(${JSON.stringify(sel)}).click()`);
@@ -427,7 +427,8 @@ try {
   need(await A.ev(`!document.querySelector('#mega-pal') && __mega.level === 'server' && __mega.list.item.name === 'lounge' && window.__joined === null`), 'jump to a voice room should focus its card without joining');
   // a second community makes a home; the cards are communities plus the "you" card
   await A.ev(`void __megaNewCommunity(), 0`); await A.waitFor(`document.querySelector('.modal #n')`); await type(A, '#n', 'Second place'); await click(A, '.modal .acts button:last-child');
-  await A.waitFor(`__mega.level === 'server' && __mega.list.items.some(x => x.cid && S.snap.communities.find(c => c.id === x.cid && c.name === 'Second place'))`, 60000);
+  await A.waitFor(`__mega.level === 'server' && __mega.list.items.some(x => x.cid && S.snap.communities.find(c => c.id === x.cid && c.name === 'Second place'))`, 60000).catch(async e => { throw new Error(e.message + ' | ' + await A.ev(`JSON.stringify({ level: __mega.level, comms: S.snap.communities.map(c => c.name), modal: !!document.querySelector('.modal'), modalText: (document.querySelector('.modal') || {}).innerText, toast: document.querySelector('#toast').textContent, items: __mega.list && __mega.list.items.map(x => x.kind + ':' + x.name + ':' + String(x.cid).slice(0, 4)), Scid: String(S.cid).slice(0, 4), Mcid: String(__mega.cid).slice(0, 4), ids: S.snap.communities.map(c => c.name + ':' + c.id.slice(0, 4)), busy: __mega.busy, follow: __mega.followMs })`)); });
+  console.log('new community listed after', await A.ev(`__mega.followMs`), 'ms');
   await key(A, 'Escape'); await sleep(900);
   need(await lvl(A) === 'home', 'Esc from the rooms should show all communities, level is ' + await lvl(A));
   const home = await A.ev(`__mega.list.items.map(x => x.kind + ':' + x.name).join()`);
@@ -470,11 +471,12 @@ try {
     need(await lvl(A) === 'chat' && await bdLive() > 50, 'the backdrop did not come back with the room');
     // history never decodes or ripples: open the other room, then this one again
     const s0 = await st(A);
-    await A.ev(`document.querySelector('#mega-rail .mitem:not(.voice):not(.opt):not(.active)').click()`); await sleep(1800);
-    await A.ev(`document.querySelector('#mega-rail .mitem:not(.voice):not(.opt):not(.active)').click()`); await sleep(1800);
+    const hopped = [await A.ev(`S.gid`)];
+    await A.ev(`(() => { window.__trace = []; const t0 = performance.now(); const iv = setInterval(() => { window.__trace.push([Math.round(performance.now() - t0), S.gid.slice(0, 4), __mega.level, document.querySelector('#mega-rail .mitem.active') && document.querySelector('#mega-rail .mitem.active').dataset.key.slice(0, 4)]); if (performance.now() - t0 > 2500) clearInterval(iv); }, 100); window.__t1 = [(__mega.railItems || []).map(x => [String(x.key).slice(0, 4), x.kind, !!x.locked]), document.querySelector('#toast').textContent, [...document.querySelectorAll('#mega-rail .mitem')].map(e => e.className.replace(/\\s+/g, '.') + ':' + e.dataset.key.slice(0, 4))]; document.querySelector('#mega-rail .mitem:not(.voice):not(.opt):not(.active)').click(); return 1; })()`); await sleep(1800); hopped.push(await A.ev(`JSON.stringify([window.__t1, document.querySelector('#toast').textContent, document.querySelector('#toast').hidden])`)); hopped.push(await A.ev(`JSON.stringify(window.__trace)`));
+    await A.ev(`document.querySelector('#mega-rail .mitem:not(.voice):not(.opt):not(.active)').click()`); await sleep(1800); hopped.push(await A.ev(`S.gid`));
     const s1 = await st(A);
     need(s1.decodes === s0.decodes && s1.ripples === s0.ripples && s1.lands === s0.lands, 'opening rooms (history) must not decode or ripple: ' + JSON.stringify([s0, s1]));
-    need(await A.ev(`S.gid === ${JSON.stringify(textGid)}`), 'could not get back to the club room');
+    need(await A.ev(`S.gid === ${JSON.stringify(textGid)}`), 'could not get back to the club room: ' + JSON.stringify(hopped) + ' ' + await A.ev(`JSON.stringify({ gid: S.gid, level: __mega.level, items: [...document.querySelectorAll('#mega-rail .mitem')].map(e => e.className + ':' + e.dataset.key), wall: window.__megaWall && __megaWall.state() })`));
     // Bob must be in the same room to talk to it
     await B.ev(`openRoom(${JSON.stringify(textGid)})`); await sleep(1200);
     const bsay = t => B.ev(`rpc('send_text', { gid: ${JSON.stringify(textGid)}, text: ${JSON.stringify(t)}, reply: null }).then(() => 1)`);
@@ -593,6 +595,105 @@ try {
     // back into the chat for what follows
     await key(A, 'Enter'); await sleep(1500);
     need(await lvl(A) === 'chat', 'colours: could not get back into the chat');
+  }
+
+  // ---- mega phase 4: the shared wall (drawn through the encrypted core, merged cell by cell, owner lock and clear) ----
+  {
+    const cid = await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`);
+    const g = JSON.stringify(textGid);
+    // a tab in the background does not poll (as in the real app), so the page that is being waited on comes to the front first
+    const wf = async (P, expr, ms) => { await P.send('Page.bringToFront'); await sleep(250); return P.waitFor(expr, ms); };
+    const ws = P => P.ev(`__megaWall.state()`);
+    const cells = P => P.ev(`JSON.stringify(__megaWall.cells().sort((a, b) => a[0] - b[0]))`);
+    const stat = P => P.ev(`JSON.stringify(__megaLive.stats)`).then(JSON.parse);
+    need(await lvl(A) === 'chat' && await A.ev(`S.gid === ${g}`), 'wall: alice is not in the room');
+    await B.ev(`openRoom(${g})`); await sleep(800);
+    await B.ev(`rpc('send_text', { gid: ${g}, text: 'wall time' }).then(() => 1)`);   // bob is plainly around
+    await wf(A, `__megaWall.state().canvas && __megaWall.state().button`, 15000).catch(() => { throw new Error('mega: wall: no draw button in the room header: ' + JSON.stringify({ a: null })); });
+    await wf(B, `__megaWall.state().canvas && __megaWall.state().button`, 15000);
+    await wf(A, `__megaWall.state().present`, 15000);
+    // off by default: no overlay (so text selection and scrolling are untouched), no toolbar
+    for (const P of [A, B]) need(await P.ev(`!document.querySelector('#mega-wallhit') && !document.querySelector('#mega-wallbar') && !document.documentElement.classList.contains('mg-drawing')`), 'wall: the pen is on by default');
+    // the owner's toolbar has lock and clear, a member's does not
+    await A.ev(`document.querySelector('#btn-wall').click()`); await B.ev(`document.querySelector('#btn-wall').click()`); await sleep(400);
+    need(await A.ev(`!!document.querySelector('#mega-wallbar #mw-lock') && !!document.querySelector('#mega-wallbar #mw-clear') && !!document.querySelector('#mega-wallhit')`), 'wall: the owner has no lock and clear: ' + JSON.stringify(await ws(A)).slice(0, 300) + ' ' + await A.ev(`JSON.stringify(S.snap.communities.map(c => [c.name, c.role, c.channels.map(x => x.gid.slice(0, 4))]))`) + ' textGid=' + textGid.slice(0, 4));
+    need(await B.ev(`!!document.querySelector('#mega-wallbar') && !document.querySelector('#mw-lock') && !document.querySelector('#mw-clear') && !document.querySelector('#mega-wallbar [id*="lock"], #mega-wallbar [id*="clear"]')`), 'wall: a non-owner sees lock or clear');
+    // a scripted scribble: a ring, 80 pointer moves over 4 seconds. It must be a handful of events, not one per move.
+    const scribble = (P, cx, cy, r, ms, glyph) => P.ev(`(async () => {
+      const hit = document.querySelector('#mega-wallhit'), G = __megaWall.state().geo, px = (x, y) => ({ clientX: G.b.left + G.ox + (x + .5) * G.cw, clientY: G.b.top + G.oy + (y + .5) * G.ch, pointerId: 7, bubbles: true, button: 0 });
+      document.querySelector('#mw-glyphs [data-g="${glyph}"]').click();
+      const n = 80, pt = i => px(${cx} + Math.round(${r} * Math.cos(i / n * 6.2832)), ${cy} + Math.round(${r} * .5 * Math.sin(i / n * 6.2832)));
+      hit.dispatchEvent(new PointerEvent('pointerdown', pt(0)));
+      for (let i = 1; i <= n; i++) { hit.dispatchEvent(new PointerEvent('pointermove', pt(i))); await new Promise(r => setTimeout(r, ${ms} / n)); }
+      hit.dispatchEvent(new PointerEvent('pointerup', pt(n))); return true; })()`);
+    const s0 = await stat(A);
+    await scribble(A, 60, 27, 20, 4000, 2);
+    await sleep(1500);
+    const s1 = await stat(A), sent = (s1.kinds['wall.d'] || 0) - (s0.kinds['wall.d'] || 0);
+    need(sent >= 1 && sent <= 10, 'wall: a 4 second scribble produced ' + sent + ' events (budget 10)');
+    need((s1.sent - s0.sent) <= 12, 'wall: a scribble sent too many live events in all: ' + (s1.sent - s0.sent));
+    const nA = (await ws(A)).marks;
+    need(nA > 30, 'wall: the scribble left only ' + nA + ' marks');
+    // it reaches the other client, identical
+    await wf(B, `__megaWall.state().marks === ${nA}`, 20000).catch(async () => { throw new Error('mega: wall: bob never got the stroke: ' + JSON.stringify([nA, await ws(B), await stat(A), await B.ev(`rpc('wall_get', { gid: ${g} }).then(r => [r.gen, r.cells.length, r.peer_at, r.locked])`), await A.ev(`rpc('wall_get', { gid: ${g} }).then(r => [r.gen, r.cells.length, r.peer_at, r.locked])`), await B.ev(`rpc('notices').then(n => n.slice(0, 4).map(x => x.kind + ':' + x.text.slice(0, 80)))`)])); });
+    need(await cells(A) === await cells(B), 'wall: the two walls differ');
+    // and a stroke of his reaches her (merged cell by cell)
+    await scribble(B, 60, 27, 8, 1500, 5); await sleep(1500);
+    await wf(A, `__megaWall.state().marks === ${(await ws(B)).marks}`, 20000).catch(() => { throw new Error('mega: wall: his stroke did not reach her'); });
+    need(await cells(A) === await cells(B), 'wall: the walls differ after both drew');
+    await A.shot('mega4-1-wall-drawing'); await B.shot('mega4-2-wall-bob');
+    // the toolbar and Esc: Esc closes the pen first, then steps back as before
+    await B.ev(`document.querySelector('#mw-done').click()`); await sleep(300);
+    need(await B.ev(`!document.querySelector('#mega-wallbar') && !document.querySelector('#mega-wallhit')`), 'wall: done did not close the pen');
+    await key(A, 'Escape'); await sleep(500);
+    need(await lvl(A) === 'chat' && await A.ev(`!document.querySelector('#mega-wallbar')`), 'wall: Esc should close the pen and stay in the room');
+    await A.shot('mega4-3-wall-idle');
+
+    // ---- lock: the owner locks it; bob's pen goes away, his strokes are refused and a forged one is dropped by every receiver
+    await B.ev(`document.querySelector('#btn-wall').click()`); await sleep(300);   // his pen is open when the lock arrives
+    await A.ev(`document.querySelector('#btn-wall').click()`); await sleep(300);
+    await A.ev(`document.querySelector('#mw-lock').click()`);
+    await wf(B, `__megaWall.state().locked && !__megaWall.state().bar && !__megaWall.state().button`, 20000).catch(() => { throw new Error('mega: wall: the lock did not reach bob or his pen stayed'); });
+    need((await ws(A)).button && (await ws(A)).locked, 'wall: the owner lost the pen when she locked it');
+    const before = await cells(A), pre = (await ws(A)).marks;
+    const refused = await B.ev(`rpc('wall_draw', { gid: ${g}, cells: [[3, 3, 1, 0]] }).then(() => 'accepted', e => 'refused: ' + e.message)`);
+    need(/^refused/.test(refused), 'wall: the core took a stroke from a member of a locked wall: ' + refused);
+    // a hostile client skips its own refusal and sends the stroke by hand
+    await B.ev(`rpc('live_send', { gid: ${g}, kind: 'wall.d', data: JSON.stringify({ g: 0, k: 99999, c: [[3 * 120 + 3, 3], [3 * 120 + 4, 3]] }) }).then(() => 1)`);
+    await sleep(4000);
+    need(await cells(A) === before && (await ws(A)).marks === pre, 'wall: a forged stroke got through a locked wall');
+    // the owner can still draw on it, and bob sees that
+    await scribble(A, 20, 10, 5, 1200, 3); await sleep(1500);
+    await wf(B, `__megaWall.state().marks === ${(await ws(A)).marks}`, 20000).catch(() => { throw new Error('mega: wall: the owner\'s stroke on the locked wall did not reach bob'); });
+    await A.ev(`document.querySelector('#mw-lock').click()`);   // unlock
+    await wf(B, `!__megaWall.state().locked && __megaWall.state().button`, 20000).catch(() => { throw new Error('mega: wall: unlock did not reach bob'); });
+    await A.ev(`document.querySelector('#mw-done').click()`); await sleep(300);
+
+    // ---- clear reaches a client that was offline when it happened, and that client cannot bring the old wall back
+    const bobProc = procs[2];
+    need(bobProc && bobProc.spawnargs.includes(String(B_PORT)), 'wall: could not find bob\'s core to pause');
+    const full = (await ws(A)).marks;
+    bobProc.kill('SIGSTOP');   // bob's core is frozen: he is offline
+    await sleep(500);
+    await A.ev(`document.querySelector('#btn-wall').click()`); await sleep(300);
+    await A.ev(`document.querySelector('#mw-clear').click()`); await sleep(300);
+    need(await A.ev(`document.querySelector('#mw-clear').textContent.includes('everyone')`), 'wall: clear did not ask first');
+    await A.ev(`document.querySelector('#mw-clear').click()`);
+    await wf(A, `__megaWall.state().marks === 0 && __megaWall.state().gen === 1`, 20000).catch(() => { throw new Error('mega: wall: the owner\'s wall did not clear'); });
+    await scribble(A, 90, 40, 4, 800, 1); await sleep(1200);
+    const fresh = (await ws(A)).marks;
+    need(fresh > 3 && fresh < full, 'wall: new drawing after the clear: ' + fresh);
+    bobProc.kill('SIGCONT');
+    await wf(B, `__megaWall.state().gen === 1 && __megaWall.state().marks > 0`, 60000).catch(async () => { throw new Error('mega: wall: bob did not get the clear after being offline: ' + JSON.stringify(await ws(B).catch(() => null))); });
+    await sleep(2000);
+    need(await B.ev(`__megaWall.state().gen === 1`) && (await ws(B)).marks <= fresh, 'wall: bob still shows the cleared wall (' + (await ws(B)).marks + ' marks)');
+    // an old-generation stroke sent late (what an offline device would do) is ignored everywhere
+    await B.ev(`rpc('live_send', { gid: ${g}, kind: 'wall.d', data: JSON.stringify({ g: 0, k: 999999, c: [[10 * 120 + 10, 3]] }) }).then(() => 1)`);
+    await sleep(3500);
+    need(!(JSON.parse(await cells(A)).some(c => c[0] === 10 * 120 + 10)), 'wall: an old-generation stroke came back after the clear');
+    await A.shot('mega4-4-wall-cleared');
+    await A.ev(`document.querySelector('#mw-done') && document.querySelector('#mw-done').click()`); await sleep(300);
+    need(await lvl(A) === 'chat', 'wall: could not get back to the chat');
   }
 
   // ---- large files ----
@@ -721,6 +822,14 @@ try {
   const pr = await P.ev(`(() => { const c = document.querySelector('#mega-bd'), s = document.querySelector('#stream'); return { bd: !!c && c.width > 0, hscroll: document.documentElement.scrollWidth > innerWidth + 1, wide: [...s.querySelectorAll('.msg, .msg *')].filter(e => e.getBoundingClientRect().right > s.getBoundingClientRect().right + 1).slice(0, 4).map(e => e.tagName + '.' + e.className), sw: s.scrollWidth, cw: s.clientWidth, n: document.querySelectorAll('.msg').length }; })()`);
   need(pr.bd && !pr.hscroll, 'the room on a phone: backdrop missing or the page scrolls sideways: ' + JSON.stringify(pr));
   await P.shot('mega2-5-phone-room');
+  // the shared wall on a phone: the same grid, smaller; the pen's toolbar stays on screen
+  await P.ev(`rpc('wall_draw', { gid: S.gid, share: false, cells: Array.from({ length: 64 }, (_, i) => [60 + Math.round(18 * Math.cos(i / 64 * 6.2832)), 27 + Math.round(9 * Math.sin(i / 64 * 6.2832)), 1 + i % 3, i % 2]) }).then(() => 1)`);
+  await P.waitFor(`__megaWall.state().marks > 20`, 15000);
+  await P.ev(`document.querySelector('#btn-wall').click()`); await sleep(600);
+  const pw = await P.ev(`(() => { const r = document.querySelector('#mega-wallbar').getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom, w: innerWidth, h: innerHeight, hscroll: document.documentElement.scrollWidth > innerWidth + 1 }; })()`);
+  need(pw.l >= 0 && pw.r <= pw.w + 1 && pw.t >= 0 && pw.b <= pw.h && !pw.hscroll, 'wall: the toolbar does not fit a phone screen: ' + JSON.stringify(pw));
+  await P.shot('mega4-5-phone-wall');
+  await P.ev(`document.querySelector('#mw-done').click()`); await sleep(300);
   const pdots = await P.ev(`(() => { const r = document.querySelector('#mega-rail').getBoundingClientRect(); return { w: r.width, h: r.height, level: __mega.level }; })()`);
   if (pdots.level !== 'chat' || pdots.w < 20 || pdots.w > 60) throw new Error('mega: the dots are wrong on a phone: ' + JSON.stringify(pdots));
   // phones swipe in from the left edge instead of scrolling over the dots

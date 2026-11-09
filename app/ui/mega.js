@@ -579,7 +579,7 @@
         const it = items.find(x => x.gid === S.gid && x.kind === 'text');
         if (it && BD && BD.gid === it.gid && mainEl) {
           const hi = lift(hiOf(it), 4.8); root.style.setProperty('--mg-c', dotOf(it)); root.style.setProperty('--mg-hi', hi); root.style.setProperty('--mg-hi-ink', bestInk(hi));
-          BD.f = fieldOf(it); BD.h = hiOf(it); bdColours(BD); dirty();
+          BD.f = fieldOf(it); BD.h = hiOf(it); bdColours(BD); dirty(); if (window.__megaWall) __megaWall.recolour();
         }
       }
     }, 16);
@@ -672,14 +672,14 @@
   function menu(items, x, y) { const p = popAt(`<div class="mmenu" role="menu">${items.map((m, i) => `<button role="menuitem" type="button" data-m="${i}">${esc(m[0])}</button>`).join('')}</div>`, x, y); p.onclick = e => { const b = e.target.closest('[data-m]'); if (b) { closePops(); items[+b.dataset.m][1](); } }; }
   function moreMenu(btn) {
     const r = btn.getBoundingClientRect();
-    menu([['settings', () => $('#btn-settings').click()], ['devices and recovery', () => $('#btn-devices').click()], ['activity log', () => $('#btn-activity').click()], ...(M.level === 'server' ? [['new community', () => follow(newCommunity())], ['join with an invite link', () => joinCommunity()]] : [])], Math.min(r.left, innerWidth - 220), r.bottom + 6);
+    menu([['settings', () => $('#btn-settings').click()], ['devices and recovery', () => $('#btn-devices').click()], ['activity log', () => $('#btn-activity').click()], ...(M.level === 'server' ? [['new community', () => newCommunityHere()], ['join with an invite link', () => joinCommunity()]] : [])], Math.min(r.left, innerWidth - 220), r.bottom + 6);
   }
   mega.addEventListener('click', e => {
     const j = e.target.closest('[data-join]');
     if (j) { rpc('cancel_join', { id: j.dataset.join }).then(() => tick()).catch(er => toast(er.message)); return; }
     const b = e.target.closest('[data-m]'); if (!b) return;
     const a = b.dataset.m;
-    if (a === 'new') follow(newCommunity()); else if (a === 'join') joinCommunity();
+    if (a === 'new') newCommunityHere(); else if (a === 'join') joinCommunity();
     else if (a === 'more') moreMenu(b); else if (a === 'jump') palette();
     else if (a === 'back') showHome(M.cid);
     else if (a === 'invite') $('#btn-invite').click(); else if (a === 'room') $('#add-room').click();
@@ -688,11 +688,18 @@
   });
 
   // a community made from here becomes the one the person is looking at: show its rooms once the core lists it
-  async function follow(p) {
+  async function follow(p, before) {
     await p;
-    for (let i = 0; i < 24; i++) { if (S.cid && S.cid !== M.cid && comm(S.cid)) { if (M.level !== 'chat') showServer(S.cid); return; } await wait(150); }
+    const t0 = Date.now();
+    // by what is new in the list, not by S.cid: a refresh that has not listed the community yet can put S.cid back
+    for (let i = 0; i < 160; i++) {
+      const fresh = comms().find(c => !before.has(c.id));
+      if (fresh) { M.followMs = Date.now() - t0; if (M.level !== 'chat') showServer(fresh.id); return; }
+      await wait(150);   // a busy machine can take many seconds to list a new community
+    }
   }
-  window.__megaNewCommunity = () => follow(newCommunity());
+  const newCommunityHere = () => { const before = new Set(comms().map(c => c.id)); return follow(newCommunity(), before); };
+  window.__megaNewCommunity = newCommunityHere;
 
   function palette() {
     if ($('#mega-pal')) return; closePops();
@@ -707,7 +714,7 @@
         else all.push({ x: it, label: it.name, sub: it.locked ? sub + ', waiting for keys' : sub, run: () => { if (it.locked) { showServer(c.id, it.key); toast('This room is still waiting for keys.'); } else toChat(c.id, it.gid); } });
       }
     }
-    for (const [label, run] of [['settings', () => $('#btn-settings').click()], ['devices and recovery', () => $('#btn-devices').click()], ['activity log', () => $('#btn-activity').click()], ['new community', () => follow(newCommunity())], ['join with an invite link', () => joinCommunity()]]) all.push({ x: { kind: 'action', id: 'a:' + label, theme: ['#efedf2', '#efedf2'] }, label, sub: 'action', run });
+    for (const [label, run] of [['settings', () => $('#btn-settings').click()], ['devices and recovery', () => $('#btn-devices').click()], ['activity log', () => $('#btn-activity').click()], ['new community', () => newCommunityHere()], ['join with an invite link', () => joinCommunity()]]) all.push({ x: { kind: 'action', id: 'a:' + label, theme: ['#efedf2', '#efedf2'] }, label, sub: 'action', run });
     const e = document.createElement('div'); e.id = 'mega-pal'; e.setAttribute('role', 'dialog'); e.setAttribute('aria-label', 'Jump to');
     e.innerHTML = '<input id="m-pq" placeholder="jump to" autocomplete="off" aria-label="Jump to a room"><ul id="m-pl"></ul>'; document.body.append(e); M.pal = e;
     const close = () => { e.remove(); M.pal = null; M.closers = M.closers.filter(f => f !== close); document.removeEventListener('pointerdown', out); };
@@ -737,6 +744,7 @@
     if (M.pal) { M.pal.querySelector('input').blur(); closePops(); return true; }
     if (PT.open) { closePaint(); return true; }
     if (closePops()) return true;
+    if (window.__megaWall && __megaWall.isOn()) { __megaWall.off(); return true; }
     if (S.people) { $('#btn-people').click(); return true; }
     if (M.rail) { closeRail(); return true; }
     if (M.level === 'chat') { if (typing) t.blur(); openFromDots(); return true; }
@@ -798,15 +806,8 @@
     a.cols = Math.ceil(w0 / a.cw); a.rows = Math.ceil(h0 / a.chh); a.c.width = a.cols * a.sw; a.c.height = a.rows * a.sh;
     a.mask = new Uint8Array(a.cols * a.rows); a.col = colFor(a.cols, H(a.gid)); bdColours(a); dirty();
   }
-  function bdMask() {
-    const a = BD; if (!a || !a.mask) return;
-    const b = a.c.getBoundingClientRect(); if (!b.width) return; a.mask.fill(0);
-    const kw = b.width / a.cols, kh = b.height / a.rows;
-    const hit = r => {
-      if (!r.width && !r.height) return;
-      const x0 = Math.max(0, Math.floor((r.left - b.left) / kw) - 1), x1 = Math.min(a.cols, Math.ceil((r.right - b.left) / kw) + 1), y0 = Math.max(0, Math.floor((r.top - b.top) / kh)), y1 = Math.min(a.rows, Math.ceil((r.bottom - b.top) / kh));
-      for (let y = y0; y < y1; y++) a.mask.fill(1, y * a.cols + x0, y * a.cols + Math.max(x0, x1));
-    };
+  // every rectangle the words occupy right now (the backdrop and the shared wall both paint around them)
+  function eachRect(hit) {
     const rg = document.createRange(), text = e => { rg.selectNodeContents(e); for (const r of rg.getClientRects()) hit(r); }, box = e => hit(e.getBoundingClientRect());
     const pad = e => { const r = e.getBoundingClientRect(); hit({ left: r.left - 6, right: r.right + 6, top: r.top - 6, bottom: r.bottom + 6, width: r.width, height: r.height }); };
     const st = $('#stream');
@@ -818,6 +819,18 @@
     $$('#chan-title,#chan-sub', mainEl).forEach(text);
     $$('#head .head-actions > *,#head #btn-rooms', mainEl).forEach(pad);
     $$('.slip,#typing,#mega-typing .mmascot,#mega-typing .mripple:not(:empty),#hint:not([hidden]),#jump:not([hidden]),#replybar:not([hidden]),#banner:not([hidden]),#upd:not([hidden])', mainEl).forEach(box);
+  }
+  function bdMask() {
+    const a = BD; if (!a || !a.mask) return;
+    const b = a.c.getBoundingClientRect(); if (!b.width) return; a.mask.fill(0);
+    const kw = b.width / a.cols, kh = b.height / a.rows;
+    const hit = r => {
+      if (!r.width && !r.height) return;
+      const x0 = Math.max(0, Math.floor((r.left - b.left) / kw) - 1), x1 = Math.min(a.cols, Math.ceil((r.right - b.left) / kw) + 1), y0 = Math.max(0, Math.floor((r.top - b.top) / kh)), y1 = Math.min(a.rows, Math.ceil((r.bottom - b.top) / kh));
+      for (let y = y0; y < y1; y++) a.mask.fill(1, y * a.cols + x0, y * a.cols + Math.max(x0, x1));
+    };
+    eachRect(hit);
+    if (window.__megaWall) { __megaWall.fillMask(a.mask, a.cols, a.rows, b); __megaWall.remask(); }   // the drawing is an obstacle too, and the drawing avoids the words
   }
   function bdDraw() {
     const a = BD; if (!a || !a.mask || !a.at) return;
@@ -866,11 +879,11 @@
     let item = null;
     if (M.started && M.level === 'chat' && !M.opts && S.gid) { const c = comm(M.cid); item = c && roomItems(c).find(x => x.gid === S.gid && x.kind === 'text'); }
     root.classList.toggle('mg-room', !!item);
-    if (!item) { bdStop(); typingDraw([]); focusFrame(); return; }
+    if (!item) { bdStop(); if (window.__megaWall) __megaWall.close(); typingDraw([]); focusFrame(); return; }
     if (BD && BD.gid === item.gid) return;
     const hi = lift(hiOf(item), 4.8);
     root.style.setProperty('--mg-c', dotOf(item)); root.style.setProperty('--mg-hi', hi); root.style.setProperty('--mg-hi-ink', bestInk(hi));
-    typingDraw([]); bdStart(item);
+    typingDraw([]); bdStart(item); if (window.__megaWall) __megaWall.open(item);
   }
 
   // ---- size by length, and the centre focus while reading back
@@ -1104,6 +1117,8 @@
     if (M.level === 'chat' && M.cid === c.id) { M.opts = false; showOpts(); drawRail(); return; }
     toChatOpen(c.id);
   };
+  M.eachRect = eachRect; M.relook = () => dirty(false);
+  window.__megaTheme = { colours(gid) { const c = comm(M.cid), x = c && roomItems(c).find(i => i.gid === gid && i.kind === 'text'); return x ? [lift(fieldOf(x), 3.6), lift(hiOf(x), 4.8)] : null; } };
   M.prev = PREV; M.shown = SHOWN; M.canPaint = canPaint; window.__mega = M;
   if (S.snap && !$('#app').hidden) render();   // the first snapshot may have arrived while this file was still loading
 })();
