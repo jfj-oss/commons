@@ -91,6 +91,9 @@ pub struct State {
     /// chunks arrived; this holds the key material and enough to offer the same file again after a restart.
     #[serde(default)]
     pub large_uploads: BTreeMap<String, LargeUpload>,
+    /// Upload id -> message id of recently sent large files, so finishing twice (a lost answer, a retry) is harmless.
+    #[serde(default)]
+    pub large_sent: Vec<(String, String)>,
     /// Large downloads, by message id: where the partial file is and how much of it has been written.
     #[serde(default)]
     pub large_downloads: BTreeMap<String, LargeDownload>,
@@ -121,6 +124,13 @@ pub struct LargeUpload {
     /// Chunk indexes the relay said it has, as of the last begin or the last chunk sent.
     #[serde(default)]
     pub uploaded: Vec<u64>,
+    /// Plaintext SHA-256 (hex) of every chunk read so far, by chunk index. Saved before the chunk is sent, so a
+    /// restart never has to re-read the file to finish, and a file that changed since is caught by comparing.
+    #[serde(default)]
+    pub hashes: BTreeMap<u64, String>,
+    /// The person paused it (as opposed to it being interrupted).
+    #[serde(default)]
+    pub paused: bool,
     pub started: u64,
 }
 
@@ -150,6 +160,8 @@ pub struct LargeDownload {
     pub finished: bool,
     #[serde(default)]
     pub path: String,
+    #[serde(default)]
+    pub paused: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

@@ -17,10 +17,6 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-/// Save the resume position and chunk hashes every this many chunks. A crash then costs at most this much
-/// re-reading, and the relay itself remembers which chunks actually arrived.
-const SAVE_EVERY: u64 = 8;
-
 pub fn hash_chunk(plain: &[u8]) -> [u8; 32] { Sha256::digest(plain).into() }
 
 pub fn chunk_key(file_key: &[u8; 32], index: u64) -> [u8; 32] {
@@ -71,6 +67,30 @@ pub struct UploadStart {
     pub expires: u64,
     pub complete: bool,
     pub name: String,
+    /// Chunks the page must read from the file: not on the relay yet, or never hashed. Everything else is already safe.
+    pub need_read: Vec<u64>,
+    /// A sample of chunks already hashed (plus the last one), which the page must re-read and check before sending
+    /// anything new, so a changed file can never be mixed into an old upload.
+    pub verify: Vec<u64>,
+    pub hashed: u64,
+}
+/// Marks the one failure that must never be retried: the file is not the one this upload began with.
+pub const CHANGED: &str = "the file has changed since this upload began";
+
+fn upload_start(id: &str, s: &LargeUpload, complete: bool) -> UploadStart {
+    let need_read: Vec<u64> = (0..s.chunks).filter(|i| !s.uploaded.contains(i) || !s.hashes.contains_key(i)).collect();
+    // Up to 8 evenly spread hashed chunks, including the first and the last: enough to notice an edited or swapped file.
+    let hashed: Vec<u64> = s.hashes.keys().copied().collect();
+    let mut verify: Vec<u64> = vec![];
+    if !need_read.is_empty() && !hashed.is_empty() {
+        let n = hashed.len();
+        let picks = 8.min(n);
+        for k in 0..picks { verify.push(hashed[if picks == 1 { 0 } else { k * (n - 1) / (picks - 1) }]); }
+        verify.push(*hashed.last().unwrap());
+        verify.sort_unstable(); verify.dedup();
+    }
+    UploadStart { id: id.into(), chunk_size: s.chunk_size, chunks: s.chunks, uploaded: s.uploaded.clone(), expires: s.expires, complete, name: s.name.clone(),
+        need_read, verify, hashed: s.hashes.len() as u64 }
 }
 pub struct PreparedChunk { pub ct: Vec<u8>, pub needed: bool }
 #[derive(Clone, Debug)]
@@ -82,6 +102,7 @@ fn name_of(name: &str) -> String {
     let safe = cut_name(safe.trim(), 200);
     if safe.is_empty() { "file".into() } else { safe }
 }
+fn fmt_pct(done: u64, chunks: u64) -> String { format!("{}%", done * 100 / chunks.max(1)) }
 fn chunk_count(size: u64) -> u64 { LargeFile::chunk_count(size, LARGE_CHUNK_BYTES) }
 fn unique_path(dir: &Path, name: &str) -> PathBuf {
     let first = dir.join(name);
@@ -106,7 +127,9 @@ impl Client {
         // A file with the same name and key in the same room is the same upload; sessions are removed when it is
         // sent or cancelled, so a deliberate second send of the same file starts a fresh one.
         if let Some((id, s)) = self.st.large_uploads.iter().find(|(_, s)| s.gid == gid && s.name == name && s.size == size && s.last_modified == last_modified).map(|(id, s)| (id.clone(), s.clone())) {
-            return Ok(UploadStart { id, chunk_size: s.chunk_size, chunks: s.chunks, uploaded: s.uploaded.clone(), expires: s.expires, complete: false, name: s.name });
+            if let Some(u) = self.st.large_uploads.get_mut(&id) { u.paused = false; }
+            self.save()?;
+            return Ok(upload_start(&id, &s, false));
         }
         let mut key = [0u8; 32]; let mut nonce = [0u8; 12];
         rand::rngs::OsRng.fill_bytes(&mut key); rand::rngs::OsRng.fill_bytes(&mut nonce);
@@ -116,52 +139,83 @@ impl Client {
         };
         let chunks = chunk_count(size);
         let s = LargeUpload { gid: gid.into(), name: name.clone(), mime: clean_mime(mime), size, last_modified, chunk_size: LARGE_CHUNK_BYTES, chunks,
-            blob: id.clone(), key: hex::encode(key), nonce: hex::encode(nonce), caption: caption.into(), expires: 0, uploaded: vec![], started: now_secs() };
+            blob: id.clone(), key: hex::encode(key), nonce: hex::encode(nonce), caption: caption.into(), expires: 0, uploaded: vec![],
+            hashes: Default::default(), paused: false, started: now_secs() };
+        let out = upload_start(&id, &s, false);
         self.st.large_uploads.insert(id.clone(), s);
         self.save()?;
-        Ok(UploadStart { id, chunk_size: LARGE_CHUNK_BYTES, chunks, uploaded: vec![], expires: 0, complete: false, name })
+        Ok(out)
     }
     /// The relay answered the begin: which chunks it already holds, and when it will remove the file.
     pub fn large_upload_started(&mut self, id: &str, resp: &LargeInfoResp) -> Result<UploadStart> {
         let s = self.st.large_uploads.get_mut(id).ok_or_else(|| anyhow!("no such upload"))?;
         if resp.size != s.size || resp.chunk_size != s.chunk_size || resp.chunks != s.chunks { bail!("the relay has a different file under this id"); }
         s.uploaded = resp.uploaded.clone();
+        // A part on the relay whose hash we never saved cannot be vouched for: send it again (only possible until the
+        // relay seals the file). Sealed files keep theirs; the recipients' whole-file check covers that rare case.
+        if !resp.complete { let h = &s.hashes; s.uploaded.retain(|i| h.contains_key(i)); }
         s.expires = resp.expires;
-        let out = UploadStart { id: id.into(), chunk_size: s.chunk_size, chunks: s.chunks, uploaded: s.uploaded.clone(), expires: s.expires, complete: resp.complete, name: s.name.clone() };
+        let out = upload_start(id, s, resp.complete);
         self.save()?;
         Ok(out)
     }
-    /// Encrypt one chunk, and say whether it still has to be sent. Its plaintext hash is kept for the whole-file
-    /// root hash; every chunk the UI offers is hashed, including ones the relay already has.
+    /// Encrypt one chunk, and say whether it still has to be sent. Its plaintext hash is saved to disk before anything
+    /// is sent; a chunk that hashes differently from the one saved means the file changed, and is refused.
     pub fn large_chunk_prepare(&mut self, id: &str, index: u64, plain: &[u8]) -> Result<PreparedChunk> {
         let s = self.st.large_uploads.get(id).ok_or_else(|| anyhow!("no such upload"))?;
         if index >= s.chunks { bail!("that is not a chunk of this file"); }
         let want = if index + 1 == s.chunks { s.size - s.chunk_size * (s.chunks - 1) } else { s.chunk_size };
         if plain.len() as u64 != want { bail!("that chunk is not the size it should be"); }
-        let h = hash_chunk(plain);
-        self.large_hashes.entry(id.to_string()).or_default().insert(index, h);
+        let h = hex::encode(hash_chunk(plain));
+        let fresh = match s.hashes.get(&index) {
+            Some(old) if *old != h => bail!("{CHANGED} (part {} differs); nothing mixed was sent", index + 1),
+            Some(_) => false,
+            None => true,
+        };
         let needed = !s.uploaded.contains(&index);
         let ct = if needed { encrypt_chunk(&key_of(&s.key)?, &s.blob, index, plain)? } else { vec![] };
+        if fresh {
+            self.st.large_uploads.get_mut(id).unwrap().hashes.insert(index, h);
+            self.save()?;
+        }
         Ok(PreparedChunk { ct, needed })
+    }
+    /// Compare one re-read chunk with the hash saved for it (the resume check).
+    pub fn large_chunk_check(&self, id: &str, index: u64, plain: &[u8]) -> Result<()> {
+        let s = self.st.large_uploads.get(id).ok_or_else(|| anyhow!("no such upload"))?;
+        match s.hashes.get(&index) {
+            Some(old) if *old != hex::encode(hash_chunk(plain)) => bail!("{CHANGED} (part {} differs); nothing mixed was sent", index + 1),
+            _ => Ok(()),
+        }
     }
     pub fn large_chunk_done(&mut self, id: &str, index: u64) {
         if let Some(s) = self.st.large_uploads.get_mut(id) { if !s.uploaded.contains(&index) { s.uploaded.push(index); } }
     }
-    /// The relay should have every chunk by now: compute the whole-file hash it must commit to.
+    pub fn large_upload_pause(&mut self, id: &str, paused: bool) -> Result<()> {
+        self.st.large_uploads.get_mut(id).ok_or_else(|| anyhow!("no such upload"))?.paused = paused;
+        self.save()
+    }
+    fn ordered_hashes(s: &LargeUpload) -> Result<Vec<[u8; 32]>> {
+        if s.hashes.len() as u64 != s.chunks { bail!("some parts of the file were never read; pick the file again to continue"); }
+        (0..s.chunks).map(|i| s.hashes.get(&i).ok_or_else(|| anyhow!("missing part {i}")).and_then(|h| hex32(h))).collect()
+    }
+    /// The relay should have every chunk by now: compute the whole-file hash it must commit to. Needs only the saved
+    /// hashes, not the file, so a finished upload can be completed even if the file is gone.
     pub fn large_finish_prepare(&mut self, id: &str) -> Result<(String, String)> {
         let s = self.st.large_uploads.get(id).ok_or_else(|| anyhow!("no such upload"))?;
-        let hashes = self.large_hashes.get(id).ok_or_else(|| anyhow!("the file was not read from the start"))?;
-        if hashes.len() as u64 != s.chunks { bail!("some parts of the file were not read; start the upload again"); }
-        let ordered: Vec<[u8; 32]> = (0..s.chunks).map(|i| hashes.get(&i).copied().ok_or_else(|| anyhow!("missing part {i}"))).collect::<Result<_>>()?;
-        let root = hex::encode(root_hash(s.chunks, s.size, &ordered));
+        let root = hex::encode(root_hash(s.chunks, s.size, &Self::ordered_hashes(s)?));
         Ok((s.blob.clone(), root))
     }
-    /// The relay accepted the finished file: now the (ordinary-shaped) File message may go out.
+    /// The File message of an upload that was already sent, if this id was finished before.
+    pub fn large_sent_message(&self, id: &str) -> Option<String> {
+        self.st.large_sent.iter().find(|(u, _)| u == id).map(|(_, m)| m.clone())
+    }
+    /// The relay accepted the finished file: now the (ordinary-shaped) File message may go out. The message, the
+    /// removal of the session (which holds the key) and the record of it all reach disk in one atomic save.
     pub fn large_finish_done(&mut self, id: &str) -> Result<String> {
+        if let Some(m) = self.large_sent_message(id) { return Ok(m); }
         let s = self.st.large_uploads.get(id).ok_or_else(|| anyhow!("no such upload"))?.clone();
-        let hashes = self.large_hashes.get(id).ok_or_else(|| anyhow!("the file was not read from the start"))?;
-        let ordered: Vec<[u8; 32]> = (0..s.chunks).map(|i| hashes.get(&i).copied().ok_or_else(|| anyhow!("missing part {i}"))).collect::<Result<_>>()?;
-        let sha = hex::encode(root_hash(s.chunks, s.size, &ordered));
+        let sha = hex::encode(root_hash(s.chunks, s.size, &Self::ordered_hashes(&s)?));
         let env = Envelope::File {
             id: rand_hex(16), name: s.name.clone(), mime: s.mime.clone(), size: s.size.min(MAX_BLOB_BYTES as u64),
             blob: s.blob.clone(), key: s.key.clone(), nonce: s.nonce.clone(), caption: s.caption.clone(), reply: None, ts: now_secs(),
@@ -171,13 +225,14 @@ impl Client {
         let msg_id = match &env { Envelope::File { id, .. } => id.clone(), _ => unreachable!() };
         self.queue_env(&s.gid, env);
         self.st.large_uploads.remove(id);
-        self.large_hashes.remove(id);
+        self.st.large_sent.push((id.to_string(), msg_id.clone()));
+        while self.st.large_sent.len() > 64 { self.st.large_sent.remove(0); }
         self.save()?;
         Ok(msg_id)
     }
-    /// Give up: forget the saved session and tell the caller which relay file to delete.
+    /// Give up: forget the saved session and tell the caller which relay file to delete. Only an explicit cancel
+    /// from the person reaches this.
     pub fn large_upload_cancel(&mut self, id: &str) -> Result<Option<String>> {
-        self.large_hashes.remove(id);
         let gone = self.st.large_uploads.remove(id);
         self.save()?;
         Ok(gone.map(|s| s.blob))
@@ -205,6 +260,13 @@ impl Client {
         std::fs::create_dir_all(&dir)?;
         let reusable = self.st.large_downloads.get(msg_id).is_some_and(|d| !d.finished && d.blob == *blob && d.size == large.size && d.chunks == large.chunks && Path::new(&d.part).exists() && same_place(d));
         if !reusable {
+            // A partial file with real progress is never thrown away to start somewhere else: only an explicit cancel
+            // (which asks first) does that.
+            if let Some(old) = self.st.large_downloads.get(msg_id) {
+                if !old.finished && old.done > 0 && old.blob == *blob && Path::new(&old.part).exists() {
+                    bail!("{} of this file is already saved in {}. Continue it there, or cancel that download first.", fmt_pct(old.done, old.chunks), old.dir);
+                }
+            }
             if let Some(old) = self.st.large_downloads.remove(msg_id) {
                 if !old.finished { let _ = std::fs::remove_file(&old.part); }
             }
@@ -219,38 +281,44 @@ impl Client {
                 gid: gid.into(), msg_id: msg_id.into(), blob: blob.clone(), name: name.clone(), save_name, mime: mime.clone(),
                 size: large.size, chunks: large.chunks, chunk_size: large.chunk_size, sha256: large.sha256.clone(),
                 key: key.clone(), nonce: nonce.clone(), expires: large.expires, dir: dir.display().to_string(), part: part.display().to_string(),
-                done: 0, hashes: vec![], finished: false, path: final_path.display().to_string(),
+                done: 0, hashes: vec![], finished: false, path: final_path.display().to_string(), paused: false,
             });
         }
-        // Rebuild the resume point from the part file itself, not only from the saved count: a crash may have left
-        // whole verified chunks on disk that were never counted, or half of one. Only complete chunks count, and
-        // hashing them again is what lets the whole-file check be finished after any restart.
-        let (chunks, size, chunk_size, part) = {
+        // The resume point is what was saved (each chunk is synced to disk before it is counted). Anything past the count
+        // is thrown away and fetched again, and the last few counted chunks are read back below.
+        let (chunks, size, chunk_size, part, saved_done, saved) = {
             let d = self.st.large_downloads.get(msg_id).unwrap();
-            (d.chunks, d.size, d.chunk_size, d.part.clone())
+            (d.chunks, d.size, d.chunk_size, d.part.clone(), d.done, d.hashes.clone())
         };
         let have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
-        let mut full = if have >= size { chunks } else { (have / chunk_size).min(chunks) };
-        if full > 0 && have < size && full == chunks { full = chunks - 1; }
-        let mut hashes = Vec::with_capacity(full as usize);
-        if full > 0 {
-            let mut f = std::fs::OpenOptions::new().read(true).write(true).open(&part)?;
-            let mut buf = vec![0u8; chunk_size as usize];
-            for i in 0..full {
-                let len = if i + 1 == chunks { size - chunk_size * (chunks - 1) } else { chunk_size } as usize;
-                f.read_exact(&mut buf[..len])?;
-                hashes.push(hex::encode(hash_chunk(&buf[..len])));
-            }
-            // Drop a partially written chunk at the end.
-            let keep = if full == chunks { size } else { full * chunk_size };
-            f.set_len(keep)?;
-            f.sync_all().ok();
+        let counted = saved_done.min(saved.len() as u64).min(chunks);
+        let full = if counted == chunks && have >= size { chunks } else { counted.min(have / chunk_size).min(chunks - 1).max(0) };
+        // Each counted chunk was synced to disk before it was counted and its hash saved, so a resume does not re-read the
+        // file (which could mean minutes of freeze on a 20 GB part). Only the last few chunks are read back and compared.
+        let mut f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&part)?;
+        let mut buf = vec![0u8; chunk_size as usize];
+        let mut good = full;
+        let tail_from = full.saturating_sub(3);
+        for i in tail_from..full {
+            use std::io::{Seek, SeekFrom};
+            let len = if i + 1 == chunks { size - chunk_size * (chunks - 1) } else { chunk_size } as usize;
+            f.seek(SeekFrom::Start(i * chunk_size))?;
+            if f.read_exact(&mut buf[..len]).is_err() || hex::encode(hash_chunk(&buf[..len])) != saved[i as usize] { good = i; break; }
         }
+        let hashes: Vec<String> = saved[..good as usize].to_vec();
+        let full = hashes.len() as u64;
+        let keep = if full == chunks { size } else { full * chunk_size };
+        f.set_len(keep)?;
+        f.sync_all().ok();
+        drop(f);
         let d = self.st.large_downloads.get_mut(msg_id).unwrap();
         d.done = full;
         d.hashes = hashes;
+        d.paused = false;
+        let all = d.done == d.chunks;
         let out = d.clone();
         self.save()?;
+        if all { self.large_download_finalize(msg_id)?; return Ok(self.st.large_downloads[msg_id].clone()); }
         Ok(out)
     }
     /// Decrypt, verify and append the next chunk. The last one finishes the file, checks the whole-file hash and
@@ -268,7 +336,7 @@ impl Client {
         {
             let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&d.part)?;
             f.write_all(&plain)?;
-            if index + 1 == d.chunks { f.sync_all()?; }
+            f.sync_data()?;   // a chunk is counted (and saved) only once it is on disk
         }
         let (done, chunks, size, path) = {
             let d = self.st.large_downloads.get_mut(msg_id).unwrap();
@@ -276,26 +344,39 @@ impl Client {
             d.hashes.push(hex::encode(h));
             (d.done, d.chunks, d.size, d.path.clone())
         };
-        if done == chunks {
-            let (root, part, want, final_path) = {
-                let d = self.st.large_downloads.get(msg_id).unwrap();
-                let ordered: Vec<[u8; 32]> = d.hashes.iter().map(|x| hex32(x)).collect::<Result<_>>()?;
-                (hex::encode(root_hash(d.chunks, d.size, &ordered)), d.part.clone(), d.sha256.clone(), d.path.clone())
-            };
-            let ok = root == want && std::fs::metadata(&part).map(|m| m.len() == size).unwrap_or(false);
-            if !ok {
-                let _ = std::fs::remove_file(&part);
-                self.st.large_downloads.remove(msg_id);
-                self.save()?;
-                bail!("the file did not arrive intact (the whole-file check failed), so nothing was saved");
-            }
-            std::fs::rename(&part, &final_path)?;
-            if let Some(d) = self.st.large_downloads.get_mut(msg_id) { d.finished = true; d.path = final_path.clone(); }
-            self.save()?;
-            return Ok(DownloadStep { done, chunks, size, finished: true, path: final_path });
-        }
-        if done % SAVE_EVERY == 0 { self.save()?; }
+        if done == chunks { return self.large_download_finalize(msg_id); }
+        self.save()?;
         Ok(DownloadStep { done, chunks, size, finished: false, path })
+    }
+    /// Every chunk is on disk: check the whole-file hash and move the file into place.
+    fn large_download_finalize(&mut self, msg_id: &str) -> Result<DownloadStep> {
+        let (root, part, want, final_path, size, chunks) = {
+            let d = self.st.large_downloads.get(msg_id).unwrap();
+            let ordered: Vec<[u8; 32]> = d.hashes.iter().map(|x| hex32(x)).collect::<Result<_>>()?;
+            (hex::encode(root_hash(d.chunks, d.size, &ordered)), d.part.clone(), d.sha256.clone(), d.path.clone(), d.size, d.chunks)
+        };
+        let ok = root == want && std::fs::metadata(&part).map(|m| m.len() == size).unwrap_or(false);
+        if !ok {
+            // Every chunk passed authentication, so the bytes are almost certainly fine; never discard hours of download.
+            let d = self.st.large_downloads.remove(msg_id).unwrap();
+            let kept = unique_path(Path::new(&d.dir), &format!("{}.unverified", d.save_name));
+            let _ = std::fs::rename(&part, &kept);
+            self.save()?;
+            bail!("every part of the file checked out, but the whole-file check did not match what the sender recorded. The file is kept, unverified, at {}", kept.display());
+        }
+        // Never replace a file that appeared in the meantime.
+        let final_path = if Path::new(&final_path).exists() {
+            let d = self.st.large_downloads.get(msg_id).unwrap();
+            unique_path(Path::new(&d.dir), &d.save_name).display().to_string()
+        } else { final_path };
+        std::fs::rename(&part, &final_path)?;
+        if let Some(d) = self.st.large_downloads.get_mut(msg_id) { d.finished = true; d.path = final_path.clone(); }
+        self.save()?;
+        Ok(DownloadStep { done: chunks, chunks, size, finished: true, path: final_path })
+    }
+    pub fn large_download_pause(&mut self, msg_id: &str, paused: bool) -> Result<()> {
+        self.st.large_downloads.get_mut(msg_id).ok_or_else(|| anyhow!("no download in progress"))?.paused = paused;
+        self.save()
     }
     pub fn large_download_state(&self, msg_id: &str) -> Option<LargeDownload> { self.st.large_downloads.get(msg_id).cloned() }
     /// Throw away a partial download and its file. A finished one is the person's file and stays.

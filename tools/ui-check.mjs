@@ -39,7 +39,8 @@ fs.mkdirSync(fakeBin, { recursive: true });
 fs.rmSync(xdgMarker, { force: true });
 for (const p of ['kdialog', 'zenity']) fs.writeFileSync(path.join(fakeBin, p), '#!/bin/sh\nprintf "%s" "$COMMONS_PICKED"\n', { mode: 0o755 });
 fs.writeFileSync(path.join(fakeBin, 'xdg-open'), '#!/bin/sh\nprintf "%s\\n" "$1" > "$COMMONS_XDG_MARKER"\n', { mode: 0o755 });
-run(bin('commons-relay'), ['--bind', `127.0.0.1:${RELAY_PORT}`, '--data', path.join(out, 'data/relay')]);
+const startRelay = () => run(bin('commons-relay'), ['--bind', `127.0.0.1:${RELAY_PORT}`, '--data', path.join(out, 'data/relay')]);
+let relayProc = startRelay();
 for (const [n, port] of [['alice', A_PORT], ['bob', B_PORT]]) {
   const env = { COMMONS_DATA: path.join(out, 'data', n), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1' };
   if (n === 'bob') Object.assign(env, { PATH: fakeBin + ':' + process.env.PATH, COMMONS_XDG_MARKER: xdgMarker, COMMONS_PICKED: path.join(out, 'downloads-bob') });
@@ -109,8 +110,9 @@ function hashFile(file) {
   });
 }
 
+let A, B;
 try {
-  const A = await open(`http://127.0.0.1:${A_PORT}/`); const B = await open(`http://127.0.0.1:${B_PORT}/`);
+  A = await open(`http://127.0.0.1:${A_PORT}/`); B = await open(`http://127.0.0.1:${B_PORT}/`);
   await sleep(800);
   await A.shot('01-onboarding');
   for (const [P, name] of [[A, 'Alice'], [B, 'Bob']]) {
@@ -252,13 +254,13 @@ try {
       shares: [], prefs: c.prefs, encryption: { active: true, backend: 'insertable-streams', epoch: 7, rotations: 1, devices: 2 }, blocked: [] });
     window.__callUI.render();
     const d = document.querySelector('#call-dock');
-    return { inRail: !!d && d.parentElement.id === 'rail', hidden: !d || d.hidden, status: d && d.querySelector('.cd-phase') && d.querySelector('.cd-phase').textContent,
+    return { inRail: (() => { const r = document.querySelector('#call-dock').getBoundingClientRect(); return r.right >= innerWidth - 16 && r.width <= 72 && r.height > r.width * 2; })(), hidden: !d || d.hidden, status: d && d.querySelector('.cd-phase') && d.querySelector('.cd-phase').textContent,
       name: room.name, room: d && d.querySelector('.cd-room') && d.querySelector('.cd-room').textContent, lock: !!d && !!d.querySelector('button.call-enc.ok'),
       title: d && d.querySelector('#c-enc') && d.querySelector('#c-enc').title, buttons: d ? [...d.querySelectorAll('.cd-b')].map(b => b.id) : [],
       labels: !!d && [...d.querySelectorAll('.cd-b')].every(b => b.title && b.getAttribute('aria-label')),
       mutedRed: !!d && !!d.querySelector('#c-mute.on') && d.querySelector('#c-mute').getAttribute('aria-pressed') === 'true' };
   })()`);
-  if (!dock.inRail || dock.hidden || dock.status !== 'Voice connected' || dock.room !== dock.name) throw new Error('the call dock is not the connected status card in the rail: ' + JSON.stringify(dock));
+  if (!dock.inRail || dock.hidden || dock.status !== 'Voice connected' || dock.room !== dock.name) throw new Error('the call dock is not the connected status strip on the right: ' + JSON.stringify(dock));
   if (!dock.lock || dock.title !== 'Encrypted. What the call server can see') throw new Error('the dock lock is not the encryption explainer: ' + JSON.stringify(dock));
   if (dock.buttons.join() !== 'c-mute,c-deaf,c-share,c-playopen,c-cam,c-set,c-leave') throw new Error('the dock does not have exactly the one row of controls: ' + JSON.stringify(dock.buttons));
   if (!dock.labels || !dock.mutedRed) throw new Error('a dock control has no tooltip/aria-label, or the muted state is not shown: ' + JSON.stringify(dock));
@@ -952,6 +954,13 @@ try {
   await A.waitFor(`(() => { const n = document.querySelector('#transfers .xfer-note'); return !!n && n.innerText.includes('%') && n.innerText.includes('/s') && n.innerText.includes('left'); })()`, 30000);
   await A.shot('15-uploading-large');
   await A.ev(`document.querySelector('#transfers [data-xcancel]').click()`);
+  // Cancelling real progress asks first; "Keep it" changes nothing, then cancel for real.
+  await A.waitFor(`document.querySelector('.modal')`, 5000);
+  await click(A, '.modal .acts button:first-child'); await sleep(400);
+  if (await A.ev(`!document.querySelector('#transfers [data-xcancel]')`)) throw new Error('Keep it still cancelled the upload');
+  await A.ev(`document.querySelector('#transfers [data-xcancel]').click()`);
+  await A.waitFor(`document.querySelector('.modal')`, 5000);
+  await click(A, '.modal .acts button:last-child');
   await A.waitFor(`(() => { const e = document.querySelector('#transfers'); return !e || e.hidden; })()`, 30000);
   await sleep(1500);
   if (await A.ev(`!!(${row(bigName)})`)) throw new Error('a cancelled upload still produced a message');
@@ -982,6 +991,8 @@ try {
   await B.waitFor(`(() => { const n = document.querySelector('.xfer-inline .xfer-note'); return !!n && n.innerText.includes('%') && n.innerText.includes('/s'); })()`, 30000);
   await B.shot('16-downloading-large');
   await B.ev(`(${row(bigName)}).querySelector('[data-a="cancel-get"]').click()`);
+  await B.waitFor(`document.querySelector('.modal')`, 5000);
+  await click(B, '.modal .acts button:last-child');
   await B.waitFor(`(() => { const e = document.querySelector('#transfers'); return !e || e.hidden; })()`, 30000);
   await sleep(800);
   const afterCancel = fs.readdirSync(dlDir);
@@ -992,6 +1003,16 @@ try {
   await click(B, '#dl-browse');
   await B.waitFor(`document.querySelector('#dl-to').value === ${JSON.stringify(dlDir)}`, 10000);
   await click(B, '.modal .acts button:last-child');
+  // The relay goes away for a few seconds mid-download: the page waits and carries on by itself.
+  await B.waitFor(`(() => { const n = document.querySelector('#transfers .xfer-note'); return !!n && /[1-9]%/.test(n.innerText); })()`, 30000);
+  relayProc.kill('SIGKILL'); await new Promise(r => relayProc.once('exit', r));
+  await B.waitFor(`document.querySelector('#transfers .xfer-state')?.innerText.includes('Waiting for connection')`, 120000);
+  await B.shot('16b-waiting-for-connection');
+  await sleep(3000); relayProc = startRelay();
+  await B.ev(`(() => { const b = document.querySelector('#transfers [data-xpause]'); b && b.click(); })()`);
+  await B.waitFor(`document.querySelector('#transfers .xfer-state')?.innerText.startsWith('Paused')`, 30000);
+  await B.shot('16c-paused');
+  await B.ev(`document.querySelector('#transfers [data-xpause]').click()`);
   await B.waitFor(`(() => { const m = ${row(bigName)}; return !!(m && m.querySelector('.saved-line') && m.querySelector('[data-a=show]') && m.querySelector('[data-a=get]')); })()`, 600000);
   const saved = await B.ev(`(() => { const m = S.msgs.messages.find(x => x.file && x.file.name === ${JSON.stringify(bigName)}); return m && m.file.download || null; })()`);
   if (!saved || !saved.finished) throw new Error('the core does not report the download as finished: ' + JSON.stringify(saved));
@@ -1125,5 +1146,5 @@ try {
     if (box.l < -1 || box.r > box.w + 1) throw new Error(`${why} overflows the phone screen: ${JSON.stringify(box)}`);
   }
   console.log('UI check OK; screenshots in', out);
-} catch (e) { console.error('UI check FAILED:', e.message); process.exitCode = 1; }
+} catch (e) { console.error('UI check FAILED:', e.message); try { for (const [n, P] of [['A', A], ['B', B]]) console.error(n, 'toast:', await P.ev(`document.querySelector('#toast')?.innerText`), '| transfers:', await P.ev(`document.querySelector('#transfers')?.innerText`), '| xfer:', await P.ev(`JSON.stringify([[...XFER.keys()], XLIST])`)); } catch { } process.exitCode = 1; }
 finally { runeSrv.close(); procs.forEach(p => { try { p.kill(); } catch { } }); }

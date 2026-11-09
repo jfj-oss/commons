@@ -1,11 +1,11 @@
 // Builds a small world: named people, a community with one room, everyone joined, each with a Chromium page open on their app.
 import path from 'node:path';
-import { startBridge, startChrome, openPage, rpc, sleep, RELAY_PORT } from './env.mjs';
+import { startBridge, startChrome, openPage, rpc, sleep, RELAY_PORT, port as P } from './env.mjs';
 
 export async function makeWorld(out, names, { tones = {}, extraChrome = [] } = {}) {
   const w = { out, people: {} };
   let i = 0;
-  for (const n of names) { const port = 27200 + i; startBridge(out, n, port); w.people[n] = { name: n, port, dbg: 29400 + i, tone: tones[n] || 400 + 100 * (i + 1) }; i++; }
+  for (const n of names) { const port = P(27200 + i); startBridge(out, n, port); w.people[n] = { name: n, port, dbg: P(29400 + i), tone: tones[n] || 400 + 100 * (i + 1) }; i++; }
   await sleep(1500);
   const rel = `http://127.0.0.1:${RELAY_PORT}`;
   for (const n of names) await rpc(w.people[n].port, 'create_account', { name: n[0].toUpperCase() + n.slice(1), passphrase: 'correct horse battery', relay: rel });
@@ -23,7 +23,7 @@ export async function makeWorld(out, names, { tones = {}, extraChrome = [] } = {
   }
   // ONE browser process for everybody (memory): every person is a tab; each tab's "microphone" is a sine oscillator of that
   // person's own frequency (installed by openApps), so who is heard can be told apart. No real microphone is ever opened.
-  w.chrome = await startChrome(out, 'all', 29400, 500, extraChrome);
+  w.chrome = await startChrome(out, 'all', P(29400), 500, extraChrome);
   for (const n of names) w.people[n].chrome = w.chrome;
   return w;
 }

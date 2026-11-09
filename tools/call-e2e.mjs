@@ -4,7 +4,7 @@
 // CALL_E2E_ONLY=video runs only section J (video tiles in the call panel, about a minute).
 import fs from 'node:fs';
 import path from 'node:path';
-import { startServers, startBridge, startChrome, openPage, rpc, sleep, stopAll, lkAdmin, operatorToken, FAKE_DISPLAY, RELAY_PORT, LK_PORT } from './lib/env.mjs';
+import { startServers, startBridge, startChrome, openPage, rpc, sleep, stopAll, lkAdmin, operatorToken, FAKE_DISPLAY, RELAY_PORT, LK_PORT, port } from './lib/env.mjs';
 import { makeWorld, openApps } from './lib/world.mjs';
 const UMD = fs.readFileSync(path.join(new URL('..', import.meta.url).pathname, 'app/ui/vendor/livekit-client.umd.js'), 'utf8');
 
@@ -176,7 +176,10 @@ try {
       const dock = await page('bob').ev(`(() => { const b = document.querySelector('#call-dock .cd-acts .cd-b:last-of-type'), r = b && b.getBoundingClientRect(); if (!r) return null; const e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { h: r.height, top: r.top, bottom: r.bottom, vh: innerHeight, hit: !!(e && e.closest('#call-dock')) }; })()`);
       check('K14 on a phone the call controls are on screen and can be pressed, on the cards too', !!dock && dock.hit && dock.h >= 20 && dock.top >= 0 && dock.bottom <= dock.vh, J(dock));
       check('K13 on a phone the stack is a scrollable strip across the top, tiles side by side, and the dots do not slide', ph.stage[0] <= 1 && ph.stage[1] <= 1 && ph.stage[2] >= 380 && ph.stage[3] >= 80 && ph.stage[3] <= 140 && ph.tiles.length === 2 && ph.tiles[1][0] >= ph.tiles[0][0] + ph.tiles[0][2] - 1 && ph.tiles.every(t => t[3] >= 60) && (ph.railLeft === null || ph.railLeft <= 1) && ph.overflowX === 'auto' && !ph.hscroll, J(ph));
-      await page('bob').send('Emulation.clearDeviceMetricsOverride'); await sleep(800);
+      await page('bob').send('Emulation.clearDeviceMetricsOverride'); await sleep(1200);
+      const strip = await page('bob').ev(`(() => { window.dispatchEvent(new Event('resize')); const d = document.querySelector('#call-dock').getBoundingClientRect(), m = document.querySelector('#mega').getBoundingClientRect(), b = document.querySelector('#call-dock .cd-acts .cd-b:last-of-type').getBoundingClientRect(), e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return { left: d.left, right: d.right, w: d.width, h: d.height, vw: innerWidth, megaRight: m.right, hit: !!(e && e.closest('#call-dock')) }; })()`);
+      await shotOf('bob', 'K-strip');
+      check('K15 on a computer the call controls are a vertical strip on the right and the app makes room', strip.right >= strip.vw - 16 && strip.w <= 72 && strip.h > strip.w * 2 && strip.megaRight <= strip.left + 1 && strip.hit, J(strip));
     }
     await call('alice', `c.stopShare()`);
     const noShare = await until(async () => { const t = await tilesOf('bob'); return t.length === 1 && isCam(t[0]) ? t : null; }, 8000, 'share gone').catch(async () => tilesOf('bob'));
@@ -277,6 +280,10 @@ try {
   await call('alice', `c.setCamera(true)`);
   const camOk = await until(async () => page('bob').ev(`(async()=>{ const c = window.__commonsCall; const t = [...c.tracks.values()].find(x => x.identity === ${J(dev('alice'))} && x.source === 'camera'); if (!t) return false; const v = document.createElement('video'); v.muted = true; t.track.attach(v); document.body.appendChild(v); await new Promise(r => setTimeout(r, 2000)); const w = v.videoWidth; v.remove(); return w > 0; })()`), 20000, 'camera').catch(() => false);
   check('D8 camera (fake device) arrives and decodes', camOk);
+  const camOut = await page('alice').ev(`(()=>{ const c = window.__commonsCall, p = c.room.localParticipant.getTrackPublication('camera'), t = p.track, enc = t.sender.getParameters().encodings; const set = t.mediaStreamTrack.getSettings(); return { w: set.width, h: set.height, fps: set.frameRate, top: Math.max(...enc.map(e => e.maxBitrate || 0)), layers: enc.length }; })()`);
+  check('D8b the camera captures 720p and may send about 2.5 Mbps (it was 360p at 450 kbps)', camOut.w >= 1280 && camOut.h >= 720 && camOut.top >= 2_000_000 && camOut.layers >= 2, J(camOut));
+  const shareOut = await page('alice').ev(`(()=>{ const c = window.__commonsCall, p = c.room.localParticipant.getTrackPublication('screen_share'), enc = p.track.sender.getParameters().encodings; return { top: Math.max(...enc.map(e => e.maxBitrate || 0)), layers: enc.length, pref: p.track.sender.getParameters().degradationPreference || null }; })()`);
+  check('D8c a screen share may send at least 5 Mbps (it was 2 to 2.5 Mbps)', shareOut.top >= 5_000_000 && shareOut.layers >= 2, J(shareOut));
   await call('alice', `c.setCamera(false)`);
   await call('alice', `c.stopShare()`); await call('bob', `c.stopShare()`);
   await sleep(1000);
@@ -365,7 +372,7 @@ try {
   const e0 = (await call('alice', `c.snapshot().encryption`));
   await call('dave', `c.join(S.gid, 'general')`);
   // erin joins the community mid-call: an add commit
-  const erinPort = 27210; startBridge(out, 'erin', erinPort); await sleep(1200);
+  const erinPort = port(27210); startBridge(out, 'erin', erinPort); await sleep(1200);
   await rpc(erinPort, 'create_account', { name: 'Erin', passphrase: 'correct horse battery', relay: `http://127.0.0.1:${RELAY_PORT}` });
   const link = (await rpc(P('alice').port, 'create_invite', { cid: world.cid, uses: 2, ttl: 3600 })).link;
   await rpc(erinPort, 'join', { link });

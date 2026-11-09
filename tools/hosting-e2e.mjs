@@ -4,7 +4,8 @@
 //   systemd-run --user --scope -q -p MemoryMax=6G node tools/hosting-e2e.mjs [outdir]
 import fs from 'node:fs'; import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { root, run, startChrome, openPage, rpc, sleep, stopAll, FAKE_DISPLAY } from './lib/env.mjs';
+import { root, run, startChrome, openPage, rpc, sleep, stopAll, FAKE_DISPLAY, port } from './lib/env.mjs';
+const BRIDGE_A = port(26701), BRIDGE_B = port(26702), DBG = port(26800);
 import { toneScript } from './lib/world.mjs';
 import { startHost, forceRelay, relayPath, screenShot } from './lib/host.mjs';
 
@@ -26,36 +27,36 @@ try {
   const listening = execFileSync('ss', ['-ltnH'], { encoding: 'utf8' }).split('\n').filter(l => new RegExp(`:(${[0, 1, 4, 5].map(i => BASE + i).join('|')})\\s`).test(l));
   check('H3 relay, front and LiveKit signalling are on loopback only (TURN cannot be; it needs credentials)', listening.length === 3 && listening.every(l => l.includes('127.0.0.1:')), listening.map(l => l.trim().split(/\s+/)[3]).join(' '));
 
-  bridge('alice', 26701); bridge('bob', 26702); await sleep(1200);
+  bridge('alice', BRIDGE_A); bridge('bob', BRIDGE_B); await sleep(1200);
   // A link as a friend's would be, but with the address the test can reach without a public certificate.
   const payload = web.split('#relay/')[1], link = JSON.parse(Buffer.from(payload, 'base64url'));
   check('H4 link names the public address and carries the secret', link.relay === `https://${NAME}:${PUB}` && link.secret.length >= 32);
-  const parsed = await rpc(26701, 'parse_link', { link: web });
+  const parsed = await rpc(BRIDGE_A, 'parse_link', { link: web });
   check('H5 the app reads the web link', parsed.kind === 'relay' && parsed.relay === link.relay && parsed.secret === link.secret, parsed.kind);
-  const refused = await rpc(26701, 'create_account', { name: 'Eve', passphrase: PASS, relay: RELAY, invite: '' }).then(() => null, e => e.message);
+  const refused = await rpc(BRIDGE_A, 'create_account', { name: 'Eve', passphrase: PASS, relay: RELAY, invite: '' }).then(() => null, e => e.message);
   check('H6 no secret, no account', /invite secret/.test(refused || ''), refused);
-  const wrong = await rpc(26701, 'create_account', { name: 'Eve', passphrase: PASS, relay: RELAY, invite: 'not-the-secret' }).then(() => null, e => e.message);
+  const wrong = await rpc(BRIDGE_A, 'create_account', { name: 'Eve', passphrase: PASS, relay: RELAY, invite: 'not-the-secret' }).then(() => null, e => e.message);
   check('H7 wrong secret, no account', /not this relay/.test(wrong || ''), wrong);
-  const down = await rpc(26701, 'create_account', { name: 'A', passphrase: PASS, relay: 'http://127.0.0.1:9', invite: '' }).then(() => null, e => e.message);
+  const down = await rpc(BRIDGE_A, 'create_account', { name: 'A', passphrase: PASS, relay: 'http://127.0.0.1:9', invite: '' }).then(() => null, e => e.message);
   check('H8 an unreachable relay says what to do', /switched off/.test(down || ''), down);
 
-  await rpc(26701, 'create_account', { name: 'Alice', passphrase: PASS, relay: RELAY, invite: link.secret });
-  const cid = (await rpc(26701, 'create_community', { name: 'Friends' })).id;
-  const inv = (await rpc(26701, 'create_invite', { cid, uses: 1, ttl: 3600 })).link;
-  const p2 = await rpc(26702, 'parse_link', { link: inv });
+  await rpc(BRIDGE_A, 'create_account', { name: 'Alice', passphrase: PASS, relay: RELAY, invite: link.secret });
+  const cid = (await rpc(BRIDGE_A, 'create_community', { name: 'Friends' })).id;
+  const inv = (await rpc(BRIDGE_A, 'create_invite', { cid, uses: 1, ttl: 3600 })).link;
+  const p2 = await rpc(BRIDGE_B, 'parse_link', { link: inv });
   check('H9 a community invite alone is enough for a newcomer', p2.kind === 'community' && p2.secret === link.secret && p2.name === 'Friends');
-  await rpc(26702, 'create_account', { name: 'Bob', passphrase: PASS, relay: p2.relay, invite: p2.secret });
-  await rpc(26702, 'join', { link: p2.link });
+  await rpc(BRIDGE_B, 'create_account', { name: 'Bob', passphrase: PASS, relay: p2.relay, invite: p2.secret });
+  await rpc(BRIDGE_B, 'join', { link: p2.link });
   let gid;
-  await until(async () => { const s = await rpc(26702, 'snapshot'); const c = s.communities.find(x => x.id === cid); const ch = c && c.channels.find(x => x.joined && x.status === 'ok'); gid = ch && ch.gid; return gid; }, 40000, 'bob joined');
-  await until(async () => (await rpc(26701, 'snapshot')).communities[0].channels.some(x => x.joined && x.status === 'ok'), 20000, 'alice ready');
-  await rpc(26701, 'send_text', { gid, text: 'hello through the front' });
-  await until(async () => (await rpc(26702, 'messages', { gid })).messages.some(m => m.text === 'hello through the front'), 15000, 'chat');
+  await until(async () => { const s = await rpc(BRIDGE_B, 'snapshot'); const c = s.communities.find(x => x.id === cid); const ch = c && c.channels.find(x => x.joined && x.status === 'ok'); gid = ch && ch.gid; return gid; }, 40000, 'bob joined');
+  await until(async () => (await rpc(BRIDGE_A, 'snapshot')).communities[0].channels.some(x => x.joined && x.status === 'ok'), 20000, 'alice ready');
+  await rpc(BRIDGE_A, 'send_text', { gid, text: 'hello through the front' });
+  await until(async () => (await rpc(BRIDGE_B, 'messages', { gid })).messages.some(m => m.text === 'hello through the front'), 15000, 'chat');
   check('H10 chat through the one port', true);
   const blob = Buffer.alloc(300000, 7).toString('base64url');
-  await rpc(26702, 'send_file', { gid, name: 'notes.bin', mime: 'application/octet-stream', data: blob, caption: '' });
-  const m = await until(async () => (await rpc(26701, 'messages', { gid })).messages.find(x => x.kind === 'file'), 15000, 'file');
-  const got = await rpc(26701, 'fetch_file', { gid, id: m.id });
+  await rpc(BRIDGE_B, 'send_file', { gid, name: 'notes.bin', mime: 'application/octet-stream', data: blob, caption: '' });
+  const m = await until(async () => (await rpc(BRIDGE_A, 'messages', { gid })).messages.find(x => x.kind === 'file'), 15000, 'file');
+  const got = await rpc(BRIDGE_A, 'fetch_file', { gid, id: m.id });
   check('H11 file through the one port', got.data === blob, got.name);
 
   const pub = async p => { const r = await fetch(`${RELAY}${p}`); return { s: r.status, t: await r.text(), csp: r.headers.get('content-security-policy') }; };
@@ -69,13 +70,13 @@ try {
 
   // Calls. Relay-only: if this works, nothing depended on a direct path to the server.
   const force = forceRelay;
-  const chrome = await startChrome(out, 'all', 26800, 500, ['--ignore-certificate-errors', ...(process.env.E2E_VLOG ? ['--enable-logging=stderr', '--vmodule=*turn_port*=3'] : [])]);
-  const A = await openPage(chrome, 'http://127.0.0.1:26701/', 'alice', { before: toneScript(500) + force }), B = await openPage(chrome, 'http://127.0.0.1:26702/', 'bob', { before: toneScript(700) + force });
-  for (const [p, pw] of [[A, 26701], [B, 26702]]) await p.waitFor(`!!window.__commonsCall && !document.querySelector("#app").hidden && !!S.gid`, 30000, 'app ready');
+  const chrome = await startChrome(out, 'all', DBG, 500, ['--ignore-certificate-errors', ...(process.env.E2E_VLOG ? ['--enable-logging=stderr', '--vmodule=*turn_port*=3'] : [])]);
+  const A = await openPage(chrome, `http://127.0.0.1:${BRIDGE_A}/`, 'alice', { before: toneScript(500) + force }), B = await openPage(chrome, `http://127.0.0.1:${BRIDGE_B}/`, 'bob', { before: toneScript(700) + force });
+  for (const [p, pw] of [[A, BRIDGE_A], [B, BRIDGE_B]]) await p.waitFor(`!!window.__commonsCall && !document.querySelector("#app").hidden && !!S.gid`, 30000, 'app ready');
   const call = (p, e) => p.ev(`(async()=>{ const c = window.__commonsCall; return ${e}; })()`);
   await call(A, `c.join(S.gid, 'general')`); await call(B, `c.join(S.gid, 'general')`);
   await until(async () => (await call(A, `c.room.remoteParticipants.size`)) === 1, 30000, 'call formed');
-  const devA = (await rpc(26701, 'snapshot')).me.device, devB = (await rpc(26702, 'snapshot')).me.device;
+  const devA = (await rpc(BRIDGE_A, 'snapshot')).me.device, devB = (await rpc(BRIDGE_B, 'snapshot')).me.device;
   check('H15 frame encryption active over the relayed path', (await call(A, `c.room.isE2EEEnabled`)) && (await call(B, `c.room.isE2EEEnabled`)));
   const path_ = relayPath;
   const pa = await until(async () => { const v = await path_(A); return v.length ? v : null; }, 15000, 'stats');

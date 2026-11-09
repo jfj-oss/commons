@@ -279,3 +279,180 @@ fn cancelling_an_upload_removes_the_relay_copy() {
     api.large_delete(&k, &blob).unwrap();
     assert_eq!(relay_status(&api.large_info(&k, &blob).unwrap_err()), Some(404));
 }
+
+// ---------------------------------------------------------------- large-file safety
+
+fn finish_relay_only(p: &mut Peer, id: &str) {
+    let (blob, root) = p.c.large_finish_prepare(id).unwrap();
+    let (api, k) = p.c.net_handle().unwrap();
+    api.large_finish(&k, &blob, &root).unwrap();
+}
+
+#[test]
+fn hashes_survive_a_restart_so_finishing_needs_no_file() {
+    let net = Net::new();
+    let mut alice = Peer::new(&net, "Alice");
+    let mut bob = Peer::new(&net, "Bob");
+    let (_c, gid) = community_with(&net, &mut alice, &mut [&mut bob]);
+    let size = LARGE_FILE_THRESHOLD + 1;
+    let data = content(size as usize);
+    let (id, cs, chunks, _) = begin(&mut alice, &gid, "all.bin", size, 3);
+    send(&mut alice, &id, &data, cs, chunks);
+    alice.reopen(&net);                       // the app dies after the last chunk, before finish
+    let u = alice.c.large_upload_begin(&gid, "all.bin", "x/y", size, 3, "").unwrap();
+    assert_eq!(u.hashed, chunks, "the hashes came back from disk");
+    let (api, k) = alice.c.net_handle().unwrap();
+    let r = api.large_begin(&k, &u.id, &LargeBeginReq { gid: gid.clone(), size, chunk_size: u.chunk_size }).unwrap();
+    let u = alice.c.large_upload_started(&u.id, &r).unwrap();
+    assert!(u.need_read.is_empty(), "nothing has to be read again");
+    let mid = finish(&mut alice, &id);        // no file involved
+    settle(&mut [&mut alice, &mut bob]);
+    let (got, l) = large_message(&bob, &gid);
+    assert_eq!(got, mid);
+    assert_eq!(l.chunks, chunks);
+}
+
+#[test]
+fn the_crash_between_the_relay_finishing_and_the_message_is_recovered_once() {
+    let net = Net::new();
+    let mut alice = Peer::new(&net, "Alice");
+    let mut bob = Peer::new(&net, "Bob");
+    let (_c, gid) = community_with(&net, &mut alice, &mut [&mut bob]);
+    let size = LARGE_FILE_THRESHOLD + 1;
+    let data = content(size as usize);
+    let (id, cs, chunks, _) = begin(&mut alice, &gid, "window.bin", size, 3);
+    send(&mut alice, &id, &data, cs, chunks);
+    finish_relay_only(&mut alice, &id);       // relay says complete ... and the app is killed here
+    alice.reopen(&net);
+    assert!(alice.c.large_sent_message(&id).is_none());
+    assert!(alice.c.st.large_uploads.contains_key(&id), "session and key are still there");
+    let (api, k) = alice.c.net_handle().unwrap();
+    let _ = api.large_finish(&k, &id, &alice.c.large_finish_prepare(&id).unwrap().1).unwrap(); // finish is idempotent
+    let mid = alice.c.large_finish_done(&id).unwrap();
+    assert_eq!(alice.c.large_finish_done(&id).unwrap(), mid, "asking twice sends one message");
+    alice.reopen(&net);
+    assert_eq!(alice.c.large_sent_message(&id).as_deref(), Some(mid.as_str()), "and it is remembered after a restart");
+    settle(&mut [&mut alice, &mut bob]);
+    let n = bob.c.messages(&gid).iter().filter(|m| matches!(&m.body, MsgBody::File { large: Some(_), .. })).count();
+    assert_eq!(n, 1);
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(std::fs::read(download(&mut bob, &gid, &mid, dir.path())).unwrap(), data);
+}
+
+#[test]
+fn a_changed_file_is_refused_chunk_by_chunk_and_by_the_sample() {
+    let net = Net::new();
+    let mut alice = Peer::new(&net, "Alice");
+    let mut bob = Peer::new(&net, "Bob");
+    let (_c, gid) = community_with(&net, &mut alice, &mut [&mut bob]);
+    let size = LARGE_FILE_THRESHOLD + 1;
+    let data = content(size as usize);
+    let (id, cs, chunks, _) = begin(&mut alice, &gid, "edit.bin", size, 3);
+    send(&mut alice, &id, &data, cs, 2);
+    alice.reopen(&net);
+    let (id2, _, _, _) = begin(&mut alice, &gid, "edit.bin", size, 3);
+    assert_eq!(id, id2);
+    let u = alice.c.large_upload_begin(&gid, "edit.bin", "x/y", size, 3, "").unwrap();
+    assert!(!u.verify.is_empty() && u.verify.contains(&1), "a sample including the last sent chunk is re-checked");
+    let mut other = data.clone(); other[(cs as usize) + 5] ^= 1;     // second chunk differs
+    assert!(alice.c.large_chunk_check(&id, 0, &data[..cs as usize]).is_ok());
+    let err = alice.c.large_chunk_check(&id, 1, &other[cs as usize..2 * cs as usize]).unwrap_err().to_string();
+    assert!(err.contains("changed"), "{err}");
+    assert!(alice.c.large_chunk_prepare(&id, 1, &other[cs as usize..2 * cs as usize]).is_err());
+    let _ = chunks;
+}
+
+#[test]
+fn an_upload_survives_a_relay_restart_and_pause_is_remembered() {
+    let mut net = Net::new();
+    let mut alice = Peer::new(&net, "Alice");
+    let mut bob = Peer::new(&net, "Bob");
+    let (_c, gid) = community_with(&net, &mut alice, &mut [&mut bob]);
+    let size = LARGE_FILE_THRESHOLD + 1;
+    let data = content(size as usize);
+    let (id, cs, chunks, _) = begin(&mut alice, &gid, "relay.bin", size, 3);
+    send(&mut alice, &id, &data, cs, 2);
+    alice.c.large_upload_pause(&id, true).unwrap();
+    net.stop_relay();
+    assert!(alice.c.net_handle().unwrap().0.large_info(&alice.c.net_handle().unwrap().1, &id).is_err(), "relay is down");
+    net.start_relay();
+    alice.reopen(&net);
+    assert!(alice.c.st.large_uploads[&id].paused, "pause survives a restart");
+    let (_, _, _, uploaded) = begin(&mut alice, &gid, "relay.bin", size, 3);
+    assert_eq!(uploaded, vec![0, 1], "chunks written before the relay stopped are still there");
+    assert!(!alice.c.st.large_uploads[&id].paused, "continuing clears the pause");
+    send(&mut alice, &id, &data, cs, chunks);
+    let mid = finish(&mut alice, &id);
+    settle(&mut [&mut alice, &mut bob]);
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(std::fs::read(download(&mut bob, &gid, &mid, dir.path())).unwrap(), data);
+}
+
+fn uploaded_message(net: &Net, alice: &mut Peer, bob: &mut Peer, gid: &str, name: &str, data: &[u8]) -> String {
+    let size = data.len() as u64;
+    let (id, cs, chunks, _) = begin(alice, gid, name, size, 3);
+    send(alice, &id, data, cs, chunks);
+    let mid = finish(alice, &id);
+    settle(&mut [alice, bob]);
+    let _ = net;
+    mid
+}
+
+#[test]
+fn a_partial_download_is_never_deleted_to_start_elsewhere_and_a_bad_tail_is_refetched() {
+    let net = Net::new();
+    let mut alice = Peer::new(&net, "Alice");
+    let mut bob = Peer::new(&net, "Bob");
+    let (_c, gid) = community_with(&net, &mut alice, &mut [&mut bob]);
+    let data = content((LARGE_FILE_THRESHOLD + 1) as usize);
+    let mid = uploaded_message(&net, &mut alice, &mut bob, &gid, "keep.bin", &data);
+    let dir = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    bob.c.set_download_dir(dir.path().to_str().unwrap()).unwrap();
+    let mut d = bob.c.large_download_begin(&gid, &mid).unwrap();
+    let (api, k) = bob.c.net_handle().unwrap();
+    for _ in 0..2 {
+        let ct = api.large_get_chunk(&k, &d.blob, d.done).unwrap();
+        d.done = bob.c.large_download_write(&gid, &mid, &ct).unwrap().done;
+    }
+    let err = bob.c.large_download_begin_in(&gid, &mid, Some(other.path().to_str().unwrap())).unwrap_err().to_string();
+    assert!(err.contains("already saved"), "{err}");
+    assert!(std::path::Path::new(&d.part).exists(), "the partial file is still there");
+    // a damaged last chunk on disk (say, after a power cut) is detected and fetched again, never trusted
+    bob.reopen(&net);
+    { use std::io::{Seek, SeekFrom, Write}; let mut f = std::fs::OpenOptions::new().write(true).open(&d.part).unwrap(); f.seek(SeekFrom::Start(LARGE_CHUNK_BYTES + 9)).unwrap(); f.write_all(&[1, 2, 3]).unwrap(); }
+    let d2 = bob.c.large_download_begin(&gid, &mid).unwrap();
+    assert_eq!(d2.done, 1, "only the intact chunk counts");
+    let path = download(&mut bob, &gid, &mid, dir.path());
+    assert_eq!(std::fs::read(&path).unwrap(), data);
+}
+
+#[test]
+fn a_failed_whole_file_check_keeps_the_downloaded_bytes() {
+    let net = Net::new();
+    let mut alice = Peer::new(&net, "Alice");
+    let mut bob = Peer::new(&net, "Bob");
+    let (_c, gid) = community_with(&net, &mut alice, &mut [&mut bob]);
+    let data = content((LARGE_FILE_THRESHOLD + 1) as usize);
+    let size = data.len() as u64;
+    let (id, cs, chunks, _) = begin(&mut alice, &gid, "odd.bin", size, 3);
+    send(&mut alice, &id, &data, cs, chunks);
+    alice.c.st.large_uploads.get_mut(&id).unwrap().hashes.insert(0, "00".repeat(32));   // the sender recorded a wrong root
+    let mid = finish(&mut alice, &id);
+    settle(&mut [&mut alice, &mut bob]);
+    let dir = tempfile::tempdir().unwrap();
+    bob.c.set_download_dir(dir.path().to_str().unwrap()).unwrap();
+    let mut d = bob.c.large_download_begin(&gid, &mid).unwrap();
+    let (api, k) = bob.c.net_handle().unwrap();
+    let mut last = None;
+    while d.done < d.chunks {
+        let ct = api.large_get_chunk(&k, &d.blob, d.done).unwrap();
+        match bob.c.large_download_write(&gid, &mid, &ct) { Ok(s) => d.done = s.done, Err(e) => { last = Some(e.to_string()); break; } }
+    }
+    let msg = last.expect("the check must fail");
+    assert!(msg.contains("kept"), "{msg}");
+    let kept: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+    assert!(kept.iter().any(|n| n.ends_with(".unverified")), "{kept:?}");
+    let f = dir.path().join(kept.iter().find(|n| n.ends_with(".unverified")).unwrap());
+    assert_eq!(std::fs::read(f).unwrap(), data);
+}

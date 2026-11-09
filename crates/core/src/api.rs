@@ -51,6 +51,15 @@ const RUNE_POLL_SECS: u64 = 15;
 fn s(v: &Value, k: &str) -> String { v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string() }
 type R = Result<Value, String>;
 fn e<T: std::fmt::Display>(x: T) -> String { format!("{x}") }
+/// [`e`] for a relay call during a large transfer: a dropped connection, a timeout, a relay that is restarting or busy
+/// is marked `[retry] ` so the page waits and tries again; anything else (refused, expired, over quota) is final.
+fn xe(x: anyhow::Error) -> String {
+    let transient = match crate::transport::relay_status(&x) {
+        Some(st) => matches!(st, 408 | 425 | 429 | 500..=599),
+        None => x.to_string().starts_with("network") || x.is::<std::io::Error>(),
+    };
+    if transient { format!("[retry] {x}") } else { format!("{x}") }
+}
 
 /// A usable relay address, in the one spelling we store: `http(s)://host[:port][/path]`, no trailing slash.
 pub fn clean_relay_url(u: &str) -> Result<String, String> {
@@ -449,9 +458,26 @@ impl App {
                 let size = a.get("size").and_then(|x| x.as_u64()).ok_or("missing file size")?;
                 let lm = a.get("last_modified").and_then(|x| x.as_u64()).unwrap_or(0);
                 let (u, (api, k)) = self.with(|c| Ok((c.large_upload_begin(&gid, &name, &mime, size, lm, &caption).map_err(e)?, c.net_handle().map_err(e)?)))?;
-                let resp = api.large_begin(&k, &u.id, &LargeBeginReq { gid: gid.clone(), size, chunk_size: u.chunk_size }).map_err(e)?;
+                let resp = api.large_begin(&k, &u.id, &LargeBeginReq { gid: gid.clone(), size, chunk_size: u.chunk_size }).map_err(xe)?;
                 let u = self.with(|c| c.large_upload_started(&u.id, &resp).map_err(e))?;
-                Ok(json!({"id": u.id, "chunk_size": u.chunk_size, "chunks": u.chunks, "uploaded": u.uploaded, "expires": u.expires, "complete": u.complete, "name": u.name}))
+                Ok(json!({"id": u.id, "chunk_size": u.chunk_size, "chunks": u.chunks, "uploaded": u.uploaded, "expires": u.expires, "complete": u.complete, "name": u.name,
+                          "need_read": u.need_read, "verify": u.verify, "hashed": u.hashed}))
+            }
+            // Re-sync with the relay for a session that already exists (after a drop or a relay restart), without the file.
+            "file_upload_sync" => {
+                let id = s(&a, "id");
+                let (gid, size, cs, (api, k)) = self.with(|c| {
+                    let u = c.st.large_uploads.get(&id).ok_or("no such upload")?;
+                    Ok((u.gid.clone(), u.size, u.chunk_size, c.net_handle().map_err(e)?))
+                })?;
+                let resp = api.large_begin(&k, &id, &LargeBeginReq { gid, size, chunk_size: cs }).map_err(xe)?;
+                let u = self.with(|c| c.large_upload_started(&id, &resp).map_err(e))?;
+                Ok(json!({"id": u.id, "chunks": u.chunks, "uploaded": u.uploaded, "expires": u.expires, "complete": u.complete, "need_read": u.need_read, "verify": u.verify, "hashed": u.hashed}))
+            }
+            "file_upload_check" => {
+                let (id, index) = (s(&a, "id"), a.get("index").and_then(|x| x.as_u64()).ok_or("missing chunk index")?);
+                let plain = unb64(&s(&a, "data")).map_err(e)?;
+                self.with(|c| c.large_chunk_check(&id, index, &plain).map(|_| json!({})).map_err(e))
             }
             "file_upload_chunk" => {
                 let id = s(&a, "id");
@@ -464,19 +490,41 @@ impl App {
                         let (api, k) = c.net_handle().map_err(e)?;
                         Ok((api, k, blob))
                     })?;
-                    api.large_put_chunk(&k, &blob, index, &prep.ct).map_err(e)?; // slow part, client free
+                    api.large_put_chunk(&k, &blob, index, &prep.ct).map_err(xe)?; // slow part, client free
                 }
                 self.with(|c| { c.large_chunk_done(&id, index); Ok(json!({"sent": prep.needed})) })
             }
+            // Needs only the saved hashes, never the file; asking again after it already went through is harmless.
             "file_upload_finish" => {
                 let id = s(&a, "id");
+                if let Some(mid) = self.with(|c| Ok(c.large_sent_message(&id)))? { return Ok(json!({"id": mid})); }
                 let (blob, root, (api, k)) = self.with(|c| {
                     let (b, r) = c.large_finish_prepare(&id).map_err(e)?;
                     Ok((b, r, c.net_handle().map_err(e)?))
                 })?;
-                api.large_finish(&k, &blob, &root).map_err(e)?;
+                api.large_finish(&k, &blob, &root).map_err(xe)?;
                 self.with(|c| c.large_finish_done(&id).map(|mid| json!({"id": mid})).map_err(e))
             }
+            "file_upload_pause" => {
+                let (id, paused) = (s(&a, "id"), a.get("paused").and_then(|x| x.as_bool()).unwrap_or(true));
+                self.with(|c| c.large_upload_pause(&id, paused).map(|_| json!({})).map_err(e))
+            }
+            "file_download_pause" => {
+                let (id, paused) = (s(&a, "id"), a.get("paused").and_then(|x| x.as_bool()).unwrap_or(true));
+                self.with(|c| c.large_download_pause(&id, paused).map(|_| json!({})).map_err(e))
+            }
+            // Everything unfinished, so it can be found again after a reload: uploads waiting for their file, downloads
+            // partly saved.
+            "file_transfers" => self.with(|c| {
+                let ups: Vec<Value> = c.st.large_uploads.values().map(|u| json!({
+                    "id": u.blob, "gid": u.gid, "name": u.name, "size": u.size, "last_modified": u.last_modified, "chunks": u.chunks,
+                    "hashed": u.hashes.len(), "uploaded": u.uploaded.len(), "expires": u.expires, "paused": u.paused,
+                    "ready": u.hashes.len() as u64 == u.chunks, "chunk_size": u.chunk_size })).collect();
+                let downs: Vec<Value> = c.st.large_downloads.values().filter(|d| !d.finished).map(|d| json!({
+                    "id": d.msg_id, "gid": d.gid, "name": d.name, "size": d.size, "chunks": d.chunks, "chunk_size": d.chunk_size, "done": d.done,
+                    "expires": d.expires, "paused": d.paused, "dir": d.dir })).collect();
+                Ok(json!({"uploads": ups, "downloads": downs, "now": commons_proto::now_secs()}))
+            }),
             "file_upload_cancel" => {
                 let id = s(&a, "id");
                 let blob = self.with(|c| c.large_upload_cancel(&id).map_err(e))?;
@@ -489,14 +537,14 @@ impl App {
             "file_download_begin" => {
                 let folder = s(&a, "folder");
                 let d = self.with(|c| c.large_download_begin_in(&s(&a, "gid"), &s(&a, "id"), Some(&folder)).map_err(e))?;
-                Ok(json!({"done": d.done, "chunks": d.chunks, "size": d.size, "chunk_size": d.chunk_size, "save_name": d.save_name, "finished": d.finished, "path": d.path}))
+                Ok(json!({"done": d.done, "chunks": d.chunks, "size": d.size, "chunk_size": d.chunk_size, "save_name": d.save_name, "finished": d.finished, "path": d.path, "expires": d.expires, "name": d.name}))
             }
             "file_download_chunk" => {
                 let (gid, id) = (s(&a, "gid"), s(&a, "id"));
                 let st = self.with(|c| c.large_download_state(&id).ok_or_else(|| "no download in progress".to_string()))?;
                 if st.finished { return Ok(json!({"done": st.done, "chunks": st.chunks, "size": st.size, "finished": true, "path": st.path, "save_name": st.save_name})); }
                 let (api, k) = self.with(|c| c.net_handle().map_err(e))?;
-                let ct = api.large_get_chunk(&k, &st.blob, st.done).map_err(e)?; // slow part, client free
+                let ct = api.large_get_chunk(&k, &st.blob, st.done).map_err(xe)?; // slow part, client free
                 let step = self.with(|c| c.large_download_write(&gid, &id, &ct).map_err(e))?;
                 Ok(json!({"done": step.done, "chunks": step.chunks, "size": step.size, "finished": step.finished, "path": step.path, "save_name": st.save_name}))
             }
