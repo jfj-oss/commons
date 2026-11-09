@@ -158,6 +158,11 @@ html.mega #people { position: fixed; right: 0; top: 0; bottom: 0; z-index: 30; w
 #mega-tip { position: fixed; z-index: 60; padding: 5px 11px; border-radius: 10px; background: var(--m-paper); color: var(--m-void); font: 600 13px var(--m-ui); pointer-events: none; white-space: nowrap; }
 #mega-tip[hidden] { display: none; }
 
+/* the People sheet and the options room use the same dark room look */
+html.mega.mg-room #people, html.mega.mg-opts #people { background: #0d0c12; border-left: 1px solid rgb(255 255 255 / .12); }
+html.mega.mg-opts #mega-opts { background: radial-gradient(900px 560px at 4% -10%, color-mix(in srgb, var(--mg-c) 34%, transparent), transparent 70%), #050407; }
+html.mega.mg-opts #mega-opts .mopts-in section { background: var(--card); }
+
 /* ---- the options room: client-only settings, in the chat's place ---- */
 #mega-opts { position: fixed; z-index: 14; left: var(--m-railw); right: 0; top: 0; bottom: 0; overflow-y: auto; background: var(--page); color: var(--ink); padding: 28px max(16px, env(safe-area-inset-right)) 120px 24px; }
 .mopts-in { max-width: 680px; margin: 0 auto; display: grid; gap: 18px; }
@@ -206,7 +211,8 @@ html.mega #people { position: fixed; right: 0; top: 0; bottom: 0; z-index: 30; w
 /* The stream sits on the near-black mega room with the room's colour as a glow, in every theme. Colours come from mega.js
    (--mg-c the room's colour, --mg-hi its highlight lifted to read on black). */
 html.mega.mg-room, html.mega.mg-room body, html.mega.mg-room #app { background: #050407; }
-html.mega.mg-room #main {
+html.mega { --mg-c: #4a4f66; --mg-hi: #cfd3e6; --mg-hi-ink: #0c0d12; }
+html.mega.mg-room #main, html.mega.mg-room #people, html.mega.mg-opts #mega-opts, html.mega.mg-opts #people {
   color-scheme: dark; color: var(--ink);
   --page: #050407; --page-sunk: #0d0c12; --card: #17151e; --raise: #1d1a25; --wall: #050407; --wall-2: #0d0c12;
   --ink: #efedf2; --ink-2: #c3bfce; --ink-3: #a8a4b3;
@@ -274,3 +280,30 @@ html.mega #typing .dots { display: none; }
 .mthrow { font-size: 20px; }
 
 @media (prefers-reduced-motion: reduce) { .body.mdecoding .mdec { display: none; } .body.mdecoding, .body.mdecoding * { color: inherit !important; } .msg.mland { animation: none; } .mmascot svg, .mmascot .ha, .mmascot .hb, .mmascot .eyes { animation: none; } }
+
+/* the colour picker (owner only) */
+#mega-paint { position: fixed; z-index: 47; top: 64px; right: max(16px, env(safe-area-inset-right, 0px)); width: min(330px, calc(100vw - 32px)); max-height: calc(100dvh - 80px); overflow-y: auto; display: grid; gap: 12px; padding: 16px; border-radius: 30px; background: #15131b; color: var(--m-paper); border: 1px solid var(--m-line); box-shadow: 0 24px 64px rgb(0 0 0 / .7); font: 14px/1.4 var(--m-ui); }
+#mega-paint .mtag { margin: 0; }
+.mp-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 600; }
+.mp-head #mp-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-body { display: grid; gap: 12px; }
+#mega-paint.off .mp-body { display: none; }
+.mp-wells { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.mp-well { display: flex; align-items: center; gap: 9px; padding: 7px; border-radius: 16px; background: rgb(255 255 255 / .05); border: 1px solid transparent; font-weight: 500; color: inherit; }
+.mp-well[aria-pressed="true"] { border-color: var(--m-paper); background: rgb(255 255 255 / .1); }
+.mp-well span { width: 30px; height: 30px; flex: none; border-radius: 10px; box-shadow: inset 0 0 0 1px rgb(255 255 255 / .22); }
+#mp-sv { position: relative; height: 150px; border-radius: 18px; touch-action: none; cursor: crosshair; background: linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, transparent), var(--hc, red); }
+#mp-svt { position: absolute; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 0 0 1px rgb(0 0 0 / .55), 0 2px 6px rgb(0 0 0 / .5); pointer-events: none; }
+#mp-hue { -webkit-appearance: none; appearance: none; width: 100%; height: 16px; border-radius: 999px; background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00); outline-offset: 3px; }
+#mp-hue::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgb(0 0 0 / .5); cursor: pointer; }
+#mp-hue::-moz-range-thumb { width: 20px; height: 20px; border: 0; border-radius: 50%; background: #fff; }
+.mp-hex { display: flex; align-items: center; gap: 10px; color: var(--m-mute); }
+.mp-hex input { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 12px; background: rgb(255 255 255 / .06); border: 1px solid var(--m-line); color: var(--m-paper); font: 14px ui-monospace, "IBM Plex Mono", monospace; }
+.mp-presets { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+.mp-presets button { aspect-ratio: 1; border-radius: 10px; box-shadow: inset 0 0 0 1px rgb(255 255 255 / .18); }
+.mp-end { display: flex; justify-content: flex-end; }
+#mp-warn { min-height: 18px; }
+#mega-paint :focus-visible { outline: 2px solid var(--m-paper); outline-offset: 2px; }
+/* a recolour from someone else fades in on the cards, dots and chat vars (the script steps the values; this smooths the rest) */
+.mitem, .mscrub button { transition: background-color .3s, border-color .3s; }
+@media (max-width: 760px) { #mega-paint { top: auto; bottom: 12px; max-height: 66dvh; } }

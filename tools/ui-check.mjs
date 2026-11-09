@@ -48,7 +48,7 @@ for (const [n, port] of [['alice', A_PORT], ['bob', B_PORT]]) {
 await sleep(1500);
 
 const chrome = run('chromium', ['--headless=new', '--password-store=basic', '--use-mock-keychain', `--remote-debugging-port=${CDP_PORT}`, '--user-data-dir=' + path.join(out, 'chrome'), '--use-gl=angle', '--use-angle=vulkan',
-  '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu', '--ozone-platform=headless', '--disable-software-rasterizer', '--mute-audio', '--disable-audio-output', '--no-first-run', '--window-size=1280,800', 'about:blank']);
+  '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu', '--ozone-platform=headless', '--disable-software-rasterizer', '--mute-audio', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', '--disable-audio-output', '--no-first-run', '--window-size=1280,800', 'about:blank']);
 let ver; for (let i = 0; i < 50; i++) { try { ver = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)).json(); break; } catch { await sleep(200); } }
 if (!ver) throw new Error('chromium did not start');
 
@@ -398,10 +398,12 @@ try {
   await A.ev(`document.querySelector('#mega-rail .mitem.opt').click()`); await sleep(500);
   const op = await A.ev(`(() => { const o = document.querySelector('#mega-opts'); return { open: !o.hidden, ids: ['snd', 'th', 'ty', 'dl-dir'].filter(i => !o.querySelector('#' + i)), privacy: o.innerText.includes('the relay can see that a message-sized packet was sent at that moment'), noRelay: !o.querySelector('#rl') && !o.querySelector('#n') }; })()`);
   need(op.open && !op.ids.length && op.privacy && op.noRelay, 'the options room is wrong: ' + JSON.stringify(op));
+  // a new account has typing hints on; the switch turns them off and on again
+  need(await A.ev(`S.snap.typing_enabled === true && document.querySelector('#mega-opts #ty').checked`), 'typing hints should be on for a new account');
   await A.ev(`document.querySelector('#mega-opts #ty').click()`);
-  await A.waitFor(`S.snap.typing_enabled === true`, 8000).catch(() => { throw new Error('mega: the typing switch in options did not reach the core'); });
+  await A.waitFor(`S.snap.typing_enabled === false`, 8000).catch(() => { throw new Error('mega: the typing switch in options did not reach the core'); });
   await A.ev(`document.querySelector('#mega-opts #ty').click()`);
-  await A.waitFor(`S.snap.typing_enabled === false`, 8000).catch(() => { throw new Error('mega: the typing switch in options did not turn off again'); });
+  await A.waitFor(`S.snap.typing_enabled === true`, 8000).catch(() => { throw new Error('mega: the typing switch in options did not turn on again'); });
   await A.shot('mega-3-options');
   // Esc from chat -> the community's rooms; resting on the voice card never joins, Enter does
   await key(A, 'Escape'); await sleep(900);
@@ -462,7 +464,6 @@ try {
     need(await bdLive() > 50, 'the backdrop canvas did not draw');
     need(await A.ev(`getComputedStyle(document.querySelector('#main')).backgroundColor === 'rgb(5, 4, 7)' || getComputedStyle(document.querySelector('#main')).backgroundImage.includes('radial-gradient')`), 'the room does not sit on the mega room background');
     await A.shot('mega2-1-room');
-    console.log('DBG composer', await A.ev(`(() => { const i = document.querySelector('#input'), r = i.getBoundingClientRect(), cs = getComputedStyle(i), row = document.querySelector('.slip .row').getBoundingClientRect(), at = document.elementFromPoint(r.left + 20, r.top + 10); return JSON.stringify({ r, color: cs.color, vis: cs.visibility, op: cs.opacity, fs: cs.fontSize, ff: cs.fontFamily, row, at: at && (at.tagName + '#' + at.id + '.' + at.className), ph: i.placeholder, hidden: document.querySelector('#composer').hidden }); })()`));
     await key(A, 'Escape'); await sleep(900);
     need(await lvl(A) === 'server' && await A.ev(`!document.querySelector('#mega-bd') && !document.documentElement.classList.contains('mg-room')`), 'the backdrop must stop completely on the card levels');
     await key(A, 'Enter'); await sleep(1500);
@@ -527,6 +528,71 @@ try {
     const rx = await A.ev(`(() => { const p = document.querySelector('.msg[data-id=${JSON.stringify(mineId)}] .react[data-e="🎉"]'); return { n: p.querySelector('.n').textContent, hold: p.classList.contains('rhold'), vis: getComputedStyle(p).visibility }; })()`);
     need(rx.n === '1' && !rx.hold && rx.vis === 'visible' && (await st(A)).throws > t0, 'a live reaction should fly in and show its true count: ' + JSON.stringify([rx, await st(A), t0]));
     await A.shot('mega2-4-after');
+  }
+
+  // ---- mega phase 3: owner colours (through the encrypted core) and the live channel ----
+  {
+    const cid = await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`);
+    const col = P => P.ev(`(() => { const c = S.snap.communities.find(c => c.id === ${JSON.stringify(cid)}); return c && c.style && c.style.rooms && c.style.rooms[${JSON.stringify(textGid)}] ? c.style.rooms[${JSON.stringify(textGid)}].main : null; })()`);
+    const chipShown = P => P.ev(`(() => { const b = document.querySelector('#mega [data-m="paint"]'); return !!b && !b.hidden; })()`);
+    // the owner at the rooms level: the chip shows on a room card, not on the options card
+    await key(A, 'Escape'); await sleep(900);
+    need(await lvl(A) === 'server', 'colours: expected the rooms level, got ' + await lvl(A));
+    await A.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.kind === 'options'), true)`); await sleep(1500);
+    need(!(await chipShown(A)), 'colours: the chip must not show on the options card');
+    await A.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.key === ${JSON.stringify(textGid)}), true)`); await sleep(1500);
+    need(await chipShown(A), 'colours: the owner has no colours chip on a room card');
+    // a non-owner never sees it, and the core refuses a change from them
+    for (let i = 0; i < 3 && await lvl(B) === 'chat'; i++) { await key(B, 'Escape'); await sleep(900); }
+    await B.ev(`__mega.level !== 'chat' ? __mega.list.go(__mega.list.items.findIndex(x => x.key === ${JSON.stringify(textGid)}), true) : 0`); await sleep(1200);
+    need(!(await chipShown(B)) && await B.ev(`!__mega.canPaint(__mega.list.item)`), 'colours: a non-owner sees the colours chip');
+    const refused = await B.ev(`rpc('set_style', { cid: ${JSON.stringify(cid)}, room: ${JSON.stringify(textGid)}, main: '#ff0000', hi: '#00ff00' }).then(() => 'accepted', e => 'refused: ' + e.message)`);
+    need(/^refused/.test(refused), 'colours: the core accepted a change from a member: ' + refused);
+    // the owner picks a colour in the picker; it shows at once here and is sent when the edit settles
+    await A.ev(`document.querySelector('#mega [data-m="paint"]').click()`); await sleep(500);
+    need(await A.ev(`!!document.querySelector('#mega-paint') && !document.querySelector('#mega-paint').classList.contains('off') && document.querySelectorAll('#mega-paint .mp-presets button').length === 8 && !!document.querySelector('#mp-sv') && !!document.querySelector('#mp-hue') && !!document.querySelector('#mp-hex') && !!document.querySelector('#mp-reset')`), 'colours: the picker is missing parts');
+    await A.ev(`(() => { const h = document.querySelector('#mp-hex'); h.value = '#12ab34'; h.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    need(await A.ev(`__mega.shown.get(${JSON.stringify(textGid)})[0] === '#12ab34'`), 'colours: the owner does not see the new colour at once');
+    need(await col(B) === null, 'colours: the colour was sent before the edit settled');
+    await A.shot('mega3-1-picker');
+    await B.waitFor(`(() => { const c = S.snap.communities.find(c => c.id === ${JSON.stringify(cid)}); return c && c.style && c.style.rooms && c.style.rooms[${JSON.stringify(textGid)}] && c.style.rooms[${JSON.stringify(textGid)}].main === '#12ab34'; })()`, 40000).catch(async () => { const d = async Q => JSON.stringify(await Q.ev(`rpc('notices').then(n => n.slice(-6).map(x => x.kind + ': ' + x.text))`)) + ' style=' + JSON.stringify(await Q.ev(`S.snap.communities.map(c => [c.name, c.role, c.style])`)); throw new Error('mega: the other client never received the owner colour | A ' + await d(A) + ' | B ' + await d(B)); });
+    await B.waitFor(`__mega.shown.get(${JSON.stringify(textGid)})[0] === '#12ab34'`, 8000).catch(() => { throw new Error('mega: the other client did not recolour'); });
+    need(await B.ev(`/changed the colours/.test(document.querySelector('#toast').textContent)`), 'colours: no note naming who changed it: ' + await B.ev(`document.querySelector('#toast').textContent`));
+    need(await B.ev(`document.querySelector('#toast').textContent.includes(S.snap.communities.find(c => c.id === ${JSON.stringify(cid)}).style.by)`), 'colours: the note does not name the owner');
+    await B.shot('mega3-2-recoloured');
+    // a change from the other side is ignored: still the owner's colour on both
+    await sleep(800);
+    need(await col(A) === '#12ab34' && await col(B) === '#12ab34', 'colours: the colour did not hold');
+    // a client that joins later gets the colours out of the table
+    const C_PORT = Number(process.env.COMMONS_UI_C_PORT || 7103);
+    run(bin('dev_bridge'), [String(C_PORT), path.join(root, 'app/ui')], { COMMONS_DATA: path.join(out, 'data', 'carol'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1' });
+    await sleep(1500);
+    const C = await open(`http://127.0.0.1:${C_PORT}/`);
+    await C.waitFor(`!!document.querySelector('#nm')`);
+    await type(C, '#nm', 'Carol'); await type(C, '#pp', 'correct horse battery'); await type(C, '#pp2', 'correct horse battery'); await click(C, '#go');
+    await C.waitFor(`document.querySelector('.modal')`); await sleep(300); await click(C, '.modal .acts button');
+    await C.waitFor(`!document.querySelector('#app').hidden`);
+    const inv = await A.ev(`rpc('create_invite', { cid: ${JSON.stringify(cid)}, uses: 1 }).then(r => r.link)`);
+    await C.ev(`rpc('join', { link: ${JSON.stringify(inv)} }).then(() => 1)`);
+    await C.waitFor(`(() => { const c = S.snap.communities.find(c => c.name === 'Book club'); return c && c.style && c.style.rooms && Object.values(c.style.rooms).some(r => r.main === '#12ab34'); })()`, 60000).catch(() => { throw new Error('mega: a late joiner did not get the colours'); });
+    await C.waitFor(`!!__mega.shown && [...__mega.shown.values()].some(v => v[0] === '#12ab34')`, 8000);
+    await C.shot('mega3-3-late-joiner');
+    // reset puts the default back for everyone
+    await A.ev(`document.querySelector('#mp-reset').click()`);
+    await B.waitFor(`(() => { const c = S.snap.communities.find(c => c.id === ${JSON.stringify(cid)}); return c && c.style && !c.style.rooms[${JSON.stringify(textGid)}]; })()`, 40000).catch(() => { throw new Error('mega: reset did not reach the other client'); });
+    await A.ev(`document.querySelector('#mp-done').click()`); await sleep(300);
+    need(await A.ev(`!document.querySelector('#mega-paint')`), 'colours: done did not close the picker');
+    // the live channel's test hook: one event across, never in the history
+    const msgsBefore = await B.ev(`rpc('messages', { gid: ${JSON.stringify(textGid)}, limit: 200 }).then(m => m.messages.length)`);
+    await A.ev(`rpc('live_send', { gid: ${JSON.stringify(textGid)}, kind: 'probe', data: 'hello' }).then(() => 1)`);
+    await sleep(2500);
+    const live = await B.ev(`rpc('live_poll', { since: 0 }).then(r => r.events.filter(e => e.kind === 'probe').map(e => e.data + ':' + e.account.slice(0, 4)))`);
+    need(live.length === 1 && live[0].startsWith('hello:'), 'live: the event did not arrive exactly once: ' + JSON.stringify(live));
+    need(await B.ev(`rpc('messages', { gid: ${JSON.stringify(textGid)}, limit: 200 }).then(m => m.messages.length)`) === msgsBefore, 'live: an event showed up in the history');
+    for (const Q of [A, B]) need(await Q.ev(`rpc('notices').then(n => n.filter(x => x.kind === 'newer').length)`) === 0, 'live: a newer-version notice appeared between two current clients');
+    // back into the chat for what follows
+    await key(A, 'Enter'); await sleep(1500);
+    need(await lvl(A) === 'chat', 'colours: could not get back into the chat');
   }
 
   // ---- large files ----
@@ -669,6 +735,14 @@ try {
   const pcards = await P.ev(`(() => { const c = document.querySelector('.mslot.settled .msq')?.getBoundingClientRect(); return c ? { l: c.left, r: c.right, w: innerWidth } : null; })()`);
   if (!pcards || pcards.l < -1 || pcards.r > pcards.w + 1) throw new Error('mega: the cards overflow a phone screen: ' + JSON.stringify(pcards));
   await P.shot('mega-7-phone-cards');
+  // the colour picker on a phone: a sheet at the bottom that stays on screen
+  await P.ev(`(() => { const x = __mega.list.items.findIndex(i => __mega.canPaint(i)); if (x >= 0) __mega.list.go(x, true); })()`); await sleep(1500);
+  need(await P.ev(`(() => { const b = document.querySelector('#mega [data-m="paint"]'); return !!b && !b.hidden; })()`), 'colours: no chip for the owner on a phone');
+  await P.ev(`document.querySelector('#mega [data-m="paint"]').click()`); await sleep(600);
+  const pp = await P.ev(`(() => { const r = document.querySelector('#mega-paint').getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom, w: innerWidth, h: innerHeight }; })()`);
+  need(pp.l >= 0 && pp.r <= pp.w + 1 && pp.t >= 0 && pp.b <= pp.h + 1, 'colours: the picker does not fit a phone screen: ' + JSON.stringify(pp));
+  await P.shot('mega3-4-phone-picker');
+  await P.ev(`document.querySelector('#mp-done').click()`); await sleep(300);
   await P.ev(`__mega.list.go(0, true)`); await sleep(1200);
   await P.ev(`document.querySelectorAll('.room')[0].click()`); await sleep(900);
   // In a call on a phone the dock is a slim bar at the bottom of the chat, not in the (closed) drawer.

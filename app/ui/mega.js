@@ -134,7 +134,15 @@
   const mentionsIn = c => c.channels.reduce((n, x) => n + (S.mention.get(x.gid) || 0), 0);
   const unreadIn = c => c.channels.reduce((n, x) => n + (x.unread || 0), 0);
   const PREV = new Map();   // gid -> { sig, who, text }: the newest line, for the card
-  const mk = (o, sigParts) => { o.theme = o.theme || DEF[H(o.id) % DEF.length]; o.sig = JSON.stringify(sigParts); return o; };
+  // ---------------------------------------------------------------- owner colours
+  // The core carries what the owner chose (S.snap.communities[].style, already checked against the owner's signature).
+  // SHOWN is what is on screen this moment, so a change from someone else can fade in instead of jumping.
+  const SHOWN = new Map(), GOAL = new Map(), HOLD = new Map(), SEEN = new Map(), TW = new Map();
+  const isHex = v => /^#[0-9a-f]{6}$/i.test(v || '');
+  // the colours the owner set for this community card (gid null) or room, or the defaults derived from the id
+  const targetOf = (cid, gid) => { const c = comm(cid), st = c && c.style, d = st && (gid ? st.rooms && st.rooms[gid] : st.community); return d && isHex(d.main) && isHex(d.hi) ? [d.main.toLowerCase(), d.hi.toLowerCase()] : DEF[H(gid || cid) % DEF.length]; };
+  const themeOf = o => SHOWN.get(o.id) || (o.kind === 'options' ? DEF[H(o.id) % DEF.length] : targetOf(o.cid || o.id, o.kind === 'community' ? null : o.gid));
+  const mk = (o, sigParts) => { o.theme = o.theme || themeOf(o); o.sig = JSON.stringify([sigParts, o.theme]); return o; };
 
   function commItem(c) {
     const un = unreadIn(c), at = mentionsIn(c), voice = S.cid === c.id ? c.channels.filter(x => x.kind === 'voice' && (callPeople(x.gid) || []).length) : [];
@@ -237,6 +245,7 @@
       if (settled === cur) return;
       if (settled >= 0) slots[settled]?.classList.remove('settled');
       settled = cur; settledTop = el.scrollTop; slots[cur].classList.add('settled'); remaskAll(); setTimeout(remaskAll, 850);
+      if (opts.onSettle) opts.onSettle(items[cur]);
     };
     el.addEventListener('scroll', () => {
       if (!raf) raf = requestAnimationFrame(frame);
@@ -272,6 +281,12 @@
           sc.children[i].className = scrubCls(x);
         });
         frame(); setTimeout(remaskAll, 60); return true;
+      },
+      // new colours only: same cards, new paint (no content is rebuilt, so the ascii keeps flowing)
+      repaint(next) {
+        if (next.length !== items.length) return;
+        next.forEach((x, i) => { if (x.key !== items[i].key) return; items[i] = x; $('.msq', slots[i]).style.cssText = cardVars(x); sc.children[i].style.setProperty('--c', dotOf(x)); });
+        live.forEach((a, i) => { a.x = items[i]; a.at = atlasOf(fieldOf(a.x), hiOf(a.x), a.sw, a.sh, a.fs); asciiDraw(a, clock); });
       },
       visible() { return slots.map((s, i) => ({ x: items[i], i, a: Math.abs(i - cur) })).filter(o => o.a <= 1).map(o => ({ ...o, r: $('.msq', slots[o.i]).getBoundingClientRect() })); },
       rectOf(i) { return $('.msq', slots[i]).getBoundingClientRect(); },
@@ -317,15 +332,15 @@
     const dot = $('#activity-dot') && !$('#activity-dot').hidden ? '<span class="mdot" title="new in the activity log"></span>' : '';
     const more = `<button class="mchip" data-m="more" type="button" aria-haspopup="menu">more${dot}</button>`;
     const jump = `<button class="mchip" data-m="jump" type="button">jump<span class="mhide-s">&nbsp;to</span> <span class="mtag mhide-s">ctrl k</span></button>`;
-    if (!c) return `<div class="mbar"><span class="mmark">mega</span><span class="mtag" id="m-sync" hidden></span><span class="mgrow"></span><button class="mchip" data-m="new" type="button">new</button><button class="mchip" data-m="join" type="button">join</button>${more}${jump}</div>`;
+    if (!c) return `<div class="mbar"><span class="mmark">mega</span><span class="mtag" id="m-sync" hidden></span><span class="mgrow"></span><button class="mchip" data-m="paint" type="button" hidden>colours</button><button class="mchip" data-m="new" type="button">new</button><button class="mchip" data-m="join" type="button">join</button>${more}${jump}</div>`;
     const admin = c.role === 'admin' || c.role === 'owner', names = S.membersFor === c.id ? S.members.map(m => m.name) : [];
-    return `<div class="mbar">${cs.length > 1 ? '<button class="mchip" data-m="back" type="button" aria-label="Back to all communities"><span aria-hidden="true">&larr;</span><span class="mhide-s"> back</span></button>' : ''}<span class="mmark">${esc(c.name)}</span><span class="mtag" id="m-sync" hidden></span><span class="mgrow"></span>${admin ? '<button class="mchip mhide-s" data-m="invite" type="button">invite</button><button class="mchip mhide-s" data-m="room" type="button">new room</button>' : ''}<button class="mchip" data-m="people" type="button" aria-label="People">${names.length ? mfaces(names.slice(0, 3)) : ''}<span class="mhide-s">people</span></button>${more}${jump}</div>`;
+    return `<div class="mbar">${cs.length > 1 ? '<button class="mchip" data-m="back" type="button" aria-label="Back to all communities"><span aria-hidden="true">&larr;</span><span class="mhide-s"> back</span></button>' : ''}<span class="mmark">${esc(c.name)}</span><span class="mtag" id="m-sync" hidden></span><span class="mgrow"></span><button class="mchip" data-m="paint" type="button" hidden>colours</button>${admin ? '<button class="mchip mhide-s" data-m="invite" type="button">invite</button><button class="mchip mhide-s" data-m="room" type="button">new room</button>' : ''}<button class="mchip" data-m="people" type="button" aria-label="People">${names.length ? mfaces(names.slice(0, 3)) : ''}<span class="mhide-s">people</span></button>${more}${jump}</div>`;
   }
   function drawBar() {
     const html = barHTML(); let bar = $('.mbar', mega);
     if (bar && html !== M.barSig) { bar.outerHTML = html; }
     else if (!bar) mega.insertAdjacentHTML('afterbegin', html);
-    M.barSig = html; syncText();
+    M.barSig = html; syncText(); if (M.list) paintFollow(M.list.item);
   }
   function notesHTML() {
     const sn = S.snap; if (!sn) return '';
@@ -347,7 +362,7 @@
     drawBar(); M.sig = '';
     const items = homeItems(), want = startCid || store.get('last', null) || S.cid;
     const start = Math.max(0, items.findIndex(x => x.cid === want));
-    M.list = List(items, { start, enter: enterCommunity });
+    M.list = List(items, { start, enter: enterCommunity, onSettle: paintFollow });
     drawNotes();
   }
   function showServer(cid, startKey) {
@@ -358,7 +373,7 @@
     const items = roomItems(c);
     let start = startKey ? items.findIndex(x => x.key === startKey) : items.findIndex(x => x.unread > 0 && x.kind === 'text');
     if (start < 0) start = 0;
-    M.list = List(items, { start, enter: enterRoom, join: joinVoice });
+    M.list = List(items, { start, enter: enterRoom, join: joinVoice, onSettle: paintFollow });
     drawNotes(); loadPreviews(c);
   }
   const goHome = () => { const cs = comms(); if (cs.length === 1) showServer(cs[0].id, S.gid); else showHome(M.cid || S.cid); };
@@ -449,6 +464,11 @@
     const items = e.target; if (railRaf || !M.rail || items.id !== 'm-items') return;
     railRaf = requestAnimationFrame(() => { railRaf = 0; const b = items.getBoundingClientRect(), m = b.top + b.height / 2; $$('.mitem', items).forEach(i => { const r = i.getBoundingClientRect(), d = Math.min(1, Math.abs(r.top + r.height / 2 - m) / (b.height / 2)); i.style.transform = `scale(${(1 - .16 * d).toFixed(3)})`; }); });
   }, { passive: true, capture: true });
+  rail.addEventListener('contextmenu', e => {
+    const b = e.target.closest('.mitem'); if (!b) return;
+    const x = (M.railItems || []).find(k => k.key === b.dataset.key);
+    if (x && canPaint(x)) { e.preventDefault(); paint(x); }
+  });
   rail.addEventListener('click', e => {
     if (e.target.closest('#m-home')) { goHomeFromChat(); return; }
     const b = e.target.closest('.mitem'); if (!b) return;
@@ -510,6 +530,135 @@
   });
   optsEl.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 'dl-dir') e.target.blur(); });
 
+
+  // ---- following the snapshot: the owner's colours arrive, fade in, and are announced once by name
+  const calmNow = () => typeof calm === 'function' && calm();
+  function setShown(id, to, animate) {
+    const from = SHOWN.get(id); GOAL.set(id, to); TW.delete(id);
+    if (!from || !animate || calmNow()) { SHOWN.set(id, to); return false; }
+    const t0 = performance.now(), tok = {}; TW.set(id, tok);
+    // timers, not animation frames: a window in the background still ends on the right colour
+    const step = () => {
+      if (TW.get(id) !== tok) return;
+      const k = Math.min(1, (performance.now() - t0) / 650), e = k * k * (3 - 2 * k);
+      SHOWN.set(id, k >= 1 ? to : [mix(from[0], to[0], e), mix(from[1], to[1], e)]); repaintColours();
+      if (k < 1) setTimeout(step, 33); else TW.delete(id);
+    };
+    setTimeout(step, 0); return true;
+  }
+  function syncColours() {
+    const now = Date.now();
+    for (const c of comms()) {
+      const changed = [];
+      for (const [id, gid, name] of [[c.id, null, c.name], ...c.channels.map(ch => [ch.gid, ch.gid, ch.name])]) {
+        const to = targetOf(c.id, gid), goal = GOAL.get(id);
+        if (!goal) { SHOWN.set(id, to); GOAL.set(id, to); continue; }
+        if (goal[0] === to[0] && goal[1] === to[1]) continue;
+        if ((HOLD.get(id) || 0) > now) continue;          // the owner is editing this one right now
+        setShown(id, to, true); changed.push(name);
+      }
+      const ver = c.style ? c.style.ver : 0, was = SEEN.get(c.id);
+      SEEN.set(c.id, ver);
+      if (was !== undefined && ver > was && c.role !== 'owner' && changed.length) {
+        const who = c.style && c.style.by ? c.style.by : 'the owner';
+        toast(`${who} changed the colours of ${changed.length > 2 ? changed.length + ' rooms' : changed.join(' and ')}`);
+      }
+    }
+  }
+  let rcRaf = 0;
+  function repaintColours() {
+    if (rcRaf) return;
+    rcRaf = setTimeout(() => {
+      rcRaf = 0; if (!M.started) return;
+      const c = comm(M.cid);
+      if (M.level === 'home') { if (M.list) M.list.repaint(homeItems()); }
+      else if (M.level === 'server') { if (c && M.list) M.list.repaint(roomItems(c)); }
+      else if (c) {
+        const items = roomItems(c); M.railItems = items; M.sig = railSig(c);
+        $$('.mitem', rail).forEach(b => { const x = items.find(k => k.key === b.dataset.key); if (x) { b.style.setProperty('--c', dotOf(x)); if (M.rail) b.style.cssText += ';' + cardVars(x, true); } });
+        const it = items.find(x => x.gid === S.gid && x.kind === 'text');
+        if (it && BD && BD.gid === it.gid && mainEl) {
+          const hi = lift(hiOf(it), 4.8); root.style.setProperty('--mg-c', dotOf(it)); root.style.setProperty('--mg-hi', hi); root.style.setProperty('--mg-hi-ink', bestInk(hi));
+          BD.f = fieldOf(it); BD.h = hiOf(it); bdColours(BD); dirty();
+        }
+      }
+    }, 16);
+  }
+
+  // ---- the picker (owner only): square, hue, hex, presets, a warning when the two are too close, reset
+  const PRESETS = DEF.slice(0, 8);
+  const canPaint = x => !!x && x.kind !== 'options' && x.kind !== 'you' && (comm(x.cid || x.id) || {}).role === 'owner';
+  const PT = { open: false, set() { } };
+  const toHsv = h => { const [r, g, b] = rgb(h).map(v => v / 255), Mx = Math.max(r, g, b), d = Mx - Math.min(r, g, b); let hh = 0; if (d) hh = Mx === r ? ((g - b) / d + 6) % 6 : Mx === g ? (b - r) / d + 2 : (r - g) / d + 4; return [hh * 60, Mx ? d / Mx : 0, Mx]; };
+  const fromHsv = (h, s, v) => { const f = n => { const k = (n + h / 60) % 6; return (v - v * s * Math.max(0, Math.min(k, 4 - k, 1))) * 255; }; return hex([f(5), f(3), f(1)]); };
+  function paintFollow(x) {
+    const b = $('[data-m="paint"]', mega); if (b) b.hidden = !(canPaint(x) && (M.level === 'home' || M.level === 'server'));
+    if (PT.open) { if (!x || (!canPaint(x) && x.kind !== 'options')) closePaint(); else PT.set(x); }
+  }
+  function closePaint() { const e = document.getElementById('mega-paint'); if (e) e.remove(); PT.open = false; PT.set = () => { }; }
+  // sending: one request at a time, newest value per card, never on every pointer move
+  const SAVE = new Map(); let saving = false;
+  async function flushSaves() {
+    if (saving) return; saving = true;
+    try {
+      while (SAVE.size) {
+        const [id, o] = SAVE.entries().next().value; SAVE.delete(id);
+        try { await rpc('set_style', { cid: o.cid, room: o.gid || '', main: o.main, hi: o.hi }); } catch (er) { toast(er.message); }
+        HOLD.set(id, Date.now() + 2500);
+      }
+    } finally { saving = false; }
+  }
+  const queueSave = (x, d) => { HOLD.set(x.id, Date.now() + 6000); SAVE.set(x.id, { cid: x.cid || x.id, gid: x.kind === 'community' ? '' : x.gid, main: d ? d[0] : '', hi: d ? d[1] : '' }); flushSaves(); };
+  function paint(start) {
+    if (PT.open) { closePaint(); return; }
+    closePops();
+    const e = document.createElement('div'); e.id = 'mega-paint'; e.setAttribute('role', 'dialog'); e.setAttribute('aria-label', 'Colours');
+    e.innerHTML = `<div class="mp-head"><span id="mp-name"></span><button class="mchip" id="mp-done" type="button">done</button></div><p class="mtag" id="mp-note"></p><div class="mp-body">
+      <div class="mp-wells"><button type="button" class="mp-well" data-w="0"><span></span>colour</button><button type="button" class="mp-well" data-w="1"><span></span>highlight</button></div>
+      <div id="mp-sv" tabindex="0" role="slider" aria-label="Saturation and brightness"><span id="mp-svt"></span></div>
+      <input id="mp-hue" type="range" min="0" max="359" step="1" aria-label="Hue">
+      <label class="mp-hex">hex <input id="mp-hex" maxlength="7" spellcheck="false" autocomplete="off" aria-label="Hex colour"></label>
+      <div class="mp-presets">${PRESETS.map((p, i) => `<button type="button" data-p="${i}" aria-label="Preset ${i + 1}" style="background:linear-gradient(135deg,${p[0]} 50%,${p[1]} 50%)"></button>`).join('')}</div>
+      <p class="mtag" id="mp-warn" role="status"></p><div class="mp-end"><button class="mchip" id="mp-reset" type="button">reset</button></div></div>`;
+    document.body.append(e); PT.open = true;
+    let w = 0, hsv = [0, 0, 0], target = start, timer = 0;
+    const sv = $('#mp-sv', e), hue = $('#mp-hue', e), hx = $('#mp-hex', e);
+    const cur = () => (SHOWN.get(target.id) || themeOf(target)).slice();
+    const show = () => {
+      if (!canPaint(target)) return;
+      const t = cur();
+      sv.style.setProperty('--hc', fromHsv(hsv[0], 1, 1)); const th = $('#mp-svt', e); th.style.left = hsv[1] * 100 + '%'; th.style.top = (1 - hsv[2]) * 100 + '%'; th.style.background = t[w]; hue.value = Math.round(hsv[0]);
+      if (document.activeElement !== hx) hx.value = t[w];
+      $$('.mp-well', e).forEach(b => { b.setAttribute('aria-pressed', +b.dataset.w === w); $('span', b).style.background = t[+b.dataset.w]; });
+      $('#mp-warn', e).textContent = contrast(t[0], t[1]) < 1.6 ? 'These two are too close, so the highlight will barely show.' : '';
+    };
+    // live on this screen at once; sent to everyone only when the person lets go
+    const apply = d => { setShown(target.id, d, false); HOLD.set(target.id, Date.now() + 6000); repaintColours(); show(); };
+    const commit = () => { clearTimeout(timer); queueSave(target, cur()); };
+    const later = () => { clearTimeout(timer); timer = setTimeout(commit, 450); };
+    PT.set = x => {
+      target = x; const ok = canPaint(x); e.classList.toggle('off', !ok);
+      $('#mp-name').textContent = x.kind === 'options' ? 'options' : x.name;
+      $('#mp-note').textContent = x.kind === 'options' ? 'The options room is private to each person, so it stays grey.' : 'Everyone in the community sees these colours. Only you, the owner, can change them.';
+      if (ok) { hsv = toHsv(cur()[w]); show(); }
+    };
+    const edit = (i, v) => { const t = cur(); t[i] = v; apply(t); };
+    const pick = ev => { const r = sv.getBoundingClientRect(); hsv[1] = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)); hsv[2] = 1 - Math.max(0, Math.min(1, (ev.clientY - r.top) / r.height)); edit(w, fromHsv(...hsv)); };
+    sv.onpointerdown = ev => { sv.setPointerCapture(ev.pointerId); pick(ev); sv.onpointermove = pick; };
+    sv.onpointerup = () => { sv.onpointermove = null; commit(); };
+    sv.onkeydown = ev => { const d = { ArrowLeft: [-.02, 0], ArrowRight: [.02, 0], ArrowUp: [0, .02], ArrowDown: [0, -.02] }[ev.key]; if (!d) return; ev.preventDefault(); ev.stopPropagation(); hsv[1] = Math.max(0, Math.min(1, hsv[1] + d[0])); hsv[2] = Math.max(0, Math.min(1, hsv[2] + d[1])); edit(w, fromHsv(...hsv)); later(); };
+    hue.oninput = () => { hsv[0] = +hue.value; edit(w, fromHsv(...hsv)); }; hue.onchange = commit;
+    hx.oninput = () => { let v = hx.value.trim(); if (v && v[0] !== '#') v = '#' + v; if (isHex(v)) { v = v.toLowerCase(); hsv = toHsv(v); edit(w, v); later(); } };
+    hx.onblur = show;
+    e.onclick = ev => {
+      const b = ev.target.closest('.mp-well'); if (b) { w = +b.dataset.w; hsv = toHsv(cur()[w]); show(); return; }
+      const p = ev.target.closest('[data-p]'); if (p) { const d = PRESETS[+p.dataset.p].slice(); hsv = toHsv(d[w]); apply(d); commit(); return; }
+      if (ev.target.id === 'mp-reset') { const d = DEF[H(target.gid || target.cid || target.id) % DEF.length].slice(); hsv = toHsv(d[w]); apply(d); clearTimeout(timer); queueSave(target, null); return; }
+      if (ev.target.id === 'mp-done') closePaint();
+    };
+    PT.set(start);
+  }
+
   // ---------------------------------------------------------------- floats: menus, jump to
   function closePops() { const had = M.closers.length; M.closers.forEach(f => f()); M.closers = []; return had > 0; }
   function popAt(html, x, y) {
@@ -535,6 +684,7 @@
     else if (a === 'back') showHome(M.cid);
     else if (a === 'invite') $('#btn-invite').click(); else if (a === 'room') $('#add-room').click();
     else if (a === 'people') $('#btn-people').click();
+    else if (a === 'paint') { if (M.list && canPaint(M.list.item)) paint(M.list.item); }
   });
 
   // a community made from here becomes the one the person is looking at: show its rooms once the core lists it
@@ -585,6 +735,7 @@
     if (typing && t.id === 'search' && !$('#search-pop').hidden) return false;
     if (!$('#sw-menu').hidden) return false;
     if (M.pal) { M.pal.querySelector('input').blur(); closePops(); return true; }
+    if (PT.open) { closePaint(); return true; }
     if (closePops()) return true;
     if (S.people) { $('#btn-people').click(); return true; }
     if (M.rail) { closeRail(); return true; }
@@ -711,13 +862,14 @@
   // ---- when a room is on screen: its colours, the dark look, the backdrop
   function syncRoom() {
     if (!mainEl) mainEl = $('#main');
+    root.classList.toggle('mg-opts', !!(M.started && M.level === 'chat' && M.opts));
     let item = null;
     if (M.started && M.level === 'chat' && !M.opts && S.gid) { const c = comm(M.cid); item = c && roomItems(c).find(x => x.gid === S.gid && x.kind === 'text'); }
     root.classList.toggle('mg-room', !!item);
     if (!item) { bdStop(); typingDraw([]); focusFrame(); return; }
     if (BD && BD.gid === item.gid) return;
     const hi = lift(hiOf(item), 4.8);
-    mainEl.style.setProperty('--mg-c', dotOf(item)); mainEl.style.setProperty('--mg-hi', hi); mainEl.style.setProperty('--mg-hi-ink', bestInk(hi));
+    root.style.setProperty('--mg-c', dotOf(item)); root.style.setProperty('--mg-hi', hi); root.style.setProperty('--mg-hi-ink', bestInk(hi));
     typingDraw([]); bdStart(item);
   }
 
@@ -914,6 +1066,7 @@
   // ---------------------------------------------------------------- following the snapshot
   function render() {
     if (!S.snap) return;
+    syncColours();
     if (!M.started) { start(); return; }
     if (M.busy) { M.dirty = true; return; }
     const cs = comms();
@@ -951,6 +1104,6 @@
     if (M.level === 'chat' && M.cid === c.id) { M.opts = false; showOpts(); drawRail(); return; }
     toChatOpen(c.id);
   };
-  M.prev = PREV; window.__mega = M;
+  M.prev = PREV; M.shown = SHOWN; M.canPaint = canPaint; window.__mega = M;
   if (S.snap && !$('#app').hidden) render();   // the first snapshot may have arrived while this file was still loading
 })();
