@@ -32,3 +32,44 @@
   .mslot { height: 70cqh; }
   .mlist { padding-block: 15cqh; }
 }
+
+/* ---- the section label above the voice cards: at 70 px it sat right under the bar's chips whenever the voice card was
+   centred. Smaller, on the grid, and it steps aside while the card below it is the settled one. ---- */
+.msect { font-size: round(down, clamp(24px, 4cqw, 48px), var(--m-dsnap)); transition: opacity .3s; }
+.msect:has(+ .mslot.settled) { opacity: 0; }
+@media (prefers-reduced-motion: reduce) { .msect { transition: none; } }
+
+/* ---- the card bar on a computer never wraps either: the community name gives way first (it is on the card in any
+   case), and in a narrow stage (the camera stack open) the keyboard tag goes. ---- */
+@media (min-width: 761px) {
+  .mbar { flex-wrap: nowrap; }
+  .mbar > * { flex: none; }
+  .mmark { flex: 0 1 auto; min-width: 120px; max-width: none; }
+  .mgrow { flex: 1 0 8px; }
+}
+@container (max-width: 1040px) { .mbar .mchip[data-m="jump"] .mtag, .mbar .mchip[data-m="jump"] .mhide-s { display: none; } }
+
+/* ---- offline: the relay line is drawn where the composer's small print is; the small print steps aside for it ---- */
+@media (min-width: 761px) {
+  html.mega #app:has(#sync-status.bad:not([hidden])) #composer .foot .hint { visibility: hidden; }
+  html.mega #rail#rail #sync-status { font: 400 12px/1.3 var(--m-name); letter-spacing: var(--m-small); }
+}
+
+/* ---- the camera stack: the tile bars wore the browser's grey select and squeezed the name to "Bob · scre…" ---- */
+html.mega #c-shares .ctile .bar { gap: 6px; padding: 6px 8px; font: 500 11px/1 var(--m-ui); letter-spacing: var(--m-small); background: linear-gradient(transparent, rgb(5 4 7 / .78)); }
+html.mega #c-shares .ctile .bar .grow { flex: 1 1 64px; }
+html.mega #c-shares .ctile .bar select, html.mega #c-shares .ctile .bar button { appearance: none; -webkit-appearance: none; flex: none; height: 24px; padding: 0 9px; border: 0; border-radius: 999px; background: rgb(5 4 7 / .72); color: var(--m-paper); font: 500 11px/1 var(--m-ui); letter-spacing: var(--m-small); text-transform: lowercase; cursor: pointer; }
+html.mega #c-shares .ctile .bar select { padding-right: 22px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23efedf2' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 8px center; background-size: 9px 6px; }
+html.mega #c-shares .ctile .bar select option { background: #17151e; color: var(--m-paper); }
+html.mega #c-shares .ctile .bar select:hover, html.mega #c-shares .ctile .bar button:hover { background-color: rgb(5 4 7 / .9); }
+html.mega #c-shares .ctile .bar select:focus-visible, html.mega #c-shares .ctile .bar button:focus-visible { outline: 2px solid var(--m-paper); outline-offset: 1px; }
+
+/* ---- display type on the 12 px grid: the sizes that had drifted off it ---- */
+html.mega .modal h2, html.mega .modal-out h2 { font-size: 36px; }
+.mi-t { font-size: 24px; }
+#mi-rec .mi-rt b { font-size: 24px; }
+.rg-who b { font-size: round(down, clamp(36px, 5vw, 48px), 12px); }
+.mi-code, .mi-first #ipw { font-size: 24px; }
+
+/* ---- a placeholder that does not fit ends in an ellipsis instead of mid-word ---- */
+html.mega input::placeholder, html.mega textarea::placeholder { text-overflow: ellipsis; }
