@@ -543,6 +543,70 @@ try {
     await A.shot('mega2-4-after');
   }
 
+  // ---- mega music: the backdrop listens to music in the call (fake audio, silent) and breathes for a shared "listening to" ----
+  if (!process.env.COMMONS_UI_SKIP_MUSIC)
+  {
+    need(await lvl(A) === 'chat', 'music: not in a room');
+    // a fake AudioContext: records every connect (nothing may reach a destination) and serves a kick-drum spectrum
+    await A.ev(`(() => {
+      const R = window.__fakeAC = { made: 0, closed: 0, connects: [], destTouched: 0, on: false, tick: 0 };
+      window.__realAC = window.AudioContext;
+      class Node { constructor(k) { this.k = k; } connect(t) { R.connects.push([this.k, t && t.k || '?']); return t; } disconnect() { } }
+      window.AudioContext = class { constructor() { R.made++; this.state = 'running'; }
+        get destination() { R.destTouched++; return new Node('destination'); }
+        createAnalyser() { const n = new Node('analyser'); n.fftSize = 1024; n.frequencyBinCount = 512;
+          n.getByteFrequencyData = a => { R.tick++; const kick = (R.tick % 6) < 2; for (let i = 0; i < a.length; i++) a[i] = i < 5 ? (kick ? 235 : 40) : i < 64 ? 70 : 5; }; return n; }
+        createMediaStreamSource() { return new Node('source'); }
+        resume() { return Promise.resolve(); }
+        close() { R.closed++; this.state = 'closed'; return Promise.resolve(); } };
+      const cv = document.createElement('canvas'); cv.width = cv.height = 8; window.__fakeTrack = cv.captureStream(1).getVideoTracks()[0];
+      __megaMusic._sources(() => R.on ? [{ key: 'fake', track: __fakeTrack }] : []);
+    })()`);
+    const mu = () => A.ev(`JSON.stringify({ ...__megaMusic.state(), r: __fakeAC.connects.length, dest: __fakeAC.destTouched, made: __fakeAC.made, closed: __fakeAC.closed, heat: __mega.bdInfo().heat, rip: __mega.stats.ripples })`).then(JSON.parse);
+    const m0 = await mu();
+    need(m0.ctxOpen === 0 && m0.made === 0 && m0.mode === '', 'music: nothing may run before music plays: ' + JSON.stringify(m0));
+    // music playing: the analyser runs (at most about 15 a second) and drives heat and ripples
+    await A.ev(`__fakeAC.on = true; __megaMusic.sync(); 1`); const t0 = Date.now();
+    await sleep(3200); const m1 = await mu(), secs = (Date.now() - t0) / 1000;
+    need(m1.mode === 'music' && m1.ctxOpen === 1 && m1.made === 1, 'music: the analyser did not start: ' + JSON.stringify(m1));
+    need(m1.analyses > 15 && m1.analyses <= 15 * secs + 2, 'music: analysis rate out of bounds (' + m1.analyses + ' in ' + secs + ' s)');
+    need(m1.heat > .3 && m1.rip > m0.rip && m1.onsets > 0, 'music: heat and ripples did not follow the beat: ' + JSON.stringify([m0, m1]));
+    need(m1.dest === 0 && m1.r > 0 && (await A.ev(`__fakeAC.connects.every(c => c[1] === 'analyser')`)), 'music: something was connected somewhere other than the analyser: ' + JSON.stringify(await A.ev(`__fakeAC.connects.slice(0, 6)`)));
+    await A.shot('mega-music-1-playing');
+    // a hidden tab does no work
+    await A.ev(`Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); 1`);
+    const mh = await mu(); await sleep(600); const mh2 = await mu();
+    need(mh.ctxOpen === 0 && mh2.analyses === mh.analyses, 'music: a hidden tab must stop all analysis: ' + JSON.stringify([mh, mh2]));
+    await A.ev(`delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); 1`);
+    await sleep(300); need((await mu()).ctxOpen === 1, 'music: coming back to the tab did not resume');
+    // the music stops: the analyser is disconnected and the context closed, and nothing more is analysed
+    await A.ev(`__fakeAC.on = false; __megaMusic.sync(); 1`); await sleep(100);
+    const m2 = await mu(); await sleep(800); const m3 = await mu();
+    need(m2.ctxOpen === 0 && m3.analyses === m2.analyses && m3.made === m3.closed && m3.mode === '', 'music: stopping the music leaked or kept working: ' + JSON.stringify([m2, m3]));
+    // strength 0 does nothing at all
+    await A.ev(`__mega.bdApi.bd().dim = 0; __fakeAC.on = true; __megaMusic.sync(); 1`); await sleep(1200);
+    const z = await mu(); need(z.made === m3.made && z.ctxOpen === 0 && z.analyses === m3.analyses, 'music: strength 0 must not touch audio: ' + JSON.stringify(z));
+    await A.ev(`__mega.bdApi.bd().dim = 100; __megaMusic.sync(); 1`); await sleep(300);
+    need((await mu()).ctxOpen === 1, 'music: the strength coming back should resume the effect');
+    await A.ev(`__fakeAC.on = false; __megaMusic.sync(); 1`);
+    // reduced motion does nothing
+    await A.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+    await A.ev(`__fakeAC.on = true; __megaMusic.sync(); 1`); await sleep(1200);
+    const rm = await mu(); need(rm.made === z.made + 1 && rm.ctxOpen === 0,'music: reduced motion must not run the analyser: ' + JSON.stringify(rm));
+    await A.ev(`__fakeAC.on = false; __megaMusic.sync(); 1`);
+    // a shared "listening to" with no call audio: a slow generic breath and a small note, never beat-synced
+    await A.ev(`S.members = [...S.members, { name: 'zed', me: false, listening: { title: 'Test Song', artist: 'Nobody' } }]; __megaMusic.sync(); 1`);
+    const lm = await mu(); need(lm.mode === '' && /Test Song/.test(lm.note), 'music: reduced motion: the note may show but nothing may pulse: ' + JSON.stringify(lm));
+    await A.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
+    await A.ev(`__megaMusic.sync(); 1`); await sleep(2500);
+    const br = await mu();
+    need(br.mode === 'breath' && br.breaths > 2 && br.ctxOpen === 0 && /Test Song · Nobody/.test(br.note) && br.onsets === lm.onsets, 'music: the shared listening status did not give a breath and a note: ' + JSON.stringify(br));
+    await A.shot('mega-music-2-note');
+    await A.ev(`S.members = S.members.filter(x => x.name !== 'zed'); __megaMusic.sync(); 1`);
+    const gone = await mu(); need(gone.mode === '' && gone.note === '', 'music: the note should go when the status does: ' + JSON.stringify(gone));
+    await A.ev(`__megaMusic._sources(null); window.AudioContext = window.__realAC; 1`);
+  }
+
   // ---- mega phase 3: owner colours (through the encrypted core) and the live channel ----
   {
     const cid = await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`);

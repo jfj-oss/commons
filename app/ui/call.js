@@ -364,6 +364,15 @@
       room.on(E.ParticipantEncryptionStatusChanged, () => this.changed());
     }
 
+    /** The music in this call as plain audio tracks (what someone plays into the call, or what we play), for the room's backdrop to listen to.
+     *  Voices are not included. Nothing here changes what anyone hears. */
+    musicSources() {
+      const out = [], SA = this.LK && this.LK.Track.Source.ScreenShareAudio;
+      for (const [k, t] of this.tracks) if (t.track && t.track.kind === 'audio' && t.source === SA && t.track.mediaStreamTrack) out.push({ key: k, track: t.track.mediaStreamTrack });
+      const p = this.play; if (p && p.atrack && !p.paused) out.push({ key: 'me/play', track: p.atrack });
+      return out;
+    }
+
     _pollNow() { if (this._poll) { this._polling = false; } this.rpc('call_state', { gid: this.gid }).then(st => this._applyKeys(st)).catch(() => { }); }
 
     _audioHostEl() {
