@@ -364,6 +364,8 @@ html.mega #call-dock { --rail-ink: var(--m-paper); --rail-mute: rgba(255, 255, 2
 @media (max-width: 760px) {
   html.mega #call-dock.standalone { left: max(10px, env(safe-area-inset-left, 0px)); right: max(10px, env(safe-area-inset-right, 0px)); bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
   html.mega #c-shares .ctile select { display: none; }
+  html.mega #call-stage { scrollbar-width: none; }
+  html.mega #call-stage::-webkit-scrollbar { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { html.mega #call-stage, html.mega #app, html.mega #mega-rail, html.mega #mega, html.mega #mega-opts, html.mega #rail#rail { transition-duration: .01ms !important; } }
 
