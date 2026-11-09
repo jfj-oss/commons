@@ -9,7 +9,7 @@ import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { startServers, openPage, rpc, sleep, stopAll, lkAdmin, LK_PORT, root, wav } from './lib/env.mjs';
+import { startServers, openPage, rpc, sleep, stopAll, lkAdmin, LK_PORT, root, wav, port } from './lib/env.mjs';
 import { makeWorld, openApps } from './lib/world.mjs';
 
 const out = process.argv[2] || '/tmp/commons-call-play-e2e';
@@ -32,7 +32,7 @@ const CORS = {
 };
 
 // ---------------------------------------------------------------- stand-in Jellyfin, with Quick Connect
-const jfPort = 28996, jfBase = `http://127.0.0.1:${jfPort}`;
+const jfPort = port(28996), jfBase = `http://127.0.0.1:${jfPort}`;
 const JF_ITEMS = [
   { Id: 'movie1', Name: 'Colour Bars: The Movie', Type: 'Movie', ProductionYear: 2024, ImageTags: { Primary: 't1' }, RunTimeTicks: 80000000 },
   { Id: 'ep2', Name: 'An Episode', Type: 'Episode', SeriesName: 'A Show', ProductionYear: 2023, ImageTags: {}, RunTimeTicks: 70000000 },
@@ -97,8 +97,8 @@ await new Promise(r => jf.listen(jfPort, '127.0.0.1', r));
 // ---------------------------------------------------------------- stand-in rune (local music, CORS + Range)
 // The narrow CORS rule is the one rune now implements: only the Megatron origins get headers, and only on the routes the
 // picker needs. The rune unit tests exercise the real allowlist; here the browser's own origin is the allowed one.
-const runePort = 28997, runeBase = `http://127.0.0.1:${runePort}`;
-const RUNE_ORIGIN = 'http://127.0.0.1:27200';
+const runePort = port(28997), runeBase = `http://127.0.0.1:${runePort}`;
+const RUNE_ORIGIN = `http://127.0.0.1:${port(27200)}`;
 const runeHits = { search: 0, stream: 0, range: 0, cover: 0, album: 0, playlist: 0, preflight: 0, denied: 0 };
 const toneA = path.join(out, 'rune-a.wav'), toneB = path.join(out, 'rune-b.wav'), toneC = path.join(out, 'rune-c.wav');
 wav(toneA, 660, 60); wav(toneB, 990, 60); wav(toneC, 1320, 60);

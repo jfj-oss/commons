@@ -4,7 +4,7 @@
 // CALL_E2E_ONLY=video runs only section J (video tiles in the call panel, about a minute).
 import fs from 'node:fs';
 import path from 'node:path';
-import { startServers, startBridge, startChrome, openPage, rpc, sleep, stopAll, lkAdmin, operatorToken, FAKE_DISPLAY, RELAY_PORT, LK_PORT } from './lib/env.mjs';
+import { startServers, startBridge, startChrome, openPage, rpc, sleep, stopAll, lkAdmin, operatorToken, FAKE_DISPLAY, RELAY_PORT, LK_PORT, port } from './lib/env.mjs';
 import { makeWorld, openApps } from './lib/world.mjs';
 const UMD = fs.readFileSync(path.join(new URL('..', import.meta.url).pathname, 'app/ui/vendor/livekit-client.umd.js'), 'utf8');
 
@@ -369,7 +369,7 @@ try {
   const e0 = (await call('alice', `c.snapshot().encryption`));
   await call('dave', `c.join(S.gid, 'general')`);
   // erin joins the community mid-call: an add commit
-  const erinPort = 27210; startBridge(out, 'erin', erinPort); await sleep(1200);
+  const erinPort = port(27210); startBridge(out, 'erin', erinPort); await sleep(1200);
   await rpc(erinPort, 'create_account', { name: 'Erin', passphrase: 'correct horse battery', relay: `http://127.0.0.1:${RELAY_PORT}` });
   const link = (await rpc(P('alice').port, 'create_invite', { cid: world.cid, uses: 2, ttl: 3600 })).link;
   await rpc(erinPort, 'join', { link });
