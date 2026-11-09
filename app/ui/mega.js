@@ -745,7 +745,8 @@
       const d = dimOf(lk);
       looksBox.innerHTML = `<p class="mp-lab" id="mp-l1">card animation</p><div class="mp-fx" role="group" aria-labelledby="mp-l1">${tiles('card', lk.card)}</div>`
         + (text ? `<p class="mp-lab" id="mp-l2">chat animation</p><div class="mp-fx" role="group" aria-labelledby="mp-l2">${tiles('chat', lk.chat)}</div>
-          <label class="mp-dim"><span class="mp-lab">backdrop</span><input id="mp-dim" type="range" min="0" max="${DIM_MAX}" step="5" value="${d}" aria-label="Backdrop strength behind the chat"><output id="mp-dimv" for="mp-dim">${d === 0 ? 'off' : d + '%'}</output></label>` : '');
+          <label class="mp-dim"><span class="mp-lab">backdrop</span><input id="mp-dim" type="range" min="0" max="${DIM_MAX}" step="5" value="${d}" aria-label="Backdrop strength behind the chat"><output id="mp-dimv" for="mp-dim">${d === 0 ? 'off' : d + '%'}</output></label>
+          <button type="button" id="mp-oracle" class="mp-oracle" aria-pressed="${lk.oracle_quiet ? 'true' : 'false'}">${lk.oracle_quiet ? 'oracle stays quiet here' : 'oracle can join in here'}</button>` : '');
     };
     const tint = () => { clearTimeout(tt); tt = setTimeout(() => { const t = cur(); $$('.mp-t', e).forEach(b => { b.style.backgroundImage = fxThumb(b.dataset.n === '' ? target.fxAuto : +b.dataset.n, t[0], t[1]); }); }, 120); };
     // a look is changed here at once, and sent only when committed (the same one-request-at-a-time queue as the colours)
@@ -774,6 +775,13 @@
     hue.oninput = () => { hsv[0] = +hue.value; edit(w, fromHsv(...hsv)); }; hue.onchange = commit;
     hx.oninput = () => { let v = hx.value.trim(); if (v && v[0] !== '#') v = '#' + v; if (isHex(v)) { v = v.toLowerCase(); hsv = toHsv(v); edit(w, v); later(); } };
     hx.onblur = show;
+    looksBox.addEventListener('click', async ev => {
+      const b = ev.target.closest && ev.target.closest('#mp-oracle'); if (!b || b.disabled || target.kind !== 'text') return;
+      const on = b.getAttribute('aria-pressed') !== 'true', t = target; b.disabled = true;
+      try { await rpc('set_oracle_quiet', { cid: t.cid, room: t.gid, on }); b.setAttribute('aria-pressed', on ? 'true' : 'false'); b.textContent = on ? 'oracle stays quiet here' : 'oracle can join in here'; }
+      catch (er) { toast('Could not change that: ' + er.message); }
+      b.disabled = false;
+    });
     looksBox.addEventListener('input', ev => { if (ev.target.id !== 'mp-dim') return; const v = +ev.target.value; $('#mp-dimv', e).textContent = v === 0 ? 'off' : v + '%'; editLook({ dim: v }, false); });
     looksBox.addEventListener('change', ev => { if (ev.target.id !== 'mp-dim') return; const v = +ev.target.value; clearTimeout(ltimer); ltimer = setTimeout(() => editLook({ dim: v }, true), 350); });
     e.onclick = ev => {

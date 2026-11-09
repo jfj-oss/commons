@@ -434,4 +434,5 @@ html.mg-drawing-card .mscrub { pointer-events: none; }
   html.mega #call-dock.standalone .cd-err, html.mega #call-dock.standalone .cd-note, html.mega #call-dock.standalone .cd-row { position: absolute; right: 70px; top: 0; width: 240px; margin: 0; padding: 8px 10px; border-radius: 12px; background: var(--m-glass); color: var(--m-paper); font-family: var(--m-ui); }
   @supports (corner-shape: squircle) { html.mega #call-dock.standalone { border-radius: 40px; corner-shape: squircle; } html.mega #call-dock.standalone .cd-b { border-radius: 22px; corner-shape: squircle; } }
 }
-
+#mega-paint .mp-oracle { width: 100%; margin-top: 8px; padding: 9px 12px; border-radius: 12px; background: rgb(255 255 255 / .08); color: var(--m-paper); font: 12px/1.2 var(--m-ui); letter-spacing: var(--m-small); text-align: left; }
+#mega-paint .mp-oracle[aria-pressed="true"] { background: var(--m-paper); color: #050407; }

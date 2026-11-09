@@ -861,6 +861,12 @@ try {
     need(z1.draws === z0.draws && z1.ink === 0, 'looks: at 0 the backdrop still works or draws: ' + JSON.stringify([z0, z1]));
     await B.shot('mega5-3-strength-0');
     // the top of the range: readable text, a lively backdrop
+    // the per-room Oracle switch: owner only, durable, and every client knows
+    await A.ev(`document.querySelector('#mp-oracle').click()`);
+    await wf(B, `(() => { const c = S.snap.communities.find(c => c.id === ${JSON.stringify(cid)}); return !!(((c.style || {}).looks || {})[${JSON.stringify(textGid)}] || {}).oracle_quiet; })()`, 60000).catch(() => { throw new Error('mega: the Oracle switch did not reach bob'); });
+    need(await A.ev(`document.querySelector('#mp-oracle').getAttribute('aria-pressed') === 'true'`), 'looks: the Oracle switch does not show that it is on');
+    await A.ev(`document.querySelector('#mp-oracle').click()`);
+    await wf(B, `(() => { const c = S.snap.communities.find(c => c.id === ${JSON.stringify(cid)}); return !((c.style || {}).looks || {})[${JSON.stringify(textGid)}]?.oracle_quiet; })()`, 60000).catch(() => { throw new Error('mega: switching Oracle back on did not reach bob'); });
     const topDim = await A.ev(`+document.querySelector('#mp-dim').max`);
     await A.ev(`(() => { const s = document.querySelector('#mp-dim'); s.value = s.max; s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
     await wf(B, `__mega.bdInfo().dim === ${topDim}`, 60000);
