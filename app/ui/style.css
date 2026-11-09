@@ -144,7 +144,7 @@
   --ink: #eee8d5; --ink-2: #b4c0bc; --ink-3: #93a5a6;
   --line: #123844; --line-2: #2f4851; --hover: rgba(238, 232, 213, .06);
   --rail: #052f39; --rail-2: #0a3a46; --rail-3: #00252e; --rail-ink: #eee8d5; --rail-mute: #93a5a6; --rail-line: #123844;
-  --glass: rgba(5, 47, 57, .72); --glass-line: #123844; --glass-ink: #eee8d5; --glass-solid: #052f39;
+  --glass: #052f39; --glass-line: #123844; --glass-ink: #eee8d5; --glass-solid: #052f39;
   --glass-hi: rgba(238, 232, 213, .2); --glass-lo: rgba(0, 0, 0, .29);
   --act: #e8863f; --act-ink: #062a33; --act-soft: #4a3a28; --act-line: #d9793a;
   --id: #3fb8ad; --id-ink: #00252e; --id-soft: #0e4a50;
