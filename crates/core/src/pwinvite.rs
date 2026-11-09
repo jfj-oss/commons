@@ -78,19 +78,51 @@ pub fn check(pw: &str) -> Result<()> {
     Ok(())
 }
 
-fn relay_key(relay: &str) -> String { relay.trim().trim_end_matches('/').to_lowercase() }
+/// The relay's address reduced to what names the server: scheme, user-visible case, a trailing slash, a default port (80 or 443),
+/// a trailing dot on the host and any query or fragment do not count. "HTTPS://Chat.Example.org:443/" and "chat.example.org" are one relay.
+pub fn canon_relay(relay: &str) -> String {
+    let mut s = relay.trim().to_lowercase();
+    for p in ["https://", "http://"] {
+        if let Some(r) = s.strip_prefix(p) { s = r.to_string(); break; }
+    }
+    let s = s.split(['?', '#']).next().unwrap_or("");
+    let (hostport, path) = match s.find('/') { Some(i) => (&s[..i], &s[i..]), None => (s, "") };
+    let path = path.trim_end_matches('/');
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() && p.bytes().all(|c| c.is_ascii_digit()) && !h.ends_with(':') => (h, p.trim_start_matches('0')),
+        _ => (hostport, ""),
+    };
+    let host = host.trim_end_matches('.');
+    let port = if port.is_empty() || port == "80" || port == "443" { String::new() } else { format!(":{port}") };
+    format!("{host}{port}{path}")
+}
+/// True when two spellings name the same relay.
+pub fn same_relay(a: &str, b: &str) -> bool { canon_relay(a) == canon_relay(b) }
+
+/// What older apps salted with: the address exactly as spelled (lower case, no final slash), scheme included.
+fn relay_key_v1(relay: &str) -> String { relay.trim().trim_end_matches('/').to_lowercase() }
 
 pub struct Derived { pub lid: String, pub key: [u8; 32] }
 
-/// The lookup id and the key, from the password and the relay's address. The salt is per relay, so one table of guesses
-/// cannot serve two relays. The two outputs are split by hashing, so the id reveals nothing about the key.
-pub fn derive(pw: &str, relay: &str, kdf: KdfParams) -> Result<Derived> {
-    let salt = &Sha256::digest(format!("mega/pwinvite/v1/{}", relay_key(relay)).as_bytes())[..16];
+fn derive_salted(pw: &str, salt_text: &str, kdf: KdfParams) -> Result<Derived> {
+    let salt = &Sha256::digest(salt_text.as_bytes())[..16];
     let params = Params::new(kdf.m_kib, kdf.t, kdf.p, Some(32)).map_err(|e| anyhow!("kdf params: {e}"))?;
     let mut master = [0u8; 32];
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params).hash_password_into(normalize(pw).as_bytes(), salt, &mut master).map_err(|e| anyhow!("kdf: {e}"))?;
     let part = |label: &str| -> [u8; 32] { let mut h = Sha256::new(); h.update(label.as_bytes()); h.update(master); h.finalize().into() };
     Ok(Derived { lid: hex::encode(part("mega/pwinvite/id")), key: part("mega/pwinvite/key") })
+}
+
+/// The lookup id and the key, from the password and the relay's address. The salt is per relay (by its canonical address, so the way
+/// the address is spelled does not matter), so one table of guesses cannot serve two relays. The two outputs are split by hashing,
+/// so the id reveals nothing about the key.
+pub fn derive(pw: &str, relay: &str, kdf: KdfParams) -> Result<Derived> {
+    derive_salted(pw, &format!("mega/pwinvite/v2/{}", canon_relay(relay)), kdf)
+}
+
+/// The derivation of apps before the address was canonicalised. Only used to find invites those apps made.
+pub fn derive_legacy(pw: &str, relay: &str, kdf: KdfParams) -> Result<Derived> {
+    derive_salted(pw, &format!("mega/pwinvite/v1/{}", relay_key_v1(relay)), kdf)
 }
 
 /// version | nonce | ciphertext. The id is bound in, so a copy cannot be moved under another password's id.
@@ -120,21 +152,33 @@ pub const NOT_FOUND: &str = "No invite goes with that password. Check it, ask fo
 
 /// Asks the relay for the sealed copy and opens it with the password. A wrong password, an expired invite, a revoked
 /// one and a used-up one all read the same here, and on the relay.
+///
+/// Invites made before the address was canonicalised sit under the older id. A relay that knows `alt` is asked for both ids in one
+/// request (one miss, not two). An older relay is asked for the new id and then, on a miss, for the old one.
 pub fn lookup(api: &Api, relay: &str, pw: &str, kdf: KdfParams) -> Result<String> {
     check_len(pw)?;
     let info = api.info(None).map_err(|e| anyhow!("could not reach the server: {e}"))?;
     if !info.pwinvite { bail!("This server is too old to take password invites. Ask for an invite link instead."); }
     let d = derive(pw, relay, kdf)?;
-    let r: HttpResp = api.t.request(None, "POST", "/v1/pwinvite/lookup", &serde_json::to_vec(&PwLookupReq { lid: d.lid.clone() })?, std::time::Duration::from_secs(15))?;
-    match r.status {
-        200 => {
-            let resp: PwLookupResp = serde_json::from_slice(&r.body).map_err(|_| anyhow!(NOT_FOUND))?;
-            let blob = unb64(&resp.blob).map_err(|_| anyhow!(NOT_FOUND))?;
-            open(&d, &blob).map_err(|_| anyhow!(NOT_FOUND))
+    let legacy = derive_legacy(pw, relay, kdf)?;
+    // None: the relay has nothing under that id.
+    let ask = |lid: &str, alt: Option<&str>| -> Result<Option<Vec<u8>>> {
+        let body = serde_json::to_vec(&PwLookupReq { lid: lid.to_string(), alt: alt.map(|a| a.to_string()) })?;
+        let r: HttpResp = api.t.request(None, "POST", "/v1/pwinvite/lookup", &body, std::time::Duration::from_secs(15))?;
+        match r.status {
+            200 => {
+                let resp: PwLookupResp = serde_json::from_slice(&r.body).map_err(|_| anyhow!(NOT_FOUND))?;
+                Ok(Some(unb64(&resp.blob).map_err(|_| anyhow!(NOT_FOUND))?))
+            }
+            429 => bail!("Too many tries just now. Wait a few minutes and try again."),
+            _ => Ok(None),
         }
-        429 => bail!("Too many tries just now. Wait a few minutes and try again."),
-        _ => bail!(NOT_FOUND),
-    }
+    };
+    let mut blob = ask(&d.lid, info.pwalt.then_some(legacy.lid.as_str()))?;
+    if blob.is_none() && !info.pwalt { blob = ask(&legacy.lid, None)?; }
+    let blob = blob.ok_or_else(|| anyhow!(NOT_FOUND))?;
+    // The id that matched decides the key; the sealed copy is bound to its own id, so only the right pair opens it.
+    open(&d, &blob).or_else(|_| open(&legacy, &blob)).map_err(|_| anyhow!(NOT_FOUND))
 }
 fn check_len(pw: &str) -> Result<()> {
     if pw.trim().is_empty() { bail!("Type the invite password you were given."); }
@@ -163,6 +207,25 @@ mod tests {
         assert_ne!(a.lid, d.lid);
         assert_ne!(a.lid, hex::encode(a.key), "the id says nothing about the key");
         assert_eq!(a.lid.len(), 64);
+    }
+    #[test]
+    fn the_spelling_of_the_relay_address_does_not_change_the_id() {
+        let want = derive("amber-fox-teal-47", "https://chat.example.org", K).unwrap().lid;
+        for same in ["https://chat.example.org/", "HTTPS://Chat.Example.ORG", "http://chat.example.org", "https://chat.example.org:443", "https://chat.example.org:443/", "chat.example.org", " https://chat.example.org// ", "http://chat.example.org:80", "https://chat.example.org./", "https://chat.example.org?x=1#y"] {
+            assert_eq!(derive("amber-fox-teal-47", same, K).unwrap().lid, want, "{same}");
+            assert!(same_relay(same, "https://chat.example.org"), "{same}");
+        }
+        for other in ["https://chat.example.org:8443", "https://chat.example.org/relay", "https://www.chat.example.org", "https://chat.example.net", "http://127.0.0.1:8787", "http://127.0.0.1:8788"] {
+            assert_ne!(derive("amber-fox-teal-47", other, K).unwrap().lid, want, "{other}");
+            assert!(!same_relay(other, "https://chat.example.org"), "{other}");
+        }
+        assert_eq!(canon_relay("http://[::1]:8787/"), "[::1]:8787");
+        assert_eq!(canon_relay("http://127.0.0.1:08787"), "127.0.0.1:8787");
+        // And the older derivation is still available, to find what older apps filed.
+        let old = derive_legacy("amber-fox-teal-47", "https://chat.example.org/", K).unwrap();
+        assert_ne!(old.lid, want);
+        assert_eq!(old.lid, derive_legacy("amber-fox-teal-47", "https://CHAT.example.org", K).unwrap().lid, "the old rule: case and a final slash only");
+        assert_ne!(old.lid, derive_legacy("amber-fox-teal-47", "chat.example.org", K).unwrap().lid, "the old rule: the scheme counted");
     }
     #[test]
     fn seals_and_opens_but_only_for_the_password() {

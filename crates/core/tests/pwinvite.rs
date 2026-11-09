@@ -254,3 +254,109 @@ fn an_old_relay_without_the_feature_fails_with_a_clear_message() {
     let e = pw::lookup(&a, &net.url(), PW, K).unwrap_err().to_string();
     assert!(e.contains("too old"), "{e}");
 }
+
+// ---- audit: the relay's spelling, older invites, and what a failed attempt costs
+
+/// Wraps the transport the way a relay from before `alt` behaves: it does not say `pwalt` and ignores the extra id. Counts lookups.
+struct Before(HttpTransport, Arc<std::sync::atomic::AtomicUsize>);
+impl Transport for Before {
+    fn request(&self, k: Option<&ed25519_dalek::SigningKey>, m: &str, p: &str, b: &[u8], t: Duration) -> anyhow::Result<HttpResp> {
+        if p == "/v1/pwinvite/lookup" {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut v: Value = serde_json::from_slice(b).unwrap();
+            v.as_object_mut().unwrap().remove("alt");
+            return self.0.request(k, m, p, &serde_json::to_vec(&v).unwrap(), t);
+        }
+        let mut r = self.0.request(k, m, p, b, t)?;
+        if p == "/v1/info" { let mut v: Value = serde_json::from_slice(&r.body).unwrap(); v.as_object_mut().unwrap().remove("pwalt"); r.body = serde_json::to_vec(&v).unwrap(); }
+        Ok(r)
+    }
+}
+
+/// A registered device of its own, to file a sealed copy the way an older app did.
+fn stranger_dev(net: &Net) -> ed25519_dalek::SigningKey {
+    let acct = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+    let dev = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+    let cert = commons_proto::DeviceCert::issue(&acct, &dev.verifying_key().to_bytes());
+    let r = HttpTransport::new(&net.url()).request(Some(&dev), "POST", "/v1/devices", &serde_json::to_vec(&commons_proto::RegisterReq { cert, invite: None }).unwrap(), Duration::from_secs(5)).unwrap();
+    assert_eq!(r.status, 200);
+    dev
+}
+
+#[test]
+fn the_way_the_relay_address_is_spelled_does_not_matter() {
+    let net = Net::new();
+    let (al, _d, cid) = alice(&net);
+    al.call("create_invite", json!({"cid": cid, "password": PW, "uses": 5})).unwrap();
+    let hostport = net.url().trim_start_matches("http://").to_string();
+    for spelled in [net.url(), format!("{}/", net.url()), format!("{}///", net.url()), format!("HTTP://{hostport}"), hostport.clone(), format!("https://{hostport}"), format!(" {} ", net.url())] {
+        assert!(pw::lookup(&api(&net), &spelled, PW, K).is_ok(), "{spelled}");
+    }
+    // The whole flow from a friend who typed the address with a final slash.
+    let (bo, _d2) = app(&net);
+    let r = bo.call("create_account_password", json!({"password": PW, "name": "bob", "passphrase": "my device pass", "relay": format!("{}/", net.url())})).unwrap();
+    assert_eq!(r["ok"], true);
+    assert!(r.get("join_error").is_none(), "{r}");
+    for a in [&al, &bo] { a.shutdown(); }
+}
+
+#[test]
+fn an_invite_filed_under_the_older_id_is_still_found_by_both_kinds_of_relay() {
+    let net = Net::new();
+    let dev = stranger_dev(&net);
+    let t = HttpTransport::new(&net.url());
+    // What an app from before this change filed: the id and key from the address exactly as that app spelled it.
+    let old = pw::derive_legacy(PW, &net.url(), K).unwrap();
+    let body = pw::put_body(&old, "commons://join/legacy-link", 3600, Some(1)).unwrap();
+    assert_eq!(t.request(Some(&dev), "PUT", &format!("/v1/pwinvite/{}", old.lid), &body, Duration::from_secs(5)).unwrap().status, 200);
+    // A relay that knows `alt`: one request.
+    assert_eq!(pw::lookup(&api(&net), &net.url(), PW, K).unwrap(), "commons://join/legacy-link");
+    // A relay from before: the new id misses, then the older one is asked. (The copy had 6 fetches; this is the second.)
+    let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let a = Api { t: Arc::new(Before(HttpTransport::new(&net.url()), n.clone())) };
+    assert_eq!(pw::lookup(&a, &net.url(), PW, K).unwrap(), "commons://join/legacy-link");
+    assert_eq!(n.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_wrong_password_costs_one_miss_on_a_relay_that_knows_both_ids() {
+    let limit = 6;
+    let guesses = |old_relay: bool| -> usize {
+        let net = Net::with_limits(commons_relay::Limits { pwinvite_misses_per_window: limit, ..Default::default() });
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let a = if old_relay { Api { t: Arc::new(Before(HttpTransport::new(&net.url()), n)) } } else { api(&net) };
+        let mut wrong = 0;
+        for i in 0..20 {
+            let e = pw::lookup(&a, &net.url(), &format!("guess-{i}-aaa-bbb"), K).unwrap_err().to_string();
+            if e.contains("Too many tries") { break; }
+            assert_eq!(e, pw::NOT_FOUND);
+            wrong += 1;
+        }
+        wrong
+    };
+    let (new_relay, old_relay) = (guesses(false), guesses(true));
+    assert_eq!(new_relay, limit as usize, "one miss per wrong password");
+    assert_eq!(old_relay, limit as usize / 2, "a relay from before cannot be asked both ids at once, so each wrong password costs two there");
+}
+
+#[test]
+fn a_failed_attempt_after_the_lookup_does_not_spend_another_fetch() {
+    use std::os::unix::fs::PermissionsExt;
+    let net = Net::new();
+    let (al, _d, cid) = alice(&net);
+    al.call("create_invite", json!({"cid": cid, "password": PW, "uses": 1})).unwrap();
+    let left = || db(&net).query_row::<i64, _, _>("SELECT fetches_left FROM pwinvites", [], |r| r.get(0)).unwrap();
+    let before = left();
+    let (bo, d2) = app(&net);
+    // Something local goes wrong after the invite was fetched: the account folder cannot be written.
+    std::fs::set_permissions(d2.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    if std::fs::File::create(d2.path().join("x")).is_ok() { eprintln!("skipped: this user can write anywhere"); std::fs::set_permissions(d2.path(), std::fs::Permissions::from_mode(0o700)).unwrap(); return; }
+    let args = json!({"password": PW, "name": "bob", "passphrase": "my device pass"});
+    assert!(bo.call("create_account_password", args.clone()).is_err(), "the first try fails");
+    assert_eq!(left(), before - 1, "the failed try fetched once");
+    std::fs::set_permissions(d2.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let r = bo.call("create_account_password", args).unwrap();
+    assert_eq!(r["ok"], true);
+    assert_eq!(left(), before - 1, "the retry used the copy it already had");
+    for a in [&al, &bo] { a.shutdown(); }
+}

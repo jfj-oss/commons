@@ -885,13 +885,13 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
     if *m == Method::GET && seg == ["health"] { return Ok(status(StatusCode::OK, "ok")); }
     let db = st.db.lock().unwrap();
     match (m.clone(), seg) {
-        (Method::GET, ["v1", "info"]) => Ok(json(&InfoResp { gated: lim.invite_secret.is_some(), ok: false, pwinvite: true })),
+        (Method::GET, ["v1", "info"]) => Ok(json(&InfoResp { gated: lim.invite_secret.is_some(), ok: false, pwinvite: true, pwalt: true })),
         // Lets an app check a secret before it creates anything on disk. Counts against guessing.
         (Method::POST, ["v1", "info"]) => {
             let r: InfoReq = parse(body)?;
-            let Some(secret) = &lim.invite_secret else { return Ok(json(&InfoResp { gated: false, ok: true, pwinvite: true })) };
+            let Some(secret) = &lim.invite_secret else { return Ok(json(&InfoResp { gated: false, ok: true, pwinvite: true, pwalt: true })) };
             st.limited("info".into(), lim.info_checks_per_window, "too many attempts, try again later")?;
-            Ok(json(&InfoResp { gated: true, ok: same_secret(secret, &r.invite), pwinvite: true }))
+            Ok(json(&InfoResp { gated: true, ok: same_secret(secret, &r.invite), pwinvite: true, pwalt: true }))
         }
         // ---- device registry ----
         (Method::POST, ["v1", "devices"]) => {
@@ -1156,14 +1156,26 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
             st.limited("pwlook/all".into(), lim.pwinvite_misses_per_window.saturating_mul(3), "too many attempts, try again in a few minutes")?;
             st.limited(format!("pwlook/{}", r.lid), lim.pwinvite_lookups_per_id_per_window, "too many attempts, try again in a few minutes")?;
             let now = now_secs() as i64;
-            let row: Option<(Vec<u8>, i64)> = db.query_row("SELECT blob, fetches_left FROM pwinvites WHERE lid=?1 AND expires>=?2", params![r.lid, now], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(dberr)?;
+            let find = |lid: &str| -> std::result::Result<Option<(Vec<u8>, i64)>, Resp> {
+                db.query_row("SELECT blob, fetches_left FROM pwinvites WHERE lid=?1 AND expires>=?2", params![lid, now], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(dberr)
+            };
+            let mut lid = r.lid.clone();
+            let mut row = find(&lid)?;
+            // The same password under the older salt: asked in the same request, so it costs one miss, not two.
+            if row.is_none() {
+                if let Some(alt) = r.alt.as_deref().filter(|a| is_hex(a, 64) && **a != *r.lid) {
+                    st.limited(format!("pwlook/{alt}"), lim.pwinvite_lookups_per_id_per_window, "too many attempts, try again in a few minutes")?;
+                    row = find(alt)?;
+                    if row.is_some() { lid = alt.to_string(); }
+                }
+            }
             let Some((blob, left)) = row else {
                 // Only misses spend the guessing budget; a miss past it is refused like every other lookup now is.
                 st.limited("pwmiss".into(), lim.pwinvite_misses_per_window, "too many attempts, try again in a few minutes")?;
                 return Err(gone());
             };
-            if left <= 1 { db.execute("DELETE FROM pwinvites WHERE lid=?1", [&r.lid]).map_err(dberr)?; }
-            else { db.execute("UPDATE pwinvites SET fetches_left=fetches_left-1 WHERE lid=?1", [&r.lid]).map_err(dberr)?; }
+            if left <= 1 { db.execute("DELETE FROM pwinvites WHERE lid=?1", [&lid]).map_err(dberr)?; }
+            else { db.execute("UPDATE pwinvites SET fetches_left=fetches_left-1 WHERE lid=?1", [&lid]).map_err(dberr)?; }
             Ok(json(&PwLookupResp { blob: b64(&blob) }))
         }
         // ---- large files: own quota, own expiry, chunks on disk ----

@@ -278,12 +278,20 @@ pub struct InfoResp {
     /// This relay keeps sealed password invites. Older relays do not say, which reads as false.
     #[serde(default)]
     pub pwinvite: bool,
+    /// This relay also tries `PwLookupReq::alt` in the same lookup (one miss, not two). Older relays do not say, which reads as false.
+    #[serde(default)]
+    pub pwalt: bool,
 }
 /// A sealed copy of an invite link, filed under an id derived from the inviter's password.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PwPutReq { pub blob: String, pub ttl: u64, pub fetches: u32 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct PwLookupReq { pub lid: String }
+pub struct PwLookupReq {
+    pub lid: String,
+    /// A second id for the same password (the salt older apps used), tried when `lid` finds nothing. Older relays ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt: Option<String>,
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PwLookupResp { pub blob: String }
 #[derive(Serialize, Deserialize, Debug, Clone)]

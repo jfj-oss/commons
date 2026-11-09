@@ -39,6 +39,9 @@ pub struct App {
     /// When a call last asked the core for something (its key poll, token, or game-key heartbeat), from this window or
     /// from a call handed off to the browser. The updater waits while this is recent: `call_active`.
     call_seen: Mutex<Option<std::time::Instant>>,
+    /// The invite link a password just fetched, kept for a few minutes. A fetch spends one of the invite's few; if what comes next
+    /// fails (a relay that wants its secret, a full relay, a lost connection), trying again must not spend another.
+    pw_link: Mutex<Option<(String, String, std::time::Instant)>>,
     me: std::sync::Weak<App>,
 }
 
@@ -103,7 +106,7 @@ impl App {
     pub fn new(dir: PathBuf, default_relay: &str) -> Arc<App> { Self::with_kdf(dir, default_relay, KdfParams::STRONG) }
     pub fn with_kdf(dir: PathBuf, default_relay: &str, kdf: KdfParams) -> Arc<App> {
         Arc::new_cyclic(|me| App {
-            me: me.clone(), call_seen: Mutex::new(None), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None),
+            me: me.clone(), call_seen: Mutex::new(None), pw_link: Mutex::new(None), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None),
             wake: (Mutex::new(false), Condvar::new()), live_wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), files: Mutex::new(vec![]),
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
             bridge: Mutex::new(None),
@@ -289,6 +292,19 @@ impl App {
         if !api.info(Some(invite)).map_err(|x| format!("{x:#}"))?.ok { return Err("That is not this relay's invite secret.".into()); }
         Ok(())
     }
+
+    /// The sealed invite for this password at this relay: from the short-lived memory if it was fetched a moment ago, else from the relay.
+    fn pw_invite_link(&self, api: &Api, relay: &str, pw: &str) -> Result<String, String> {
+        use sha2::{Digest, Sha256};
+        let key = hex::encode(Sha256::digest(format!("{}|{}", crate::pwinvite::canon_relay(relay), crate::pwinvite::normalize(pw)).as_bytes()));
+        if let Some((k, link, at)) = self.pw_link.lock().unwrap().as_ref() {
+            if *k == key && at.elapsed() < std::time::Duration::from_secs(600) { return Ok(link.clone()); }
+        }
+        let link = crate::pwinvite::lookup(api, relay, pw, self.kdf).map_err(e)?;
+        *self.pw_link.lock().unwrap() = Some((key, link.clone(), std::time::Instant::now()));
+        Ok(link)
+    }
+    fn forget_pw_link(&self) { *self.pw_link.lock().unwrap() = None; }
 
     fn relay_arg(&self, a: &Value) -> Result<String, String> {
         let r = if s(a, "relay").trim().is_empty() { self.default_relay.clone() } else { s(a, "relay") };
@@ -665,13 +681,16 @@ impl App {
                 if pass.len() < 8 { return Err("The password for this device must be at least 8 characters.".into()); }
                 if name.trim().is_empty() { return Err("Please choose a name.".into()); }
                 check_name("A display name", name.trim())?;
+                // Everything that can be checked without the invite comes first: a fetch spends one of the invite's few.
+                if Client::exists(&self.dir) { return Err("This computer already has an account set up. Unlock it, or remove it first.".into()); }
                 let api = Api { t: HttpTransport::new(&relay).into_arc() };
                 api.health().map_err(|x| unreachable_text(&relay, &format!("{x:#}")))?;
-                let link = crate::pwinvite::lookup(&api, &relay, &pw, self.kdf).map_err(e)?;
+                let link = self.pw_invite_link(&api, &relay, &pw)?;
                 let l = InviteLink::decode(&link).map_err(|_| crate::pwinvite::NOT_FOUND.to_string())?;
-                if l.relay.trim_end_matches('/') != relay.trim_end_matches('/') { return Err(crate::pwinvite::NOT_FOUND.into()); }
+                if !crate::pwinvite::same_relay(&l.relay, &relay) { return Err(crate::pwinvite::NOT_FOUND.into()); }
                 self.probe(&relay, Some(l.secret.trim()))?;
                 self.open_with(|t| Client::create_with_invite(&self.dir, &pass, &relay, name.trim(), l.secret.trim(), self.kdf, t), &relay)?;
+                self.forget_pw_link();
                 self.with(|c| c.set_recovery_unsaved(true).map_err(e))?;
                 match self.with(|c| c.join_with_link(&link).map_err(e)) {
                     Ok(id) => Ok(json!({"ok": true, "community": id, "name": l.name})),
@@ -682,8 +701,10 @@ impl App {
             "join_password" => {
                 let (pw, relay) = (s(&a, "password"), self.with(|c| Ok(c.st.relay.clone()))?);
                 let api = Api { t: HttpTransport::new(&relay).into_arc() };
-                let link = crate::pwinvite::lookup(&api, &relay, &pw, self.kdf).map_err(e)?;
-                self.with(|c| c.join_with_link(&link).map(|id| json!({"id": id})).map_err(e))
+                let link = self.pw_invite_link(&api, &relay, &pw)?;
+                let out = self.with(|c| c.join_with_link(&link).map(|id| json!({"id": id})).map_err(e));
+                if out.is_ok() { self.forget_pw_link(); }
+                out
             }
             "join" => self.with(|c| c.join_with_link(&s(&a, "link")).map(|id| json!({"id": id})).map_err(e)),
             "cancel_join" => self.with(|c| c.cancel_join(&s(&a, "id")).map(|_| json!({})).map_err(e)),
