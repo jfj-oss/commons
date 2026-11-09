@@ -83,9 +83,9 @@ fn relay_holds_no_plaintext() {
     // the relay sees only these tables
     let c = rusqlite::Connection::open_with_flags(net.db_path(), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
     let tables: Vec<String> = c.prepare("SELECT name FROM sqlite_master WHERE type='table'").unwrap().query_map([], |r| r.get(0)).unwrap().map(|x| x.unwrap()).collect();
-    for t in ["devices", "keypackages", "group_members", "group_auth", "acl_demoted", "entries", "welcomes", "rendezvous", "blobs", "large_files", "usage", "call_denied", "pwinvites"] { assert!(tables.iter().any(|x| x == t), "{t}"); }
+    for t in ["devices", "keypackages", "group_members", "group_auth", "acl_demoted", "entries", "welcomes", "rendezvous", "blobs", "large_files", "usage", "call_denied", "pwinvites", "relay_meta"] { assert!(tables.iter().any(|x| x == t), "{t}"); }
     let tables: Vec<String> = tables.into_iter().filter(|t| t != "sqlite_sequence").collect();
-    assert_eq!(tables.len(), 13, "{tables:?}");
+    assert_eq!(tables.len(), 14, "{tables:?}");
 }
 
 #[test]
