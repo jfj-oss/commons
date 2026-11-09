@@ -1039,7 +1039,8 @@ try {
       hit.dispatchEvent(new PointerEvent('pointerup', pt(n))); return true; })()`);
     const stat = P => P.ev(`JSON.stringify(__megaLive.stats)`).then(JSON.parse);
     const wst = P => P.ev(`__megaWall.state()`);
-    const roomCells = (P, gid) => P.ev(`rpc('wall_get', { gid: ${JSON.stringify(gid)} }).then(r => r.cells.length)`);
+    // wall_get answers "busy" with no cells while the core is occupied, which is not the same as an empty wall
+    const roomCells = (P, gid) => P.ev(`(async () => { for (;;) { const r = await rpc('wall_get', { gid: ${JSON.stringify(gid)} }); if (!r.busy) return r.cells.length; await new Promise(z => setTimeout(z, 200)); } })()`);
     const chip = P => P.ev(`(() => { const b = document.querySelector('#mega [data-m="draw"]'); return !!b && !b.hidden; })()`);
     await toServer(A); await toServer(B);
     await focusCard(A, g); await focusCard(B, g);
@@ -1117,7 +1118,8 @@ try {
     need(await A.ev(`__megaWall.state().carrier`) !== null, 'cards: no carrier room for the community wall');
     await A.shot('mega5-10-community-drawn-alice'); await B.shot('mega5-11-community-drawn-bob');
     need(await roomCells(A, textGid) === roomBefore && await roomCells(B, textGid) === roomBeforeB, 'cards: the community drawing reached a room wall: ' + JSON.stringify([roomBefore, roomBeforeB, await roomCells(A, textGid), await roomCells(B, textGid)]));
-    const otherRooms = await A.ev(`Promise.all(S.snap.communities.find(c => c.id === ${cidj}).channels.map(x => rpc('wall_get', { gid: x.gid }).then(r => r.cells.length)))`);
+    const otherGids = await A.ev(`S.snap.communities.find(c => c.id === ${cidj}).channels.map(x => x.gid).filter(g => g !== ${JSON.stringify(textGid)})`);
+    const otherRooms = []; for (const g of otherGids) otherRooms.push(await roomCells(A, g));
     need(otherRooms.reduce((a, b) => a + b, 0) === 0, 'cards: a room other than the drawn one holds marks: ' + JSON.stringify(otherRooms));
     // lock and clear of the community wall are the owner's
     await A.ev(`document.querySelector('#mw-lock').click()`);
