@@ -847,7 +847,7 @@ try {
     await wf(B, `(() => { const l = (S.snap.communities.find(c => c.id === ${cidj}).style || {}).looks || {}; const r = l[${g}]; return !!r && r.card === ${cardN} && r.chat === ${chatN} && r.dim === 40; })()`, 60000)
       .catch(async () => { throw new Error('mega: looks: the other client did not get the look: ' + JSON.stringify(await looks(B)) + ' / ' + JSON.stringify(await looks(A))); });
     const v1 = await styleVer(A);
-    need(v1 - v0 === 3, 'looks: card, chat and a whole slider drag should be exactly 3 commits, got ' + (v1 - v0));
+    need(v1 - v0 >= 1 && v1 - v0 <= 3, 'looks: card, chat and a whole slider drag should be at most 3 commits (quick changes combine), got ' + (v1 - v0));
     // bob is in the room: his backdrop follows live
     await wf(B, `__mega.bdInfo().fx === ${chatN} && __mega.bdInfo().dim === 40`, 8000).catch(async () => { throw new Error('mega: looks: bob\'s open room did not follow: ' + JSON.stringify(await bd(B))); });
     need(await B.ev(`/changed the look of/.test(document.querySelector('#toast').textContent) && document.querySelector('#toast').textContent.includes(S.snap.communities.find(c => c.id === ${cidj}).style.by)`), 'looks: no note naming who changed it: ' + await B.ev(`document.querySelector('#toast').textContent`));
