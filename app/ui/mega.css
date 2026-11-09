@@ -19,7 +19,6 @@ html.mega {
   --m-ui: var(--sans);
   --m-spring: cubic-bezier(.2, 1.2, .3, 1);
 }
-html.mega[data-read="plain"] { --m-readfb: var(--sans); }
 @supports (corner-shape: squircle) { html.mega { --m-sq: 76px; } .msq, .mfly { corner-shape: squircle; } }
 @media (max-width: 760px) { html.mega { --m-railw: 40px; --m-sq: 36px; } }
 }
@@ -30,7 +29,7 @@ html.mega #app { grid-template-columns: minmax(0, 1fr) auto; padding-left: var(-
 html.mega #btn-rooms { display: none !important; }
 /* messages and the composer are set in the raster face at 24px (a multiple of 12), with the reading font behind it for
    the characters the trial face lacks (" @ # % & _ + =) */
-html.mega { --read: var(--m-msg); --read-size: 24px; --read-lead: 1.05; }
+html.mega, html.mega:root[data-read] { --read: var(--m-msg); --read-size: 24px; --read-lead: 1.05; }   /* an old "Plain" choice no longer applies */
 html.mega .body, html.mega #input { letter-spacing: calc(var(--m-small) * .5); }
 html.mega #chan-title { font-family: var(--m-sharp); font-weight: 400; font-size: round(down, 36px, 12px); line-height: 1; letter-spacing: var(--m-track); }
 html.mega .body.gone { font-style: normal; }
@@ -202,3 +201,76 @@ html.mega #people { position: fixed; right: 0; top: 0; bottom: 0; z-index: 30; w
   .mslot { height: 66cqh; }
   .mlist { padding-block: 17cqh; }
 }
+
+/* ======== phase 2: the living chat room ======== */
+/* The stream sits on the near-black mega room with the room's colour as a glow, in every theme. Colours come from mega.js
+   (--mg-c the room's colour, --mg-hi its highlight lifted to read on black). */
+html.mega.mg-room, html.mega.mg-room body, html.mega.mg-room #app { background: #050407; }
+html.mega.mg-room #main {
+  color-scheme: dark; color: var(--ink);
+  --page: #050407; --page-sunk: #0d0c12; --card: #17151e; --raise: #1d1a25; --wall: #050407; --wall-2: #0d0c12;
+  --ink: #efedf2; --ink-2: #c3bfce; --ink-3: #a8a4b3;
+  --line: rgb(255 255 255 / .12); --line-2: rgb(255 255 255 / .22); --hover: rgb(255 255 255 / .05);
+  --glass: rgb(16 14 22 / .78); --glass-line: rgb(255 255 255 / .14); --glass-ink: #efedf2; --glass-solid: #17151e; --glass-hi: rgb(255 255 255 / .12); --glass-lo: rgb(0 0 0 / .3);
+  --accent: var(--mg-hi); --accent-ink: var(--mg-hi-ink); --accent-soft: color-mix(in srgb, var(--mg-hi) 22%, transparent);
+  --act: var(--mg-hi); --act-ink: var(--mg-hi-ink); --act-soft: color-mix(in srgb, var(--mg-hi) 18%, transparent); --act-line: var(--mg-hi); --focus: var(--mg-hi);
+  --hot: var(--mg-hi); --hot-soft: color-mix(in srgb, var(--mg-hi) 18%, transparent); --hot-pill: var(--mg-hi); --hot-pill-ink: var(--mg-hi-ink); --pill: var(--mg-hi); --pill-ink: var(--mg-hi-ink);
+  --brass: var(--mg-hi); --brass-soft: color-mix(in srgb, var(--mg-hi) 22%, transparent); --brass-line: color-mix(in srgb, var(--mg-hi) 70%, transparent);
+  --id: #79c7ab; --id-ink: #0e1f19; --id-soft: #24382f; --ok: var(--id); --ok-soft: var(--id-soft);
+  --danger: #ff8d80; --danger-ink: #2c0e05; --danger-soft: #45211b; --warn: #ecab62; --warn-soft: #3d2d18;
+  --sealed: #f0917a; --sealed-soft: #38231c; --sealed-hatch: rgba(240, 145, 122, .04); --gap-bg: #0f0c09; --gap-ink: #c8bba3; --tick: #3c332a; --ticket: #352c20;
+  --name-mix: 48%; --name-base: #f7e7c8; --wax-ink: #fff3d9; --seal-ring: rgba(255, 238, 205, .3);
+  --shadow-s: 0 1px 2px rgba(0, 0, 0, .3); --shadow: 0 16px 40px -8px rgba(0, 0, 0, .6), 0 2px 6px rgba(0, 0, 0, .3); --glow: transparent; --grain-o: 0;
+  background: radial-gradient(900px 560px at 4% -10%, color-mix(in srgb, var(--mg-c) 34%, transparent), transparent 70%), radial-gradient(760px 520px at 104% 112%, color-mix(in srgb, var(--mg-c) 14%, transparent), transparent 70%), #050407;
+}
+html.mega.mg-room #main::before, html.mega.mg-room #main::after, html.mega.mg-room #lamp, html.mega.mg-room #main canvas.wall-dither { display: none; }
+html.mega.mg-room #stream { background: none; }
+html.mega.mg-room #head { min-height: 44px; padding-block: 5px; padding-top: max(5px, env(safe-area-inset-top)); background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; border-bottom-color: rgb(255 255 255 / .07); }
+html.mega.mg-room #chan-title { font-size: round(down, 24px, 12px); }
+html.mega.mg-room #chan-sub { font-size: 12px; }
+html.mega.mg-room #stream { padding-bottom: 42px; overflow-x: hidden; }
+html.mega.mg-room .body .at.self { background: var(--mg-hi); color: var(--mg-hi-ink); padding: 0 .16em; border-radius: 4px; }
+#main > #mega-bd { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+
+/* text sizes by length (text-only messages); all multiples of 12px, line-height stays 1.05 */
+html.mega .msg[data-mz="1"] .body { font-size: 36px; line-height: var(--read-lead); }
+html.mega .msg[data-mz="2"] .body { font-size: 48px; line-height: var(--read-lead); }
+html.mega .msg[data-mz="3"] .body { font-size: 72px; line-height: var(--read-lead); }
+
+/* centre focus while reading back: only transform and opacity, and any row you point at or select is whole */
+html.mega #stream .msg { transform-origin: left center; transition: background .12s, transform .22s var(--m-spring), opacity .22s; }
+html.mega #stream .msg:hover, html.mega #stream .msg:focus-within, html.mega #stream .msg.open { transform: none !important; opacity: 1 !important; }
+html.mega .msg.mland { animation: mland .62s var(--m-spring); }
+@keyframes mland { 0% { transform: scale(.92); } 45% { transform: scale(1.05); } 100% { transform: none; } }
+
+/* ascii arrival: the real text stays in place (and in the page, unchanged); a copy made of glyphs sits over it for 340 ms */
+.body.mdecoding { position: relative; }
+.body.mdecoding, .body.mdecoding * { color: transparent !important; text-shadow: none !important; }
+.body.mdecoding .mdec { position: absolute; inset: 0; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; pointer-events: none; color: var(--mg-hi) !important; }
+.body.mdecoding .mdec .mreal { color: var(--ink) !important; }
+.body.mdecoding .mdec .mdg { color: var(--mg-hi) !important; }
+
+/* typing: the mascot peeks over the composer. #typing keeps its words (for the eye and for screen readers), without the dots. */
+html.mega .slip { position: relative; isolation: isolate; }
+html.mega #typing .dots { display: none; }
+/* sits just above the box, so the box (which clips its own contents) covers the mascot's feet */
+#composer > #mega-typing { position: relative; height: 0; padding: 0; pointer-events: none; }
+#mega-typing .mtin { position: absolute; left: 14px; right: 14px; bottom: -7px; height: 36px; display: flex; align-items: flex-end; gap: 8px; overflow: hidden; }
+.mmascots { flex: none; display: flex; gap: 2px; }
+.mmascot { width: 36px; height: 36px; flex: none; }
+.mmascot svg { display: block; width: 36px; height: 36px; animation: mbob .56s steps(2, jump-none) infinite alternate; }
+@keyframes mbob { from { transform: translateY(1px); } to { transform: translateY(-2px); } }
+.mmascot .ha { animation: mtapa .3s steps(1) infinite; }
+.mmascot .hb { animation: mtapb .3s steps(1) infinite; }
+@keyframes mtapa { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+@keyframes mtapb { 0%, 49% { opacity: 0; } 50%, 100% { opacity: 1; } }
+.mmascot .eyes { animation: mblink 3.1s steps(1) infinite; }
+@keyframes mblink { 0%, 93% { opacity: 1; } 94%, 100% { opacity: 0; } }
+.mripple { flex: 1; min-width: 0; padding-bottom: 8px; white-space: pre; overflow: hidden; color: var(--mg-hi); font: 500 12px/16px "IBM Plex Mono", ui-monospace, monospace; }
+
+/* thrown reactions: the pill only shows its new number when the emoji lands */
+.react.rhold { visibility: hidden; }
+.mthrow, .mburst { position: fixed; left: 0; top: 0; font: 700 16px/1 "IBM Plex Mono", ui-monospace, monospace; will-change: transform; }
+.mthrow { font-size: 20px; }
+
+@media (prefers-reduced-motion: reduce) { .body.mdecoding .mdec { display: none; } .body.mdecoding, .body.mdecoding * { color: inherit !important; } .msg.mland { animation: none; } .mmascot svg, .mmascot .ha, .mmascot .hb, .mmascot .eyes { animation: none; } }

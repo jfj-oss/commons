@@ -289,6 +289,7 @@
     mega.hidden = chat; rail.hidden = !chat;
     root.classList.toggle('mg-chat', chat); root.classList.toggle('mg-cards', !chat);
     if (!chat) { hideOpts(); closeRail(); }
+    syncRoom();
   }
   // Switching community through the same state the old switcher used, so drafts, members and call presence follow.
   function setCommunity(cid) {
@@ -431,6 +432,7 @@
     const items = roomItems(c), others = comms().some(o => o.id !== c.id && unreadIn(o) > 0), many = comms().length > 1;
     M.railItems = items; M.sig = railSig(c);
     rail.className = arriving ? 'arriving' : ''; M.rail = false;
+    syncRoom();
     rail.innerHTML = `<button class="mhomedot ${others ? 'un' : ''}" id="m-home" type="button" aria-label="${many ? 'All communities' : 'All rooms'}${others ? ', unread messages elsewhere' : ''}" data-name="${many ? 'all communities' : 'all rooms'}"><span class="mhl">${many ? 'all communities' : 'all rooms'}</span></button><div class="mitems" id="m-items">${items.map(dotHTML).join('')}</div>`;
   }
   function openRail() {
@@ -481,13 +483,13 @@
     return `<div class="mopts-in mrise">${ti('options', '', 'h1')}<p>Only on this device. Nobody else can see these.</p>
       <section><h3>alerts and sound</h3><label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p>Plays when mega is in the background or the message is in another room.</p></section>
       <section><h3>look</h3><label>Theme</label>${seg('th', [['', 'Match system'], ['light', 'Daylight'], ['solar', 'Solarized'], ['dark', 'After hours'], ['wave', 'Wave']], th)}
-        <div id="wave-row" ${th === 'wave' ? '' : 'hidden'}><label for="wave-pal">Wave colours</label><select id="wave-pal">${wave.map(([k, l]) => `<option value="${k}"${(pref.get('wavePalette') || 'blue') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
-        <label>Message font</label>${seg('rd', [['', 'Book'], ['plain', 'Plain']], pref.get('read') || '')}</section>
+        <div id="wave-row" ${th === 'wave' ? '' : 'hidden'}><label for="wave-pal">Wave colours</label><select id="wave-pal">${wave.map(([k, l]) => `<option value="${k}"${(pref.get('wavePalette') || 'blue') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div></section>
       <section><h3>typing hints</h3><label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints — the relay can see that a message-sized packet was sent at that moment</span></label></section>
       ${mobileApp() ? '' : `<section><h3>large files</h3><label for="dl-dir">Large-file downloads folder</label><input type="text" id="dl-dir" value="${esc(S.snap.download_dir || '')}" spellcheck="false"><p>Written here as they arrive, one verified piece at a time. Leave empty for your usual Downloads folder. Each download still asks where to save it.</p></section>`}
     </div>`;
   }
   function showOpts() {
+    syncRoom();
     if (!M.opts || M.level !== 'chat') { hideOpts(); return; }
     optsEl.innerHTML = optsHTML(); optsEl.hidden = false; optsEl.scrollTop = 0;
   }
@@ -498,7 +500,6 @@
     $('#' + id, optsEl).value = v;
     if (id === 'snd') pref.set('sound', v === 'all' ? '' : v);
     else if (id === 'th') { pref.set('theme', v); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh(); const r = $('#wave-row', optsEl); if (r) r.hidden = v !== 'wave'; }
-    else if (id === 'rd') { pref.set('read', v); applyPrefs(); }
   });
   optsEl.addEventListener('change', async e => {
     try {
@@ -615,6 +616,300 @@
   let tx = null;
   addEventListener('touchstart', e => { tx = M.level === 'chat' && e.touches[0].clientX < 30 ? e.touches[0].clientX : null; if (M.rail && !e.target.closest('#mega-rail')) closeRail(); }, { passive: true });
   addEventListener('touchmove', e => { if (tx != null && e.touches[0].clientX - tx > 34) { openRail(); tx = null; } }, { passive: true });
+
+  // ---------------------------------------------------------------- the living room (phase 2)
+  // Everything below works on the real stream (#stream, built by renderStream in app.js) without changing what it shows:
+  // the backdrop is a canvas behind it, sizes/focus are styles on the message rows, arrivals and reactions are detected by
+  // comparing what renderStream painted this time with what it painted last time. Message text is untrusted: it only ever
+  // reaches the page through textContent here.
+  const ST = { decodes: 0, ripples: 0, throws: 0, lands: 0, flights: 0 };
+  M.stats = ST;
+  const still = () => calm() || root.classList.contains('fx-lite');
+  const roomOn = () => root.classList.contains('mg-room');
+  const lift = (c, r) => { let i = 0; while (contrast(c, '#050407') < r && i++ < 16) c = mix(c, '#ffffff', .12); return c; };
+  const kidsIn = (st, lo, hi) => {   // the stream's children that touch [lo, hi]; they are in order, so find the first by bisection
+    const k = st.children, n = k.length; let a = 0, b = n;
+    while (a < b) { const m = (a + b) >> 1, e = k[m]; if (e.offsetTop + e.offsetHeight < lo) a = m + 1; else b = m; }
+    const out = []; for (let i = a; i < n; i++) { const e = k[i]; if (e.offsetTop > hi) break; out.push(e); }
+    return out;
+  };
+
+  // ---- the backdrop: the room's two colours as ascii, flowing around everything on the page
+  const HEAT = new Map();   // gid -> heat, so a room you come back to is as lively as you left it
+  let BD = null, mainEl = null;
+  function bdColours(a) {
+    const v = '#050407', b = a.f, h = a.h;
+    a.at = atlasOf(mix(v, b, .2), mix(v, h, .3), a.sw, a.sh, a.fs); a.atB = atlasOf(mix(v, b, .5), lift(h, 3.4), a.sw, a.sh, a.fs);
+  }
+  function bdSize() {
+    const a = BD; if (!a) return; const box = a.c.parentElement, w0 = box.clientWidth, h0 = box.clientHeight; if (!w0 || !h0) return;
+    const dpr = Math.min(devicePixelRatio || 1, 2), small = w0 < 560; a.cw = small ? 8 : 10; a.chh = small ? 13 : 17; a.fs = Math.round((small ? 11 : 14) * dpr); a.sw = Math.round(a.cw * dpr); a.sh = Math.round(a.chh * dpr);
+    a.cols = Math.ceil(w0 / a.cw); a.rows = Math.ceil(h0 / a.chh); a.c.width = a.cols * a.sw; a.c.height = a.rows * a.sh;
+    a.mask = new Uint8Array(a.cols * a.rows); a.col = colFor(a.cols, H(a.gid)); bdColours(a); dirty();
+  }
+  function bdMask() {
+    const a = BD; if (!a || !a.mask) return;
+    const b = a.c.getBoundingClientRect(); if (!b.width) return; a.mask.fill(0);
+    const kw = b.width / a.cols, kh = b.height / a.rows;
+    const hit = r => {
+      if (!r.width && !r.height) return;
+      const x0 = Math.max(0, Math.floor((r.left - b.left) / kw) - 1), x1 = Math.min(a.cols, Math.ceil((r.right - b.left) / kw) + 1), y0 = Math.max(0, Math.floor((r.top - b.top) / kh)), y1 = Math.min(a.rows, Math.ceil((r.bottom - b.top) / kh));
+      for (let y = y0; y < y1; y++) a.mask.fill(1, y * a.cols + x0, y * a.cols + Math.max(x0, x1));
+    };
+    const rg = document.createRange(), text = e => { rg.selectNodeContents(e); for (const r of rg.getClientRects()) hit(r); }, box = e => hit(e.getBoundingClientRect());
+    const pad = e => { const r = e.getBoundingClientRect(); hit({ left: r.left - 6, right: r.right + 6, top: r.top - 6, bottom: r.bottom + 6, width: r.width, height: r.height }); };
+    const st = $('#stream');
+    for (const el of kidsIn(st, st.scrollTop - 60, st.scrollTop + st.clientHeight + 60)) {
+      if (el.classList.contains('msg')) { $$('.body', el).forEach(text); $$('.who,.quote,.file,.react,.imgslot,.mediaslot,time.when', el).forEach(box); }
+      else if (el.classList.contains('day')) $$('span,button', el).forEach(box);
+      else box(el);
+    }
+    $$('#chan-title,#chan-sub', mainEl).forEach(text);
+    $$('#head .head-actions > *,#head #btn-rooms', mainEl).forEach(pad);
+    $$('.slip,#typing,#mega-typing .mmascot,#mega-typing .mripple:not(:empty),#hint:not([hidden]),#jump:not([hidden]),#replybar:not([hidden]),#banner:not([hidden]),#upd:not([hidden])', mainEl).forEach(box);
+  }
+  function bdDraw() {
+    const a = BD; if (!a || !a.mask || !a.at) return;
+    const { g, cols, rows, mask, sw, sh } = a; g.clearRect(0, 0, a.c.width, a.c.height);
+    const gate = .5 - .26 * a.heat, field = FX[a.fx], rips = a.rip, nr = rips.length;
+    for (let y = 0, i = 0; y < rows; y++) for (let x = 0; x < cols; x++, i++) {
+      if (mask[i]) continue;
+      let v = field(x, y, a.t, a), lit = 0;
+      for (let k = 0; k < nr; k++) { const q = rips[k], d = Math.hypot(x - q.x, (y - q.y) * 1.7) - q.r; if (d * d < q.band * 5) { const e = Math.exp(-d * d / q.band) * q.s; v += e; if (e > lit) lit = e; } }
+      if (v < gate) continue;
+      g.drawImage(lit > .2 ? a.atB : a.at, Math.min(9, v * 10 | 0) * sw, (v < .64 ? 0 : v < .86 ? 1 : 2) * sh, sw, sh, x * sw, y * sh, sw, sh);
+    }
+  }
+  function bdLoop(now) {
+    const a = BD; if (!a) return; a.raf = requestAnimationFrame(bdLoop);
+    if (document.hidden || still() || !a.mask) return;
+    if (now - a.last < (a.rip.length ? 40 : a.heat < .05 ? 300 : 100)) return;   // 25 fps while a ripple runs, 10 idle, nearly still when the room is quiet
+    const dt = Math.min(.25, (now - a.last) / 1000); a.last = now;
+    a.heat *= Math.pow(.5, dt / 18); a.t += dt * (.1 + a.heat * 1.5);
+    a.rip.forEach(q => { q.r += q.v * dt; q.s *= Math.pow(q.fade, dt); }); a.rip = a.rip.filter(q => q.s > .04 && q.r < a.cols * 1.3);
+    bdDraw();
+  }
+  function bdStart(item) {
+    bdStop();
+    const c = document.createElement('canvas'); c.id = 'mega-bd'; c.setAttribute('aria-hidden', 'true'); mainEl.prepend(c);
+    const a = BD = { c, g: c.getContext('2d'), gid: item.gid, fx: item.fx, f: fieldOf(item), h: hiOf(item), heat: HEAT.get(item.gid) ?? .12, t: H(item.gid) % 90, rip: [], last: performance.now(), raf: 0 };
+    a.ro = new ResizeObserver(() => { clearTimeout(a.rz); a.rz = setTimeout(() => { if (BD === a) { bdSize(); focusFrame(); } }, 120); }); a.ro.observe(mainEl);
+    bdSize(); if (!still()) a.raf = requestAnimationFrame(bdLoop);
+  }
+  function bdStop() {
+    const a = BD; if (!a) return; BD = null; HEAT.set(a.gid, a.heat);
+    cancelAnimationFrame(a.raf); clearTimeout(a.rz); a.ro.disconnect(); a.c.remove();
+  }
+  const bdHeat = n => { if (BD) BD.heat = Math.min(1, BD.heat + n); };
+  function ripple(cx, cy, s, ring) {
+    const a = BD; if (!a || !a.mask || still()) return; const b = a.c.getBoundingClientRect(); if (!b.width) return;
+    if (a.rip.length > 6) a.rip.shift();
+    a.rip.push({ x: (cx - b.left) / (b.width / a.cols), y: (cy - b.top) / (b.height / a.rows), r: 0, s, v: ring ? 20 : 44, band: ring ? 7 : 4, fade: ring ? .3 : .12 });
+    ST.ripples++; a.last = 0;
+  }
+
+  // ---- when a room is on screen: its colours, the dark look, the backdrop
+  function syncRoom() {
+    if (!mainEl) mainEl = $('#main');
+    let item = null;
+    if (M.started && M.level === 'chat' && !M.opts && S.gid) { const c = comm(M.cid); item = c && roomItems(c).find(x => x.gid === S.gid && x.kind === 'text'); }
+    root.classList.toggle('mg-room', !!item);
+    if (!item) { bdStop(); typingDraw([]); focusFrame(); return; }
+    if (BD && BD.gid === item.gid) return;
+    const hi = lift(hiOf(item), 4.8);
+    mainEl.style.setProperty('--mg-c', dotOf(item)); mainEl.style.setProperty('--mg-hi', hi); mainEl.style.setProperty('--mg-hi-ink', bestInk(hi));
+    typingDraw([]); bdStart(item);
+  }
+
+  // ---- size by length, and the centre focus while reading back
+  function sizeTier(x) {
+    if (!x || x.kind !== 'text' || x.deleted) return 0;
+    const n = [...String(x.text || '')].length; if (!n) return 0;
+    const t = n <= 4 ? 3 : n <= 12 ? 2 : n <= 18 ? 1 : 0;
+    return Math.min(3, t + (!x.mine && mentionsMe(x.text) ? 1 : 0));
+  }
+  let touched = new Set();
+  const atEnd = st => st.scrollHeight - st.scrollTop - st.clientHeight < 80;
+  function focusFrame() {
+    const st = $('#stream'); if (!st) return;
+    if (!roomOn() || still() || atEnd(st)) { touched.forEach(e => { e.style.transform = ''; e.style.opacity = ''; }); touched.clear(); return; }
+    const hh = st.clientHeight, top = st.scrollTop, zt = top + hh * .3, zb = top + hh * .7, reach = hh * .3;
+    const sel = getSelection(), hasSel = !!sel && !sel.isCollapsed && sel.rangeCount > 0;
+    const seen = new Set(), ops = [];
+    for (const el of kidsIn(st, top - 60, top + hh + 60)) {
+      if (!el.classList.contains('msg')) continue;
+      const a = el.offsetTop, b = a + el.offsetHeight;
+      let d = Math.min(1, Math.max(0, zt - b, a - zb) / reach);
+      if (d && (hasSel && sel.containsNode(el, true))) d = 0;
+      ops.push([el, d]); seen.add(el);
+    }
+    for (const [el, d] of ops) { el.style.transform = d ? `scale(${(1 - .2 * d).toFixed(3)})` : ''; el.style.opacity = d ? (1 - .55 * d).toFixed(3) : ''; if (d) touched.add(el); else touched.delete(el); }
+    touched.forEach(e => { if (!seen.has(e)) { e.style.transform = ''; e.style.opacity = ''; touched.delete(e); } });   // scrolled far away: back to normal
+  }
+  let flushRaf = 0, flushT = 0;
+  function dirty(trail) {
+    if (!flushRaf) flushRaf = requestAnimationFrame(() => { flushRaf = 0; if (!roomOn()) return; focusFrame(); if (BD) { bdMask(); if (still() || document.hidden) bdDraw(); } });
+    if (trail !== false) { clearTimeout(flushT); flushT = setTimeout(() => dirty(false), 300); }   // the rows ease into their new size, so look again once they have
+  }
+  document.addEventListener('selectionchange', () => { if (roomOn() && !atEnd($('#stream'))) dirty(false); });
+  document.addEventListener('input', e => { if (e.target && e.target.id === 'input') dirty(); }, true);
+  addEventListener('resize', () => dirty());
+  $('#stream').addEventListener('scroll', () => {
+    dirty();
+    // something new arrived while reading back: the existing "back to latest" button must be there (app.js hides it under 260px)
+    if (S.below > 0 && !S.pinned) $('#jump').hidden = false;
+  }, { passive: true });
+
+  // ---- ascii arrival: a new message resolves out of scrambled glyphs
+  const SCR = ".:;-/!?'()";
+  function decode(body) {
+    const chars = [...body.textContent]; if (!chars.length || chars.length > 400) return;
+    ST.decodes++;
+    const ov = document.createElement('span'), real = document.createElement('span'), noise = document.createElement('span');
+    ov.className = 'mdec'; real.className = 'mreal'; ov.setAttribute('aria-hidden', 'true'); noise.className = 'mdg'; ov.append(real, noise);
+    body.classList.add('mdecoding'); body.append(ov);
+    const t0 = performance.now(), D = 340;
+    const done = () => { ov.remove(); body.classList.remove('mdecoding'); };
+    const step = now => {
+      if (!body.isConnected || document.hidden) { done(); return; }
+      const k = Math.min(1, (now - t0) / D); if (k >= 1) { done(); return; }
+      const n = Math.floor(k * chars.length); let g = '';
+      for (let i = n; i < chars.length; i++) g += /\s/.test(chars[i]) ? chars[i] : SCR[Math.random() * SCR.length | 0];
+      real.textContent = chars.slice(0, n).join(''); noise.textContent = g;   // text, never markup
+      requestAnimationFrame(step);
+    };
+    real.textContent = ''; noise.textContent = chars.map(c => /\s/.test(c) ? c : SCR[Math.random() * SCR.length | 0]).join('');
+    requestAnimationFrame(step);
+  }
+
+  // ---- what renderStream just painted, against what it painted last time
+  const RM = { gid: null, ids: new Set(), rx: new Map(), arr: [] };
+  let lastMine = null;
+  document.addEventListener('click', e => {
+    const b = e.target.closest && (e.target.closest('.emojis button') || e.target.closest('.react[data-e]'));
+    if (b) { const r = b.getBoundingClientRect(); lastMine = { x: r.left + r.width / 2, y: r.top + r.height / 2, t: Date.now() }; }
+  }, true);
+  const rxMap = m => { const o = new Map(); for (const x of m.messages) if (x.reactions && x.reactions.length) o.set(String(x.id), new Map(x.reactions.map(r => [r.emoji, { n: r.count, mine: !!r.mine }]))); return o; };
+  function burst(x, y, c) {
+    if (!fxl.isConnected) return;
+    const n = root.classList.contains('fx-lite') ? 10 : 24;
+    for (let i = 0; i < n; i++) {
+      const e = document.createElement('span'); e.className = 'mburst'; e.textContent = SCR[Math.random() * SCR.length | 0]; e.style.color = c; fxl.append(e);
+      const ang = Math.random() * 6.283, d = 30 + Math.random() * 100, dx = x + Math.cos(ang) * d, dy = y + Math.sin(ang) * d * .7;
+      e.animate([{ transform: `translate(${x}px,${y}px) scale(1.3)`, opacity: 1 }, { transform: `translate(${dx}px,${dy}px) scale(.8)`, opacity: 0 }], { duration: 380 + Math.random() * 300, easing: 'cubic-bezier(.1,.8,.3,1)' }).onfinish = () => e.remove();
+    }
+  }
+  const countNow = (id, em) => { const x = S.msgs && S.msgs.messages.find(k => String(k.id) === id), r = x && x.reactions.find(k => k.emoji === em); return r ? r.count : 0; };
+  const pillOf = (id, em) => $$('.react[data-e]', $('#stream')).find(b => b.dataset.id === id && b.dataset.e === em);
+  // a reaction flies to its message and bursts there; the number on the pill only changes when it lands
+  function throwReaction(id, em, prevN, mine) {
+    const pill = pillOf(id, em), st = $('#stream'); if (!pill || !roomOn() || still() || document.hidden) return;
+    const t = pill.getBoundingClientRect(), sr = st.getBoundingClientRect();
+    if (t.bottom < sr.top || t.top > sr.bottom) return;
+    ST.flights++;
+    if (prevN > 0) $('.n', pill).textContent = String(prevN); else pill.classList.add('rhold');
+    const cr = $('#composer').getBoundingClientRect();
+    let x0 = sr.right - 30, y0 = sr.top + sr.height * (.2 + Math.random() * .5);
+    if (mine) { if (lastMine && Date.now() - lastMine.t < 8000) { x0 = lastMine.x; y0 = lastMine.y; } else { x0 = cr.left + cr.width / 2; y0 = cr.top; } }
+    const x1 = t.left + t.width / 2, y1 = t.top + t.height / 2, hi = getComputedStyle(mainEl).getPropertyValue('--mg-hi').trim() || '#efedf2';
+    const f = document.createElement('span'); f.className = 'mthrow'; f.textContent = em; f.style.color = hi; fxl.append(f);
+    const finish = () => {
+      const p = pillOf(id, em); if (p) { p.classList.remove('rhold'); const n = $('.n', p); if (n) n.textContent = String(countNow(id, em)); p.classList.add('pop'); setTimeout(() => p.classList.remove('pop'), 400); }
+    };
+    const a = f.animate([{ transform: `translate(${x0}px,${y0}px) scale(.7) rotate(-30deg)` }, { transform: `translate(${(x0 + x1) / 2}px,${Math.max(sr.top + 40, Math.min(y0, y1) - 90)}px) scale(2.4) rotate(190deg)` }, { transform: `translate(${x1}px,${y1}px) scale(1) rotate(360deg)` }], { duration: 560, easing: 'ease-in' });
+    a.onfinish = () => { f.remove(); burst(x1, y1, hi); ripple(x1, y1, 1.25, true); bdHeat(.12); ST.throws++; finish(); };
+    a.oncancel = () => { f.remove(); finish(); };
+    setTimeout(finish, 1500);   // however it ended, the pill shows the true count
+  }
+
+  // ---- the mascot peeking over the composer
+  const BOT = ['......#.....', '......#.....', '...######...', '..########..', '.##########.', '.##e####e##.', '.##e####e##.', '.##########.', '.##########.', '..########..'], HA = ['...##...##..', '...##.......'], HB = ['...##...##..', '........##..'];
+  const px = (rows, y0, kind) => rows.flatMap((r, y) => [...r].map((c, x) => c === kind ? `<rect x="${x}" y="${y + y0}" width="1.02" height="1.02"/>` : '')).join('');
+  const MASCOT = `<svg viewBox="0 0 12 12" shape-rendering="crispEdges" aria-hidden="true"><g fill="currentColor">${px(BOT, 0, '#')}${px(BOT, 0, 'e')}</g><g class="eyes" fill="#101116">${px(BOT, 0, 'e')}</g><g class="ha" fill="currentColor">${px(HA, 10, '#')}</g><g class="hb" fill="currentColor">${px(HB, 10, '#')}</g></svg>`;
+  let rippleT = 0, rippleP = 0, ripW = 0;
+  function typingBox() {
+    let t = $('#mega-typing'); if (t) return t;
+    const slip = $('#composer .slip'); if (!slip) return null;
+    t = document.createElement('div'); t.id = 'mega-typing'; t.setAttribute('aria-hidden', 'true'); t.innerHTML = '<div class="mtin"><span class="mmascots"></span><span class="mripple"></span></div>'; slip.before(t); return t;
+  }
+  function typingDraw(names) {
+    const t = typingBox(); if (!t) return;
+    const box = $('.mmascots', t), rip = $('.mripple', t), want = roomOn() ? [...new Set(names)].slice(0, 6) : [];
+    const key = want.join('\n'); if (key === typingDraw.key) return; typingDraw.key = key;
+    $$('.mmascot', box).forEach(e => { if (!want.includes(e.dataset.who) && !e.dataset.out) { e.dataset.out = '1'; if (still()) e.remove(); else e.animate([{ transform: 'none' }, { transform: 'translateY(26px)' }], { duration: 200, easing: 'ease-in', fill: 'forwards' }).onfinish = () => e.remove(); } });
+    for (const w of want) {
+      if ($$('.mmascot', box).some(e => e.dataset.who === w && !e.dataset.out)) continue;
+      const e = document.createElement('span'); e.className = 'mmascot'; e.dataset.who = w; e.style.color = faceColor(w); e.innerHTML = MASCOT; box.append(e);   // MASCOT is a constant; the name only goes into a data attribute
+      if (!still()) e.animate([{ transform: 'translateY(30px)' }, { transform: 'none' }], { duration: 380, easing: 'cubic-bezier(.2,1.5,.3,1)' });
+    }
+    clearInterval(rippleT); rip.textContent = '';
+    if (want.length && !still()) {
+      ripW = 0;
+      rippleT = setInterval(() => {
+        if (document.hidden) return;
+        if (!ripW) ripW = rip.clientWidth || 60;
+        const n = Math.ceil(ripW / 7.4), G = ' .:-=:. '; let o = ''; for (let i = 0; i < n; i++) o += G[Math.floor((Math.sin(i * .34 - rippleP) + 1) * 3.99)];
+        rip.textContent = o; rippleP += .42;
+      }, 66);
+    }
+    if (want.length) bdHeat(.03);
+    dirty(false);
+  }
+
+  const baseRender = window.renderStream;
+  window.renderStream = function () {
+    const first = !!S.first, gid = S.gid, was = S.painted;
+    const r = baseRender.apply(this, arguments);
+    try { afterPaint(first, gid, was); } catch (er) { console.error(er); }
+    return r;
+  };
+  function afterPaint(first, gid, prevPainted) {
+    const m = S.msgs; if (!m || S.painted === prevPainted) return;
+    const st = $('#stream'), on = roomOn() && !document.hidden;
+    const byId = new Map(m.messages.map(x => [String(x.id), x]));
+    const els = $$('.msg[data-id]', st), ids = new Set(els.map(e => e.dataset.id));
+    // sizes: set on every row the paint touched (a repainted row is a new element)
+    for (const el of els) { const t = sizeTier(byId.get(el.dataset.id)), v = t ? String(t) : ''; if ((el.dataset.mz || '') !== v) { if (v) el.dataset.mz = v; else delete el.dataset.mz; } }
+    const live = !first && RM.gid === gid && gid != null;
+    const rx = rxMap(m), seen = RM.ids, prevRx = RM.rx;
+    if (live && on && !still()) {
+      const nowS = Date.now() / 1000, fresh = els.filter(e => !seen.has(e.dataset.id));
+      const burstIn = fresh.length > 4;   // a catch-up, not conversation
+      const sr = st.getBoundingClientRect();
+      for (const el of burstIn ? [] : fresh) {
+        const x = byId.get(el.dataset.id);
+        if (!x) continue;                                       // a row still sending is handled below
+        if (nowS - x.ts > 60 || x.deleted) continue;            // old history paged in
+        if (x.mine) continue;                             // what you just wrote already rippled as "sending"
+        RM.arr = RM.arr.filter(t => Date.now() - t < 1500); RM.arr.push(Date.now());
+        const body = $('.body', el) || $('.txt', el);
+        if (body) {
+          const r = body.getBoundingClientRect();
+          if (r.bottom > sr.top && r.top < sr.bottom) ripple(r.left + Math.min(r.width, 300) / 2, r.top + r.height / 2, mentionsMe(x.text) ? 1.1 : .72);
+        }
+        bdHeat(.24);
+        if (x.kind === 'text' && x.text) {
+          if (RM.arr.length <= 2 && $('.body', el)) decode($('.body', el));
+          if (mentionsMe(x.text)) { el.classList.add('mland'); ST.lands++; setTimeout(() => el.classList.remove('mland'), 700); }
+        }
+      }
+      // reactions that just appeared on messages that were already here
+      let flights = 0;
+      for (const [id, mm] of rx) {
+        const prev = prevRx.get(id); if (!seen.has(id)) continue;
+        for (const [em, r] of mm) {
+          const p = prev && prev.get(em), pn = p ? p.n : 0;
+          if (r.n > pn && flights < 3) { flights++; throwReaction(id, em, pn, r.mine && !(p && p.mine)); }
+        }
+      }
+    }
+    // a sending row ripples once
+    if (live && on && !still()) for (const el of els) if (!seen.has(el.dataset.id) && el.classList.contains('sending')) { const b = $('.body', el); if (b) { const r = b.getBoundingClientRect(); ripple(r.left + Math.min(r.width, 300) / 2, r.top + r.height / 2, .5); bdHeat(.1); } }
+    RM.gid = gid; RM.ids = ids; RM.rx = rx;
+    typingDraw(m.typing || []);
+    if (S.below > 0 && !S.pinned) $('#jump').hidden = false;
+    dirty();
+  }
 
   // ---------------------------------------------------------------- following the snapshot
   function render() {
