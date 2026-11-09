@@ -1091,6 +1091,8 @@ try {
     need(await A.ev(`!document.querySelector('#mega-wallhit-card') && !document.documentElement.classList.contains('mg-drawing-card')`), 'cards: done did not leave the pen');
 
     // ---- 3. the community card has a wall of its own, carried in a room and never drawn in any room
+    // a room's own wall may still be arriving from the other device: the baseline is taken once both agree
+    for (let i = 0; i < 30 && await roomCells(A, textGid) !== await roomCells(B, textGid); i++) { await B.send('Page.bringToFront'); await sleep(700); await A.send('Page.bringToFront'); await sleep(700); }
     const roomBefore = await roomCells(A, textGid), roomBeforeB = await roomCells(B, textGid);
     // bob has only this community, so he has no home level yet: he starts a second one (a member of a second community is the usual case)
     if (await B.ev(`S.snap.communities.length`) < 2) { await B.ev(`rpc('create_community', { name: 'Bob side' }).then(() => 1)`); await wf(B, `S.snap.communities.length >= 2`, 30000); }
