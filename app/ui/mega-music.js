@@ -36,7 +36,10 @@
   function callSources() {
     if (srcOverride) return srcOverride();
     const c = window.__commonsCall, bd = api() && api().bd();
-    if (!c || !bd || c.gid !== bd.gid || c.phase !== 'connected' || typeof c.musicSources !== 'function') return [];
+    // Calls live in voice rooms and backdrops in text rooms, so the music counts for any text room of the same community.
+    const comms = (typeof S !== 'undefined' && S.snap && S.snap.communities) || [];
+    const together = !!c && !!bd && (c.gid === bd.gid || comms.some(x => x.channels.some(ch => ch.gid === c.gid) && x.channels.some(ch => ch.gid === bd.gid)));
+    if (!c || !bd || !together || c.phase !== 'connected' || typeof c.musicSources !== 'function') return [];
     try { return c.musicSources(); } catch { return []; }
   }
   function listening() {
