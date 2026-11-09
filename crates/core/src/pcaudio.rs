@@ -205,7 +205,8 @@ fn undo(mut a: Active) {
         let ours = sinks.iter().find(|(_, n)| n == SINK).map(|(i, _)| *i);
         // Only a stream that is still on our sink is moved; if the person moved it elsewhere themselves, it stays there.
         if let Some(s) = streams.iter().find(|s| s.id == a.stream.id && s.app == a.stream.app && s.binary == a.stream.binary) {
-            if s.sink.is_some() && s.sink == ours {
+            // (If our sink is already gone, PipeWire has moved the stream somewhere on its own; put it back where it was.)
+            if s.sink.is_some() && (s.sink == ours || (ours.is_none() && s.sink != Some(a.orig_sink))) {
                 let back = if sinks.iter().any(|(i, _)| *i == a.orig_sink) { a.orig_sink.to_string() } else { "@DEFAULT_SINK@".to_string() };
                 if run_capture("pactl", &move_args(a.stream.id, &back)).is_err() { let _ = run_capture("pactl", &move_args(a.stream.id, "@DEFAULT_SINK@")); }
             }
@@ -248,7 +249,7 @@ fn watchdog() {
         let Some(a) = g.as_mut() else { continue };
         let dead = a.procs.iter_mut().any(|c| matches!(c.try_wait(), Ok(Some(_))));
         let why = if dead { Some("The sound route stopped unexpectedly, so sharing was stopped.") } else if a.seen.elapsed() > LEASE { Some("The call page went away, so sharing was stopped.") } else { None };
-        if let Some(w) = why { let a = g.take().unwrap(); drop(g); undo(a); *ENDED.lock().unwrap() = Some(w.into()); }
+        if let Some(w) = why { let a = g.take().unwrap(); *ENDED.lock().unwrap() = Some(w.into()); drop(g); undo(a); }
     }); });
 }
 
