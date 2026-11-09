@@ -1118,7 +1118,7 @@ try {
     await A.shot('mega5-10-community-drawn-alice'); await B.shot('mega5-11-community-drawn-bob');
     need(await roomCells(A, textGid) === roomBefore && await roomCells(B, textGid) === roomBeforeB, 'cards: the community drawing reached a room wall: ' + JSON.stringify([roomBefore, roomBeforeB, await roomCells(A, textGid), await roomCells(B, textGid)]));
     const otherRooms = await A.ev(`Promise.all(S.snap.communities.find(c => c.id === ${cidj}).channels.map(x => rpc('wall_get', { gid: x.gid }).then(r => r.cells.length)))`);
-    need(otherRooms.reduce((a, b) => a + b, 0) === roomBefore, 'cards: a room other than the drawn one holds marks: ' + JSON.stringify(otherRooms));
+    need(otherRooms.reduce((a, b) => a + b, 0) === 0, 'cards: a room other than the drawn one holds marks: ' + JSON.stringify(otherRooms));
     // lock and clear of the community wall are the owner's
     await A.ev(`document.querySelector('#mw-lock').click()`);
     await wf(B, `document.querySelector('#mega [data-m="draw"]').hidden`, 60000).catch(() => { throw new Error('mega: cards: the community lock did not hide the chip for bob'); });
