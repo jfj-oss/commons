@@ -74,8 +74,8 @@ html.mega #people { position: fixed; right: 0; top: 0; bottom: 0; z-index: 30; w
 .mat { flex: none; min-width: 44px; height: 44px; padding: 0 10px; display: grid; place-items: center; border-radius: 50%; background: var(--m-solid); color: var(--m-on); font-weight: 600; }
 .mmid { grid-area: mid; display: flex; flex-direction: column; justify-content: center; gap: 12px; opacity: 0; transform: translateY(10px); transition: opacity .35s, transform .55s var(--m-spring); }
 .mslot.settled .mmid { opacity: 1; transform: none; }
-.mpreview { font: 24px/1.1 var(--m-msg); letter-spacing: calc(var(--m-small) * .5); max-width: 34em; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
-.mpreview b { font: 600 15px var(--m-ui); letter-spacing: var(--m-small); }
+.mpreview { font: clamp(17px, 1.9cqw, 26px)/1.2 var(--m-msg); letter-spacing: calc(var(--m-small) * .5); max-width: 34em; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.mpreview b { font: 600 .82em var(--m-ui); letter-spacing: var(--m-small); }
 .mti { grid-area: ti; margin: 0; align-self: end; font-family: var(--m-blend); font-weight: 400; font-size: round(down, calc(clamp(44px, 10cqw, 138px) * var(--m-dz)), var(--m-dsnap)); line-height: .9; letter-spacing: round(calc(var(--m-track) + .045em), var(--m-lsnap)); text-wrap: balance; transition: letter-spacing .75s var(--m-spring); overflow-wrap: anywhere; }
 .mti i, .mnu i { font-style: inherit; margin-left: round(calc(var(--k, 0) * 1em), var(--m-lsnap)); }
 .mti i.sp, .mopts-in h1 i.sp { margin-left: .06em; }

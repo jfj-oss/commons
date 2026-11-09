@@ -197,19 +197,23 @@
   const dimOf = lk => (Number.isFinite(lk.dim) ? Math.max(0, Math.min(DIM_MAX, Math.round(lk.dim))) : 100);
   const mk = (o, sigParts) => { o.theme = o.theme || themeOf(o); o.sig = JSON.stringify([sigParts, o.theme]); return o; };
 
+  // who is in a call, for any community's card: the open one comes from app.js, the others from the home poll below
+  const CP = new Map();   // gid -> people, from the relay's presence for every community at once
+  const peopleIn = gid => callPeople(gid) || CP.get(gid) || [];
   function commItem(c) {
-    const un = unreadIn(c), at = mentionsIn(c), voice = S.cid === c.id ? c.channels.filter(x => x.kind === 'voice' && (callPeople(x.gid) || []).length) : [];
-    const first = voice[0], people = first ? callPeople(first.gid) : [];
-    const names = c.channels.filter(x => x.kind !== 'voice').map(x => x.name);
-    const auto = [4, 3, 0, 5, 2][H(c.name) % 5], lk = lookOf(c.id, c.id);
-    return mk({ key: 'c:' + c.id, id: c.id, cid: c.id, kind: 'community', name: c.name, unread: un, at, act: un, fxAuto: auto, fx: patOf(lk.card) ?? auto, rooms: c.channels.length, names, voiceName: first && first.name, people: people.map(p => p.name) },
-      [c.name, un, at, c.channels.length, names.slice(0, 4), first && first.name, people.map(p => p.name)]);
+    const un = unreadIn(c), at = mentionsIn(c), voice = c.channels.filter(x => x.kind === 'voice' && peopleIn(x.gid).length);
+    const first = voice[0], people = first ? peopleIn(first.gid) : [];
+    // the newest line over all of the community's readable text rooms
+    let pv = null; for (const x of c.channels) { const p = x.kind !== 'voice' && x.joined && PREV.get(x.gid); if (p && p.text && (!pv || (p.ts || 0) > (pv.ts || 0))) pv = p; }
+    const auto = [4, 3, 0, 5, 2][H(c.name) % 5], lk = lookOf(c.id, c.id), nm = c.members | 0;
+    return mk({ key: 'c:' + c.id, id: c.id, cid: c.id, kind: 'community', name: c.name, unread: un, at, act: un, fxAuto: auto, fx: patOf(lk.card) ?? auto, rooms: c.channels.length, members: nm, pv, voiceName: first && first.name, people: people.map(p => p.name) },
+      [c.name, un, at, c.channels.length, nm, pv && pv.who, pv && pv.text, first && first.name, people.map(p => p.name)]);
   }
   const youItem = () => mk({ key: 'you', id: 'you', kind: 'you', name: 'you', unread: 0, at: 0, act: 0, fx: 4, theme: ['#d9dce4', '#2b3bff'] }, ['you']);
   function roomItems(c) {
     const off = H(c.id), out = [];
     const room = ch => {
-      const voice = ch.kind === 'voice', i = c.channels.indexOf(ch), people = voice ? (callPeople(ch.gid) || []) : [], pv = PREV.get(ch.gid) || {};
+      const voice = ch.kind === 'voice', i = c.channels.indexOf(ch), people = voice ? peopleIn(ch.gid) : [], pv = PREV.get(ch.gid) || {};
       const auto = voice ? 1 : [0, 3, 4, 5, 2][(off + i) % 5], lk = lookOf(c.id, ch.gid);
       const it = { key: ch.gid, id: ch.gid, gid: ch.gid, cid: c.id, kind: voice ? 'voice' : 'text', name: ch.name, unread: ch.unread || 0, at: S.mention.get(ch.gid) || 0, locked: !ch.joined, status: ch.joined && ch.status && ch.status !== 'ok' ? ch.status : '', people, here: voice && inCallHere(ch.gid), fxAuto: auto, fx: patOf(lk.card) ?? auto, chatFx: patOf(lk.chat) ?? auto, dim: DIMS.has(ch.gid) ? DIMS.get(ch.gid) : dimOf(lk), pv };
       it.act = it.unread;
@@ -222,33 +226,63 @@
     return out;
   }
 
-  // newest line of each readable room, for the cards; asks the core only when a room's count changed
+  // newest line of each readable room, for the cards; asks the core only when a room's count changed (or its line is older than ttl)
+  async function prevOf(ch, ttl) {
+    const sig = ch.unread + ':' + ch.status, p = PREV.get(ch.gid);
+    if (p && p.sig === sig && Date.now() - p.t < ttl) return false;   // the snapshot has no "last activity", so look again every so often
+    let n;
+    try {
+      const m = await rpc('messages', { gid: ch.gid, limit: 8 });
+      const last = [...m.messages].reverse().find(x => !x.deleted && x.kind !== 'notice' && x.kind !== 'member');
+      n = { sig, t: Date.now(), ts: last ? last.ts || 0 : 0, who: last ? last.name : '', text: last ? plain(last.text || (last.file ? last.file.name : '')) : '' };
+    } catch { n = { sig, t: Date.now(), ts: 0, who: '', text: '' }; }
+    PREV.set(ch.gid, n);
+    return !p || p.who !== n.who || p.text !== n.text;
+  }
   async function loadPreviews(c) {
     if (loadPreviews.busy) return; loadPreviews.busy = true;
     try {
       for (const ch of c.channels) {
         if (ch.kind === 'voice' || !ch.joined) continue;
-        const sig = ch.unread + ':' + ch.status, p = PREV.get(ch.gid);
-        if (p && p.sig === sig && Date.now() - p.t < 4000) continue;   // the snapshot has no "last activity", so look again every few seconds
-        let n;
-        try {
-          const m = await rpc('messages', { gid: ch.gid, limit: 8 });
-          const last = [...m.messages].reverse().find(x => !x.deleted && x.kind !== 'notice' && x.kind !== 'member');
-          n = { sig, t: Date.now(), who: last ? last.name : '', text: last ? plain(last.text || (last.file ? last.file.name : '')) : '' };
-        } catch { n = { sig, t: Date.now(), who: '', text: '' }; }
-        const changed = !p || p.who !== n.who || p.text !== n.text; PREV.set(ch.gid, n);
-        if (changed && M.level === 'server' && M.cid === c.id) render();
+        if (await prevOf(ch, 4000) && M.level === 'server' && M.cid === c.id) render();
       }
     } finally { loadPreviews.busy = false; }
   }
+  // home: the newest line of every community, a few rooms per pass (rooms with unread first), each looked at again only every 30 s
+  async function homePreviews() {
+    if (homePreviews.busy || M.level !== 'home' || document.hidden) return; homePreviews.busy = true;
+    try {
+      let left = 10, changed = false;
+      const rooms = comms().flatMap(c => c.channels.filter(x => x.kind !== 'voice' && x.joined)).sort((a, b) => (b.unread > 0) - (a.unread > 0));
+      for (const ch of rooms) {
+        if (M.level !== 'home' || left <= 0) break;
+        const p = PREV.get(ch.gid); if (p && p.sig === ch.unread + ':' + ch.status && Date.now() - p.t < 30000) continue;
+        left--; if (await prevOf(ch, 30000)) changed = true;
+      }
+      if (changed && M.level === 'home') render();
+    } finally { homePreviews.busy = false; }
+  }
+  // home: who is in a call in every community, in one request every 8 s while the cards are on screen (the relay takes 64 rooms at most)
+  let cpAt = 0, cpBackoff = 0, cpSig = '', cpBusy = false;
+  async function homePresence() {
+    if (cpBusy || M.level !== 'home' || document.hidden || Date.now() < cpBackoff || Date.now() - cpAt < 8000) return;
+    const cids = comms().filter(c => c.channels.some(x => x.kind === 'voice' && x.joined)).map(c => c.id); if (!cids.length) return;
+    cpAt = Date.now(); cpBusy = true;
+    try {
+      const r = await rpc('call_presence', { cids }), rooms = (r && r.rooms) || {}, sig = JSON.stringify(rooms);
+      if (sig !== cpSig) { cpSig = sig; CP.clear(); for (const [g, v] of Object.entries(rooms)) if (Array.isArray(v) && v.length) CP.set(g, v); if (M.level === 'home') render(); }
+    } catch (e) { cpBackoff = Date.now() + (/no call server/.test(String((e && e.message) || e)) ? 60000 : 16000); }
+    finally { cpBusy = false; }
+  }
+  setInterval(() => { if (M.started && M.level === 'home') { homePresence(); homePreviews(); } }, 2500);
 
   function cardHTML(x) {
     if (x.kind === 'news') return __megaNew.html(x);   // the "what's new" card (mega-new.js)
     let mid = '', sub = '', num = '';
     if (x.kind === 'community') {
-      sub = `${x.rooms} room${x.rooms === 1 ? '' : 's'}`; num = x.unread || '';
+      sub = x.members ? `${x.members} ${x.members === 1 ? 'person' : 'people'}` : `${x.rooms} room${x.rooms === 1 ? '' : 's'}`; num = x.unread || '';
       if (x.voiceName && x.people.length) mid += `<div class="mfaces-row">${mfaces(x.people)}<span>${x.people.length} in ${esc(x.voiceName)}</span></div>`;
-      if (x.names.length) mid += `<div class="mpreview">${esc(x.names.slice(0, 5).join(', '))}${x.names.length > 5 ? ', …' : ''}</div>`;
+      if (x.pv && x.pv.text) mid += `<div class="mpreview"><b>${esc(x.pv.who)}</b> ${esc(x.pv.text)}</div>`;
     } else if (x.kind === 'you') { sub = 'settings'; mid = '<div class="mpreview">your profile and account</div>'; }
     else if (x.kind === 'voice') {
       sub = 'voice'; num = x.people.length || '';
@@ -427,7 +461,7 @@
     const items = homeItems(), want = startCid || store.get('last', null) || S.cid;
     const ki = startKey ? items.findIndex(x => x.key === startKey) : -1, start = ki >= 0 ? ki : Math.max(0, items.findIndex(x => x.cid === want));
     M.list = List(items, { start, enter: enterCommunity, onSettle: paintFollow });
-    drawNotes();
+    drawNotes(); homePresence(); homePreviews();
   }
   function showServer(cid, startKey) {
     const c = comm(cid); if (!c) { showHome(); return; }
@@ -934,6 +968,7 @@
   };
 
   // ---- the backdrop: the room's two colours as ascii, flowing around everything on the page
+  const HEAT_FLOOR = .12;   // a quiet room still breathes: this much heat is the least it ever settles to
   const HEAT = new Map();   // gid -> heat, so a room you come back to is as lively as you left it
   let BD = null, mainEl = null;
   // The owner's backdrop strength scales how bright the glyphs are (100 is today's look exactly), how dense they get above that, and how much
@@ -1005,16 +1040,17 @@
   function bdLoop(now) {
     const a = BD; if (!a) return; a.raf = requestAnimationFrame(bdLoop);
     if (document.hidden || still() || !a.mask || a.dim === 0) return;
-    if (now - a.last < (a.rip.length ? 40 : a.heat < .05 ? 300 : 100)) return;   // 25 fps while a ripple runs, 10 idle, nearly still when the room is quiet
+    if (now - a.last < (a.rip.length ? 40 : 100)) return;   // 25 fps while a ripple runs, a steady 10 otherwise: a quiet room still drifts
     const dt = Math.min(.25, (now - a.last) / 1000); a.last = now;
-    a.heat *= Math.pow(.5, dt / 18); a.t += dt * (.1 + a.heat * 1.5);
+    a.heat = Math.max(HEAT_FLOOR, a.heat * Math.pow(.5, dt / 18)); a.t += dt * (.1 + a.heat * 1.5);
+    if ((a.nextRip -= dt) <= 0) { a.nextRip = 14 + Math.random() * 14; idleRipple(a); }   // now and then a gentle ring from somewhere in the room
     a.rip.forEach(q => { q.r += q.v * dt; q.s *= Math.pow(q.fade, dt); }); a.rip = a.rip.filter(q => q.s > .04 && q.r < a.cols * 1.3);
     bdDraw();
   }
   function bdStart(item) {
     bdStop();
     const c = document.createElement('canvas'); c.id = 'mega-bd'; c.setAttribute('aria-hidden', 'true'); mainEl.prepend(c);
-    const a = BD = { c, g: c.getContext('2d'), gid: item.gid, fx: item.chatFx ?? item.fx, fxAuto: item.fxAuto, dim: item.dim ?? 100, f: fieldOf(item), h: hiOf(item), heat: HEAT.get(item.gid) ?? .12, t: H(item.gid) % 90, rip: [], last: performance.now(), raf: 0 };
+    const a = BD = { c, g: c.getContext('2d'), gid: item.gid, fx: item.chatFx ?? item.fx, fxAuto: item.fxAuto, dim: item.dim ?? 100, f: fieldOf(item), h: hiOf(item), heat: Math.max(HEAT_FLOOR, HEAT.get(item.gid) ?? 0), t: H(item.gid) % 90, rip: [], last: performance.now(), raf: 0, nextRip: 5 + Math.random() * 6 };
     a.ro = new ResizeObserver(() => { clearTimeout(a.rz); a.rz = setTimeout(() => { if (BD === a) { bdSize(); focusFrame(); } }, 120); }); a.ro.observe(mainEl);
     bdSize(); if (!still()) a.raf = requestAnimationFrame(bdLoop);
   }
@@ -1023,6 +1059,11 @@
     cancelAnimationFrame(a.raf); clearTimeout(a.rz); a.ro.disconnect(); a.c.remove();
   }
   const bdHeat = n => { if (BD) BD.heat = Math.min(1, BD.heat + n * lvOf(BD)); };
+  function idleRipple(a) {
+    if (!a.mask || a.dim === 0 || !a.cols) return;
+    if (a.rip.length > 6) a.rip.shift();
+    a.rip.push({ x: a.cols * (.15 + .7 * Math.random()), y: a.rows * (.2 + .6 * Math.random()), r: 0, s: .5 * lvOf(a), v: 26, band: 8, fade: .3 });
+  }
   function ripple(cx, cy, s, ring) {
     const a = BD; if (!a || !a.mask || still() || a.dim === 0) return; const b = a.c.getBoundingClientRect(); if (!b.width) return;
     if (a.rip.length > 6) a.rip.shift();
@@ -1301,7 +1342,7 @@
   window.__megaTheme = { colours(gid) { const c = comm(M.cid), x = c && roomItems(c).find(i => i.gid === gid && i.kind === 'text'); return x ? [lift(fieldOf(x), 5), lift(hiOf(x), 6)] : null; } };
   M.api = { comms, comm, roomItems, dotOf, hiOf, fieldOf, lift, mix, contrast, bestInk, cardVars, ti, letters, toChat, openRail, themeOf, dirty, DEF };
   M.admExit = () => { M.adm = false; showOpts(); drawRail(); };   // mega-admin.js: no longer an admin, so back to the plain options room
-  M.prev = PREV; M.shown = SHOWN; M.canPaint = canPaint;
+  M.prev = PREV; M.cp = CP; M.shown = SHOWN; M.canPaint = canPaint;
   M.callTheme = gid => { const c = comms().find(x => x.channels.some(ch => ch.gid === gid)); return c ? targetOf(c.id, gid) : null; };
   M.inkOn = hex => { const n = parseInt(hex.slice(1), 16), f = v => { v /= 255; return v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }, l = .2126 * f(n >> 16) + .7152 * f((n >> 8) & 255) + .0722 * f(n & 255); return (l + .05) * (l + .05) > .0525 * 1.05 ? '#050407' : '#efedf2'; };
   window.__mega = M;

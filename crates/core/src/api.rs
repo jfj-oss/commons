@@ -801,9 +801,14 @@ impl App {
             // device ids it returns to names from this device's own group state. Only this community's joined
             // rooms are asked about, and all in one relay request, so a refresh is not one request per room.
             "call_presence" => {
-                let cid = s(&a, "cid");
+                // one community ("cid"), or several at once ("cids", for the home cards): only voice rooms can hold a call, and the
+                // relay takes at most 64 rooms in one question, so ask about the voice rooms first and stop at that limit
+                let mut cids: Vec<String> = a.get("cids").and_then(|x| x.as_array()).map(|v| v.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+                if cids.is_empty() { cids.push(s(&a, "cid")); }
                 let (api, k, gids) = self.with(|c| {
-                    let gids: Vec<String> = c.channels_of(&cid).into_iter().filter(|ch| ch.joined).map(|ch| ch.gid).collect();
+                    let mut gids: Vec<String> = vec![];
+                    for cid in &cids { gids.extend(c.channels_of(cid).into_iter().filter(|ch| ch.joined && ch.kind == "voice").map(|ch| ch.gid)); }
+                    gids.truncate(64);
                     let (api, k) = c.net_handle().map_err(e)?;
                     Ok((api, k, gids))
                 })?;
@@ -837,7 +842,7 @@ fn snapshot(c: &Client) -> Value {
             "looks": d.looks.iter().filter(|(g, _)| **g == co.id || co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, l)| (g.clone(), { let mut v = json!({"card": l.card, "chat": l.chat, "dim": l.dim}); if l.oracle_quiet == Some(true) { v["oracle_quiet"] = json!(true); } v })).collect::<serde_json::Map<String, Value>>(),
             "wall": d.wall.iter().filter(|(g, _)| **g == co.id || co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, n)| (g.clone(), json!(n))).collect::<serde_json::Map<String, Value>>(),
             "rooms": d.rooms.iter().filter(|(g, _)| co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, x)| { let x = x.lower(); (g.clone(), json!({"main": x.main, "hi": x.hi})) }).collect::<serde_json::Map<String, Value>>()}));
-        json!({"id": co.id, "style": style, "name": if co.name.is_empty() { "…".to_string() } else { co.name.clone() }, "role": role.name(), "removed": co.removed, "removed_reason": co.removed_reason, "channels": chans, "unread": unread,
+        json!({"id": co.id, "style": style, "name": if co.name.is_empty() { "…".to_string() } else { co.name.clone() }, "role": role.name(), "members": c.st.groups.get(&co.id).map(|g| g.accounts.len()).unwrap_or(0), "removed": co.removed, "removed_reason": co.removed_reason, "channels": chans, "unread": unread,
                "banned": if role >= Role::Admin { co.banned.iter().map(|a| json!({"account": a, "name": c.display_name(a)})).collect::<Vec<_>>() } else { vec![] }, "invites": co.invites.iter().map(|i| json!({"id": i.id, "expires": i.expires, "uses_left": i.uses_left, "mine": co.invite_sks.contains_key(&i.id), "password": c.st.pw_invites.contains_key(&i.id)})).collect::<Vec<_>>(),
                "status": c.group_status(&co.id)})
     }).collect();
