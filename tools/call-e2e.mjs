@@ -87,6 +87,8 @@ try {
     check('J7 camera on again: the tile comes back with pictures', back.length === 2 && back.filter(isCam).length === 1 && back.every(x => x.w > 0 && x.playing), J(back));
     // ---- K. the camera stack (mega phase 4): all tiles in one column, dragging reorders for everyone in the call
     {
+      // a tab in the background does not poll the live channel (as in the real app): the person who is meant to see a change is brought to the front
+      const front = async n => { await page(n).send('Page.bringToFront'); await sleep(300); };
       const shotOf = async (n, name) => { try { await page(n).send('Page.bringToFront'); await sleep(300); const r = await page(n).send('Page.captureScreenshot', { format: 'png' }); fs.mkdirSync(out, { recursive: true }); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(r.result.data, 'base64')); } catch { } };
       const deck = (n, expr) => page(n).ev(`(() => { const d = window.__megaDeck; return ${expr}; })()`);
       const ord = n => deck(n, `d.order()`);
@@ -103,11 +105,15 @@ try {
         ${hold ? 'return true;' : `window.dispatchEvent(ev('pointerup', y1)); return true;`} })()`);
       const upN = n => page(n).ev(`(window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 11, bubbles: true, button: 0 })), true)`);
       const same = (a, b) => J(a) === J(b);
+      await front('bob');
       await call('alice', `c.setCamera(true)`);
       await until(async () => (await tilesOf('bob')).length === 2 && (await tilesOf('alice')).length === 2, 20000, 'K: two tiles on both sides').catch(() => { });
       await until(async () => (await deck('alice', `d.tiles().length`)) === 2 && (await deck('bob', `d.tiles().length`)) === 2, 10000, 'K: both decks know both tiles');
-      check('K1 the stack is open on the left for people in the call, and the dots slide right to make room', await page('bob').ev(`(() => { const s = document.querySelector('#call-stage').getBoundingClientRect(), r = document.querySelector('#mega-rail').getBoundingClientRect(); return document.documentElement.classList.contains('deck-open') && s.left <= 1 && s.width > 120 && Math.abs(r.left - s.width) < 3; })()`), J(await page('bob').ev(`[document.querySelector('#call-stage').getBoundingClientRect().width, document.querySelector('#mega-rail').getBoundingClientRect().left]`)));
+      check('K1 the stack is open on the left for people in the call, and the dots slide right to make room', await page('bob').ev(`(() => { const s = document.querySelector('#call-stage').getBoundingClientRect(), shown = e => e && !e.hidden && e.getBoundingClientRect().width > 0, r = [document.querySelector('#mega-rail'), document.querySelector('#mega')].find(shown); return document.documentElement.classList.contains('deck-open') && s.left <= 1 && s.width > 120 && !!r && Math.abs(r.getBoundingClientRect().left - s.width) < 3; })()`), J(await page('bob').ev(`[document.querySelector('#call-stage').getBoundingClientRect().width, [document.querySelector('#mega-rail'), document.querySelector('#mega')].map(e => e && !e.hidden ? e.getBoundingClientRect().left : null)]`)));
       await sleep(600);
+      const rects = n => page(n).ev(`[...document.querySelectorAll('#c-shares .ctile')].sort((a, b) => (+a.style.order || 0) - (+b.style.order || 0)).map(e => { const r = e.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; })`);
+      const stacked = r => r.length >= 2 && r.every(x => x[3] >= 90 && x[2] >= 120) && r.every((x, i) => i === 0 || x[1] >= r[i - 1][1] + r[i - 1][3] - 1);
+      check('K1b the tiles are stacked top to bottom, none over another, each a real picture size', stacked(await rects('bob')), J(await rects('bob')));
       const base = await ord('bob');
       check('K2 both sides start from a valid order with every tile once', same([...(await ord('alice'))].sort(), [...base].sort()) && base.length === 2 && same(await visual('bob'), base), J([await ord('alice'), base]));
       // a 3 second drag by alice: the order changes for bob as well, with at most about 10 events
@@ -122,7 +128,7 @@ try {
       check('K4 a whole 3 second drag is at most about 10 live events (not one per pointer move)', e1 - e0 >= 2 && e1 - e0 <= 10, `${e1 - e0} events for ~75 pointer moves`);
       const idle0 = await sentDeck('alice'); await sleep(3500);
       check('K5 nothing is sent while idle', (await sentDeck('alice')) === idle0 && (await sentDeck('bob')) <= 12);
-      await shotOf('bob', 'K-stack-bob'); await shotOf('alice', 'K-stack-alice');
+      await shotOf('alice', 'K-stack-alice'); await shotOf('bob', 'K-stack-bob');
       // a person who is not in the call cannot reorder anything, however well-formed the message and however high the stamp
       const callGid = world.gid, rev = [...aOrd].reverse();
       await rpc(P('carol').port, 'live_send', { gid: callGid, kind: 'deck.m', data: J({ s: '', o: rev, n: 99999, b: '', e: 1 }) });
@@ -163,6 +169,12 @@ try {
       check('K12 show brings it back', await page('bob').ev(`document.documentElement.classList.contains('deck-open') && document.querySelector('#mega-deckshow').hidden`));
       await call('alice', `c.startShare({ audio: false, profile: 'motion' })`);
       await until(async () => (await tilesOf('bob')).length === 2, 20000, 'K: share back').catch(() => { });
+      // a phone (390 px): the same stack as a scrollable strip across the top, and nothing slides
+      await page('bob').send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(1500);
+      const ph = await page('bob').ev(`(() => { const s = document.querySelector('#call-stage').getBoundingClientRect(), t = [...document.querySelectorAll('#c-shares .ctile')].sort((a, b) => (+a.style.order || 0) - (+b.style.order || 0)).map(e => { const r = e.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; }), r = document.querySelector('#mega-rail'), cs = getComputedStyle(document.querySelector('#call-stage')); return { stage: [Math.round(s.left), Math.round(s.top), Math.round(s.width), Math.round(s.height)], tiles: t, railLeft: r && !r.hidden ? Math.round(r.getBoundingClientRect().left) : null, overflowX: cs.overflowX, hscroll: document.documentElement.scrollWidth > innerWidth + 1, deckw: getComputedStyle(document.documentElement).getPropertyValue('--m-deckw') }; })()`);
+      await shotOf('bob', 'K-stack-phone');
+      check('K13 on a phone the stack is a scrollable strip across the top, tiles side by side, and the dots do not slide', ph.stage[0] <= 1 && ph.stage[1] <= 1 && ph.stage[2] >= 380 && ph.stage[3] >= 80 && ph.stage[3] <= 140 && ph.tiles.length === 2 && ph.tiles[1][0] >= ph.tiles[0][0] + ph.tiles[0][2] - 1 && ph.tiles.every(t => t[3] >= 60) && (ph.railLeft === null || ph.railLeft <= 1) && ph.overflowX === 'auto' && !ph.hscroll, J(ph));
+      await page('bob').send('Emulation.clearDeviceMetricsOverride'); await sleep(800);
     }
     await call('alice', `c.stopShare()`);
     const noShare = await until(async () => { const t = await tilesOf('bob'); return t.length === 1 && isCam(t[0]) ? t : null; }, 8000, 'share gone').catch(async () => tilesOf('bob'));
