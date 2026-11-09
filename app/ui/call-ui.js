@@ -325,6 +325,7 @@
       <label class="full"><input type="checkbox" id="c-ns" ${s.prefs.noiseSuppression ? 'checked' : ''}> Noise suppression and echo cancellation (the browser's own)</label>
       <label class="full"><input type="checkbox" id="c-pttc" ${s.prefs.ptt ? 'checked' : ''}> Push to talk (hold <b>${esc(s.pttKey.replace('Key', '').replace('Backquote', '` (backtick)'))}</b> while this window is focused) <button type="button" class="mini" id="c-pttkey">Change key</button></label>
       <label class="full"><input type="checkbox" id="c-sa" ${s.prefs.shareAudio ? 'checked' : ''}> Include audio when sharing a screen or window, where the system allows it</label>
+      <label for="c-camprof">Camera quality</label><select id="c-camprof">${Object.entries(call.cameraProfiles()).map(([k, v]) => `<option value="${k}" ${(s.prefs.cameraProfile || '720p') === k ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select>
       <label for="c-prof">Share as</label><select id="c-prof">${Object.entries(call.shareProfiles()).map(([k, v]) => `<option value="${k}" ${s.prefs.shareProfile === k ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select>
       ${window.__commonsGameKeys ? '<span></span><button type="button" class="btn ghost" id="c-gamekeys">Game keys…</button>' : ''}
       <div class="full jfset"><b>Jellyfin library</b> <span class="muted small">(for playing films and episodes into the call)</span></div>
@@ -349,6 +350,7 @@
     const ns = $('#c-ns'); if (ns) ns.onchange = () => call.setNoiseSuppression(ns.checked);
     const pc = $('#c-pttc'); if (pc) pc.onchange = () => call.setPtt(pc.checked);
     const sa = $('#c-sa'); if (sa) sa.onchange = () => { call.prefs.shareAudio = sa.checked; call.savePrefs(); };
+    const cq = $('#c-camprof'); if (cq) cq.onchange = async () => { call.prefs.cameraProfile = cq.value; call.savePrefs(); if (call.camera) { await call.setCamera(false); await call.setCamera(true); } };
     const pr = $('#c-prof'); if (pr) pr.onchange = () => { call.prefs.shareProfile = pr.value; call.savePrefs(); };
     const gk = $('#c-gamekeys'); if (gk) gk.onclick = () => { if (window.__commonsGameKeys) window.__commonsGameKeys(); };
     const jfs = $('#c-jfsave');

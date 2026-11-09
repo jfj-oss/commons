@@ -277,6 +277,10 @@ try {
   await call('alice', `c.setCamera(true)`);
   const camOk = await until(async () => page('bob').ev(`(async()=>{ const c = window.__commonsCall; const t = [...c.tracks.values()].find(x => x.identity === ${J(dev('alice'))} && x.source === 'camera'); if (!t) return false; const v = document.createElement('video'); v.muted = true; t.track.attach(v); document.body.appendChild(v); await new Promise(r => setTimeout(r, 2000)); const w = v.videoWidth; v.remove(); return w > 0; })()`), 20000, 'camera').catch(() => false);
   check('D8 camera (fake device) arrives and decodes', camOk);
+  const camOut = await page('alice').ev(`(()=>{ const c = window.__commonsCall, p = c.room.localParticipant.getTrackPublication('camera'), t = p.track, enc = t.sender.getParameters().encodings; const set = t.mediaStreamTrack.getSettings(); return { w: set.width, h: set.height, fps: set.frameRate, top: Math.max(...enc.map(e => e.maxBitrate || 0)), layers: enc.length }; })()`);
+  check('D8b the camera captures 720p and may send about 2.5 Mbps (it was 360p at 450 kbps)', camOut.w >= 1280 && camOut.h >= 720 && camOut.top >= 2_000_000 && camOut.layers >= 2, J(camOut));
+  const shareOut = await page('alice').ev(`(()=>{ const c = window.__commonsCall, p = c.room.localParticipant.getTrackPublication('screen_share'), enc = p.track.sender.getParameters().encodings; return { top: Math.max(...enc.map(e => e.maxBitrate || 0)), layers: enc.length, pref: p.track.sender.getParameters().degradationPreference || null }; })()`);
+  check('D8c a screen share may send at least 5 Mbps (it was 2 to 2.5 Mbps)', shareOut.top >= 5_000_000 && shareOut.layers >= 2, J(shareOut));
   await call('alice', `c.setCamera(false)`);
   await call('alice', `c.stopShare()`); await call('bob', `c.stopShare()`);
   await sleep(1000);

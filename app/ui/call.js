@@ -90,7 +90,7 @@
       this.LK = opts.LK || window.LivekitClient;
       this.audioHost = null;
       this.reset();
-      this.prefs = Object.assign({ noiseSuppression: true, echoCancellation: true, autoGainControl: true, ptt: false, pttKey: 'Backquote', shareAudio: true, shareProfile: 'text', playProfile: '1080p30', forceCanvasPlayback: false, micId: '', outId: '', camId: '' }, lsGet('commons.call.prefs', {}));
+      this.prefs = Object.assign({ noiseSuppression: true, echoCancellation: true, autoGainControl: true, ptt: false, pttKey: 'Backquote', shareAudio: true, shareProfile: 'text', cameraProfile: '720p', playProfile: '1080p30', forceCanvasPlayback: false, micId: '', outId: '', camId: '' }, lsGet('commons.call.prefs', {}));
       this.volumes = lsGet('commons.call.volumes', {});
       this._keydown = e => this._onKey(e, true); this._keyup = e => this._onKey(e, false);
     }
@@ -190,7 +190,7 @@
         adaptiveStream: false, dynacast: true,
         e2ee: { keyProvider: kp, worker },
         audioCaptureDefaults: { deviceId: p.micId || undefined, echoCancellation: p.echoCancellation, noiseSuppression: p.noiseSuppression, autoGainControl: p.autoGainControl },
-        videoCaptureDefaults: { deviceId: p.camId || undefined, resolution: LK.VideoPresets.h360 },
+        videoCaptureDefaults: { deviceId: p.camId || undefined, resolution: this.cameraCapture() },
         audioOutput: p.outId ? { deviceId: p.outId } : undefined,
         stopLocalTrackOnUnpublish: true,
         // One quick resume (same session, ICE restart) is left to the SDK. If that fails the SDK would republish tracks into the old
@@ -500,7 +500,24 @@
     }
 
     // ------------------------------------------------------------------ screen share and camera
-    shareProfiles() { const P = this.LK.ScreenSharePresets; return { text: { label: 'Sharp text (1080p, low frame rate)', preset: P.h1080fps15, layers: [P.h360fps15, P.h720fps15] }, motion: { label: 'Smooth motion (720p, 30 fps)', preset: P.h720fps30, layers: [P.h360fps15] } }; }
+    // Bitrates are ceilings: on a weak link the browser sends less and viewers fall back to a smaller layer.
+    shareProfiles() {
+      const LK = this.LK, V = (width, height, maxBitrate, maxFramerate) => new LK.VideoPreset({ width, height, maxBitrate, maxFramerate });
+      const small = V(640, 360, 500_000, 15), mid = V(1280, 720, 2_500_000, 30);
+      return {
+        text: { label: 'Sharp text (up to 1440p, 15 fps)', preset: V(2560, 1440, 6_000_000, 15), layers: [small, V(1280, 720, 1_500_000, 15)], hint: 'detail', keep: 'maintain-resolution' },
+        motion: { label: 'Smooth motion (1080p, 30 fps)', preset: V(1920, 1080, 6_000_000, 30), layers: [small, mid], hint: 'motion', keep: 'maintain-framerate' },
+        motion60: { label: 'Fast motion (1080p, 60 fps)', preset: V(1920, 1080, 9_000_000, 60), layers: [small, mid], hint: 'motion', keep: 'maintain-framerate' },
+      };
+    }
+    cameraProfiles() {
+      return {
+        '720p': { label: '720p, 30 fps', width: 1280, height: 720, fps: 30, bitrate: 2_500_000, layers: [[320, 180, 200_000, 15], [640, 360, 800_000, 30]] },
+        '1080p': { label: '1080p, 30 fps', width: 1920, height: 1080, fps: 30, bitrate: 4_500_000, layers: [[640, 360, 800_000, 30], [1280, 720, 2_500_000, 30]] },
+      };
+    }
+    cameraProfile() { const all = this.cameraProfiles(); return all[this.prefs.cameraProfile] || all['720p']; }
+    cameraCapture() { const c = this.cameraProfile(); return { width: c.width, height: c.height, frameRate: c.fps }; }
     async startShare(opts = {}) {
       if (!this.room) throw new CallError('idle', 'Join the call first.');
       if (this.play) { const m = 'Stop playing the video before sharing your screen.'; this.fail('busy', m); throw new CallError('busy', m); }
@@ -510,8 +527,8 @@
       const wantAudio = opts.audio !== undefined ? opts.audio : this.prefs.shareAudio;
       try {
         const pub = await this.room.localParticipant.setScreenShareEnabled(true,
-          { audio: wantAudio, resolution: { width: prof.preset.width, height: prof.preset.height, frameRate: prof.preset.encoding.maxFramerate }, contentHint: (opts.profile || this.prefs.shareProfile) === 'motion' ? 'motion' : 'detail', surfaceSwitching: 'include', systemAudio: 'include' },
-          { screenShareEncoding: prof.preset.encoding, screenShareSimulcastLayers: prof.layers, videoCodec: 'vp8' });
+          { audio: wantAudio, resolution: { width: prof.preset.width, height: prof.preset.height, frameRate: prof.preset.encoding.maxFramerate }, contentHint: prof.hint, surfaceSwitching: 'include', systemAudio: 'include' },
+          { screenShareEncoding: prof.preset.encoding, screenShareSimulcastLayers: prof.layers, videoCodec: 'vp8', degradationPreference: prof.keep });
         if (pub && !pub.isEncrypted) { await this.room.localParticipant.setScreenShareEnabled(false); throw new CallError('no-e2ee', 'The screen share was not encrypted and was stopped.'); }
         this.sharing = true;
         const audioPub = this.room.localParticipant.getTrackPublication(this.LK.Track.Source.ScreenShareAudio);
@@ -532,7 +549,14 @@
     async setCamera(on) {
       if (!this.room) return;
       try {
-        const pub = await this.room.localParticipant.setCameraEnabled(on);
+        const cam = this.cameraProfile(), LK = this.LK;
+        const pub = on
+          ? await this.room.localParticipant.setCameraEnabled(true, { resolution: this.cameraCapture() }, {
+            simulcast: true, videoCodec: 'vp8', degradationPreference: 'balanced',
+            videoEncoding: { maxBitrate: cam.bitrate, maxFramerate: cam.fps },
+            videoSimulcastLayers: cam.layers.map(([width, height, maxBitrate, maxFramerate]) => new LK.VideoPreset({ width, height, maxBitrate, maxFramerate })),
+          })
+          : await this.room.localParticipant.setCameraEnabled(false);
         if (on && pub && !pub.isEncrypted) { await this.room.localParticipant.setCameraEnabled(false); throw new CallError('no-e2ee', 'The camera track was not encrypted and was stopped.'); }
         this.camera = on;
       } catch (e) { this.camera = false; const ce = e instanceof CallError ? e : this._explain(e); this.fail(ce.kind === 'other' ? 'camera' : ce.kind, ce.message.replace('microphone', 'camera')); }
