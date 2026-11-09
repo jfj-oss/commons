@@ -298,3 +298,47 @@ Do this **last**, and only if the Owner has decided to publish the next version;
 
 **Report** any change that one person saw and another did not after a minute.
 
+## Results
+
+One line per check. Pass means it did what the check says; write the version, system and browser in Notes for anything else.
+
+| # | Check | Who / device | Pass | Notes (exact text seen, seconds, version) |
+| --- | --- | --- | --- | --- |
+| A1 | Download page offers the right file first | A (Win), B (Mac) | | |
+| A2 | Install, with the system's warnings | A (Win), B (Mac) | | |
+| A3 | Opens in Brave as an app window; time to first screen | A, B | | |
+| A4–A5 | Password join lands inside the community | A, B | | |
+| A7 | First message round trip | A, B, Owner | | |
+| B | Old invite link accepted | one friend | | |
+| C | Recovery key reminder: survives reload, goes after **I saved it**, visible under devices | A, B | | |
+| D1 | Messages, replies, reactions, pictures both ways | all | | |
+| D2 | Same with the older version | Old | | |
+| D3 | Unread counts right after switching rooms | all | | |
+| E1–E2 | Voice quality, mute, deafen, device choice | all | | |
+| E3 | Measured echo latency | all | | |
+| E4 | Connection path (webrtc-internals) | one | | |
+| E5 | Padlock says encrypted, AES-GCM | all | | |
+| E6 | Leave and rejoin heard again | one | | |
+| F | Mic refused: muted but listening; allowed: heard | one | | |
+| G1–G2 | Wifi drop 15 s and 2 min: **Reconnecting…** then back | one friend | | |
+| G3 | Offline message sent later | one friend | | |
+| H | iPhone call connects, both ways, background behaviour | P | | |
+| I1–I2 | Ring everyone, ring one person | all | | |
+| I3 | Ring reaches a backgrounded window (notification) | B | | |
+| I4 | Closed app: nothing, no stale card | B | | |
+| J1 | Camera 720p and 1080p | two | | |
+| J2 | Share as: text, motion, fast motion | two | | |
+| J3 | Viewer quality auto/high/medium/low, fullscreen | two | | |
+| J4 | Audio with the share | two | | |
+| K | Tile stack drag seen by everyone | two | | |
+| L1–L2 | Room wall: draw, lock, clear | two | | |
+| L3 | Card wall and community card wall | two | | |
+| M1–M2 | Tab audio into the call, silent-tab and window messages | Owner + one | | |
+| M3 | Linux app audio route | Owner + one | | |
+| N | Backdrop pulses to music | two | | |
+| O1–O4 | Large upload: pause, resume, wifi drop, reload and continue | Owner | | |
+| O5 | Large download: pause, continue, file opens | A | | |
+| P | Update to the next version on every system | all | | |
+| Q | Admin panel changes seen by everyone | Owner + A | | |
+
+Versions used: mega ______ (Owner), ______ (A), ______ (B), ______ (P), ______ (Old). Date: __________.
