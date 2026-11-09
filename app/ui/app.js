@@ -1078,7 +1078,7 @@ async function uploadLarge(f, name, gid = S.gid) {
 }
 async function downloadLarge(m) {
   // m: a message with .file, or {gid, id, name} from the Transfers list
-  const gid = m.gid || S.gid, mid = m.id, name = m.name || m.file.name, key = 'd:' + mid;
+  const gid = m.file ? S.gid : m.gid, mid = m.id, name = m.file ? m.file.name : m.name, key = 'd:' + mid;
   if (XFER.has(key)) return;
   const x = { key, id: mid, kind: 'down', name, bytes: 0, done: 0, chunks: 0, total: 0, cancelled: false, paused: false, state: 'checking', path: '' };
   XFER.set(key, x); xferRender();
