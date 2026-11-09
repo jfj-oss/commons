@@ -33,7 +33,8 @@ const vb = (n, expr) => page(n).ev(`(async()=>{ const vb = window.__vb, c = wind
 
 async function setupLocal() {
   lk = await startServers(out, { relayTtl: 900 });
-  world = await makeWorld(out, ['alice', 'bob'], { extraChrome: [] });
+  const ui = process.env.VB_UI ? { alice: process.env.VB_UI, bob: process.env.VB_UI } : {};   // measure another version of app/ui
+  world = await makeWorld(out, ['alice', 'bob'], { extraChrome: [], ui });
   if (process.env.VB_ONE_BROWSER !== '1') world.people.bob.chrome = await startChrome(out, 'bob', port(29450), 500, []);   // its own process: a "sleeping" client can be stopped alone
   for (const n of ['alice', 'bob']) Object.assign(people, { [n]: world.people[n] });
   for (const n of ['alice', 'bob']) { const p = people[n]; p.page = await openPage(p.chrome, `http://127.0.0.1:${p.port}/`, n, { before: voiceProbe(n === 'alice' ? 500 : 700) }); await p.page.waitFor(`!!window.__commonsCall && !document.querySelector("#app").hidden && !!S.gid`, 30000, n + ' app ready'); }
@@ -43,7 +44,7 @@ async function setupLocal() {
 async function setupHosted() {
   host = await startHost(out);
   const { NAME, PUB, PASS, RELAY } = host;
-  const bridge = (name, p) => run(path.join(root, 'target/debug/dev_bridge'), [String(p), path.join(root, 'app/ui')], { COMMONS_DATA: path.join(out, name), COMMONS_RELAY: '', COMMONS_FAST_KDF: '1' }, path.join(out, name + '.log'));
+  const bridge = (name, p) => run(path.join(root, 'target/debug/dev_bridge'), [String(p), process.env.VB_UI || path.join(root, 'app/ui')], { COMMONS_DATA: path.join(out, name), COMMONS_RELAY: '', COMMONS_FAST_KDF: '1' }, path.join(out, name + '.log'));
   const A = port(26701), B = port(26702);
   bridge('alice', A); bridge('bob', B); await sleep(1500);
   const link = JSON.parse(Buffer.from(host.web.split('#relay/')[1], 'base64url'));
@@ -168,6 +169,7 @@ async function suiteLatency() {
   await joinCall('alice'); await joinCall('bob');
   const { a, b } = await ensureCalled();
   await sleep(2500);
+  if (process.env.VB_JBT !== undefined) console.log('jitterBufferTarget set on receivers:', await vb('alice', `vb.setJbTarget(${Number(process.env.VB_JBT)})`), await vb('bob', `vb.setJbTarget(${Number(process.env.VB_JBT)})`));
   // Calibration: the same probe on a track looped back inside the sender's own page, no network, no codec. It covers the probe's own timing error.
   const local = await vb('alice', `(async () => { const gen = vb.gens[vb.gens.length - 1]; vb.setMode('bursts'); const self = [...vb.taps].reverse().find(t => t.id === 'self'); self.onsets = []; const mirror = vb.tap('loopback', self.sid ? gen.dest.stream.getAudioTracks()[0].clone() : gen.dest.stream.getAudioTracks()[0]); await new Promise(r => setTimeout(r, 12000)); const ons = { sent: self.onsets.slice(), recv: mirror.onsets.slice() }; clearInterval(mirror.timer); return ons; })()`);
   const loopLat = matchLatency(local.sent, local.recv);
@@ -239,6 +241,7 @@ async function recoverOnce(name, trigger, { waitMs = 90000, downMs = 0 } = {}) {
   await sleep(500);
   const tE = Date.now();
   await trigger();
+  await sleep(2000);   // the old track's decoder keeps sounding for a moment; judge recovery only after the drop has had time to show
   const res = { name };
   try {
     await until(async () => {
@@ -312,4 +315,5 @@ finally {
   stopAll();
   console.log('results in', out);
   process.exitCode = code;
+  setTimeout(() => process.exit(code), 300);   // nothing may keep the bench alive after its report (the hosted rig's TLS stand-in would)
 }

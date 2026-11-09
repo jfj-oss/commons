@@ -102,6 +102,7 @@ export const voiceProbe = (hz) => `(() => {
   };
   wrap.prototype = Native.prototype; Object.setPrototypeOf(wrap, Native); window.RTCPeerConnection = wrap;
 
+  vb.setJbTarget = ms => { let n = 0; for (const r of vb.pcs) for (const x of r.pc.getReceivers()) if (x.track && x.track.kind === 'audio') { x.jitterBufferTarget = ms; n++; } return n; };
   // What the engine reports, straight from WebRTC.
   vb.stats = async () => {
     const out = [];

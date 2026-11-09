@@ -446,6 +446,61 @@ try {
   const shotRes = await ui.send('Page.captureScreenshot', { format: 'png' });
   fs.writeFileSync(path.join(out, 'call-dock.png'), Buffer.from(shotRes.result.data, 'base64'));
   await ui.ev(`document.querySelector('#c-leave')?.click()`);
+  await sleep(1500);
+
+  // ---------------------------------------------------------------- R. voice reliability: joining, healing, nothing left behind
+  for (const n of ['alice', 'bob', 'dave']) await call(n, `c.phase === 'idle' ? true : c.leave()`).catch(() => { });
+  await sleep(1500);
+  const inCall = async n => until(() => call(n, `c.phase === 'connected'`), 30000, n + ' connected');
+  const countTokens = n => call(n, `(() => { const o = c.__rpc0 = c.__rpc0 || c.rpc; c.__tok = 0; c.rpc = async (m, a) => { if (m === 'call_token') c.__tok++; return o.call(c, m, a); }; return true; })()`);
+  // R1: the others are heard while our own microphone is still being set up (the delay after joining)
+  await call('alice', `c.join(S.gid, 'general')`); await inCall('alice');
+  await call('bob', `(() => { c._publishMic = (orig => async on => { await new Promise(r => setTimeout(r, 2500)); return orig(on); })(c._publishMic.bind(c)); return true; })()`);
+  const r1 = await call('bob', `(async () => { const t0 = Date.now(); const joined = c.join(S.gid, 'general'); let at = null; while (Date.now() - t0 < 2300) { if ([...c.tracks.values()].some(x => x.identity === ${J(dev('alice'))} && x.source === 'microphone')) { at = Date.now() - t0; break; } await new Promise(r => setTimeout(r, 20)); } await joined; delete c._publishMic; return { at }; })()`);
+  check('R1 others are subscribed before our own microphone has finished publishing', r1.at !== null && r1.at < 2300, J(r1));
+  check('R2 bob hears alice after that join', await hears('bob', 'alice'));
+  check('R3 alice hears bob once his microphone is up', await hears('alice', 'bob'));
+  await call('bob', `c.leave()`); await call('alice', `c.leave()`); await sleep(1200);
+  // R4: a join that starts while the server is down is retried without the user, reusing one token
+  await countTokens('bob');
+  await lk.stopLivekit(); await sleep(400);
+  await page('bob').ev(`(window.__j = window.__commonsCall.join(S.gid, 'general').then(() => 'ok', e => 'err ' + e.message), true)`);
+  await sleep(2600);
+  const midPhase = await call('bob', `c.phase`);
+  lk.startLivekit();
+  const joinRes = await page('bob').ev(`Promise.race([window.__j, new Promise(r => setTimeout(() => r('timeout'), 25000))])`);
+  const r4 = await call('bob', `({ phase: c.phase, tok: c.__tok, attempt: c.attempt, err: c.error, ev: c.events.filter(e => /could not connect/.test(e.msg)).length })`);
+  check('R4 joining while the server restarts: retried, connected, without the user', joinRes === 'ok' && r4.phase === 'connected' && r4.ev > 0, J({ joinRes, midPhase, r4 }));
+  check('R5 those retries used a single call token', r4.tok === 1, J(r4));
+  await call('alice', `c.join(S.gid, 'general')`); await inCall('alice');
+  await until(async () => (await call('bob', `c.room && c.room.remoteParticipants.size`)) === 1 && (await call('alice', `c.room && c.room.remoteParticipants.size`)) === 1, 20000, 'R: both in').catch(() => { });
+  check('R6 after that join both hear each other', await hears('bob', 'alice') && await hears('alice', 'bob'));
+  // R7: a short signal drop is resumed in place: same room object, no rejoin
+  await call('bob', `(window.__r0 = c.room, window.__rj0 = c.events.filter(e => /rejoined automatically/.test(e.msg)).length, true)`);
+  await call('bob', `c.room.simulateScenario('signal-reconnect').then(() => true)`); await sleep(3000);
+  const r7 = await call('bob', `({ same: c.room === window.__r0, phase: c.phase, rejoined: c.events.filter(e => /rejoined automatically/.test(e.msg)).length > window.__rj0 })`);
+  check('R7 a short signal drop heals in place, no full rejoin', r7.same && r7.phase === 'connected' && !r7.rejoined && await hears('bob', 'alice'), J(r7));
+  // Stuck media path: the SDK thinks it is still resuming, the media path is down, the call rebuilds itself after ~10 s of polls
+  await call('bob', `(() => { window.__gcs = c.room.engine.pcManager.publisher.getConnectionState; c.room.engine.pcManager.publisher.getConnectionState = () => 'failed'; window.__rejoined0 = c.events.filter(e => /rebuilding the call/.test(e.msg)).length; return true; })()`);
+  const r10 = await until(async () => (await call('bob', `c.events.filter(e => /rebuilding the call/.test(e.msg)).length`)) > 0 && (await call('bob', `c.phase`)) === 'connected', 25000, 'R10 rebuilt').catch(() => null);
+  await until(() => call('bob', `c.room && c.room.isE2EEEnabled`), 10000, 'R10 e2ee').catch(() => { });
+  check('R10 a media path that stays down rebuilds the call by itself, encrypted', r10 && await call('bob', `c.room.isE2EEEnabled`) && await hears('bob', 'alice'), J(r10));
+  // R8: leaving while a rejoin is in progress must not leave a call behind; R9: the rejoin retries reuse the token
+  await countTokens('alice');
+  await lk.stopLivekit();
+  await until(() => call('bob', `c.phase === 'reconnecting'`), 12000, 'bob reconnecting').catch(() => { });
+  await sleep(1500);
+  await call('bob', `c.leave()`);
+  await sleep(4000);
+  lk.startLivekit();
+  await until(() => call('alice', `c.phase === 'connected' && !!c.room`), 45000, 'R8: alice rejoined');
+  await sleep(4000);
+  const r8 = await call('bob', `({ phase: c.phase, room: !!c.room })`);
+  const present = ((await lkAdmin('ListParticipants', { room: roomName })).participants || []).map(p => p.identity.slice(0, 8));
+  check('R8 leaving during a rejoin stays left: no call appears afterwards', r8.phase === 'idle' && !r8.room && !present.includes(dev('bob').slice(0, 8)), J({ r8, present }));
+  const aTok = await call('alice', `c.__tok`);
+  check('R9 an outage of several seconds costs at most two call tokens (the relay limits them)', aTok <= 2, String(aTok));
+  await call('alice', `c.leave()`);
 } catch (e) { if (e.only) console.log(e.message); else { console.error('TEST RUN ABORTED:', e); failed++; results.push({ name: 'run', ok: false, detail: String(e.stack || e) }); } }
 finally {
   fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify(results, null, 1));
