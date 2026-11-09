@@ -68,6 +68,9 @@ pub struct State {
     /// The shared walls (drawings on rooms' backdrops), as last saved. Changes reach this copy on a slow debounce; see `Client::flush_walls`.
     #[serde(default)]
     pub walls: BTreeMap<String, crate::wall::Wall>,
+    /// A new account whose recovery key has not been saved yet: the app keeps asking until the person says they did.
+    #[serde(default)]
+    pub recovery_unsaved: bool,
     /// Password invites this device filed on the relay, by invite id: so that revoking one can take its sealed copy away.
     #[serde(default)]
     pub pw_invites: BTreeMap<String, PwInviteRec>,

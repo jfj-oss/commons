@@ -55,6 +55,25 @@ The relay is treated as hostile. This is everything it stores or observes. Verif
 | Lie in `group_members` ACL | Gives it nothing to gain beyond what it already has; it can only cause denial of service. ACL rules protect against members, not against the relay itself. |
 | Tell a client it has caught up when it has not (omit `more`) | The same as withholding entries. |
 
+## Joining with a password (invite passwords)
+
+An admin can choose a password when creating an invite and tell it to a friend, who types it in the app together with a name. The password does not replace the invite: it is a way to deliver one.
+
+**How it works.** The app derives two things from the password with Argon2id (64 MiB, 3 passes), salted with the relay's address: a lookup id and an encryption key. The ordinary invite link (which already carries the relay's sign-up secret when there is one) is sealed with XChaCha20-Poly1305 under that key, padded to whole kilobytes, and filed on the relay under the lookup id. The friend's app derives the same two values, asks for the sealed copy, opens it and joins as if the link had been pasted. Everything an invite link is checked against still applies on the community's side: the invite's own expiry and use count, bans, the roster and owner rules, and an admin's client being the one that adds the person.
+
+**What the relay learns.** The lookup id and the ciphertext (a fixed-size block, so its size says nothing about the link), which account filed it, when it expires and how many fetches remain. It never receives the password, the key or the link. It also sees that someone looked an id up, and from where it can see (behind Tailscale Funnel: nothing useful). A wrong password, an expired copy, a revoked one and a used-up one get the same answer.
+
+**What a weak password risks.** Whoever guesses the password can join the community, up to the invite's use limit and expiry; that is the same as being handed the link. Guessing works in two ways.
+* *Online*: asking the relay. It allows 8 lookups per id and 40 misses per 10 minutes for the whole relay, and past that it refuses every lookup, hits included, so a guesser gains nothing by luck. Cost to a real friend: an attacker who keeps the whole-relay budget spent also keeps friends from joining, until they stop. That is accepted: the choice was between that and letting guessing continue. At 40 guesses per window a suggested password (about 36 bits) is out of reach in any realistic time.
+* *Offline*: someone who obtains the relay's database (or who is the relay's operator) holds the lookup id and ciphertext and can test guesses at the cost of one Argon2id run each. A password with fewer than about 36 bits is refused at creation, and the suggestion (three random words from a list of about 1000 and a two-digit number) is about 36 bits. That is good against a thief of a copy of the database for the few days the invite lives; it is not good against a determined attacker with a large budget and a long time. The default is therefore 7 days and one use, a password invite lives at most 30 days, and the relay deletes the copy when it expires, when its fetch allowance runs out, or when the inviter revokes the invite. If you are inviting someone to something sensitive, use a longer password (the screen says when yours is short) or a link.
+* A password that is also used elsewhere, or is reused for a second invite on the same relay, is as strong as its weakest use. A password already in use on the relay is refused (the inviter is told so; that is also a small yes/no signal to any registered account, rate limited per account).
+
+**What the inviter should know.** The password is not stored by the app after the screen that shows it. Anyone who sees it (screen, message history, a shoulder) can join until the invite is used up or revoked; revoke from the same screen. A relay with no sign-up secret lets anyone register; one with a secret can only be joined by password because the sealed copy carries that secret to the friend, so a password is as sensitive as the secret for its lifetime.
+
+**The friend's device password.** It protects the local vault exactly as before (Argon2id, unchanged). It is typed once with a show button instead of twice. The recovery key is not shown before joining; a reminder stays on screen until the person says they saved it. Until then, losing the device loses the account.
+
+**Older relays and clients.** A relay without this feature answers its info request without the `pwinvite` flag; the app then says the server is too old and offers links. Old links and old clients are unaffected and remain the fallback.
+
 ## Voice rooms and screen share (stage 2): what each server can see
 
 Two servers are involved. Assume both are run by the same person and both are hostile.

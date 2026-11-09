@@ -48,7 +48,8 @@ class App {
   async firstRun(link, name) {
     await until(() => this.ev(`return !!document.querySelector('#lnk');`), 60000, this.name + ' first-run screen');
     await this.ev(`const set = (s, v) => { const e = document.querySelector(s); e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); };
-      set('#lnk', ${J(link)}); await new Promise(r => setTimeout(r, 400));`);
+      document.querySelector('#l-new') && document.querySelector('#l-new').click(); await new Promise(r => setTimeout(r, 400));
+    set('#lnk', ${J(link)}); await new Promise(r => setTimeout(r, 400));`);
     await this.shot(this.name + '-link-pasted');
     await this.ev(`const set = (s, v) => { const e = document.querySelector(s); e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); }; set('#nm', ${J(name)}); set('#pp', 'correct horse battery'); set('#pp2', 'correct horse battery');
       document.querySelector('#go').click();`);

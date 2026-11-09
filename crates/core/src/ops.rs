@@ -276,6 +276,8 @@ impl Client {
         Ok(())
     }
 
+    pub fn set_recovery_unsaved(&mut self, on: bool) -> Result<()> { self.st.recovery_unsaved = on; self.save() }
+
     /// Take the sealed copies of password invites that are over (expired, or no longer listed) off the relay.
     pub fn prune_pw_invites(&mut self) {
         let now = now_secs();

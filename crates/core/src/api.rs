@@ -605,6 +605,7 @@ impl App {
                 })
             }
             // How good a password for an invite is, and a fresh suggestion. Needs no account.
+            "recovery_saved" => self.with(|c| c.set_recovery_unsaved(a.get("unsaved").and_then(|x| x.as_bool()).unwrap_or(false)).map(|_| json!({})).map_err(e)),
             "password_strength" => { let st = crate::pwinvite::strength(&s(&a, "password")); Ok(json!({"bits": st.bits, "ok": st.ok, "warn": st.warn})) }
             "suggest_password" => Ok(json!({"password": crate::pwinvite::suggest()})),
             // A new account that joins with only the inviter's password. Nothing is made unless the password finds an invite.
@@ -621,6 +622,7 @@ impl App {
                 if l.relay.trim_end_matches('/') != relay.trim_end_matches('/') { return Err(crate::pwinvite::NOT_FOUND.into()); }
                 self.probe(&relay, Some(l.secret.trim()))?;
                 self.open_with(|t| Client::create_with_invite(&self.dir, &pass, &relay, name.trim(), l.secret.trim(), self.kdf, t), &relay)?;
+                self.with(|c| c.set_recovery_unsaved(true).map_err(e))?;
                 match self.with(|c| c.join_with_link(&link).map_err(e)) {
                     Ok(id) => Ok(json!({"ok": true, "community": id, "name": l.name})),
                     Err(m) => Ok(json!({"ok": true, "join_error": m})),
@@ -791,7 +793,7 @@ fn snapshot(c: &Client) -> Value {
     let problems: Vec<Value> = c.st.notices.iter().rev().filter(|n| matches!(n.kind.as_str(), "decrypt" | "broken" | "rollback" | "reject" | "gap" | "welcome" | "relay" | "state" | "clock" | "revoked")).take(5).map(|n| json!({"ts": n.ts, "kind": n.kind, "text": n.text})).collect();
     let net = match c.net.state { NetState::Connecting => "connecting", NetState::Online => "online", NetState::Offline => "offline" };
     let listening = c.listening_of(&me).map(|l| json!({"title": l.title, "artist": l.artist}));
-    json!({"me": {"account": me, "name": c.st.name, "device": c.my_device()}, "relay": c.st.relay, "relay_secret": !c.st.relay_invite.is_empty(), "communities": comms, "joining": joining, "refused": refused,
+    json!({"me": {"account": me, "name": c.st.name, "device": c.my_device(), "recovery_unsaved": c.st.recovery_unsaved}, "relay": c.st.relay, "relay_secret": !c.st.relay_invite.is_empty(), "communities": comms, "joining": joining, "refused": refused,
            "typing_enabled": c.st.typing_enabled, "share_listening": c.st.share_listening, "rune_url": c.rune_url(), "listening": listening,
            "outbox": c.st.outbox.len(), "problems": problems, "net": net, "net_detail": c.net.detail, "revoked": c.st.self_revoked,
            "download_dir": c.download_dir().display().to_string(),
