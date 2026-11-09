@@ -935,7 +935,7 @@
     const fxn = it.chatFx ?? it.fx, d = it.dim ?? 100;
     a.fxAuto = it.fxAuto;
     if (a.fx !== fxn) { a.fx = fxn; fade(a.c); }
-    if (a.dim !== d) { a.dim = d; if (d === 0) a.g.clearRect(0, 0, a.c.width, a.c.height); bdColours(a); a.last = 0; }
+    if (a.dim !== d) { a.dim = d; if (d === 0) a.g.clearRect(0, 0, a.c.width, a.c.height); bdColours(a); a.last = 0; if (window.__megaMusic) __megaMusic.sync(); }
   }
   function bdSize() {
     const a = BD; if (!a) return; const box = a.c.parentElement, w0 = box.clientWidth, h0 = box.clientHeight; if (!w0 || !h0) return;
@@ -955,7 +955,7 @@
     }
     $$('#chan-title,#chan-sub', mainEl).forEach(text);
     $$('#head .head-actions > *,#head #btn-rooms', mainEl).forEach(pad);
-    $$('.slip,#typing,#mega-typing .mmascot,#mega-typing .mripple:not(:empty),#hint:not([hidden]),#jump:not([hidden]),#replybar:not([hidden]),#banner:not([hidden]),#upd:not([hidden])', mainEl).forEach(box);
+    $$('.slip,#mega-note,#typing,#mega-typing .mmascot,#mega-typing .mripple:not(:empty),#hint:not([hidden]),#jump:not([hidden]),#replybar:not([hidden]),#banner:not([hidden]),#upd:not([hidden])', mainEl).forEach(box);
   }
   function bdMask() {
     const a = BD; if (!a || !a.mask) return;
@@ -1018,11 +1018,11 @@
     let item = null;
     if (M.started && M.level === 'chat' && !M.opts && S.gid) { const c = comm(M.cid); item = c && roomItems(c).find(x => x.gid === S.gid && x.kind === 'text'); }
     root.classList.toggle('mg-room', !!item);
-    if (!item) { bdStop(); if (window.__megaWall) __megaWall.close(); typingDraw([]); focusFrame(); return; }
+    if (!item) { bdStop(); if (window.__megaMusic) __megaMusic.sync(); if (window.__megaWall) __megaWall.close(); typingDraw([]); focusFrame(); return; }
     if (BD && BD.gid === item.gid) return;
     const hi = lift(hiOf(item), 4.8);
     root.style.setProperty('--mg-c', dotOf(item)); root.style.setProperty('--mg-hi', hi); root.style.setProperty('--mg-hi-ink', bestInk(hi));
-    typingDraw([]); bdStart(item); if (window.__megaWall) __megaWall.open(item);
+    typingDraw([]); bdStart(item); if (window.__megaWall) __megaWall.open(item); if (window.__megaMusic) __megaMusic.sync();
   }
 
   // ---- size by length, and the centre focus while reading back
@@ -1256,6 +1256,7 @@
     if (M.level === 'chat' && M.cid === c.id) { M.opts = false; showOpts(); drawRail(); return; }
     toChatOpen(c.id);
   };
+  M.bdApi = { bd: () => BD, heat: bdHeat, ripple, still };   // for mega-music.js
   M.eachRect = eachRect; M.relook = () => dirty(false);
   // what the wall module needs from the cards: ink for the marks, a repaint of the cards that show a given wall, the draw chip
   M.wallInk = x => { const f = fieldOf(x), hi = hiOf(x), ink = bestInk(f), alt = ink === '#0c0d12' ? '#ffffff' : '#0c0d12'; return [ink, contrast(hi, f) >= 2.4 ? hi : alt]; };
@@ -1266,7 +1267,7 @@
   };
   M.attachWalls = () => ACTIVE.forEach(a => { __megaWall.cardOn(a); remask(a); asciiDraw(a, clock); });
   M.drawChip = drawChip; M.fx = FX; M.fxNames = FXNAMES;
-  M.bdInfo = () => (BD ? { gid: BD.gid, fx: BD.fx, fxAuto: BD.fxAuto, dim: BD.dim, at: H(BD.at.toDataURL()), draws: ST.bdDraws } : null);
+  M.bdInfo = () => (BD ? { gid: BD.gid, fx: BD.fx, fxAuto: BD.fxAuto, dim: BD.dim, heat: BD.heat, at: H(BD.at.toDataURL()), draws: ST.bdDraws } : null);
   window.__megaTheme = { colours(gid) { const c = comm(M.cid), x = c && roomItems(c).find(i => i.gid === gid && i.kind === 'text'); return x ? [lift(fieldOf(x), 5), lift(hiOf(x), 6)] : null; } };
   M.prev = PREV; M.shown = SHOWN; M.canPaint = canPaint; window.__mega = M;
   if (S.snap && !$('#app').hidden) render();   // the first snapshot may have arrived while this file was still loading
