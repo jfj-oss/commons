@@ -742,6 +742,7 @@ impl Bot {
             if entry.last_seq != max_seq { entry.last_seq = max_seq; dirty = true; }
             if entry.deepseek != deepseek_now { entry.deepseek = deepseek_now; dirty = true; }
             let quiet = quiet_in(c, &gid);
+            let addressed = !found.is_empty();
             // Joining in by itself: only in a live conversation, only on the local model (nobody asked for these words to
             // leave the computer), and a mention always wins. The dice are rolled per new message, then it waits a little.
             let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
@@ -776,7 +777,7 @@ impl Bot {
             drop(pending);
             // Drawing on the wall: the same kind of dice, an active room, an unlocked wall, and never where the owner has said quiet.
             // A mention or command this round means people are talking to it, not watching the wall.
-            if found.is_empty() && chatter > 0 && !quiet && self.cfg.wall_chance_pct > 0 && log.msgs.iter().rev().find(|m| m.sender != me).is_some_and(|m| m.ts + 180 >= now)
+            if !addressed && chatter > 0 && !quiet && self.cfg.wall_chance_pct > 0 && log.msgs.iter().rev().find(|m| m.sender != me).is_some_and(|m| m.ts + 180 >= now)
                 && self.wall_allowed(entry, now) && c.wall_info(&gid).is_some_and(|w| !w.locked) && self.gpu.blocked().is_none() && roll(self.cfg.wall_chance_pct) {
                 if self.wall_busy.lock().unwrap_or_else(|p| p.into_inner()).insert(gid.clone()) {
                     if let Some(last) = log.msgs.last() {
@@ -912,7 +913,8 @@ impl Bot {
         }
         let theme = WALL_THEMES[(random() % WALL_THEMES.len() as u64) as usize];
         let system = format!("{WALL_RULES}\n\n{}", WALL_ASK.replace("{theme}", theme));
-        if safety::reason(&system).is_some() { return; }
+        // The fixed rules talk about what is forbidden, so it is the asked-for part (the theme) that is checked, not the rules.
+        if safety::reason(&WALL_ASK.replace("{theme}", theme)).is_some() { return; }
         let llm = self.local.as_ref();
         let mut art = None;
         for _ in 0..2 {

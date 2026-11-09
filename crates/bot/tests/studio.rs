@@ -564,3 +564,391 @@ fn joining_in_needs_a_live_conversation_and_respects_the_switches() {
     say(&mut alice, &mut oracle, "more chatter");
     assert!(bot.poll(&mut oracle.c).is_empty());
 }
+
+// ================================================================ Oracle's switch and the shared wall
+
+use commons_bot::bot::{parse_wall_art, place_art, WallInfo};
+use std::collections::HashSet;
+use std::time::Instant;
+
+const CAT: &str = " ##   ## \n ####### \n # o o # \n ###x### \n  -----  \n ~~~~~~~ ";
+const ROCKET: &str = "```\n  ..  \n .##. \n.####.\n######\n  ||  \n  ||  \n```";
+
+/// A fake Ollama that answers each chat call with the next of `replies` (the last one repeats). Nothing leaves the machine.
+fn scripted_ollama(replies: &[&str]) -> FakeHttp {
+    let replies: Vec<String> = replies.iter().map(|s| s.to_string()).collect();
+    let n = Arc::new(AtomicUsize::new(0));
+    FakeHttp::start(move |r| match r.path.as_str() {
+        "/api/tags" => (200, json!({"models": [{"name": "qwen3.5:9b"}]}).to_string()),
+        "/api/show" => (200, json!({"capabilities": ["completion", "tools"]}).to_string()),
+        "/api/chat" => {
+            let i = n.fetch_add(1, Ordering::SeqCst).min(replies.len() - 1);
+            (200, json!({"model": "qwen3.5:9b", "message": {"role": "assistant", "content": replies[i]}, "done": true}).to_string())
+        }
+        "/api/generate" => (200, json!({"done": true}).to_string()),
+        _ => (404, "{}".into()),
+    })
+}
+
+/// A chat with a wall: records every stroke event with the time it was sent. After `lock_after` / `clear_after` strokes the owner
+/// "locks" or "clears" the wall, as seen by the next check.
+struct WallChat {
+    inner: FakeChat,
+    quiet: bool,
+    info: WallInfo,
+    strokes: Vec<(Instant, Vec<(u32, u32, u8, u8)>)>,
+    lock_after: Option<usize>,
+    clear_after: Option<usize>,
+    refuse_first: usize,
+}
+impl WallChat {
+    fn new() -> WallChat {
+        WallChat { inner: chat_with_talk(), quiet: false, info: WallInfo::default(), strokes: vec![], lock_after: None, clear_after: None, refuse_first: 0 }
+    }
+    fn cells(&self) -> Vec<(u32, u32, u8, u8)> { self.strokes.iter().flat_map(|s| s.1.clone()).collect() }
+}
+impl Chat for WallChat {
+    fn my_account(&self) -> String { self.inner.my_account() }
+    fn history(&self, g: &str, l: usize) -> Vec<Line> { self.inner.history(g, l) }
+    fn typing(&mut self, _: &str) {}
+    fn send(&mut self, g: &str, t: &str, r: Option<String>) -> Result<String, String> { self.inner.send(g, t, r) }
+    fn send_file(&mut self, g: &str, n: &str, m: &str, d: &[u8], c: &str) -> Result<String, String> { self.inner.send_file(g, n, m, d, c) }
+    fn oracle_quiet(&self, _: &str) -> bool { self.quiet }
+    fn wall_info(&self, _: &str) -> Option<WallInfo> { Some(self.info.clone()) }
+    fn wall_draw(&mut self, _: &str, cells: &[(u32, u32, u8, u8)]) -> Result<bool, String> {
+        if self.refuse_first > 0 { self.refuse_first -= 1; return Ok(false); }
+        assert!(self.info.gen == 0 || !self.info.locked, "never drawn on a locked wall");
+        self.strokes.push((Instant::now(), cells.to_vec()));
+        let n = self.strokes.len();
+        if self.lock_after == Some(n) { self.info.locked = true; }
+        if self.clear_after == Some(n) { self.info.gen += 1; self.info.marks.clear(); }
+        Ok(true)
+    }
+}
+fn wall_job() -> Job { Job { gid: "g".into(), trigger: "t".into(), from: String::new(), text: String::new(), kind: JobKind::Wall } }
+fn walled() -> Config { Config { wall_chance_pct: 100, wall_stroke_gap_ms: 0, wall_min_gap_secs: 0, ..Config::default() } }
+fn wall_bot(dir: &Path, cfg: Config, ollama: &FakeHttp, gpu: Arc<dyn GpuCheck>) -> Bot {
+    make_bot(dir, cfg, &ollama.url(), Arc::new(DeadSearch), Arc::new(DeadStudio), gpu)
+}
+
+// ---- the parser and the placement
+
+#[test]
+fn wall_art_is_parsed_strictly() {
+    let a = parse_wall_art(ROCKET).expect("fenced art is fine");
+    assert_eq!((a.width(), a.height()), (6, 6));
+    assert!(parse_wall_art(CAT).is_some());
+    assert!(parse_wall_art("Sure! Here is a cat for you").is_none(), "a sentence is not art");
+    assert!(parse_wall_art("  ..  \n .##. \n.#a##.\n######\n  ||  ").is_none(), "a letter outside the glyph set");
+    assert!(parse_wall_art("  ..  \n .##. \n.#\t##.\n######\n  ||  ").is_none(), "a tab");
+    assert!(parse_wall_art("  ..  \n .##. \n.####.@\n######\n  ||  ").is_none(), "an @");
+    assert!(parse_wall_art(&format!("{0}\n{0}\n{0}", "#".repeat(41))).is_none(), "too wide");
+    assert!(parse_wall_art(&vec!["#####"; 17].join("\n")).is_none(), "too tall");
+    assert!(parse_wall_art(&vec!["#####"; 16].join("\n")).is_some(), "16 rows fit");
+    assert!(parse_wall_art(&format!("{0}\n{0}\n{0}", "#".repeat(40))).is_some(), "40 columns fit");
+    assert!(parse_wall_art("#\n\n.").is_none(), "too few marks");
+    assert!(parse_wall_art("").is_none());
+}
+
+#[test]
+fn placement_never_touches_existing_marks_and_gives_up_when_it_must() {
+    let art = parse_wall_art(ROCKET).unwrap();
+    let cols = commons_core::wall::WALL_COLS;
+    // Everything but a pocket in the right of the wall is marked.
+    let mut marks: HashSet<u32> = (0..commons_core::wall::WALL_CELLS).collect();
+    for y in 20..30 { for x in 90..100 { marks.remove(&(y * cols + x)); } }
+    let (ox, oy) = place_art(&art, &marks).expect("the pocket is big enough");
+    assert!((90..=94).contains(&ox) && (20..=24).contains(&oy), "it went into the pocket, got {ox},{oy}");
+    for s in art.strokes(ox, oy) { for (x, y, ..) in s { assert!(!marks.contains(&(y * cols + x))); } }
+    // A pocket too small for it: nothing is drawn rather than drawing over others.
+    for y in 20..30 { for x in 90..100 { marks.insert(y * cols + x); } }
+    for y in 20..24 { for x in 90..94 { marks.remove(&(y * cols + x)); } }
+    assert!(place_art(&art, &marks).is_none());
+    // Spaces inside the piece are not marks: a thin mark may sit in the hollow of a bigger one.
+    let ring = parse_wall_art("#####\n#   #\n#   #\n#####").unwrap();
+    let mut m2: HashSet<u32> = (0..commons_core::wall::WALL_CELLS).collect();
+    for y in 10..14 { for x in 10..15 { m2.remove(&(y * cols + x)); } }
+    m2.insert(11 * cols + 12);
+    let (rx, ry) = place_art(&ring, &m2).expect("the hollow of a ring is not a mark of the ring");
+    for s in ring.strokes(rx, ry) { for (x, y, ..) in s { assert!(!m2.contains(&(y * cols + x))); } }
+}
+
+// ---- the model's art on the wall
+
+#[test]
+fn oracle_draws_the_art_stroke_by_stroke_within_the_budget() {
+    let ollama = scripted_ollama(&[CAT]);
+    let dir = tempfile::tempdir().unwrap();
+    // The real default pacing: no more than two events a second.
+    let bot = wall_bot(dir.path(), Config { wall_stroke_gap_ms: Config::default().wall_stroke_gap_ms, ..walled() }, &ollama, Arc::new(NoGpu));
+    let mut chat = WallChat::new();
+    bot.answer(&mut chat, &wall_job());
+    let art = parse_wall_art(CAT).unwrap();
+    assert!(chat.strokes.len() >= 2, "it appears in more than one go: {}", chat.strokes.len());
+    for (_, s) in &chat.strokes {
+        assert!(!s.is_empty() && s.len() <= commons_core::wall::WALL_BATCH, "an event has 1 to 200 cells");
+        assert!(s.iter().all(|&(x, y, g, c)| x < 120 && y < 54 && g >= 1 && (g as usize) < commons_core::wall::WALL_GLYPHS.len() && c == 0), "only glyphs, never an erase");
+    }
+    for w in chat.strokes.windows(2) {
+        assert!(w[1].0.duration_since(w[0].0) >= Duration::from_millis(450), "at most about two events a second");
+    }
+    let drawn: usize = chat.cells().len();
+    let want: usize = art.strokes(0, 0).iter().map(|s| s.len()).sum();
+    assert_eq!(drawn, want, "every mark of the art, nothing else");
+    assert!(chat.inner.sent.is_empty() && chat.inner.files.is_empty(), "it says nothing about it");
+    assert_eq!(ollama.hits("/api/chat"), 1);
+    // The prompt that went out carries the safety words and the glyph set.
+    let body = ollama.requests().into_iter().find(|r| r.path == "/api/chat").unwrap().json().to_string();
+    assert!(body.contains("minors") && body.contains("real person"), "{body}");
+    assert!(body.contains("# * + . o = ~ / | - x"));
+}
+
+#[test]
+fn wall_art_avoids_marks_that_are_already_there_and_is_not_drawn_when_there_is_no_room() {
+    let ollama = scripted_ollama(&[ROCKET]);
+    let dir = tempfile::tempdir().unwrap();
+    let bot = wall_bot(dir.path(), walled(), &ollama, Arc::new(NoGpu));
+    let mut chat = WallChat::new();
+    // Marks over the whole left half and the top.
+    for y in 0..54u32 { for x in 0..60u32 { chat.info.marks.insert(y * 120 + x); } }
+    bot.answer(&mut chat, &wall_job());
+    assert!(!chat.cells().is_empty());
+    assert!(chat.cells().iter().all(|&(x, y, ..)| !chat.info.marks.contains(&(y * 120 + x))), "no overlap");
+    // A wall that is full: nothing is drawn.
+    let dir2 = tempfile::tempdir().unwrap();
+    let bot = wall_bot(dir2.path(), walled(), &ollama, Arc::new(NoGpu));
+    let mut full = WallChat::new();
+    full.info.marks = (0..commons_core::wall::WALL_CELLS).collect();
+    bot.answer(&mut full, &wall_job());
+    assert!(full.strokes.is_empty());
+}
+
+#[test]
+fn malformed_art_draws_nothing_and_one_retry_is_allowed() {
+    for bad in ["Sure thing, here is a cat!", "####################################################\n#\n#", "..\n.a.\n.."] {
+        let ollama = scripted_ollama(&[bad]);
+        let dir = tempfile::tempdir().unwrap();
+        let bot = wall_bot(dir.path(), walled(), &ollama, Arc::new(NoGpu));
+        let mut chat = WallChat::new();
+        bot.answer(&mut chat, &wall_job());
+        assert!(chat.strokes.is_empty(), "nothing usable, nothing drawn: {bad:?}");
+        assert_eq!(ollama.hits("/api/chat"), 2, "it asked once more, and no more");
+    }
+    let ollama = scripted_ollama(&["no idea, sorry", ROCKET]);
+    let dir = tempfile::tempdir().unwrap();
+    let bot = wall_bot(dir.path(), walled(), &ollama, Arc::new(NoGpu));
+    let mut chat = WallChat::new();
+    bot.answer(&mut chat, &wall_job());
+    assert!(!chat.strokes.is_empty(), "the second try was good");
+    assert_eq!(ollama.hits("/api/chat"), 2);
+}
+
+#[test]
+fn the_hard_block_covers_wall_art_and_what_comes_with_it() {
+    let ollama = scripted_ollama(&[&format!("a nude teen\n{ROCKET}")]);
+    let dir = tempfile::tempdir().unwrap();
+    let bot = wall_bot(dir.path(), walled(), &ollama, Arc::new(NoGpu));
+    let mut chat = WallChat::new();
+    bot.answer(&mut chat, &wall_job());
+    assert!(chat.strokes.is_empty(), "blocked output is never drawn");
+    assert_eq!(ollama.hits("/api/chat"), 1, "and it is not asked again");
+    assert!(chat.inner.sent.is_empty());
+    // The wording reaches the model only through our own fixed prompt, which the same check passes.
+    assert!(safety::reason("Draw a small ASCII picture of a cat.").is_none());
+}
+
+#[test]
+fn a_locked_wall_is_left_alone_and_a_lock_or_clear_mid_drawing_stops_it() {
+    let ollama = scripted_ollama(&[CAT]);
+    let dir = tempfile::tempdir().unwrap();
+    let bot = wall_bot(dir.path(), walled(), &ollama, Arc::new(NoGpu));
+    let mut locked = WallChat::new();
+    locked.info.locked = true;
+    bot.answer(&mut locked, &wall_job());
+    assert!(locked.strokes.is_empty());
+    assert_eq!(ollama.hits("/api/chat"), 0, "no model call for a wall it may not draw on");
+
+    let total = parse_wall_art(CAT).unwrap().strokes(0, 0).len();
+    assert!(total >= 3);
+    let mut mid = WallChat::new();
+    mid.lock_after = Some(1);
+    let dir2 = tempfile::tempdir().unwrap();
+    wall_bot(dir2.path(), walled(), &ollama, Arc::new(NoGpu)).answer(&mut mid, &wall_job());
+    assert_eq!(mid.strokes.len(), 1, "locked after the first event: it stops");
+
+    let mut cleared = WallChat::new();
+    cleared.clear_after = Some(1);
+    let dir3 = tempfile::tempdir().unwrap();
+    wall_bot(dir3.path(), walled(), &ollama, Arc::new(NoGpu)).answer(&mut cleared, &wall_job());
+    assert_eq!(cleared.strokes.len(), 1, "cleared after the first event: it does not bring the picture back");
+}
+
+#[test]
+fn the_wall_switch_quiet_cap_gpu_and_a_busy_core_are_respected() {
+    let ollama = scripted_ollama(&[CAT]);
+    // Quiet: no model call, nothing drawn.
+    let dir = tempfile::tempdir().unwrap();
+    let mut q = WallChat::new();
+    q.quiet = true;
+    wall_bot(dir.path(), walled(), &ollama, Arc::new(NoGpu)).answer(&mut q, &wall_job());
+    assert!(q.strokes.is_empty());
+    // Quiet switched on while the model is thinking is noticed before the first stroke too.
+    // The GPU belongs to Studio or a game: the model is not even asked.
+    let dir = tempfile::tempdir().unwrap();
+    let mut g = WallChat::new();
+    wall_bot(dir.path(), walled(), &ollama, Arc::new(BusyGpu)).answer(&mut g, &wall_job());
+    assert!(g.strokes.is_empty());
+    assert_eq!(ollama.hits("/api/chat"), 0);
+    // The daily cap per room: with 1 allowed, the second job draws nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let bot = wall_bot(dir.path(), Config { wall_daily_max: 1, ..walled() }, &ollama, Arc::new(NoGpu));
+    let mut c1 = WallChat::new();
+    bot.answer(&mut c1, &wall_job());
+    let mut c2 = WallChat::new();
+    bot.answer(&mut c2, &wall_job());
+    assert!(!c1.strokes.is_empty());
+    assert!(c2.strokes.is_empty(), "the cap holds");
+    // A core that says "later" is asked again, a few times, then it gives up quietly.
+    let dir = tempfile::tempdir().unwrap();
+    let mut busy = WallChat::new();
+    busy.refuse_first = 2;
+    wall_bot(dir.path(), Config { wall_stroke_gap_ms: 0, ..walled() }, &ollama, Arc::new(NoGpu)).answer(&mut busy, &wall_job());
+    assert_eq!(busy.cells().len(), parse_wall_art(CAT).unwrap().strokes(0, 0).iter().map(|s| s.len()).sum::<usize>());
+    let dir = tempfile::tempdir().unwrap();
+    let mut stuck = WallChat::new();
+    stuck.refuse_first = 100;
+    wall_bot(dir.path(), walled(), &ollama, Arc::new(NoGpu)).answer(&mut stuck, &wall_job());
+    assert!(stuck.strokes.is_empty());
+}
+
+#[test]
+fn a_mention_is_still_answered_in_a_quiet_room() {
+    let ollama = fake_ollama(&["qwen3.5:9b"], "mi deh yah");
+    let dir = tempfile::tempdir().unwrap();
+    let bot = make_bot(dir.path(), Config::default(), &ollama.url(), Arc::new(DeadSearch), Arc::new(DeadStudio), Arc::new(NoGpu));
+    let mut chat = WallChat::new();
+    chat.quiet = true;
+    chat.inner.lines = vec![Line { mine: false, name: "alice".into(), text: "@Oracle hello?".into() }];
+    bot.answer(&mut chat, &ask_job("@Oracle hello?")).expect("answered");
+    assert_eq!(chat.inner.sent, vec!["mi deh yah".to_string()]);
+}
+
+#[test]
+fn quiet_stops_chiming_and_surprise_art() {
+    let studio = fake_studio(idle_state(), "PNG");
+    let ollama = studio_ollama("picture", "a neon goat");
+    let dir = tempfile::tempdir().unwrap();
+    let bot = make_bot(dir.path(), arty(), &ollama.url(), Arc::new(DeadSearch), studio_with(&studio, dir.path()), Arc::new(NoGpu));
+    let mut chat = WallChat::new();
+    chat.quiet = true;
+    assert!(bot.answer(&mut chat, &chime_job()).is_none());
+    assert!(chat.inner.sent.is_empty() && chat.inner.files.is_empty());
+    assert_eq!(ollama.hits("/api/chat"), 0, "the model is not even asked");
+    assert_eq!(posts_to_studio(&studio), 0);
+    chat.quiet = false;
+    assert!(bot.answer(&mut chat, &chime_job()).is_some(), "and it follows the switch back on");
+}
+
+// ---- through the real core: the owner's signed flag
+
+fn quiet_flag(p: &Peer, gen: &str) -> bool {
+    let snap = commons_core::api::debug_snapshot(&p.c);
+    snap["communities"][0]["style"]["looks"][gen]["oracle_quiet"].as_bool().unwrap_or(false)
+}
+
+#[test]
+fn only_the_owner_can_set_the_flag_and_the_bot_follows_it_live() {
+    let net = Net::new();
+    let mut alice = Peer::new(&net, "alice");
+    let mut oracle = Peer::new(&net, "Oracle");
+    let (cid, gen) = community_with(&net, &mut alice, &mut [&mut oracle]);
+    let ollama = scripted_ollama(&["pasta a fi pickney"]);
+    let dir = tempfile::tempdir().unwrap();
+    let bot = make_bot(dir.path(), Config { wall_chance_pct: 100, wall_min_gap_secs: 0, wall_stroke_gap_ms: 0, ..chatty() }, &ollama.url(), Arc::new(DeadSearch), Arc::new(DeadStudio), Arc::new(NoGpu));
+    let say = |who: &mut Peer, other: &mut Peer, t: &str| { who.c.send_text(&gen, t, None).unwrap(); settle(&mut [who, other]); };
+    let _ = bot.poll(&mut oracle.c);
+
+    // A member cannot set it, by either route, and nothing is signed.
+    assert!(oracle.c.set_oracle_quiet(&cid, &gen, true).is_err());
+    assert!(oracle.c.set_look(&cid, Some(&gen), Some(commons_core::envelope::Look { oracle_quiet: Some(true), ..Default::default() })).is_err());
+    settle(&mut [&mut alice, &mut oracle]);
+    assert!(!quiet_flag(&alice, &gen) && !quiet_flag(&oracle, &gen));
+
+    // Without the flag it talks and draws on a lively room.
+    say(&mut alice, &mut oracle, "one");
+    let kinds: Vec<JobKind> = bot.poll(&mut oracle.c).into_iter().map(|j| j.kind).collect();
+    assert!(kinds.contains(&JobKind::Chime) && kinds.contains(&JobKind::Wall), "{kinds:?}");
+
+    // The owner switches it off. The bot sees it through its own synced state, no restart.
+    alice.c.set_oracle_quiet(&cid, &gen, true).unwrap();
+    settle(&mut [&mut alice, &mut oracle]);
+    assert!(quiet_flag(&alice, &gen) && quiet_flag(&oracle, &gen), "in the snapshot beside looks");
+    assert!(alice.c.look_of(&cid, Some(&gen)).unwrap().oracle_quiet == Some(true));
+    // Patterns set afterwards through set_look keep the flag unless it is named.
+    alice.c.set_look(&cid, Some(&gen), Some(commons_core::envelope::Look { chat: Some(3), oracle_quiet: alice.c.look_of(&cid, Some(&gen)).and_then(|l| l.oracle_quiet), ..Default::default() })).unwrap();
+    settle(&mut [&mut alice, &mut oracle]);
+    say(&mut alice, &mut oracle, "two");
+    say(&mut alice, &mut oracle, "three");
+    assert!(bot.poll(&mut oracle.c).is_empty(), "no chime, no art, no drawing");
+
+    // The owner's flag beats "@Oracle chime in". A mention is still answered.
+    say(&mut alice, &mut oracle, "@Oracle chime in");
+    let jobs = bot.poll(&mut oracle.c);
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].kind, JobKind::SetChime { on: true });
+    let sent = bot.answer(&mut oracle.c, &jobs[0]).expect("it explains");
+    assert!(sent.text.contains("owner"), "{}", sent.text);
+    say(&mut alice, &mut oracle, "chatter");
+    assert!(bot.poll(&mut oracle.c).is_empty(), "still quiet after the chat command");
+    say(&mut alice, &mut oracle, "@Oracle hello there");
+    let jobs = bot.poll(&mut oracle.c);
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].kind, JobKind::Answer { deepseek: false });
+    assert!(bot.answer(&mut oracle.c, &jobs[0]).is_some(), "someone asked");
+    // "@Oracle quiet" still works for what it did.
+    say(&mut alice, &mut oracle, "@Oracle quiet");
+    assert_eq!(bot.poll(&mut oracle.c)[0].kind, JobKind::SetChime { on: false });
+
+    // Off again: the owner's switch no longer holds it back (the chat words still do).
+    alice.c.set_oracle_quiet(&cid, &gen, false).unwrap();
+    settle(&mut [&mut alice, &mut oracle]);
+    assert!(!quiet_flag(&alice, &gen));
+    say(&mut alice, &mut oracle, "@Oracle chime in");
+    assert_eq!(bot.poll(&mut oracle.c)[0].kind, JobKind::SetChime { on: true });
+    say(&mut alice, &mut oracle, "talking");
+    let kinds: Vec<JobKind> = bot.poll(&mut oracle.c).into_iter().map(|j| j.kind).collect();
+    assert!(kinds.contains(&JobKind::Chime), "{kinds:?}");
+}
+
+#[test]
+fn the_bots_drawing_reaches_everyone_through_the_core_and_a_lock_or_clear_is_obeyed() {
+    let net = Net::new();
+    let mut alice = Peer::new(&net, "alice");
+    let mut oracle = Peer::new(&net, "Oracle");
+    let (cid, gen) = community_with(&net, &mut alice, &mut [&mut oracle]);
+    let ollama = scripted_ollama(&[ROCKET]);
+    let dir = tempfile::tempdir().unwrap();
+    let bot = wall_bot(dir.path(), walled(), &ollama, Arc::new(NoGpu));
+    let job = Job { gid: gen.clone(), ..wall_job() };
+
+    // Locked by the owner: the core would refuse anyway, and the bot does not even ask the model.
+    alice.c.set_wall(&cid, &gen, Some(true), false).unwrap();
+    settle(&mut [&mut alice, &mut oracle]);
+    bot.answer(&mut oracle.c, &job);
+    assert_eq!(ollama.hits("/api/chat"), 0);
+    assert!(oracle.c.wall_view(&gen).cells.is_empty());
+
+    alice.c.set_wall(&cid, &gen, Some(false), false).unwrap();
+    settle(&mut [&mut alice, &mut oracle]);
+    bot.answer(&mut oracle.c, &job);
+    for _ in 0..4 { settle(&mut [&mut alice, &mut oracle]); }
+    let mine = oracle.c.wall_view(&gen).cells.len();
+    assert!(mine >= 8, "drawn on its own wall: {mine}");
+    assert_eq!(alice.c.wall_view(&gen).cells.len(), mine, "and everyone sees the same");
+    assert!(alice.c.wall_view(&gen).cells.iter().all(|c| c.3 == oracle.acct()), "marked by nothing but its own account");
+
+    // The owner clears it: the new generation is empty, and a later drawing goes on the new one.
+    alice.c.set_wall(&cid, &gen, None, true).unwrap();
+    settle(&mut [&mut alice, &mut oracle]);
+    assert!(alice.c.wall_view(&gen).cells.is_empty());
+}
