@@ -92,7 +92,7 @@ impl LiveHub {
     /// Returns the events and the cursor to use next.
     pub fn since(&mut self, gid: &str, after: u64, skip_device: &str, now: u64) -> (Vec<(u64, String, Vec<u8>)>, u64) {
         self.expire(gid, now);
-        let Some(r) = self.rings.get(gid) else { return (vec![], after) };
+        let Some(r) = self.rings.get(gid) else { return (vec![], 0) };
         let mut out = vec![];
         let mut bytes = 0usize;
         let mut next = r.next;

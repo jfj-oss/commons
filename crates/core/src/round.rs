@@ -34,6 +34,7 @@ pub struct Round {
     kps: Vec<(String, u32)>,
     checks: Vec<AclCheck>,
     sync: Option<SyncReq>,
+    live: Option<crate::live::LivePlan>,
     cap: u64,
 }
 
@@ -56,6 +57,7 @@ pub struct RoundDone {
     kps: Vec<(String, Vec<u8>)>,
     repaired: Vec<(String, usize)>,
     sync: Option<(Result<SyncResp>, Vec<String>, Vec<String>)>,
+    live: Option<crate::live::LiveDone>,
     cap: u64,
 }
 
@@ -150,6 +152,8 @@ impl Round {
             }
         }
         for c in &self.checks { if let Some(Ok(n)) = go(&mut d, || check_acl(api, k, c)) { if n > 0 { d.repaired.push((c.gid.clone(), n)); } } }
+        // The unstored live channel: its failures never fail the round (a relay without it just says 404).
+        if let Some(lp) = self.live { if !d.failure.as_ref().is_some_and(is_down) { d.live = Some(lp.run(0)); } }
         if let Some(req) = self.sync {
             if d.failure.as_ref().is_some_and(is_down) {
                 d.sync = Some((Err(clone_err(d.failure.as_ref().unwrap())), req.ack_welcomes, vec![]));
@@ -259,6 +263,7 @@ impl Client {
             self.last_dir_check.insert("acl".into(), now);
             self.plan_acl_checks(&mut r);
         }
+        r.live = self.live_plan(!self.live.background);
         r.sync = Some(self.sync_req(wait_ms));
         r
     }
@@ -362,6 +367,7 @@ impl Client {
             self.notice("relay", format!("the relay had cut {n} member(s) off from group {}; let them back in", &gid[..8.min(gid.len())]));
         }
         if let Some(e) = &d.failure { self.note_failure(e); }
+        if let Some(l) = d.live { self.live_finish(l); }
         let mut result = Ok(());
         match d.sync {
             Some((Ok(resp), _, bad)) => {
