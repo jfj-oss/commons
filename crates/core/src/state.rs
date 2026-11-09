@@ -58,6 +58,9 @@ pub struct State {
     pub avatar_removed: bool,
     pub lr_published: bool,
     pub typing_enabled: bool,
+    /// The shared walls (drawings on rooms' backdrops), as last saved. Changes reach this copy on a slow debounce; see `Client::flush_walls`.
+    #[serde(default)]
+    pub walls: BTreeMap<String, crate::wall::Wall>,
     /// The relay's invite secret, kept so that we can register again if the relay ever forgets this device.
     pub relay_invite: String,
     /// When this device last passed the relay's sign-up secret on, per community's control group.
@@ -84,6 +87,69 @@ pub struct State {
     /// Phones have no keyboard for a game to read, so the setting is not kept there.
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     pub game_keys: commons_gamekeys::Settings,
+    /// Large uploads that have not finished yet, by the relay's file id. The relay is the source of truth for which
+    /// chunks arrived; this holds the key material and enough to offer the same file again after a restart.
+    #[serde(default)]
+    pub large_uploads: BTreeMap<String, LargeUpload>,
+    /// Large downloads, by message id: where the partial file is and how much of it has been written.
+    #[serde(default)]
+    pub large_downloads: BTreeMap<String, LargeDownload>,
+    /// Where large downloads are saved. Empty means the system's Downloads folder.
+    #[serde(default)]
+    pub download_dir: String,
+}
+
+/// One large file on its way out. Chunk bytes are never stored here, only the key material and where we are.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct LargeUpload {
+    pub gid: String,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    /// The file's modification time when it was picked, so a changed file with the same name and size does not
+    /// resume as if it were the same bytes.
+    #[serde(default)]
+    pub last_modified: u64,
+    pub chunk_size: u64,
+    pub chunks: u64,
+    /// The relay's id for the file (also the message's `blob`).
+    pub blob: String,
+    pub key: String,
+    pub nonce: String,
+    pub caption: String,
+    pub expires: u64,
+    /// Chunk indexes the relay said it has, as of the last begin or the last chunk sent.
+    #[serde(default)]
+    pub uploaded: Vec<u64>,
+    pub started: u64,
+}
+
+/// One large file coming in. The partial file lives on disk; `done` chunks have been decrypted, verified and
+/// appended, and their plaintext hashes are kept so the whole-file check can be finished after a restart.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct LargeDownload {
+    pub gid: String,
+    pub msg_id: String,
+    pub blob: String,
+    pub name: String,
+    pub save_name: String,
+    pub mime: String,
+    pub size: u64,
+    pub chunks: u64,
+    pub chunk_size: u64,
+    pub sha256: String,
+    pub key: String,
+    pub nonce: String,
+    pub expires: u64,
+    pub dir: String,
+    pub part: String,
+    pub done: u64,
+    #[serde(default)]
+    pub hashes: Vec<String>,
+    #[serde(default)]
+    pub finished: bool,
+    #[serde(default)]
+    pub path: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -131,8 +197,27 @@ pub struct Community {
     /// Consents waiting for an admin (us, if we are one) to put them in the table.
     #[serde(default)]
     pub consent_queue: BTreeMap<String, Consent>,
+    /// The owner's colours in force, from the newest document whose signature was the owner's. Kept even when a table
+    /// comes through without it (an older app rewrote the table), so the room does not flicker back to defaults.
+    #[serde(default)]
+    pub style: Option<StyleDoc>,
+    #[serde(default)]
+    pub style_sig: String,
+    /// When this device (as owner) last put the colours back into the table on its own.
+    #[serde(default)]
+    pub style_repub: u64,
 }
 impl Community {
+    /// Take a verified document if it is newer than the one in force: higher version, then later time, then the
+    /// signature as the final tie-break, so every device settles on the same one whatever order it saw them in.
+    pub fn adopt_style(&mut self, doc: StyleDoc, sig: &str) -> bool {
+        let newer = match &self.style {
+            None => true,
+            Some(cur) => (doc.ver, doc.ts, sig) > (cur.ver, cur.ts, self.style_sig.as_str()),
+        };
+        if newer { self.style = Some(doc); self.style_sig = sig.to_string(); }
+        newer
+    }
     pub fn role_of(&self, acct: &str) -> Option<Role> {
         if acct == self.owner { Some(Role::Owner) } else if self.admins.iter().any(|a| a == acct) { Some(Role::Admin) } else { Some(Role::Member) }
     }
@@ -203,7 +288,12 @@ impl GroupState {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum MsgBody {
     Text(String),
-    File { name: String, mime: String, size: u64, blob: String, key: String, nonce: String, caption: String },
+    File {
+        name: String, mime: String, size: u64, blob: String, key: String, nonce: String, caption: String,
+        /// Too large for one blob: the real size, chunk layout and whole-file hash. Absent for ordinary files.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        large: Option<LargeFile>,
+    },
     /// System line shown in the timeline (decrypt failures, rejoin notices...). Never silent.
     Notice(String),
 }

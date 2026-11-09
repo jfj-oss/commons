@@ -100,8 +100,8 @@ try {
     await until(() => a.ev(`const b = document.querySelector('#c-browser'); if (b) { b.click(); return true; } return false;`), 15000, a.name + ' browser button');
     return until(() => fs.existsSync(a.urls) && fs.readFileSync(a.urls, 'utf8').trim().split('\n').pop(), 15000, a.name + ' hand-off link');
   };
-  const panel = await (async () => { const u = await openCall(alice); return { u, text: await alice.ev(`return document.querySelector('#call-panel').innerText;`) }; })();
-  await alice.shot('call-panel');
+  const panel = await (async () => { const u = await openCall(alice); return { u, text: await alice.ev(`return document.querySelector('#call-dock').innerText;`) }; })();
+  await alice.shot('call-dock');
   check('P8 the panel explains calls open in the browser, and hands off', /open in your browser/i.test(panel.text) && /^http:\/\/127\.0\.0\.1:\d+\/callpage\.html#s=/.test(panel.u), panel.text.slice(0, 80));
   const urlB = await openCall(bob);
   const chrome = await startChrome(out, 'all', 26800, 500, ['--ignore-certificate-errors']);
@@ -151,7 +151,7 @@ try {
   check('G5 holding the key mutes her', true, (Date.now() - t0) + ' ms including docker exec');
   check('G6 friends hear nothing', await silent(3000));
   check('G7 friends just see a normal mute', await peerSees());
-  check('G8 the call says so', /Muted by game key/.test(await A.ev(`document.querySelector('#call-panel').innerText`)));
+  check('G8 the call says so', /Muted by game key/.test(await A.ev(`document.querySelector('#call-dock').innerText`)));
   const up = Date.now();
   alice.sh('xdotool keyup v');
   await until(async () => !(await gameMuted()), 3000, 'released');

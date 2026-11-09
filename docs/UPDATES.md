@@ -13,12 +13,13 @@ scripts/publish-update.sh 0.3.0 --min-version 0.2.0   # also tell apps older tha
 
 It bumps the version (tauri.conf.json and app/src-tauri/Cargo.toml), builds Linux (Ubuntu 22.04 in Docker), Windows
 (cross-built in Docker; the NSIS installer) and macOS (on the Mac over ssh, two jobs at background priority, only when it
-is plugged in or above 40%; `--skip-mac` goes on without it), signs the files here with the updater key, and puts them
-in `dist/`:
+is plugged in or above 40%; `--skip-mac` goes on without it) — and each system's browser version alongside its desktop
+app — signs the files here with the updater key, and puts them in `dist/`:
 
 | In dist/ | Served at | For |
 | --- | --- | --- |
 | `Megatron-linux-x86_64.AppImage`, `Megatron-windows-x64-setup.exe`, `Megatron-macos-arm64.dmg` | `/download/…`, listed on `/join` | friends installing |
+| `Megatron-linux-browser.tar.gz`, `Megatron-windows-browser.zip`, `Megatron-macos-browser.zip` | `/download/…`, listed on `/join` | friends who want the browser version |
 | `update/latest.json` | `/update/latest.json` | the apps: version, notes, and per system a file address and its signature |
 | `update/Commons_<version>_…` | `/update/…` | the files the apps install (this version and the one before) |
 
@@ -50,6 +51,55 @@ tests; the https rule above is enforced by our own code before the plugin is cal
 How it installs: Linux replaces the AppImage file in place (keep it where it was first put, writable). Windows runs the
 new installer (per user, no administrator rights) and the app restarts. macOS swaps the `Megatron.app` bundle (works when
 it was dragged to Applications; not from inside the dmg). The app then restarts, and asks for the passphrase as after any start.
+
+## The browser versions (Linux, Windows, macOS)
+
+Each browser version is the core as a local bridge plus `app/ui`, opened in the person's own browser as an app window:
+`Megatron-linux-browser.tar.gz` (Brave/Chrome/Chromium/Edge; `packaging/linux-browser`),
+`Megatron-windows-browser.zip` (Edge/Brave/Chrome; `packaging/windows-browser`) and
+`Megatron-macos-browser.zip` (`Megatron.app`; Brave/Chrome/Edge, or Safari as a normal tab;
+`packaging/macos-browser`). All are published and signed by the same script, each in the same manifest as its own
+platform:
+
+| System | Manifest platform key | Update file |
+| --- | --- | --- |
+| Linux x86_64 | `linux-browser-x86_64` | `Megatron-linux-browser.tar.gz` |
+| Windows x86_64 | `windows-browser-x86_64` | `Megatron-windows-browser.tar.gz` |
+| macOS Apple silicon | `darwin-browser-aarch64` | `Megatron-macos-browser.tar.gz` |
+
+No Tauri updater target has any of those names (desktop apps look for `linux-x86_64`, `windows-x86_64`,
+`darwin-aarch64`), so the desktop apps ignore them, and each browser bridge looks only for its own.
+
+The launcher runs `bridge --update <relay> <install-dir>` before it starts the page, with a five-second cap: offline, or
+a relay that does not answer, only delays the window a moment. On Linux this is the shell script
+`packaging/linux-browser/megatron`; on Windows and macOS it is `megatron_launcher`, a small Rust program (no console
+window on Windows, and the `Megatron.app` executable on macOS). The bridge:
+
+1. fetches `<relay>/update/latest.json` and localizes it exactly as the desktop app does (`crates/core/src/update.rs`:
+   the account's relay only, https or loopback http, no redirects);
+2. takes this system's entry, downloads it without following redirects, with timeouts and a size cap;
+3. verifies the tarball with the minisign public key embedded in the bridge at build time — the same key as the desktop
+   app — and requires the signature's trusted comment to name exactly the manifest's version; an unsigned, wrongly
+   signed, or legacy (non-pre-hashed) file is refused;
+4. installs only a strictly newer version (a downgrade is refused);
+5. unpacks into a temporary folder next to the install (plain files and directories only, no symlinks or `..`), then
+   renames `ui/` and the bridge (and the launcher, where the package carries one) into place. The previous copy stays in
+   `.update-previous` until the new bridge has bound its port; if the new bridge does not start, the launcher puts the
+   previous bridge and `ui/` back.
+
+Windows cannot overwrite a running `.exe`, so the update runs as a child process of the running `bridge.exe`: the tarball's
+`bridge.exe` replaces the file by renaming the running image aside (Windows permits renaming a running executable) and
+moving the new one into place. The launcher does the same for itself. The portable Windows download is a zip that
+`install.cmd` copies to `%LOCALAPPDATA%\Megatron-browser` and points a Start-menu shortcut at; the macOS download is a
+`Megatron.app` signed ad-hoc (right-click, Open the first time). Account data lives in
+`%LOCALAPPDATA%\Megatron-browser\data` and `~/Library/Application Support/Megatron-browser`, apart from the desktop app.
+
+The page shows a small note from that check: "Updated to x.y.z" after an install, or "Update available" and the reason
+if a newer version exists but could not be installed. The bridge can run for days, so the page also asks it (15 s after
+unlocking, then every 4 hours, or from Settings, "Check for updates") and shows an **Update now** button. That runs the
+same checks with no time limit, refuses during a call, then the bridge replaces itself and the page reloads; only an
+installed copy with an embedded key can do this. `crates/core/src/browser_update.rs` has the code and its tests; `tools/browser-update-test.sh` exercises the
+Linux launcher end to end with a throwaway key and a loopback relay.
 
 ## The signing key
 

@@ -4,6 +4,10 @@ const USAGE: &str = "usage: commons-relay [--bind 127.0.0.1:8787] [--data ./rela
   COMMONS_RELAY_INVITE=<secret>  new accounts need this secret to register (set it in the environment, not on the command line)
   --open                         allow a non-loopback bind with no invite secret (anyone who can reach it can register)
   --quota-mb N                   per-account limit for messages and, separately, for files
+  --large-quota-gb N             large-file storage per member account (default 10)
+  --large-owner-quota-gb N       the same for a community's owner (default 100)
+  --large-total-gb N             most large-file storage the whole relay holds (default 250)
+  --large-expire-days N          days a large file stays before it is removed (default 7)
   --site DIR                     serve the /join page, the files in DIR from /download/, and app updates from DIR/update/
   --min-app-version X.Y.Z        tell apps older than this that they must update (or COMMONS_MIN_APP_VERSION; docs/UPDATES.md)
   --front ADDR                   one port for everything behind a TLS terminator (docs/DEPLOY.md); needs an invite secret
@@ -43,6 +47,10 @@ async fn main() {
                 limits.max_entry_bytes_per_account = mb << 20;
                 limits.max_blob_bytes_per_account = mb << 20;
             }
+            "--large-quota-gb" => limits.large_file_quota_per_account = a.next().expect("--large-quota-gb N").parse::<u64>().expect("number") << 30,
+            "--large-owner-quota-gb" => limits.large_file_quota_owner = a.next().expect("--large-owner-quota-gb N").parse::<u64>().expect("number") << 30,
+            "--large-total-gb" => limits.large_file_total = a.next().expect("--large-total-gb N").parse::<u64>().expect("number") << 30,
+            "--large-expire-days" => limits.large_file_expire_secs = a.next().expect("--large-expire-days N").parse::<u64>().expect("number") * 86400,
             "--livekit-url" => lk_url = Some(a.next().expect("--livekit-url ws(s)://host")),
             "--livekit-key" => lk_key = Some(a.next().expect("--livekit-key api-key")),
             "--livekit-secret-file" => lk_secret = Some(std::fs::read_to_string(a.next().expect("--livekit-secret-file path")).expect("read secret file").trim().to_string()),
@@ -67,7 +75,7 @@ async fn main() {
             if api_secret.starts_with("REPLACE") { eprintln!("refusing to start: the LiveKit API secret is still the REPLACE placeholder from the template"); std::process::exit(2) }
             if api_secret.len() < 32 { eprintln!("refusing to start: the LiveKit API secret must be at least 32 characters"); std::process::exit(2) }
             tracing::info!("call tokens enabled for {url}");
-            Some(commons_relay::LiveKitCfg { api_key, api_secret, url, token_ttl_secs: lk_ttl, turn_port })
+            Some(commons_relay::LiveKitCfg { api_key, api_secret, url, token_ttl_secs: lk_ttl, turn_port, api_url: front_lk.map(|a| format!("http://{a}")) })
         }
         (None, None, None) => None,
         _ => { eprintln!("call support needs all of: livekit url, key and secret"); std::process::exit(2) }

@@ -68,7 +68,7 @@ impl Client {
         let nonce = rand_hex(16);
         let cid = community_id(&owner, &nonce);
         let consents = vec![sign_consent(&self.acct_key()?, &cid, now_secs())];
-        let ext = GroupExt::Control { name: name.into(), owner: owner.clone(), nonce: nonce.clone(), admins: vec![], channels: vec![], invites: vec![], banned: vec![], transfers: vec![], consents };
+        let ext = GroupExt::Control { name: name.into(), owner: owner.clone(), nonce: nonce.clone(), admins: vec![], channels: vec![], invites: vec![], banned: vec![], transfers: vec![], consents, style: None };
         let signer = self.signer()?;
         let cfg = mls::create_cfg(&ext)?;
         let mut group = MlsGroup::new_with_group_id(&self.prov, &signer, &cfg, GroupId::from_slice(&hex::decode(&cid)?), mls::cred_with_key(&self.cert()?)?)?;
@@ -99,7 +99,14 @@ impl Client {
     }
 
     pub fn create_channel(&mut self, cid: &str, name: &str) -> Result<String> {
+        self.create_channel_kind(cid, name, "")
+    }
+
+    /// `kind` is empty for a text room or [`ROOM_VOICE`] for a voice room. Only those two are accepted here:
+    /// anything else would be a new kind this version does not know how to run.
+    pub fn create_channel_kind(&mut self, cid: &str, name: &str, kind: &str) -> Result<String> {
         if self.my_role(cid) < Role::Admin { bail!("only admins can create channels"); }
+        let kind = match kind { "" | "text" => String::new(), ROOM_VOICE => ROOM_VOICE.to_string(), _ => bail!("unknown room kind {kind}") };
         let name = name.trim().to_lowercase().replace(' ', "-");
         check_name("a room name", &name).map_err(|e| anyhow!(e))?;
         if self.st.communities[cid].channels.iter().any(|c| name_key(&c.name) == name_key(&name)) { bail!("there is already a room called {name}"); }
@@ -136,7 +143,7 @@ impl Client {
         let mut listed = Err(anyhow!("another admin changed the community at the same time; try again"));
         for _ in 0..3 {
             let mut t = self.ctl_ext(cid)?;
-            if let GroupExt::Control { channels, .. } = &mut t { channels.push(ChanMeta { id: gid.clone(), name: name.clone() }); }
+            if let GroupExt::Control { channels, .. } = &mut t { channels.push(ChanMeta { id: gid.clone(), name: name.clone(), kind: kind.clone() }); }
             let mut plan = Plan::empty("create channel");
             plan.gce = Some(t);
             match self.run_commit(cid, plan) {
@@ -355,6 +362,79 @@ impl Client {
         Ok(())
     }
 
+    /// The style document as it stands, with entries for rooms that no longer exist dropped (so it stays small). The community's own id is a
+    /// valid key too: its card has a colour pair, a look, a lock and a wall of its own.
+    fn style_base(&self, cid: &str) -> Result<StyleDoc> {
+        let c = self.st.communities.get(cid).ok_or_else(|| anyhow!("unknown community"))?;
+        let mut doc = c.style.clone().unwrap_or_default();
+        let mut live: BTreeSet<&str> = c.channels.iter().map(|ch| ch.id.as_str()).collect();
+        live.insert(cid);
+        doc.rooms.retain(|g, _| live.contains(g.as_str()));
+        doc.locked.retain(|g| live.contains(g.as_str()));
+        doc.wall.retain(|g, _| live.contains(g.as_str()));
+        doc.looks.retain(|g, _| live.contains(g.as_str()));
+        Ok(doc)
+    }
+    fn has_room(&self, cid: &str, room: &str) -> bool { self.st.communities.get(cid).is_some_and(|c| c.channels.iter().any(|ch| ch.id == room)) }
+
+    /// The owner sets the colours of one room (`room` = its id) or of the community's own card (`room` = None). `None` for
+    /// `duo` puts the default back. Anybody else is refused here, and their device would refuse to believe it anyway: the
+    /// table only carries colours the owner's key signed.
+    pub fn set_style(&mut self, cid: &str, room: Option<&str>, duo: Option<Duo>) -> Result<()> {
+        if self.my_role(cid) != Role::Owner { bail!("only the owner can change colours"); }
+        let duo = duo.map(|d| d.lower());
+        if duo.as_ref().is_some_and(|d| !d.valid()) { bail!("colours must look like #rrggbb"); }
+        if let Some(r) = room { if !self.has_room(cid, r) { bail!("unknown room"); } }
+        let mut doc = self.style_base(cid)?;
+        match (room, duo) {
+            (Some(r), Some(d)) => { doc.rooms.insert(r.to_string(), d); }
+            (Some(r), None) => { doc.rooms.remove(r); }
+            (None, d) => doc.community = d,
+        }
+        self.publish_style(cid, doc, "colours")
+    }
+
+    /// Owner only: the look of one room (`room` = its id) or of the community's own card (`room` = None): the card pattern, the chat pattern and the
+    /// backdrop strength. `None` for `look` (or one with no part set) puts everything back to automatic. Nothing is published when nothing changes.
+    pub fn set_look(&mut self, cid: &str, room: Option<&str>, look: Option<Look>) -> Result<()> {
+        if self.my_role(cid) != Role::Owner { bail!("only the owner can change the look"); }
+        let look = look.filter(|l| !l.is_empty());
+        if look.as_ref().is_some_and(|l| !l.valid()) { bail!("a look has patterns 0 to {MAX_LOOK_PATTERN} and a strength of 0 to {MAX_LOOK_DIM} percent"); }
+        if let Some(r) = room { if !self.has_room(cid, r) { bail!("unknown room"); } }
+        if room.is_none() && look.as_ref().is_some_and(|l| l.chat.is_some() || l.dim.is_some()) { bail!("the community card has a card pattern only"); }
+        let mut doc = self.style_base(cid)?;
+        let key = room.unwrap_or(cid).to_string();
+        let cur = self.st.communities.get(cid).and_then(|c| c.style.as_ref()).and_then(|d| d.looks.get(&key)).cloned();
+        if cur == look { return Ok(()); }
+        match look { Some(l) => { doc.looks.insert(key, l); } None => { doc.looks.remove(&key); } }
+        self.publish_style(cid, doc, "look")
+    }
+
+    /// Owner only: lock a wall (`lock` = Some(true)) or open it again, and/or clear it (`clear`: its generation goes up by one, so every
+    /// drawing and snapshot of the old generation is ignored from now on, by devices that were offline too). Both live in the signed style document.
+    /// `room` is a room's id, or the community's own id for the community card's wall.
+    pub fn set_wall(&mut self, cid: &str, room: &str, lock: Option<bool>, clear: bool) -> Result<()> {
+        if self.my_role(cid) != Role::Owner { bail!("only the owner can lock or clear a wall"); }
+        if room != cid && !self.has_room(cid, room) { bail!("unknown room"); }
+        let mut doc = self.style_base(cid)?;
+        match lock { Some(true) => { doc.locked.insert(room.to_string()); } Some(false) => { doc.locked.remove(room); } None => {} }
+        if clear { let n = doc.wall.entry(room.to_string()).or_insert(0); *n += 1; }
+        if lock.is_none() && !clear { return Ok(()); }
+        self.publish_style(cid, doc, "wall")
+    }
+
+    fn publish_style(&mut self, cid: &str, mut doc: StyleDoc, label: &str) -> Result<()> {
+        doc.ver = self.st.communities.get(cid).and_then(|c| c.style.as_ref()).map_or(0, |s| s.ver) + 1;
+        doc.ts = now_secs();
+        let signed = sign_style(&self.acct_key()?, cid, &doc).map_err(|e| anyhow!(e))?;
+        let mut t = self.ctl_ext(cid)?;
+        if let GroupExt::Control { style, .. } = &mut t { *style = Some(signed); }
+        let mut plan = Plan::empty(label);
+        plan.gce = Some(t);
+        if self.run_commit(cid, plan)? == Outcome::Lost { bail!("the community changed at the same time; try again"); }
+        Ok(())
+    }
+
     // ------------------------------------------------------------------ messages
     pub(crate) fn queue_env(&mut self, gid: &str, env: Envelope) {
         let id = match &env { Envelope::Text { id, .. } | Envelope::File { id, .. } => id.clone(), _ => rand_hex(16) };
@@ -376,7 +456,7 @@ impl Client {
         self.st.outbox.push(OutItem { id: if matches!(env, Envelope::Text { .. } | Envelope::File { .. }) { rand_hex(16) } else { id }, gid: gid.into(), env, cipher: None, tries: 0 });
         self.activity += 1;
     }
-    fn check_chan(&self, gid: &str) -> Result<()> {
+    pub(crate) fn check_chan(&self, gid: &str) -> Result<()> {
         if self.st.self_revoked { bail!("this device has been revoked, so it can no longer send"); }
         match self.st.groups.get(gid) { Some(g) if g.kind == Kind::Channel && !g.removed => Ok(()), _ => bail!("not a channel you are in") }
     }
@@ -423,7 +503,7 @@ impl Client {
         let ct = ChaCha20Poly1305::new((&key).into()).encrypt(Nonce::from_slice(&nonce), data).map_err(|_| anyhow!("encrypt"))?;
         let safe: String = name.chars().filter(|c| !c.is_control()).collect();
         let safe = cut_name(safe.trim(), 200);
-        let env = Envelope::File { id: rand_hex(16), name: if safe.is_empty() { "file".into() } else { safe }, mime: clean_mime(mime), size: data.len() as u64, blob: rand_hex(16), key: hex::encode(key), nonce: hex::encode(nonce), caption: caption.into(), reply: None, ts: now_secs() };
+        let env = Envelope::File { id: rand_hex(16), name: if safe.is_empty() { "file".into() } else { safe }, mime: clean_mime(mime), size: data.len() as u64, blob: rand_hex(16), key: hex::encode(key), nonce: hex::encode(nonce), caption: caption.into(), reply: None, ts: now_secs(), large: None };
         env.validate().map_err(|e| anyhow!("{e}"))?;
         Ok(OutFile { gid: gid.into(), env, ct })
     }
@@ -545,7 +625,7 @@ impl Client {
         if fresh { self.file_cache(&f.slot, &plain); }
         Ok((f.avatar.mime.clone(), plain))
     }
-    /// Best-effort typing hint. Off by default (see THREAT-MODEL.md).
+    /// Best-effort typing hint. On by default for new accounts; an existing account keeps its choice (see THREAT-MODEL.md).
     pub fn send_typing(&mut self, gid: &str) {
         if !self.st.typing_enabled || self.check_chan(gid).is_err() || !self.ready_to_encrypt(gid) { return; }
         let key = format!("{gid}|me");
@@ -554,7 +634,51 @@ impl Client {
         self.typing.insert(key, now);
         self.queue_env(gid, Envelope::Typing);
     }
-    fn ready_to_encrypt(&self, gid: &str) -> bool {
+    /// Offer live data to a room. Best effort: it is only sent when the room can encrypt right now, at most four a second
+    /// per room, and when several of one kind pile up only the newest goes. Returns whether it was taken (false = dropped).
+    pub fn live_send(&mut self, gid: &str, kind: &str, data: &str) -> Result<bool> {
+        if !valid_live_kind(kind) { bail!("bad live kind"); }
+        if data.len() > MAX_LIVE { bail!("live data is too large (4096 bytes at most)"); }
+        self.check_chan(gid)?;
+        if !self.ready_to_encrypt(gid) { return Ok(false); }
+        let q = self.live_out.entry(gid.to_string()).or_default();
+        if !q.contains_key(kind) && q.len() >= LIVE_KINDS { return Ok(false); }
+        q.insert(kind.to_string(), data.to_string());
+        self.flush_live();
+        Ok(true)
+    }
+    /// Whether a live event of this kind would have to wait (one is already waiting, or the room has sent its four this second), and so
+    /// would be replaced by the next: a sender that must not lose events asks first and tries again later.
+    pub(crate) fn live_would_wait(&self, gid: &str, kind: &str) -> bool {
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        self.live_out.get(gid).is_some_and(|q| q.contains_key(kind))
+            || self.live_sent.get(gid).is_some_and(|w| w.iter().filter(|t| now_ms < **t + 1000).count() >= LIVE_SEND_PER_SEC)
+    }
+    /// Send what the rate allows. Anything not ready to go out now is dropped, not kept for later.
+    pub(crate) fn flush_live(&mut self) {
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        let gids: Vec<String> = self.live_out.keys().cloned().collect();
+        for gid in gids {
+            if !self.ready_to_encrypt(&gid) { self.live_out.remove(&gid); continue; }
+            let win = self.live_sent.entry(gid.clone()).or_default();
+            while win.front().is_some_and(|t| now_ms >= *t + 1000) { win.pop_front(); }
+            let mut send = vec![];
+            while win.len() < LIVE_SEND_PER_SEC {
+                let Some(kind) = self.live_out.get(&gid).and_then(|q| q.keys().next().cloned()) else { break };
+                let data = self.live_out.get_mut(&gid).and_then(|q| q.remove(&kind)).unwrap_or_default();
+                win.push_back(now_ms);
+                send.push((kind, data));
+            }
+            if self.live_out.get(&gid).is_some_and(|q| q.is_empty()) { self.live_out.remove(&gid); }
+            for (kind, data) in send { self.queue_env(&gid, Envelope::Live { kind, data, ts: now_secs() }); }
+        }
+        self.live_sent.retain(|_, w| !w.is_empty());
+    }
+    /// Live events newer than `since` (0 for all still held), oldest first, from rooms we are still in.
+    pub fn live_poll(&self, since: u64, gid: Option<&str>) -> Vec<LiveEvent> {
+        self.live_in.iter().filter(|e| e.id > since && gid.is_none_or(|g| g == e.gid) && self.st.groups.get(&e.gid).is_some_and(|g| !g.removed)).cloned().collect()
+    }
+    pub(crate) fn ready_to_encrypt(&self, gid: &str) -> bool {
         self.st.groups.get(gid).is_some_and(|g| !g.removed && !g.broken && !g.tainted && g.pending.is_none()) && self.synced.contains(gid)
     }
     fn encrypt_env(&mut self, gid: &str, env: &Envelope) -> Result<(Vec<u8>, String)> {
@@ -580,6 +704,11 @@ impl Client {
         for i in 0..self.st.outbox.len() {
             let (id, gid, ready) = { let it = &self.st.outbox[i]; (it.id.clone(), it.gid.clone(), it.cipher.is_some()) };
             let Some(gs) = self.st.groups.get(&gid).cloned() else { gone.insert(id); continue }; // group gone
+            let live_ts = match &self.st.outbox[i].env { Envelope::Live { ts, .. } => Some(*ts), _ => None };
+            // Live data is for now: not kept past a few seconds, never reported when it goes, and never held back by a bad moment.
+            if let Some(ts) = live_ts {
+                if gs.removed || ts + 10 < now_secs() || (!ready && !self.ready_to_encrypt(&gid)) { gone.insert(id); continue; }
+            }
             if gs.removed { self.notice("outbox", "dropped an unsent message: you are no longer in that group"); gone.insert(id); continue; }
             if ready { continue; }
             if gs.tainted && gs.pending.is_none() && self.synced.contains(&gid) && !gs.broken {
@@ -597,6 +726,7 @@ impl Client {
                 Err(e) => {
                     let it = &mut self.st.outbox[i];
                     it.tries += 1;
+                    if matches!(it.env, Envelope::Live { .. }) { gone.insert(id); continue; }
                     if it.tries > 20 { gone.insert(id); self.notice("outbox", format!("could not encrypt a message, giving up: {e}")); }
                 }
             }
@@ -905,6 +1035,17 @@ impl Client {
                 for a in admins.iter_mut() {
                     if verify_grant(me, &c.id, &a.account, &a.sig).is_err() { *a = sign_grant(&ak, &c.id, &a.account); changed = true; }
                 }
+                // The colours we know about but the table lacks (an older app rewrote it, or ownership just changed hands):
+                // put them back under our own signature, but not more than once every ten minutes whatever happens.
+                if let (Some(doc), GroupExt::Control { style, .. }) = (self.st.communities.get(&c.id).and_then(|x| x.style.clone()), &mut t) {
+                    let in_force = style.as_ref().and_then(|s| verify_style(me, &c.id, s).ok()).is_some_and(|d| d.ver >= doc.ver);
+                    let due = self.st.communities.get(&c.id).is_some_and(|x| now_secs() >= x.style_repub + 600);
+                    if !in_force && due {
+                        let mut doc = doc;
+                        doc.ver += 1; doc.ts = now_secs();
+                        if let Ok(s) = sign_style(&ak, &c.id, &doc) { *style = Some(s); changed = true; if let Some(x) = self.st.communities.get_mut(&c.id) { x.style_repub = now_secs(); } }
+                    }
+                }
             }
             if changed { plan.gce = Some(t); descs.push("update table".into()); }
         }
@@ -927,7 +1068,7 @@ impl Client {
         let Some(c) = self.st.communities.get(cid) else { return vec![] };
         c.channels.iter().map(|ch| {
             let joined = self.st.groups.get(&ch.id).is_some_and(|g| !g.removed);
-            ChannelInfo { gid: ch.id.clone(), name: ch.name.clone(), joined, unread: self.unread(&ch.id) }
+            ChannelInfo { gid: ch.id.clone(), name: ch.name.clone(), kind: ch.kind.clone(), joined, unread: self.unread(&ch.id) }
         }).collect()
     }
     pub fn unread(&self, gid: &str) -> usize {
@@ -1143,10 +1284,23 @@ impl Client {
         plan.gce = Some(t);
         self.run_commit(cid, plan).map(|_| ())
     }
+    /// Put this signed style in the table whoever signed it, as a hostile admin would (test builds only).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_plant_style(&mut self, cid: &str, s: Option<SignedStyle>) -> Result<()> {
+        let mut t = self.ctl_ext(cid)?;
+        if let GroupExt::Control { style, .. } = &mut t { *style = s; }
+        let mut plan = Plan::empty("plant style");
+        plan.gce = Some(t);
+        self.run_commit(cid, plan).map(|_| ())
+    }
     /// Send any envelope as this device, as a hostile member would (test builds only).
     #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
     pub fn debug_send_envelope(&mut self, gid: &str, env: Envelope) -> Result<()> { self.queue_env(gid, env); self.save() }
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_account_key(&self) -> SigningKey { self.acct_key().expect("identity") }
     #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
     pub fn debug_my_grant(&self, cid: &str) -> Option<String> { self.my_grant(cid) }

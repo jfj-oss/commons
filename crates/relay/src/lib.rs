@@ -60,6 +60,18 @@ pub struct Limits {
     pub big_body_timeout: Duration,
     /// Invite-secret checks (POST /v1/info), whole relay. Kept apart from registrations so probing cannot lock out sign-ups.
     pub info_checks_per_window: u32,
+    /// How much large-file storage one member may hold at once.
+    pub large_file_quota_per_account: u64,
+    /// The same for the owner of the community a file belongs to (default 100 GB).
+    pub large_file_quota_owner: u64,
+    /// Most large-file bytes the whole relay holds at once, across every account.
+    pub large_file_total: u64,
+    /// How long a large file stays before the relay removes it.
+    pub large_file_expire_secs: u64,
+    /// Largest large file a client may announce (a sanity bound, not a quota).
+    pub large_file_max_bytes: u64,
+    /// Begins (fresh or resumed) one device may ask for per window.
+    pub large_begins_per_window: u32,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -89,6 +101,12 @@ impl Default for Limits {
             body_timeout: Duration::from_secs(15),
             big_body_timeout: Duration::from_secs(120),
             info_checks_per_window: 120,
+            large_file_quota_per_account: 10 << 30,
+            large_file_quota_owner: 100 << 30,
+            large_file_total: 250 << 30,
+            large_file_expire_secs: 7 * 86400,
+            large_file_max_bytes: 1 << 40,
+            large_begins_per_window: 600,
         }
     }
 }
@@ -102,6 +120,9 @@ pub struct LiveKitCfg {
     /// The websocket URL clients should connect to (wss://... in production).
     pub url: String,
     pub token_ttl_secs: u64,
+    /// Where this relay reaches LiveKit's server API, when that is not `url`. Behind `--front` only `/rtc` is public on
+    /// purpose, so the API has to be asked on LiveKit's own local port.
+    pub api_url: Option<String>,
     /// LiveKit always tells clients TURN over TLS is on port 443. When it is somewhere else, clients are told here.
     pub turn_port: Option<u16>,
 }
@@ -110,7 +131,9 @@ impl std::fmt::Debug for LiveKitCfg {
 }
 
 #[derive(serde::Serialize)]
-struct LkVideoGrant { room: String, #[serde(rename = "roomJoin")] room_join: bool, #[serde(rename = "canPublish")] can_publish: bool, #[serde(rename = "canSubscribe")] can_subscribe: bool, #[serde(rename = "canPublishData")] can_publish_data: bool }
+struct LkVideoGrant { room: String, #[serde(rename = "roomJoin")] room_join: bool, #[serde(rename = "canPublish")] can_publish: bool, #[serde(rename = "canSubscribe")] can_subscribe: bool, #[serde(rename = "canPublishData")] can_publish_data: bool,
+    /// Lets a client set small attributes on itself (the call's "deafened" flag); no message content travels this way.
+    #[serde(rename = "canUpdateOwnMetadata")] can_update_own_metadata: bool }
 #[derive(serde::Serialize)]
 struct LkClaims { iss: String, sub: String, jti: String, nbf: u64, exp: u64, video: LkVideoGrant }
 
@@ -118,7 +141,7 @@ struct LkClaims { iss: String, sub: String, jti: String, nbf: u64, exp: u64, vid
 pub fn mint_livekit_token(cfg: &LiveKitCfg, identity: &str, room: &str, now: u64) -> Result<(String, u64), jsonwebtoken::errors::Error> {
     let exp = now + cfg.token_ttl_secs;
     let claims = LkClaims { iss: cfg.api_key.clone(), sub: identity.into(), jti: identity.into(), nbf: now.saturating_sub(30), exp,
-        video: LkVideoGrant { room: room.into(), room_join: true, can_publish: true, can_subscribe: true, can_publish_data: false } };
+        video: LkVideoGrant { room: room.into(), room_join: true, can_publish: true, can_subscribe: true, can_publish_data: false, can_update_own_metadata: true } };
     let tok = jsonwebtoken::encode(&jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256), &claims, &jsonwebtoken::EncodingKey::from_secret(cfg.api_secret.as_bytes()))?;
     Ok((tok, exp))
 }
@@ -148,13 +171,46 @@ fn livekit_http_url(url: &str) -> Option<String> {
 #[derive(serde::Deserialize)]
 struct LkParticipants { #[serde(default)] participants: Vec<LkParticipant> }
 #[derive(serde::Deserialize)]
-struct LkParticipant { identity: String, #[serde(default)] state: serde_json::Value }
+struct LkTrack {
+    /// Protojson writes the TrackType enum as `"type"`; the source says which audio track is the microphone.
+    #[serde(default, rename = "type")]
+    kind: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    muted: bool,
+}
+#[derive(serde::Deserialize)]
+struct LkParticipant {
+    identity: String,
+    #[serde(default)]
+    state: serde_json::Value,
+    #[serde(default)]
+    tracks: Vec<LkTrack>,
+    #[serde(default)]
+    attributes: HashMap<String, String>,
+}
 
-/// Ask LiveKit who is connected to one room. A 404 (a room nobody has ever called in) means nobody there.
-/// A transport error is reported, so the caller can keep its last answer instead of showing an empty call just
-/// because the media server was briefly unreachable.
-fn livekit_participants(cfg: &LiveKitCfg, gid: &str) -> Result<Vec<String>, String> {
-    let url = livekit_http_url(&cfg.url).ok_or_else(|| "the call server's address is not a websocket or http URL".to_string())?;
+/// What one LiveKit participant reports about itself. Microphone muted comes from the media server's own track
+/// state; the `deaf` and `speaking` flags are small participant attributes the call client sets (see call.js).
+/// No microphone published counts as muted, which is what a listener sees and matches the call panel.
+fn lk_state(p: &LkParticipant) -> CallPeerState {
+    let mic = p.tracks.iter().find(|t| {
+        let source = t.source.to_ascii_uppercase();
+        source == "MICROPHONE" || (t.kind.eq_ignore_ascii_case("AUDIO") && source != "SCREEN_SHARE_AUDIO")
+    });
+    CallPeerState {
+        muted: mic.map_or(true, |t| t.muted),
+        deafened: p.attributes.get("deaf").is_some_and(|v| v == "1"),
+        speaking: p.attributes.get("speaking").is_some_and(|v| v == "1"),
+    }
+}
+
+/// Ask LiveKit who is connected to one room, and what each device reports about its microphone and flags. A 404
+/// (a room nobody has ever called in) means nobody there. A transport error is reported, so the caller can keep its
+/// last answer instead of showing an empty call just because the media server was briefly unreachable.
+fn livekit_participants(cfg: &LiveKitCfg, gid: &str) -> Result<Vec<(String, CallPeerState)>, String> {
+    let url = livekit_http_url(cfg.api_url.as_deref().unwrap_or(&cfg.url)).ok_or_else(|| "the call server's address is not a websocket or http URL".to_string())?;
     let room = call_room(gid);
     let token = mint_livekit_admin_token(cfg, &room, now_secs()).map_err(|_| "cannot sign a call server request".to_string())?;
     let body = serde_json::json!({ "room": room }).to_string();
@@ -168,7 +224,7 @@ fn livekit_participants(cfg: &LiveKitCfg, gid: &str) -> Result<Vec<String>, Stri
             // Identities here are device ids: this relay minted every join token, and nothing else can join its rooms.
             Ok(p.participants.into_iter()
                 .filter(|x| is_hex(&x.identity, 64) && x.state.as_str() != Some("DISCONNECTED"))
-                .map(|x| x.identity).collect())
+                .map(|x| { let s = lk_state(&x); (x.identity, s) }).collect())
         }
         Err(ureq::Error::Status(404, _)) => Ok(vec![]),
         Err(ureq::Error::Status(c, _)) => Err(format!("call server said {c}")),
@@ -179,6 +235,10 @@ fn livekit_participants(cfg: &LiveKitCfg, gid: &str) -> Result<Vec<String>, Stri
 pub struct RelayState {
     db: Mutex<Connection>,
     blob_dir: PathBuf,
+    /// One directory per large file, and one file per chunk inside it.
+    large_dir: PathBuf,
+    /// Told when the server is stopping, so the expiry sweeper ends with it.
+    stop: Arc<std::sync::atomic::AtomicBool>,
     tick: watch::Sender<u64>,
     limits: Limits,
     /// Fixed-window counters. Lost on restart, which only makes a limit briefly more generous.
@@ -187,7 +247,7 @@ pub struct RelayState {
     big_bodies: Arc<Semaphore>,
     /// Who LiveKit last said is in each room's call, kept for a couple of seconds so that all members' rail
     /// refreshes share one query to the media server instead of each asking it.
-    presence: Mutex<HashMap<String, (u64, Vec<String>)>>,
+    presence: Mutex<HashMap<String, (u64, Vec<(String, CallPeerState)>)>>,
 }
 
 type Resp = Response<Body>;
@@ -220,6 +280,11 @@ pub fn open_db(path: &str) -> rusqlite::Result<Connection> {
          CREATE TABLE IF NOT EXISTS rendezvous(rid TEXT NOT NULL, slot TEXT NOT NULL, data BLOB NOT NULL, created INTEGER NOT NULL, owner TEXT, PRIMARY KEY(rid,slot));
          CREATE TABLE IF NOT EXISTS blobs(id TEXT PRIMARY KEY, account TEXT NOT NULL, size INTEGER NOT NULL);
          CREATE INDEX IF NOT EXISTS blob_acc ON blobs(account);
+         CREATE TABLE IF NOT EXISTS large_files(id TEXT PRIMARY KEY, account TEXT NOT NULL, gid TEXT NOT NULL, size INTEGER NOT NULL,
+             chunk_size INTEGER NOT NULL, chunks INTEGER NOT NULL, complete INTEGER NOT NULL DEFAULT 0, expires INTEGER NOT NULL,
+             created INTEGER NOT NULL, sha256 TEXT);
+         CREATE INDEX IF NOT EXISTS large_acc ON large_files(account);
+         CREATE INDEX IF NOT EXISTS large_exp ON large_files(expires);
          CREATE TABLE IF NOT EXISTS usage(account TEXT PRIMARY KEY, entry_bytes INTEGER NOT NULL DEFAULT 0);",
     )?;
     Ok(c)
@@ -229,10 +294,12 @@ pub struct RelayHandle {
     pub addr: SocketAddr,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     join: Option<tokio::task::JoinHandle<()>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
 }
 impl RelayHandle {
     pub fn url(&self) -> String { format!("http://{}", self.addr) }
     pub async fn stop(mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Some(s) = self.shutdown.take() { let _ = s.send(()); }
         if let Some(j) = self.join.take() { let _ = j.await; }
     }
@@ -244,9 +311,35 @@ pub async fn start(bind: SocketAddr, data_dir: PathBuf) -> std::io::Result<Relay
 }
 pub async fn start_with(bind: SocketAddr, data_dir: PathBuf, limits: Limits) -> std::io::Result<RelayHandle> {
     std::fs::create_dir_all(data_dir.join("blobs"))?;
+    std::fs::create_dir_all(data_dir.join("large"))?;
     let db = open_db(data_dir.join("relay.db").to_str().unwrap()).map_err(|e| std::io::Error::other(e.to_string()))?;
     let (tick, _) = watch::channel(0u64);
-    let st = Arc::new(RelayState { db: Mutex::new(db), blob_dir: data_dir.join("blobs"), tick, limits, rates: Mutex::new(HashMap::new()), big_bodies: Arc::new(Semaphore::new(4)), presence: Mutex::new(HashMap::new()) });
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let st = Arc::new(RelayState { db: Mutex::new(db), blob_dir: data_dir.join("blobs"), large_dir: data_dir.join("large"), stop: stop.clone(), tick, limits, rates: Mutex::new(HashMap::new()), big_bodies: Arc::new(Semaphore::new(4)), presence: Mutex::new(HashMap::new()) });
+    // A chunk directory with no row is what a crash mid-upload leaves behind; the row is written first, so this is safe.
+    {
+        let db = st.db.lock().unwrap();
+        if let Ok(rd) = std::fs::read_dir(&st.large_dir) {
+            for e in rd.flatten() {
+                let id = e.file_name().to_string_lossy().to_string();
+                let known: i64 = db.query_row("SELECT COUNT(*) FROM large_files WHERE id=?1", [&id], |r| r.get(0)).unwrap_or(0);
+                if known == 0 { let _ = std::fs::remove_dir_all(e.path()); }
+            }
+        }
+        sweep_large_locked(&db, &st);
+    }
+    // Files expire even if nobody touches them; a minute of lag is harmless.
+    {
+        let st2 = st.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                if st2.stop.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                let db = st2.db.lock().unwrap();
+                sweep_large_locked(&db, &st2);
+            }
+        });
+    }
     let app = Router::new().fallback(handle).with_state(st);
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let addr = listener.local_addr()?;
@@ -254,7 +347,7 @@ pub async fn start_with(bind: SocketAddr, data_dir: PathBuf, limits: Limits) -> 
     let join = tokio::spawn(async move {
         let _ = axum::serve(listener, app).with_graceful_shutdown(async { let _ = rx.await; }).await;
     });
-    Ok(RelayHandle { addr, shutdown: Some(tx), join: Some(join) })
+    Ok(RelayHandle { addr, shutdown: Some(tx), join: Some(join), stop })
 }
 
 struct Authed { device: String, account: String }
@@ -312,7 +405,9 @@ impl RelayState {
 
 /// Bodies are read before authentication (the signature covers them), so only blob uploads may be big.
 fn body_limit(m: &Method, path: &str) -> usize {
-    if *m == Method::PUT && path.starts_with("/v1/blobs/") { MAX_BLOB_BYTES + 1024 } else { 4 * 1024 * 1024 }
+    if *m == Method::PUT && path.starts_with("/v1/blobs/") { MAX_BLOB_BYTES + 1024 }
+    else if *m == Method::PUT && path.starts_with("/v1/large-files/") { MAX_LARGE_CHUNK_BYTES as usize + 1024 }
+    else { 4 * 1024 * 1024 }
 }
 
 /// The pages a friend sees before they have the app. Fixed files plus one flat folder: nothing here touches accounts.
@@ -418,12 +513,13 @@ async fn call_presence(st: Arc<RelayState>, headers: HeaderMap, path: &str, body
     };
     let now = now_secs();
     let mut rooms = std::collections::BTreeMap::new();
+    let mut state = std::collections::BTreeMap::new();
     let mut ask = vec![];
     {
         let cache = st.presence.lock().unwrap();
         for gid in gids {
             match cache.get(&gid) {
-                Some((at, v)) if now.saturating_sub(*at) < PRESENCE_TTL_SECS => { if !v.is_empty() { rooms.insert(gid, v.clone()); } }
+                Some((at, v)) if now.saturating_sub(*at) < PRESENCE_TTL_SECS => add_presence(&mut rooms, &mut state, &gid, v),
                 _ => ask.push(gid),
             }
         }
@@ -439,7 +535,7 @@ async fn call_presence(st: Arc<RelayState>, headers: HeaderMap, path: &str, body
     for (gid, h) in handles {
         match h.await {
             Ok(Ok(devs)) => {
-                if !devs.is_empty() { rooms.insert(gid.clone(), devs.clone()); }
+                add_presence(&mut rooms, &mut state, &gid, &devs);
                 let mut c = st.presence.lock().unwrap();
                 if c.len() > 4096 { c.retain(|_, (at, _)| now.saturating_sub(*at) < 60); }
                 c.insert(gid, (now, devs));
@@ -451,7 +547,22 @@ async fn call_presence(st: Arc<RelayState>, headers: HeaderMap, path: &str, body
     // If any room could not be asked, say so for the whole request: a client then keeps the list it already had
     // instead of briefly emptying the call of a room the media server was too busy to describe.
     if failed { return Err(status(StatusCode::BAD_GATEWAY, &format!("the call server did not answer: {last_err}"))); }
-    Ok(json(&CallPresenceResp { rooms }))
+    Ok(json(&CallPresenceResp { rooms, state }))
+}
+
+/// Put one room's devices (and only the non-default flags) into the two answer maps. An empty room is omitted from
+/// both, exactly as before: it cannot be told apart from a room the caller may not see.
+fn add_presence(
+    rooms: &mut std::collections::BTreeMap<String, Vec<String>>,
+    state: &mut std::collections::BTreeMap<String, std::collections::BTreeMap<String, CallPeerState>>,
+    gid: &str,
+    entries: &[(String, CallPeerState)],
+) {
+    if entries.is_empty() { return; }
+    rooms.insert(gid.to_string(), entries.iter().map(|(d, _)| d.clone()).collect());
+    let mut m = std::collections::BTreeMap::new();
+    for (d, s) in entries { if !s.is_plain() { m.insert(d.clone(), *s); } }
+    if !m.is_empty() { state.insert(gid.to_string(), m); }
 }
 
 async fn handle(State(st): State<Arc<RelayState>>, req: Request<Body>) -> Resp {
@@ -490,6 +601,12 @@ async fn handle(State(st): State<Arc<RelayState>>, req: Request<Body>) -> Resp {
     if seg.len() == 3 && seg[0] == "v1" && seg[1] == "blobs" {
         if m == Method::GET { return get_blob(st, &parts.headers, &path, &seg[2]).await; }
         if m == Method::PUT { return put_blob(st, parts.headers, path.clone(), seg[2].clone(), body).await; }
+    }
+    // A large-file chunk is one piece, not the whole file: it is read from disk and streamed, and written straight to
+    // disk on arrival. Only one chunk is ever in memory, whichever way it is going.
+    if seg.len() == 5 && seg[0] == "v1" && seg[1] == "large-files" && seg[3] == "chunks" {
+        if m == Method::GET { return get_large_chunk(st, &parts.headers, &path, &seg[2], &seg[4]).await; }
+        if m == Method::PUT { return put_large_chunk(st, parts.headers, path.clone(), seg[2].clone(), seg[4].clone(), body).await; }
     }
     let st2 = st.clone();
     let headers = parts.headers.clone();
@@ -531,6 +648,91 @@ async fn put_blob(st: Arc<RelayState>, headers: HeaderMap, path: String, id: Str
             let _ = db.execute("DELETE FROM blobs WHERE id=?1 AND account=?2", params![id, account]);
             return Err(dberr(e));
         }
+        Ok(status(StatusCode::OK, "ok"))
+    });
+    match task.await { Ok(r) => r.unwrap_or_else(|r| r), Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR, "panic") }
+}
+
+// ---- large files: resumable chunks on disk, one chunk in memory at a time ----
+
+/// The plaintext length of chunk `index`; the stored ciphertext is that plus the 16-byte Poly1305 tag.
+fn large_chunk_len(size: u64, chunk_size: u64, chunks: u64, index: u64) -> Option<u64> {
+    if chunk_size == 0 || index >= chunks { return None; }
+    Some(if index + 1 == chunks { size - chunk_size * (chunks - 1) } else { chunk_size })
+}
+
+fn chunk_file(st: &RelayState, id: &str, index: u64) -> PathBuf { st.large_dir.join(id).join(index.to_string()) }
+
+/// Chunk indexes present on disk. A row is written before its directory, so anything listed here belongs to it.
+fn uploaded_chunks(st: &RelayState, id: &str, chunks: u64) -> Vec<u64> {
+    let mut v: Vec<u64> = std::fs::read_dir(st.large_dir.join(id)).map(|rd| rd.flatten()
+        .filter_map(|e| e.file_name().to_string_lossy().parse::<u64>().ok())
+        .filter(|i| *i < chunks).collect()).unwrap_or_default();
+    v.sort_unstable();
+    v
+}
+
+/// Remove every large file whose time is up. Called from the background sweeper and before a new reservation.
+fn sweep_large_locked(db: &Connection, st: &RelayState) {
+    let now = now_secs() as i64;
+    let ids: Vec<String> = match db.prepare("SELECT id FROM large_files WHERE expires<=?1") {
+        Ok(mut s) => s.query_map([now], |r| r.get(0)).map(|rows| rows.flatten().collect()).unwrap_or_default(),
+        Err(_) => return,
+    };
+    for id in ids {
+        if db.execute("DELETE FROM large_files WHERE id=?1", [&id]).is_ok() { let _ = std::fs::remove_dir_all(st.large_dir.join(&id)); }
+    }
+}
+
+async fn get_large_chunk(st: Arc<RelayState>, headers: &HeaderMap, path: &str, id: &str, index: &str) -> Resp {
+    if !is_hex(id, 32) { return status(StatusCode::BAD_REQUEST, "bad id"); }
+    let Ok(idx) = index.parse::<u64>() else { return status(StatusCode::BAD_REQUEST, "bad chunk") };
+    {
+        let db = st.db.lock().unwrap();
+        let a = match authenticate(&db, headers, "GET", path, &[], true) { Ok((_, Some(a))) => a, Ok(_) => return status(StatusCode::FORBIDDEN, "x"), Err(r) => return r };
+        let row: Option<(String, i64, i64, i64, i64, i64)> = db.query_row(
+            "SELECT gid,size,chunk_size,chunks,complete,expires FROM large_files WHERE id=?1", [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).optional()
+            .unwrap_or(None);
+        let Some((gid, size, cs, chunks, complete, expires)) = row else { return status(StatusCode::NOT_FOUND, "no such file") };
+        if expires as u64 <= now_secs() { return status(StatusCode::NOT_FOUND, "this file has expired") }
+        if complete == 0 { return status(StatusCode::CONFLICT, "this file is still being uploaded") }
+        match is_member(&db, &gid, &a.account) { Ok(true) => {}, Ok(false) => return status(StatusCode::FORBIDDEN, "not a member"), Err(r) => return r }
+        if large_chunk_len(size as u64, cs as u64, chunks as u64, idx).is_none() { return status(StatusCode::NOT_FOUND, "no such chunk") }
+    }
+    let Ok(f) = tokio::fs::File::open(chunk_file(&st, id, idx)).await else { return status(StatusCode::NOT_FOUND, "no such chunk") };
+    let len = f.metadata().await.map(|m| m.len()).unwrap_or(0);
+    Response::builder().status(200).header("content-type", "application/octet-stream").header("content-length", len)
+        .body(Body::from_stream(tokio_util::io::ReaderStream::new(f))).unwrap()
+}
+
+async fn put_large_chunk(st: Arc<RelayState>, headers: HeaderMap, path: String, id: String, index: String, body: axum::body::Bytes) -> Resp {
+    let task = tokio::task::spawn_blocking(move || -> Result<Resp, Resp> {
+        let Ok(idx) = index.parse::<u64>() else { return Err(status(StatusCode::BAD_REQUEST, "bad chunk")) };
+        let (size, chunk_size, chunks) = {
+            let db = st.db.lock().unwrap();
+            let a = authenticate(&db, &headers, "PUT", &path, &body, true)?.1.ok_or_else(|| status(StatusCode::FORBIDDEN, "x"))?;
+            if !is_hex(&id, 32) { return Err(status(StatusCode::BAD_REQUEST, "bad id")); }
+            let row: Option<(String, String, i64, i64, i64, i64)> = db.query_row(
+                "SELECT account,gid,size,chunk_size,chunks,complete FROM large_files WHERE id=?1", [&id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).optional().map_err(dberr)?;
+            let Some((account, _gid, size, cs, chunks, complete)) = row else { return Err(status(StatusCode::NOT_FOUND, "no such file")) };
+            if account != a.account { return Err(status(StatusCode::FORBIDDEN, "not your upload")) }
+            if complete != 0 { return Err(status(StatusCode::CONFLICT, "already finished")) }
+            (size as u64, cs as u64, chunks as u64)
+        };
+        let Some(plain) = large_chunk_len(size, chunk_size, chunks, idx) else { return Err(status(StatusCode::NOT_FOUND, "no such chunk")) };
+        // The exact ciphertext length is known from the announcement, so junk is refused before it reaches the disk.
+        if body.len() as u64 != plain + 16 { return Err(status(StatusCode::BAD_REQUEST, "bad chunk length")); }
+        let dir = st.large_dir.join(&id);
+        std::fs::create_dir_all(&dir).map_err(dberr)?;
+        let (tmp, p) = (dir.join(format!(".{idx}.tmp")), dir.join(idx.to_string()));
+        if let Err(e) = std::fs::write(&tmp, &body) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(dberr(e));
+        }
+        let _ = std::fs::remove_file(&p); // Windows does not rename over an existing file
+        std::fs::rename(&tmp, &p).map_err(dberr)?;
         Ok(status(StatusCode::OK, "ok"))
     });
     match task.await { Ok(r) => r.unwrap_or_else(|r| r), Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR, "panic") }
@@ -837,6 +1039,92 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
                 None => Err(status(StatusCode::NOT_FOUND, "none")),
             }
         }
+        // ---- large files: own quota, own expiry, chunks on disk ----
+        (Method::POST, ["v1", "large-files", id, "begin"]) => {
+            let a = authenticate(&db, headers, ms, path, body, true)?.1.ok_or_else(|| status(StatusCode::FORBIDDEN, "x"))?;
+            if !is_hex(id, 32) { return Err(status(StatusCode::BAD_REQUEST, "bad id")); }
+            let r: LargeBeginReq = parse(body)?;
+            if !valid_gid(&r.gid) { return Err(status(StatusCode::BAD_REQUEST, "bad group")); }
+            if r.size == 0 || r.size > lim.large_file_max_bytes { return Err(status(StatusCode::BAD_REQUEST, "bad file size")); }
+            if r.chunk_size < MIN_LARGE_CHUNK_BYTES || r.chunk_size > MAX_LARGE_CHUNK_BYTES { return Err(status(StatusCode::BAD_REQUEST, "bad chunk size")); }
+            let chunks = r.size / r.chunk_size + u64::from(r.size % r.chunk_size != 0);
+            if chunks == 0 || chunks > 1_000_000 { return Err(status(StatusCode::BAD_REQUEST, "too many chunks")); }
+            if !is_member(&db, &r.gid, &a.account)? { return Err(status(StatusCode::FORBIDDEN, "not a member")); }
+            let auth = group_auth(&db, &r.gid)?.ok_or_else(|| status(StatusCode::NOT_FOUND, "unknown community"))?;
+            st.limited(format!("large|{}", a.device), lim.large_begins_per_window, "too many large uploads, wait a little")?;
+            sweep_large_locked(&db, st);
+            let now = now_secs() as i64;
+            let existing: Option<(String, String, i64, i64, i64, i64, i64)> = db.query_row(
+                "SELECT account,gid,size,chunk_size,chunks,complete,expires FROM large_files WHERE id=?1", [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))).optional().map_err(dberr)?;
+            if let Some((account, gid, size, cs, have_chunks, complete, expires)) = existing {
+                if account != a.account || gid != r.gid || size as u64 != r.size || cs as u64 != r.chunk_size || have_chunks as u64 != chunks {
+                    return Err(status(StatusCode::CONFLICT, "that file id belongs to a different file"));
+                }
+                let uploaded = uploaded_chunks(st, id, chunks);
+                return Ok(json(&LargeInfoResp { size: r.size, chunk_size: r.chunk_size, chunks, complete: complete != 0, expires: expires as u64, uploaded }));
+            }
+            let used: i64 = db.query_row("SELECT COALESCE(SUM(size),0) FROM large_files WHERE account=?1", [&a.account], |r| r.get(0)).map_err(dberr)?;
+            let quota = if a.account == auth.owner { lim.large_file_quota_owner } else { lim.large_file_quota_per_account };
+            if used as u64 + r.size > quota { return Err(status(StatusCode::INSUFFICIENT_STORAGE, "large-file storage quota reached")); }
+            let total: i64 = db.query_row("SELECT COALESCE(SUM(size),0) FROM large_files", [], |r| r.get(0)).map_err(dberr)?;
+            if total as u64 + r.size > lim.large_file_total { return Err(status(StatusCode::INSUFFICIENT_STORAGE, "the relay's large-file area is full")); }
+            let expires = now + lim.large_file_expire_secs as i64;
+            db.execute("INSERT INTO large_files(id,account,gid,size,chunk_size,chunks,complete,expires,created) VALUES(?1,?2,?3,?4,?5,?6,0,?7,?8)",
+                params![id, a.account, r.gid, r.size as i64, r.chunk_size as i64, chunks as i64, expires, now]).map_err(dberr)?;
+            if let Err(e) = std::fs::create_dir_all(st.large_dir.join(id)) {
+                let _ = db.execute("DELETE FROM large_files WHERE id=?1", [id]);
+                return Err(dberr(e));
+            }
+            Ok(json(&LargeInfoResp { size: r.size, chunk_size: r.chunk_size, chunks, complete: false, expires: expires as u64, uploaded: vec![] }))
+        }
+        (Method::GET, ["v1", "large-files", id, "info"]) => {
+            let a = authenticate(&db, headers, ms, path, body, true)?.1.ok_or_else(|| status(StatusCode::FORBIDDEN, "x"))?;
+            if !is_hex(id, 32) { return Err(status(StatusCode::BAD_REQUEST, "bad id")); }
+            let row: Option<(String, String, i64, i64, i64, i64, i64)> = db.query_row(
+                "SELECT account,gid,size,chunk_size,chunks,complete,expires FROM large_files WHERE id=?1", [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))).optional().map_err(dberr)?;
+            let Some((account, gid, size, cs, chunks, complete, expires)) = row else { return Err(status(StatusCode::NOT_FOUND, "no such file")) };
+            if expires as u64 <= now_secs() { return Err(status(StatusCode::NOT_FOUND, "this file has expired")); }
+            if account != a.account && !is_member(&db, &gid, &a.account)? { return Err(status(StatusCode::FORBIDDEN, "not a member")); }
+            let uploaded = uploaded_chunks(st, id, chunks as u64);
+            Ok(json(&LargeInfoResp { size: size as u64, chunk_size: cs as u64, chunks: chunks as u64, complete: complete != 0, expires: expires as u64, uploaded }))
+        }
+        (Method::POST, ["v1", "large-files", id, "finish"]) => {
+            let a = authenticate(&db, headers, ms, path, body, true)?.1.ok_or_else(|| status(StatusCode::FORBIDDEN, "x"))?;
+            if !is_hex(id, 32) { return Err(status(StatusCode::BAD_REQUEST, "bad id")); }
+            let r: LargeFinishReq = parse(body)?;
+            if !is_hex(&r.sha256, 64) { return Err(status(StatusCode::BAD_REQUEST, "bad hash")); }
+            let row: Option<(String, i64, i64, i64, i64, i64)> = db.query_row(
+                "SELECT account,size,chunk_size,chunks,complete,expires FROM large_files WHERE id=?1", [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).optional().map_err(dberr)?;
+            let Some((account, size, cs, chunks, complete, expires)) = row else { return Err(status(StatusCode::NOT_FOUND, "no such file")) };
+            if expires as u64 <= now_secs() { return Err(status(StatusCode::NOT_FOUND, "this file has expired")); }
+            if account != a.account { return Err(status(StatusCode::FORBIDDEN, "not your upload")); }
+            if complete == 0 {
+                for i in 0..chunks as u64 {
+                    let want = large_chunk_len(size as u64, cs as u64, chunks as u64, i).unwrap_or(0) + 16;
+                    if std::fs::metadata(chunk_file(st, id, i)).map(|m| m.len() != want).unwrap_or(true) {
+                        return Err(status(StatusCode::CONFLICT, "chunks are missing; send them again"));
+                    }
+                }
+                db.execute("UPDATE large_files SET complete=1, sha256=?1 WHERE id=?2", params![r.sha256, id]).map_err(dberr)?;
+            }
+            Ok(json(&LargeInfoResp { size: size as u64, chunk_size: cs as u64, chunks: chunks as u64, complete: true, expires: expires as u64, uploaded: (0..chunks as u64).collect() }))
+        }
+        (Method::DELETE, ["v1", "large-files", id]) => {
+            let a = authenticate(&db, headers, ms, path, body, true)?.1.ok_or_else(|| status(StatusCode::FORBIDDEN, "x"))?;
+            if !is_hex(id, 32) { return Err(status(StatusCode::BAD_REQUEST, "bad id")); }
+            let account: Option<String> = db.query_row("SELECT account FROM large_files WHERE id=?1", [id], |r| r.get(0)).optional().map_err(dberr)?;
+            match account {
+                Some(owner) if owner == a.account => {}
+                Some(_) => return Err(status(StatusCode::FORBIDDEN, "only the uploader can delete this file")),
+                None => return Ok(status(StatusCode::OK, "ok")),
+            }
+            db.execute("DELETE FROM large_files WHERE id=?1", [id]).map_err(dberr)?;
+            let _ = std::fs::remove_dir_all(st.large_dir.join(id));
+            Ok(status(StatusCode::OK, "ok"))
+        }
         _ => Err(status(StatusCode::NOT_FOUND, "not found")),
     }
 }
@@ -926,11 +1214,14 @@ mod site_tests {
     async fn updates_are_served_from_their_own_folder_and_not_listed_for_friends() {
         let d = tmp();
         std::fs::write(d.join("Commons-linux-x86_64.AppImage"), b"app").unwrap();
+        std::fs::write(d.join("Megatron-windows-browser.zip"), b"win browser").unwrap();
+        std::fs::write(d.join("Megatron-macos-browser.zip"), b"mac browser").unwrap();
         std::fs::write(d.join("update/latest.json"), br#"{"version":"0.2.1","platforms":{"linux-x86_64":{"url":"update/Commons_0.2.1_amd64.AppImage","signature":"c2ln"}}}"#).unwrap();
         std::fs::write(d.join("update/Commons_0.2.1_amd64.AppImage"), b"new app").unwrap();
         let (c, list) = body(site(&d, "/download/", None).await.unwrap()).await;
         assert_eq!(c, 200);
         assert!(list.contains("Commons-linux-x86_64.AppImage") && !list.contains("latest.json") && !list.contains("0.2.1"), "the download page lists only what friends install: {list}");
+        assert!(list.contains("Megatron-windows-browser.zip") && list.contains("Megatron-macos-browser.zip"), "both browser versions are offered: {list}");
         let (c, m) = body(site(&d, "/update/latest.json", None).await.unwrap()).await;
         assert_eq!(c, 200);
         let v: serde_json::Value = serde_json::from_str(&m).unwrap();

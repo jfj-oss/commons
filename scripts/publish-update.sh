@@ -121,6 +121,8 @@ fi
 if want windows; then
   say "Building Windows (log: $LOGS/windows.log)"
   COMMONS_OUT=$STAGE COMMONS_BUILD_JOBS=$JOBS heavy scripts/build-windows.sh > "$LOGS/windows.log" 2>&1 || die "Windows build failed: $LOGS/windows.log"
+  say "Building the Windows browser version (log: $LOGS/windows-browser.log)"
+  COMMONS_OUT=$STAGE COMMONS_BUILD_JOBS=$JOBS heavy scripts/build-windows-browser.sh > "$LOGS/windows-browser.log" 2>&1 || die "Windows browser build failed: $LOGS/windows-browser.log"
 fi
 if want mac; then
   say "Building macOS on $MAC (log: $LOGS/mac.log)"
@@ -128,24 +130,31 @@ if want mac; then
   rsync -a --delete -e "ssh -i $MAC_KEY -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=8" --exclude /target --exclude /target-docker --exclude /dist --exclude /data --exclude /.git \
     --exclude /tools/node_modules --exclude /tools/bin --exclude /app/src-tauri/gen --exclude '*.log' --exclude /mac-watch.sh ./ "$MAC:commons-build/" > "$LOGS/mac.log" 2>&1 \
     || die "could not copy the source to the Mac: $LOGS/mac.log"
-  # Two jobs at background priority (scripts/build-mac.sh), and stopped if the Mac drops to 40% on battery.
+  # Two jobs at background priority (scripts/build-mac.sh), and stopped if the Mac drops to 40% on battery. The
+  # browser version is built the same way, after the app.
   ssh -i "$MAC_KEY" -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$MAC" 'zsh -s' >> "$LOGS/mac.log" 2>&1 <<MAC || die "macOS build failed: $LOGS/mac.log"
 export PATH=\$HOME/.cargo/bin:\$PATH
 cd ~/commons-build || exit 2
 ${CFG:+export TAURI_CONFIG='$CFG'}
+export MEGATRON_BROWSER_VERSION='$NEW' MEGATRON_BROWSER_PUBKEY='$TRUSTED'
 # its own process group (so the whole build can be stopped), and the Mac kept awake while it runs
-perl -e 'setpgrp(0, 0); exec @ARGV' scripts/build-mac.sh > publish-build.log 2>&1 &
-B=\$!
-caffeinate -i -w \$B &
-while kill -0 \$B 2>/dev/null; do
-  sleep 15
-  src=\$(pmset -g batt | head -1); pct=\$(pmset -g batt | grep -o '[0-9]*%' | head -1 | tr -d %)
-  if [[ "\$src" == *Battery* ]] && [ "\${pct:-0}" -le 40 ]; then echo "battery at \$pct%: stopping the build"; kill -TERM -- -\$B; wait \$B; exit 3; fi
-done
-wait \$B || { tail -40 publish-build.log; exit 4; }
+run_guarded() {
+  local log=\$1; shift
+  perl -e 'setpgrp(0, 0); exec @ARGV' "\$@" > "\$log" 2>&1 &
+  local B=\$!
+  caffeinate -i -w \$B &
+  while kill -0 \$B 2>/dev/null; do
+    sleep 15
+    local src=\$(pmset -g batt | head -1); local pct=\$(pmset -g batt | grep -o '[0-9]*%' | head -1 | tr -d %)
+    if [[ "\$src" == *Battery* ]] && [ "\${pct:-0}" -le 40 ]; then echo "battery at \$pct%: stopping the build"; kill -TERM -- -\$B; wait \$B; return 3; fi
+  done
+  wait \$B
+}
+run_guarded publish-build.log scripts/build-mac.sh || { rc=\$?; tail -40 publish-build.log; exit \$rc; }
+run_guarded publish-browser-build.log scripts/build-mac-browser.sh || { rc=\$?; tail -40 publish-browser-build.log; exit \$rc; }
 cd dist && rm -f Megatron.app.tar.gz && COPYFILE_DISABLE=1 tar -czf Megatron.app.tar.gz Megatron.app && ls -la
 MAC
-  scp -q -i "$MAC_KEY" -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$MAC:commons-build/dist/Megatron-macos-arm64.dmg" "$MAC:commons-build/dist/Megatron.app.tar.gz" "$STAGE/" || die "could not fetch the macOS build"
+  scp -q -i "$MAC_KEY" -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$MAC:commons-build/dist/Megatron-macos-arm64.dmg" "$MAC:commons-build/dist/Megatron.app.tar.gz" "$MAC:commons-build/dist/Megatron-macos-browser.zip" "$MAC:commons-build/dist/Megatron-macos-browser.tar.gz" "$STAGE/" || die "could not fetch the macOS build"
   mv "$STAGE/Megatron.app.tar.gz" "$STAGE/Megatron-macos-arm64.app.tar.gz"
 fi
 
@@ -156,15 +165,21 @@ sign() {
   [ "$(keyid_sig "$1.sig")" = "$WANT_ID" ] || die "$1 was signed with a key the apps do not trust (key id $(keyid_sig "$1.sig"), apps trust $WANT_ID)"
 }
 declare -A UP=()    # platform -> file in the staging folder
+# Each browser version is its own platform: no Tauri updater target is called "linux-browser-x86_64",
+# "windows-browser-x86_64" or "darwin-browser-aarch64", so desktop apps ignore them (they look for linux-x86_64,
+# windows-x86_64, darwin-aarch64), and each browser bridge looks only for its own.
 want linux   && UP[linux-x86_64]=Megatron-linux-x86_64.AppImage
+want linux   && UP[linux-browser-x86_64]=Megatron-linux-browser.tar.gz
 want windows && UP[windows-x86_64]=Megatron-windows-x64-setup.exe
+want windows && UP[windows-browser-x86_64]=Megatron-windows-browser.tar.gz
 want mac     && UP[darwin-aarch64]=Megatron-macos-arm64.app.tar.gz
+want mac     && UP[darwin-browser-aarch64]=Megatron-macos-browser.tar.gz
 [ ${#UP[@]} -gt 0 ] || die "nothing to publish"
 for p in "${!UP[@]}"; do [ -s "$STAGE/${UP[$p]}" ] || die "missing build output ${UP[$p]}"; sign "$STAGE/${UP[$p]}"; done
 
 # ---- into dist/: versioned update files first, then friends' downloads, the manifest last
 mkdir -p "$DIST/update"
-upname() { case $1 in linux-x86_64) echo "Megatron_${NEW}_x86_64.AppImage" ;; windows-x86_64) echo "Megatron_${NEW}_x64-setup.exe" ;; darwin-aarch64) echo "Megatron_${NEW}_aarch64.app.tar.gz" ;; esac; }
+upname() { case $1 in linux-x86_64) echo "Megatron_${NEW}_x86_64.AppImage" ;; linux-browser-x86_64) echo "Megatron_${NEW}_linux-browser.tar.gz" ;; windows-x86_64) echo "Megatron_${NEW}_x64-setup.exe" ;; windows-browser-x86_64) echo "Megatron_${NEW}_windows-browser.tar.gz" ;; darwin-aarch64) echo "Megatron_${NEW}_aarch64.app.tar.gz" ;; darwin-browser-aarch64) echo "Megatron_${NEW}_macos-browser.tar.gz" ;; esac; }
 platforms='{}'
 for p in "${!UP[@]}"; do
   n=$(upname "$p")
@@ -172,7 +187,7 @@ for p in "${!UP[@]}"; do
   platforms=$(jq -c --arg p "$p" --arg u "update/$n" --rawfile s "$STAGE/${UP[$p]}.sig" '. + {($p): {url: $u, signature: $s}}' <<<"$platforms")
 done
 mkdir -p "$DIST/.previous"
-for f in Megatron-linux-x86_64.AppImage Megatron-linux-browser.tar.gz Megatron-windows-x64-setup.exe Megatron-macos-arm64.dmg; do
+for f in Megatron-linux-x86_64.AppImage Megatron-linux-browser.tar.gz Megatron-windows-x64-setup.exe Megatron-windows-browser.zip Megatron-macos-arm64.dmg Megatron-macos-browser.zip; do
   [ -s "$STAGE/$f" ] || continue
   [ -e "$DIST/$f" ] && cp --reflink=auto -p "$DIST/$f" "$DIST/.previous/$f"
   cp --reflink=auto "$STAGE/$f" "$DIST/.$f.tmp" && chmod 755 "$DIST/.$f.tmp" && mv "$DIST/.$f.tmp" "$DIST/$f"

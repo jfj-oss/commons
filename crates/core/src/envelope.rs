@@ -9,6 +9,13 @@ pub const MAX_TEXT: usize = 16 * 1024;
 /// what this version will accept from a newer one, so a bad or careless sender cannot grow everybody's state.
 pub const MAX_AVATAR: u64 = 256 * 1024;
 pub const EXT_COMMONS: u16 = 0xF0C1;
+/// Most bytes of `data` in one live event.
+pub const MAX_LIVE: usize = 4096;
+/// A live event older than this (by its sender's clock) is dropped on arrival: it is a replay, not live.
+pub const LIVE_MAX_AGE: u64 = 30;
+/// How far ahead of our own clock a live event may claim to be.
+pub const LIVE_MAX_AHEAD: u64 = 60;
+pub fn valid_live_kind(k: &str) -> bool { !k.is_empty() && k.len() <= 32 && k.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')) }
 
 pub fn is_id(s: &str) -> bool { s.len() == 32 && s.bytes().all(|c| c.is_ascii_hexdigit()) }
 fn is_gid(s: &str) -> bool { s.len() >= 8 && s.len() <= 128 && s.bytes().all(|c| c.is_ascii_hexdigit()) }
@@ -73,6 +80,43 @@ pub const LISTENING_TTL_SECS: u64 = 600;
 pub const LISTENING_REFRESH_SECS: u64 = 300;
 pub const MAX_LISTEN_LINE: usize = 160;
 
+/// A file that travels in chunks because it is far too large for one encrypted blob. The key and nonce in the
+/// enclosing `File` are the file's key material; each chunk's key and nonce are derived from them and its index, and
+/// every chunk is authenticated with the chunk index and plaintext length as additional data. `sha256` commits to the
+/// whole file: see `crate::large::root_hash`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct LargeFile {
+    /// The real size, which `File::size` is not (that one stays inside an old app's 25 MB limit).
+    pub size: u64,
+    pub chunks: u64,
+    pub chunk_size: u64,
+    /// Hex of the whole-file root hash.
+    pub sha256: String,
+    /// When the relay removes it, so the chat can say so.
+    pub expires: u64,
+}
+impl LargeFile {
+    pub fn chunk_count(size: u64, chunk_size: u64) -> u64 {
+        if chunk_size == 0 { return 0; }
+        size / chunk_size + u64::from(size % chunk_size != 0)
+    }
+    /// The length of one chunk's plaintext, given the file size.
+    pub fn plain_len(&self, index: u64) -> Option<u64> {
+        if index >= self.chunks { return None; }
+        Some(if index + 1 == self.chunks { self.size - self.chunk_size * (self.chunks - 1) } else { self.chunk_size })
+    }
+    pub fn validate(&self, outer_size: u64) -> Result<(), ParseError> {
+        if self.size <= commons_proto::LARGE_FILE_THRESHOLD { return bad("a large file must be above the large-file threshold"); }
+        if self.chunk_size < commons_proto::MIN_LARGE_CHUNK_BYTES || self.chunk_size > commons_proto::MAX_LARGE_CHUNK_BYTES { return bad("bad large-file chunk size"); }
+        if self.chunks == 0 || self.chunks > 1_000_000 || self.chunks != Self::chunk_count(self.size, self.chunk_size) { return bad("bad large-file chunk count"); }
+        if !is_key(&self.sha256) || commons_proto::unhex32(&self.sha256).is_err() { return bad("bad large-file hash"); }
+        if self.expires == 0 { return bad("bad large-file expiry"); }
+        // Old apps check this one, so it has to stay plausible to them.
+        if outer_size != self.size.min(commons_proto::MAX_BLOB_BYTES as u64) { return bad("bad large-file size"); }
+        Ok(())
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "t")]
 pub enum Envelope {
@@ -80,8 +124,23 @@ pub enum Envelope {
     Edit { target: String, text: String, ts: u64 },
     Delete { target: String },
     React { target: String, emoji: String, on: bool },
-    File { id: String, name: String, mime: String, size: u64, blob: String, key: String, nonce: String, #[serde(default)] caption: String, #[serde(default)] reply: Option<String>, ts: u64 },
+    File {
+        id: String, name: String, mime: String, size: u64, blob: String, key: String, nonce: String,
+        #[serde(default)] caption: String,
+        #[serde(default)] reply: Option<String>,
+        ts: u64,
+        /// Present only for a file too large for one blob. An app from 0.2.x parses this message as the ordinary
+        /// `File` it already knows (serde ignores the field), so it gets no "unknown kind" notice: it just cannot
+        /// download the bytes. `size` above then says `min(real size, MAX_BLOB_BYTES)` so that old validation passes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        large: Option<LargeFile>,
+    },
     Typing,
+    /// Best-effort live data for a room (cursors, pointers, anything small and short-lived). Never history: not stored,
+    /// not shown, not counted, not retried. `kind` is a short lowercase token, `data` is up to `MAX_LIVE` bytes of text the
+    /// sender chose (nothing here is trusted), and `ts` lets a receiver drop what arrives long after it was meant.
+    /// An older app has no such kind, parses it as `Unknown` and notes "newer version" once; nothing else happens.
+    Live { kind: String, data: String, ts: u64 },
     /// A person's profile refresh. Extra fields ride on it rather than new kinds: an older Megatron parses this as the
     /// `Profile` it already knows and serde ignores the rest, so nothing new ever reaches an old app's `Unknown` notice.
     /// `listen` is the shared "listening to" status (`None` = nothing to share); `avatar`/`avatar_cleared` the picture.
@@ -126,8 +185,7 @@ pub enum Envelope {
 /// Where one profile picture is, and how to open it. The bytes themselves travel as a blob, encrypted the same way an
 /// attachment's are, with this key and nonce; the relay only ever holds the ciphertext.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct AvatarRef {
-    pub blob: String,
+pub struct AvatarRef {    pub blob: String,
     pub key: String,
     pub nonce: String,
     pub mime: String,
@@ -173,12 +231,14 @@ impl Envelope {
                 let emojiish = emoji.chars().all(|c| !c.is_ascii() || c.is_ascii_digit() || c == '#' || c == '*') && emoji.chars().any(|c| !c.is_ascii());
                 if !is_id(target) || emoji.is_empty() || emoji.chars().count() > 16 || !short(emoji, 32) || !emojiish { return bad("bad reaction"); }
             }
-            File { id, name, mime, size, blob, key, nonce, caption, reply, .. } => {
+            File { id, name, mime, size, blob, key, nonce, caption, reply, large, .. } => {
                 if !is_id(id) || !is_id(blob) || !short(name, 255) || !valid_mime(mime) || *size > commons_proto::MAX_BLOB_BYTES as u64 || caption.len() > MAX_TEXT { return bad("bad file"); }
                 if key.len() != 64 || nonce.len() != 24 || hex::decode(key).is_err() || hex::decode(nonce).is_err() { return bad("bad file key"); }
                 if reply.as_deref().is_some_and(|r| !is_id(r)) { return bad("bad reply"); }
+                if let Some(l) = large { l.validate(*size)?; }
             }
             Typing | Leave | Unknown => {}
+            Live { kind, data, .. } => if !valid_live_kind(kind) || data.len() > MAX_LIVE { return bad("bad live event"); },
             Profile { name, listen, avatar, avatar_cleared, .. } => {
                 if name.is_empty() || !short(name, 64) { return bad("bad profile"); }
                 if let Some(l) = listen { if l.title.is_empty() || !one_line(&l.title, MAX_LISTEN_LINE) || !one_line(&l.artist, MAX_LISTEN_LINE) { return bad("bad listening status"); } }
@@ -293,8 +353,23 @@ impl GroupExt {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct ChanMeta { pub id: String, pub name: String }
+/// How a room is used. Empty is an ordinary text room and is what an app from before voice rooms writes (and
+/// reads); `"voice"` is a room whose call is the room itself. The field is additive on purpose: an older app's
+/// `ChanMeta` ignores it, so a voice room simply appears there as a normal room and nothing reaches `Envelope`.
+pub const ROOM_VOICE: &str = "voice";
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct ChanMeta {
+    pub id: String,
+    pub name: String,
+    /// Empty for a text room. Kept as a small token, not an enum, so a kind from a newer app is carried and ignored
+    /// (shown as a text room) rather than making the whole table unreadable.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+}
+impl ChanMeta {
+    fn valid_kind(k: &str) -> bool { k.len() <= 32 && k.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') }
+}
 
 /// Stored in the group-context extension of every group, so it is authenticated by MLS
 /// and handed to a joining device inside the Welcome.
@@ -303,7 +378,10 @@ pub struct ChanMeta { pub id: String, pub name: String }
 pub enum GroupExt {
     /// The community control group: roster = its members; this is the roles/channels/invites table.
     /// `owner` is the founder, pinned in the community id. `transfers` is the signed chain from there to today's owner.
-    Control { name: String, owner: String, nonce: String, admins: Vec<AdminGrant>, channels: Vec<ChanMeta>, invites: Vec<InviteMeta>, #[serde(default)] banned: Vec<String>, #[serde(default, skip_serializing_if = "Vec::is_empty")] transfers: Vec<OwnerStep>, #[serde(default, skip_serializing_if = "Vec::is_empty")] consents: Vec<Consent> },
+    Control { name: String, owner: String, nonce: String, admins: Vec<AdminGrant>, channels: Vec<ChanMeta>, invites: Vec<InviteMeta>, #[serde(default)] banned: Vec<String>, #[serde(default, skip_serializing_if = "Vec::is_empty")] transfers: Vec<OwnerStep>, #[serde(default, skip_serializing_if = "Vec::is_empty")] consents: Vec<Consent>,
+        /// The owner-signed room colours. Additive: an older app ignores the field (and drops it if it rewrites the table, which
+        /// the owner's device then puts back). It is only ever believed when the signature is the current owner's.
+        #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_style")] style: Option<SignedStyle> },
     /// A channel group. `community` is the control group id; `name` is only a hint, the control table is authoritative.
     Channel { community: String, name: String, owner: String, nonce: String, admins: Vec<AdminGrant>, #[serde(default, skip_serializing_if = "Vec::is_empty")] transfers: Vec<OwnerStep> },
 }
@@ -314,12 +392,13 @@ impl GroupExt {
         if b.len() > 128 * 1024 { return bad("group ext too large"); }
         let g: GroupExt = serde_json::from_slice(b).map_err(|e| ParseError(format!("bad group ext: {e}")))?;
         match &g {
-            GroupExt::Control { name, owner, nonce, admins, channels, invites, banned, transfers, consents } => {
+            GroupExt::Control { name, owner, nonce, admins, channels, invites, banned, transfers, consents, style } => {
+                if style.as_ref().is_some_and(|s| s.doc.len() > MAX_STYLE_DOC || s.sig.len() > 200) { return bad("oversized style"); }
                 if banned.len() > 2000 || transfers.len() > 200 { return bad("too many bans or transfers"); }
                 if consents.len() > MAX_CONSENTS || consents.iter().any(|c| !is_key(&c.account) || c.sig.len() != 128) { return bad("bad consents"); }
                 if name.is_empty() || !short(name, 64) || !is_key(owner) || nonce.len() != 32 || admins.len() > 512 || channels.len() > 500 || invites.len() > 200 { return bad("bad control ext"); }
                 // A channel id goes into URLs and into markup: hex only, whoever wrote this table.
-                for c in channels { if !is_gid(&c.id) || !short(&c.name, 64) || c.name.is_empty() { return bad("bad channel"); } }
+                for c in channels { if !is_gid(&c.id) || !short(&c.name, 64) || c.name.is_empty() || !ChanMeta::valid_kind(&c.kind) { return bad("bad channel"); } }
                 for i in invites { if !is_id(&i.id) || !is_key(&i.pk) { return bad("bad invite"); } }
             }
             GroupExt::Channel { community, name, owner, nonce, admins, transfers } => if !is_gid(community) || !short(name, 64) || !is_key(owner) || nonce.len() != 32 || admins.len() > 512 || transfers.len() > 200 { return bad("bad channel ext"); },
@@ -533,6 +612,103 @@ mod compat_tests {
         assert_eq!(plain.to_bytes(), br#"{"t":"Profile","name":"Ana","ts":5,"listen":null}"#);
     }
 
+    /// What a 0.2.x app parses: the channel table it already knew, with no `kind` on a room.
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct OldChanMeta { id: String, name: String }
+    #[derive(Deserialize, Debug, PartialEq)]
+    #[serde(tag = "k")]
+    enum OldGroupExt {
+        Control { name: String, owner: String, nonce: String, admins: Vec<AdminGrant>, channels: Vec<OldChanMeta>, invites: Vec<InviteMeta> },
+        Channel { community: String, name: String, owner: String, nonce: String, admins: Vec<AdminGrant> },
+    }
+
+    #[test]
+    fn a_voice_room_is_only_a_field_old_apps_ignore() {
+        let (general, lobby) = ("ab".repeat(16), "cd".repeat(16));
+        let ext = GroupExt::Control {
+            name: "club".into(), owner: "e".repeat(64), nonce: "f".repeat(32), admins: vec![],
+            channels: vec![
+                ChanMeta { id: general.clone(), name: "general".into(), kind: String::new() },
+                ChanMeta { id: lobby.clone(), name: "lobby".into(), kind: ROOM_VOICE.into() },
+            ],
+            invites: vec![], banned: vec![], transfers: vec![], consents: vec![], style: None,
+        };
+        let bytes = ext.to_bytes();
+        // This version reads the kind back.
+        assert_eq!(GroupExt::parse(&bytes).unwrap(), ext);
+        // A 0.2.x app reads the very same bytes as two ordinary rooms: the extra field is ignored, not an error.
+        let OldGroupExt::Control { channels, .. } = serde_json::from_slice::<OldGroupExt>(&bytes).unwrap() else { panic!("must read as a control table") };
+        assert_eq!(channels, vec![
+            OldChanMeta { id: general.clone(), name: "general".into() },
+            OldChanMeta { id: lobby.clone(), name: "lobby".into() },
+        ]);
+        // The kind lives in group-context metadata, never in an `Envelope`: an old app syncing this table has no
+        // message to parse, so nothing can reach its `Envelope::Unknown` notice.
+        assert!(!String::from_utf8(bytes.clone()).unwrap().contains("\"t\":"));
+        // A text room is still written exactly as 0.2.x wrote it: no empty field, no new spelling.
+        let plain = ChanMeta { id: general.clone(), name: "general".into(), kind: String::new() };
+        assert_eq!(serde_json::to_string(&plain).unwrap(), format!(r#"{{"id":"{id}","name":"general"}}"#, id = general));
+        // A kind is a small lower-case token; a table that claims otherwise is refused.
+        let mut bad = ext.clone();
+        if let GroupExt::Control { channels, .. } = &mut bad { channels[1].kind = "Voice!".into(); }
+        assert!(GroupExt::parse(&bad.to_bytes()).is_err());
+        // A kind from a newer app is carried and shown as a text room here, rather than making the table unreadable.
+        let mut later = ext;
+        if let GroupExt::Control { channels, .. } = &mut later { channels[1].kind = "stage".into(); }
+        assert_eq!(GroupExt::parse(&later.to_bytes()).unwrap(), later);
+    }
+
+    #[test]
+    fn an_older_app_reads_a_large_file_as_an_ordinary_file() {
+        let size = 28u64 << 30;
+        let chunk_size = commons_proto::LARGE_CHUNK_BYTES;
+        let large = LargeFile { size, chunks: LargeFile::chunk_count(size, chunk_size), chunk_size, sha256: "ab".repeat(32), expires: commons_proto::now_secs() + 7 * 86400 };
+        let env = Envelope::File {
+            id: "00112233445566778899aabbccddeeff".into(), name: "movie.mkv".into(), mime: "video/x-matroska".into(),
+            size: size.min(commons_proto::MAX_BLOB_BYTES as u64), blob: "ffeeddccbbaa99887766554433221100".into(),
+            key: "00".repeat(32), nonce: "11".repeat(12), caption: String::new(), reply: None, ts: 5, large: Some(large.clone()),
+        };
+        let bytes = env.to_bytes();
+        assert_eq!(Envelope::parse(&bytes).unwrap(), env);
+        assert_ne!(Envelope::parse(&bytes).unwrap(), Envelope::Unknown);
+
+        // What a 0.2.x app parses: no `large` field, and it checks that size is within its own blob limit.
+        #[derive(Deserialize, Debug)]
+        #[serde(tag = "t")]
+        enum OldEnvelope {
+            File { id: String, name: String, mime: String, size: u64, blob: String, key: String, nonce: String, #[serde(default)] caption: String, #[serde(default)] reply: Option<String>, ts: u64 },
+            #[serde(other)]
+            Unknown,
+        }
+        let old: OldEnvelope = serde_json::from_slice(&bytes).unwrap();
+        match old {
+            OldEnvelope::File { size: outer, name, .. } => {
+                assert_eq!(name, "movie.mkv");
+                assert!(outer <= commons_proto::MAX_BLOB_BYTES as u64, "an old app would refuse the message");
+            }
+            OldEnvelope::Unknown => panic!("a large file must never look like an unknown kind"),
+        }
+
+        // A small file is byte-for-byte what this version always sent: no empty extra field.
+        let plain = Envelope::File { id: "00112233445566778899aabbccddeeff".into(), name: "a.txt".into(), mime: "text/plain".into(), size: 3, blob: "ffeeddccbbaa99887766554433221100".into(), key: "00".repeat(32), nonce: "11".repeat(12), caption: String::new(), reply: None, ts: 5, large: None };
+        assert!(!String::from_utf8(plain.to_bytes()).unwrap().contains("large"));
+
+        // A mismatched outer size, chunk count or hash is refused by this version.
+        let bad = |f: &dyn Fn(&mut LargeFile)| {
+            let mut e = env.clone();
+            let Envelope::File { large: Some(ref mut l), .. } = e else { unreachable!() };
+            f(l);
+            assert!(Envelope::parse(&serde_json::to_vec(&e).unwrap()).is_err());
+        };
+        bad(&|l| l.size += 1);
+        bad(&|l| l.chunks += 1);
+        bad(&|l| l.chunk_size = 1024);
+        bad(&|l| l.sha256 = "zz".repeat(32));
+        let mut small_outer = env.clone();
+        if let Envelope::File { ref mut size, .. } = small_outer { *size = 1; }
+        assert!(Envelope::parse(&serde_json::to_vec(&small_outer).unwrap()).is_err());
+    }
+
     #[test]
     fn a_bad_picture_reference_is_refused() {
         let good = serde_json::json!({"blob":"00112233445566778899aabbccddeeff","key":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f","nonce":"000102030405060708090a0b","mime":"image/webp","size":1234,"shape":"circle"});
@@ -549,4 +725,115 @@ mod compat_tests {
         assert!(Envelope::parse(&env(good.clone(), true)).is_err());
         assert!(Envelope::parse(&env(good, false)).is_ok());
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------- colours
+/// Biggest style document an owner may publish (about 500 rooms at two colours each, with room to spare).
+pub const MAX_STYLE_DOC: usize = 64 * 1024;
+pub const MAX_STYLE_ROOMS: usize = 500;
+
+/// `#rrggbb` and nothing else: the value ends up in CSS custom properties, so it must not be able to carry anything more.
+pub fn valid_color(c: &str) -> bool { c.len() == 7 && c.starts_with('#') && c.bytes().skip(1).all(|b| b.is_ascii_hexdigit()) }
+
+/// A room's (or the community card's) two colours: the main one and its highlight.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct Duo { pub main: String, pub hi: String }
+impl Duo {
+    pub fn valid(&self) -> bool { valid_color(&self.main) && valid_color(&self.hi) }
+    pub fn lower(&self) -> Duo { Duo { main: self.main.to_ascii_lowercase(), hi: self.hi.to_ascii_lowercase() } }
+}
+
+/// Most pattern numbers a look may name. The apps know only the first few (more can be added later); a number an app does not know
+/// means "automatic" to it, so the bound is a small fixed range rather than the current count.
+pub const MAX_LOOK_PATTERN: u8 = 31;
+/// Backdrop strength in percent of the app's usual look (100 = unchanged, 0 = off).
+pub const MAX_LOOK_DIM: u16 = 200;
+
+/// How the owner wants one room (or the community card) to look beyond its colours. Every part is optional; a missing part is "automatic".
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct Look {
+    /// The ASCII pattern on the card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<u8>,
+    /// The ASCII pattern behind the chat (rooms only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<u8>,
+    /// Backdrop strength behind the chat in percent (rooms only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dim: Option<u16>,
+}
+impl Look {
+    pub fn is_empty(&self) -> bool { self.card.is_none() && self.chat.is_none() && self.dim.is_none() }
+    pub fn valid(&self) -> bool {
+        !self.is_empty() && self.card.is_none_or(|n| n <= MAX_LOOK_PATTERN) && self.chat.is_none_or(|n| n <= MAX_LOOK_PATTERN) && self.dim.is_none_or(|n| n <= MAX_LOOK_DIM)
+    }
+}
+
+/// Everything the owner has chosen. A room with no entry uses the app's own default colours.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct StyleDoc {
+    /// Rises with every change the owner makes. A document with a lower number than the one already in force never wins,
+    /// whoever carries it, so replaying an old table cannot undo a newer choice.
+    pub ver: u64,
+    pub ts: u64,
+    #[serde(default)]
+    pub community: Option<Duo>,
+    #[serde(default)]
+    pub rooms: std::collections::BTreeMap<String, Duo>,
+    /// Rooms whose wall (the drawings on the room's backdrop) only the owner may draw on. Absent in older documents: nothing is locked.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub locked: std::collections::BTreeSet<String>,
+    /// Per room, the wall's generation. The owner raising it is "clear": drawings and snapshots of an older generation are ignored by everyone.
+    /// Absent in older documents: every wall is at generation 0.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub wall: std::collections::BTreeMap<String, u64>,
+    /// Per room (or the community's own card, keyed by the community id), the owner's choice of patterns and backdrop strength. Absent in older
+    /// documents, and an app that does not know it ignores it, so the signed text of a document without looks is byte for byte what it was.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub looks: std::collections::BTreeMap<String, Look>,
+}
+impl StyleDoc {
+    pub fn validate(&self) -> Result<(), ParseError> {
+        if self.ver == 0 || self.ver > (1 << 53) { return bad("bad style version"); }
+        if self.community.as_ref().is_some_and(|d| !d.valid()) { return bad("bad community colours"); }
+        if self.rooms.len() > MAX_STYLE_ROOMS || self.rooms.iter().any(|(g, d)| !is_gid(g) || !d.valid()) { return bad("bad room colours"); }
+        if self.locked.len() > MAX_STYLE_ROOMS || self.locked.iter().any(|g| !is_gid(g)) { return bad("bad locked rooms"); }
+        if self.wall.len() > MAX_STYLE_ROOMS || self.wall.iter().any(|(g, n)| !is_gid(g) || *n > (1 << 53)) { return bad("bad wall generations"); }
+        if self.looks.len() > MAX_STYLE_ROOMS || self.looks.iter().any(|(g, l)| !is_gid(g) || !l.valid()) { return bad("bad looks"); }
+        Ok(())
+    }
+}
+
+/// The document as the exact JSON text that was signed, plus the owner's signature over it. Keeping the signed text
+/// verbatim means no one has to agree on how to print JSON.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct SignedStyle { pub doc: String, pub sig: String }
+fn lenient_style<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<SignedStyle>, D::Error> {
+    // A malformed field is simply "no colours": the table around it stays readable, as it does for an app that has never heard of the field.
+    let v = <Option<serde_json::Value> as Deserialize>::deserialize(d)?;
+    Ok(v.and_then(|v| serde_json::from_value(v).ok()))
+}
+pub fn style_msg(community: &str, doc: &str) -> Vec<u8> {
+    let mut m = b"commons/style/v1".to_vec();
+    m.extend_from_slice(&commons_proto::sha256(&[community.as_bytes(), doc.as_bytes()]));
+    m
+}
+pub fn sign_style(owner_key: &ed25519_dalek::SigningKey, community: &str, doc: &StyleDoc) -> Result<SignedStyle, ParseError> {
+    use ed25519_dalek::Signer;
+    doc.validate()?;
+    let text = serde_json::to_string(doc).map_err(|e| ParseError(e.to_string()))?;
+    if text.len() > MAX_STYLE_DOC { return bad("style too large"); }
+    let sig = hex::encode(owner_key.sign(&style_msg(community, &text)).to_bytes());
+    Ok(SignedStyle { doc: text, sig })
+}
+/// The document, if `owner` (hex account key) signed it for this community and every field is well-formed.
+pub fn verify_style(owner: &str, community: &str, s: &SignedStyle) -> Result<StyleDoc, ParseError> {
+    use ed25519_dalek::Verifier;
+    if s.doc.len() > MAX_STYLE_DOC { return bad("style too large"); }
+    let vk = commons_proto::unhex32(owner).ok().and_then(|a| ed25519_dalek::VerifyingKey::from_bytes(&a).ok()).ok_or(ParseError("bad owner key".into()))?;
+    let sig = hex::decode(&s.sig).ok().and_then(|x| ed25519_dalek::Signature::from_slice(&x).ok()).ok_or(ParseError("bad signature".into()))?;
+    vk.verify(&style_msg(community, &s.doc), &sig).map_err(|_| ParseError("colours not signed by the owner".into()))?;
+    let doc: StyleDoc = serde_json::from_str(&s.doc).map_err(|e| ParseError(format!("bad style document: {e}")))?;
+    doc.validate()?;
+    Ok(doc)
 }

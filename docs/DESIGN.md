@@ -108,7 +108,7 @@ The sender encrypts the file with a fresh ChaCha20-Poly1305 key, uploads the cip
 
 One state file: magic, Argon2id parameters, salt, nonce, XChaCha20-Poly1305 ciphertext. It holds identity secrets, the whole OpenMLS store, every community's state, and the message history, so a stolen laptop yields nothing without the passphrase. Writes are atomic (temp file, fsync, rename) and the previous generation is kept as `state.bak`. A failed authentication tag means a wrong passphrase or a damaged file, so the backup is tried before saying which: if it opens, the damaged file is set aside as `state.damaged`, the previous generation is used, and the user is told. An exclusive lock on the data folder means only one process can have it open, because two would hand out the same key material. Search is a local scan of that history. Attachment cache files are sealed with the same key and named after the blob id, key and nonce together.
 
-Typing indicators are off by default. When on, they are ordinary padded application messages with no special tag, which leaks only that "a message-sized packet was sent now", something the relay sees about every message anyway.
+Typing indicators are on by default for new accounts (an account that turned them off keeps that). When on, they are ordinary padded application messages with no special tag, which leaks only that "a message-sized packet was sent now", something the relay sees about every message anyway.
 
 ## 7. The hard parts (what hurt in Matrix) and what is done about them
 

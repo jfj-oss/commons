@@ -37,20 +37,20 @@ try {
   const room = await rpc(P('alice').port, 'call_token', { gid: world.gid });
   const roomName = room.room;
 
-  // ---------------------------------------------------------------- J. video tiles in the real call panel (runs first, on a fresh call)
-  // Bugs from real use: (1) with camera or screen share on, the videos flickered: every state update rebuilt the panel and moved
+  // ---------------------------------------------------------------- J. video tiles in the real call (runs first, on a fresh call)
+  // Bugs from real use: (1) with camera or screen share on, the videos flickered: every state update rebuilt the call UI and moved
   // the <video> elements into new tiles; (2) a camera switched off left a black box (the SDK mutes a camera, it does not unpublish it).
-  // The panel is watched from inside the page: DOM removals/additions of tiles and videos, media events, and a 50 ms sampler that
+  // The stage is watched from inside the page: DOM removals/additions of tiles and videos, media events, and a 50 ms sampler that
   // counts moments where a shown video is not playing.
   const WATCH = `(() => {
-    const panel = document.querySelector('#call-panel'); const st = window.__vt = { added: 0, removed: 0, events: {}, samples: 0, blank: 0, n: 0 };
+    const panel = document.querySelector('#call-stage'); const st = window.__vt = { added: 0, removed: 0, events: {}, samples: 0, blank: 0, n: 0 };
     const count = (nodes, k) => { for (const n of nodes) if (n.nodeType === 1) st[k] += (n.matches('.ctile, video') ? 1 : 0) + n.querySelectorAll('.ctile, video').length; };
     new MutationObserver(ms => { for (const m of ms) { count(m.addedNodes, 'added'); count(m.removedNodes, 'removed'); } }).observe(panel, { childList: true, subtree: true });
     for (const ev of ['emptied', 'loadstart', 'pause', 'abort']) panel.addEventListener(ev, e => { if (e.target.tagName === 'VIDEO') st.events[ev] = (st.events[ev] || 0) + 1; }, true);
     setInterval(() => { for (const v of panel.querySelectorAll('.ctile video')) { st.samples++; if (!(v.isConnected && v.readyState >= 2 && !v.paused && v.videoWidth > 0)) st.blank++; } }, 50);
     window.__vtReset = () => { st.added = st.removed = st.samples = st.blank = 0; st.events = {}; };
     return true; })()`;
-  const tilesOf = n => page(n).ev(`[...document.querySelectorAll('#call-panel .ctile')].map(d => { const v = d.querySelector('video'); if (v && !v.__vid) v.__vid = ++window.__vt.n; return { key: d.dataset.key, label: (d.querySelector('.bar .grow') || d).innerText, id: v ? v.__vid : 0, w: v ? v.videoWidth : 0, playing: !!v && !v.paused && v.readyState >= 2 }; })`);
+  const tilesOf = n => page(n).ev(`[...document.querySelectorAll('#call-stage .ctile')].map(d => { const v = d.querySelector('video'); if (v && !v.__vid) v.__vid = ++window.__vt.n; return { key: d.dataset.key, label: (d.querySelector('.bar .grow') || d).innerText, id: v ? v.__vid : 0, w: v ? v.videoWidth : 0, playing: !!v && !v.paused && v.readyState >= 2 }; })`);
   const isCam = t => /camera/.test(t.label), isScreen = t => /screen/.test(t.label);
   {
     for (const n of ['alice', 'bob']) { await page(n).ev(FAKE_DISPLAY); await page(n).ev(`window.__shareName = ${J(n)}`); }
@@ -85,11 +85,104 @@ try {
     await call('alice', `c.setCamera(true)`);
     const back = await until(async () => { const t = await tilesOf('bob'); return t.length === 2 && t.every(x => x.w > 0 && x.playing) ? t : null; }, 20000, 'camera back').catch(async () => tilesOf('bob'));
     check('J7 camera on again: the tile comes back with pictures', back.length === 2 && back.filter(isCam).length === 1 && back.every(x => x.w > 0 && x.playing), J(back));
+    // ---- K. the camera stack (mega phase 4): all tiles in one column, dragging reorders for everyone in the call
+    {
+      // a tab in the background does not poll the live channel (as in the real app): the person who is meant to see a change is brought to the front
+      const front = async n => { await page(n).send('Page.bringToFront'); await sleep(300); };
+      const shotOf = async (n, name) => { try { await page(n).send('Page.bringToFront'); await sleep(300); const r = await page(n).send('Page.captureScreenshot', { format: 'png' }); fs.mkdirSync(out, { recursive: true }); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(r.result.data, 'base64')); } catch { } };
+      const deck = (n, expr) => page(n).ev(`(() => { const d = window.__megaDeck; return ${expr}; })()`);
+      const ord = n => deck(n, `d.order()`);
+      const visual = n => page(n).ev(`[...document.querySelectorAll('#c-shares .ctile')].sort((a, b) => (+a.style.order || 0) - (+b.style.order || 0)).map(e => e.dataset.key.slice(e.dataset.key.indexOf('/') + 1))`);
+      const sentDeck = n => page(n).ev(`(window.__megaLive.stats.kinds['deck.m'] || 0) + (window.__megaLive.stats.kinds['deck.q'] || 0)`);
+      // a scripted drag of the first tile to the bottom and back to the middle over `ms`, with a move every ~40 ms
+      const drag = (n, ms, hold) => page(n).ev(`(async () => {
+        const tiles = [...document.querySelectorAll('#c-shares .ctile')].sort((a, b) => (+a.style.order || 0) - (+b.style.order || 0));
+        const el = tiles[0], r = el.getBoundingClientRect(), last = tiles[tiles.length - 1].getBoundingClientRect();
+        const x = r.left + r.width / 2, y0 = r.top + r.height / 3, y1 = last.bottom - 6, id = 11, ev = (t, y) => new PointerEvent(t, { clientX: x, clientY: y, pointerId: id, bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' });
+        el.dispatchEvent(ev('pointerdown', y0));
+        const steps = Math.max(2, Math.round(${ms} / 40));
+        for (let i = 1; i <= steps; i++) { window.dispatchEvent(ev('pointermove', y0 + (y1 - y0) * (i / steps))); await new Promise(r => setTimeout(r, 40)); }
+        ${hold ? 'return true;' : `window.dispatchEvent(ev('pointerup', y1)); return true;`} })()`);
+      const upN = n => page(n).ev(`(window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 11, bubbles: true, button: 0 })), true)`);
+      const same = (a, b) => J(a) === J(b);
+      await front('bob');
+      await call('alice', `c.setCamera(true)`);
+      await until(async () => (await tilesOf('bob')).length === 2 && (await tilesOf('alice')).length === 2, 20000, 'K: two tiles on both sides').catch(() => { });
+      await until(async () => (await deck('alice', `d.tiles().length`)) === 2 && (await deck('bob', `d.tiles().length`)) === 2, 10000, 'K: both decks know both tiles');
+      check('K1 the stack is open on the left for people in the call, and the dots slide right to make room', await page('bob').ev(`(() => { const s = document.querySelector('#call-stage').getBoundingClientRect(), shown = e => e && !e.hidden && e.getBoundingClientRect().width > 0, r = [document.querySelector('#mega-rail'), document.querySelector('#mega')].find(shown); return document.documentElement.classList.contains('deck-open') && s.left <= 1 && s.width > 120 && !!r && Math.abs(r.getBoundingClientRect().left - s.width) < 3; })()`), J(await page('bob').ev(`[document.querySelector('#call-stage').getBoundingClientRect().width, [document.querySelector('#mega-rail'), document.querySelector('#mega')].map(e => e && !e.hidden ? e.getBoundingClientRect().left : null)]`)));
+      await sleep(600);
+      const rects = n => page(n).ev(`[...document.querySelectorAll('#c-shares .ctile')].sort((a, b) => (+a.style.order || 0) - (+b.style.order || 0)).map(e => { const r = e.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; })`);
+      const stacked = r => r.length >= 2 && r.every(x => x[3] >= 90 && x[2] >= 120) && r.every((x, i) => i === 0 || x[1] >= r[i - 1][1] + r[i - 1][3] - 1);
+      check('K1b the tiles are stacked top to bottom, none over another, each a real picture size', stacked(await rects('bob')), J(await rects('bob')));
+      const base = await ord('bob');
+      check('K2 both sides start from a valid order with every tile once', same([...(await ord('alice'))].sort(), [...base].sort()) && base.length === 2 && same(await visual('bob'), base), J([await ord('alice'), base]));
+      // a 3 second drag by alice: the order changes for bob as well, with at most about 10 events
+      const e0 = await sentDeck('alice');
+      await drag('alice', 3000, false);
+      await sleep(1500);
+      const e1 = await sentDeck('alice');
+      const aOrd = await ord('alice');
+      const moved = !same(aOrd, base);
+      await until(async () => same(await ord('bob'), aOrd), 8000, 'bob follows alice\'s order').catch(() => { });
+      check('K3 dragging a tile reorders it for the other person in the call, and their tiles really moved', moved && same(await ord('bob'), aOrd) && same(await visual('bob'), aOrd) && same(await visual('alice'), aOrd), J([base, aOrd, await ord('bob'), await visual('bob')]));
+      check('K4 a whole 3 second drag is at most about 10 live events (not one per pointer move)', e1 - e0 >= 2 && e1 - e0 <= 10, `${e1 - e0} events for ~75 pointer moves`);
+      const idle0 = await sentDeck('alice'); await sleep(3500);
+      check('K5 nothing is sent while idle', (await sentDeck('alice')) === idle0 && (await sentDeck('bob')) <= 12);
+      await shotOf('alice', 'K-stack-alice'); await shotOf('bob', 'K-stack-bob');
+      // a person who is not in the call cannot reorder anything, however well-formed the message and however high the stamp
+      const callGid = world.gid, rev = [...aOrd].reverse();
+      await rpc(P('carol').port, 'live_send', { gid: callGid, kind: 'deck.m', data: J({ s: '', o: rev, n: 99999, b: '', e: 1 }) });
+      await sleep(3500);
+      check('K6 an order from a member who is not in the call is ignored', same(await ord('bob'), aOrd) && same(await ord('alice'), aOrd), J([await ord('bob'), rev]));
+      // junk from someone who is in the call: unknown tiles, duplicates, wrong types never hide or duplicate a tile
+      const known = aOrd.slice();
+      await rpc(P('alice').port, 'live_send', { gid: callGid, kind: 'deck.m', data: J({ s: '', o: ['nope', known[0], known[0], 'x'.repeat(10)], n: 100000, b: '', e: 1 }) });
+      await sleep(1200);
+      await rpc(P('alice').port, 'live_send', { gid: callGid, kind: 'deck.m', data: '{"o": 5}' });
+      await sleep(3000);
+      const bAfter = await ord('bob'), vAfter = await visual('bob');
+      check('K7 unknown, repeated and malformed entries never hide or duplicate a tile', same([...bAfter].sort(), [...known].sort()) && bAfter.length === known.length && same(vAfter, bAfter) && (await tilesOf('bob')).length === 2, J([bAfter, vAfter]));
+      // first grab holds the tile; it expires by itself after about 3 s of silence
+      await drag('alice', 400, true);   // grabbed and moved, button still down, then silence
+      await until(async () => (await deck('bob', `d.holds().length`)) === 1, 8000, 'bob sees alice\'s hold').catch(() => { });
+      const marked = await page('bob').ev(`(() => { const e = document.querySelector('#c-shares .ctile.held'); return e ? e.dataset.holder : null; })()`);
+      const b0 = await ord('bob');
+      await drag('bob', 400, false);   // bob tries to take the same (first) tile
+      await sleep(600);
+      check('K8 while alice holds a tile bob cannot take it, and her name is on it', marked === 'Alice' && same(await ord('bob'), b0), J([marked, b0, await ord('bob')]));
+      await sleep(3600);
+      const expired = await deck('bob', `d.holds().length`);
+      check('K9 the hold expires by itself after about 3 s of silence', expired === 0 && (await page('bob').ev(`!document.querySelector('#c-shares .ctile.held')`)), J(await deck('bob', `d.holds()`)));
+      await upN('alice');
+      await sleep(800);
+      // a tile leaving: the order stays valid on both sides, and the remaining tile is kept
+      const camKeep = (await visual('bob'))[0];
+      await call('alice', `c.stopShare()`);
+      await until(async () => (await tilesOf('bob')).length === 1 && (await tilesOf('alice')).length === 1, 10000, 'K: one tile left').catch(() => { });
+      await sleep(1200);
+      const [lb, la] = [await ord('bob'), await ord('alice')];
+      check('K10 a reorder survives a tile leaving: one tile left on both sides, each exactly once', lb.length === 1 && la.length === 1 && same(await visual('bob'), lb) && (await tilesOf('bob')).length === 1, J([lb, la]));
+      // the hide control only changes my own view
+      await page('bob').ev(`document.querySelector('#mega-deckhide').click()`); await sleep(900);
+      check('K11 hide collapses my stack and slides everything back, without touching anyone else\'s', await page('bob').ev(`!document.documentElement.classList.contains('deck-open') && getComputedStyle(document.querySelector('#call-stage')).display === 'none' && !document.querySelector('#mega-deckshow').hidden`) && await page('alice').ev(`document.documentElement.classList.contains('deck-open')`));
+      await page('bob').ev(`document.querySelector('#mega-deckshow').click()`); await sleep(900);
+      check('K12 show brings it back', await page('bob').ev(`document.documentElement.classList.contains('deck-open') && document.querySelector('#mega-deckshow').hidden`));
+      await call('alice', `c.startShare({ audio: false, profile: 'motion' })`);
+      await until(async () => (await tilesOf('bob')).length === 2, 20000, 'K: share back').catch(() => { });
+      // a phone (390 px): the same stack as a scrollable strip across the top, and nothing slides
+      await page('bob').send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(1500);
+      const ph = await page('bob').ev(`(() => { const s = document.querySelector('#call-stage').getBoundingClientRect(), t = [...document.querySelectorAll('#c-shares .ctile')].sort((a, b) => (+a.style.order || 0) - (+b.style.order || 0)).map(e => { const r = e.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; }), r = document.querySelector('#mega-rail'), cs = getComputedStyle(document.querySelector('#call-stage')); return { stage: [Math.round(s.left), Math.round(s.top), Math.round(s.width), Math.round(s.height)], tiles: t, railLeft: r && !r.hidden ? Math.round(r.getBoundingClientRect().left) : null, overflowX: cs.overflowX, hscroll: document.documentElement.scrollWidth > innerWidth + 1, deckw: getComputedStyle(document.documentElement).getPropertyValue('--m-deckw') }; })()`);
+      await shotOf('bob', 'K-stack-phone');
+      const dock = await page('bob').ev(`(() => { const b = document.querySelector('#call-dock .cd-acts .cd-b:last-of-type'), r = b && b.getBoundingClientRect(); if (!r) return null; const e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { h: r.height, top: r.top, bottom: r.bottom, vh: innerHeight, hit: !!(e && e.closest('#call-dock')) }; })()`);
+      check('K14 on a phone the call controls are on screen and can be pressed, on the cards too', !!dock && dock.hit && dock.h >= 20 && dock.top >= 0 && dock.bottom <= dock.vh, J(dock));
+      check('K13 on a phone the stack is a scrollable strip across the top, tiles side by side, and the dots do not slide', ph.stage[0] <= 1 && ph.stage[1] <= 1 && ph.stage[2] >= 380 && ph.stage[3] >= 80 && ph.stage[3] <= 140 && ph.tiles.length === 2 && ph.tiles[1][0] >= ph.tiles[0][0] + ph.tiles[0][2] - 1 && ph.tiles.every(t => t[3] >= 60) && (ph.railLeft === null || ph.railLeft <= 1) && ph.overflowX === 'auto' && !ph.hscroll, J(ph));
+      await page('bob').send('Emulation.clearDeviceMetricsOverride'); await sleep(800);
+    }
     await call('alice', `c.stopShare()`);
     const noShare = await until(async () => { const t = await tilesOf('bob'); return t.length === 1 && isCam(t[0]) ? t : null; }, 8000, 'share gone').catch(async () => tilesOf('bob'));
     check('J8 stopping the share removes only the screen tile', noShare.length === 1 && isCam(noShare[0]) && noShare[0].id === back.find(isCam)?.id, J(noShare));
     await call('alice', `c.setCamera(false)`);
-    for (const n of ['alice', 'bob']) { await call(n, `c.leave()`); await page(n).ev(`(document.querySelector('#c-close')?.click(), true)`); }
+    for (const n of ['alice', 'bob']) await call(n, `c.leave()`);
     await sleep(1000);
   }
   if (process.env.CALL_E2E_ONLY === 'video') throw Object.assign(new Error('CALL_E2E_ONLY=video: the other sections are skipped'), { only: true });
@@ -199,7 +292,7 @@ try {
     // capture every encoded frame the server forwards to us (what is on the wire after SRTP), per remote track
     const Orig = window.RTCPeerConnection; window.__frames = {}; window.__decoded = {};
     window.RTCPeerConnection = function (cfg, ...r) { cfg = Object.assign({}, cfg, { encodedInsertableStreams: true }); const pc = new Orig(cfg, ...r); const origSetCfg = pc.setConfiguration.bind(pc); pc.setConfiguration = c => origSetCfg(Object.assign({}, c, { encodedInsertableStreams: true }));
-      pc.addEventListener('track', ev => { if (ev.track.kind !== 'audio') return; const key = ev.track.id; window.__frames[key] = []; const { readable, writable } = ev.receiver.createEncodedStreams();
+      pc.addEventListener('track', ev => { if (ev.track.kind !== 'audio') return; const key = ev.track.id; window.__frames[key] = []; let es; try { es = ev.receiver.createEncodedStreams(); } catch (e) { (window.__capErr = window.__capErr || []).push(String(e)); return; } const { readable, writable } = es;
         readable.pipeThrough(new TransformStream({ transform(f, ctl) { if (window.__frames[key].length < 150) window.__frames[key].push(Array.from(new Uint8Array(f.data))); ctl.enqueue(f); } })).pipeTo(writable); });
       return pc; };
     window.RTCPeerConnection.prototype = Orig.prototype;
@@ -213,6 +306,7 @@ try {
   await ctl.ev(`(async()=>{ const room = new LivekitClient.Room(); await room.connect('ws://127.0.0.1:${LK_PORT}', ${J(plainTok)}); await room.localParticipant.setMicrophoneEnabled(true, undefined, { red: false }); window.__r = room; return true; })()`);
   await sleep(6000);
   const sub = await spy.ev(`window.__sub`);
+  console.log('spy capture errors:', J(await spy.ev(`({ errs: window.__capErr || [], has: typeof RTCRtpReceiver.prototype.createEncodedStreams, script: typeof RTCRtpScriptTransform, ua: navigator.userAgent })`)));
   const analysis = await spy.ev(`(async()=>{
     const frames = window.__frames; const out = [];
     const eq = (a, b) => { let n = 0, m = Math.min(a.length, b.length); for (let i = 0; i < m; i++) if (a[i] === b[i]) n++; return m ? n / m : 0; };
@@ -244,7 +338,7 @@ try {
   const encTones = enc.map(toneOf).filter(x => x !== null);
   const aliceEnc = enc.find(a => a.who === dev('alice')); const aliceShare = aliceEnc ? toneOf(aliceEnc) : null;
   check('E3 the same tone inside our E2EE frames is NOT decodable at the operator (alice tone 500 Hz)', aliceShare !== null && aliceShare < 0.05, `alice share ${aliceShare}; all ${J(encTones)}`);
-  check('E4 forwarded E2EE frame bodies are not predictable from one frame to the next (ciphertext: ~0.4% equal bytes)', enc.every(a => a.bodyEqual < 0.02), J(enc.map(a => a.bodyEqual)) + ' vs plaintext frames ' + J(plain.map(a => a.bodyEqual)) + ' (the unencrypted 1-byte header and 14-byte IV/trailer are excluded)');
+  check('E4 forwarded E2EE frame bodies are not predictable from one frame to the next (ciphertext: ~0.4% equal bytes)', enc.length >= 3 && enc.every(a => a.frames >= 50 && a.bodyEqual < 0.02), J(enc.map(a => a.bodyEqual)) + ' vs plaintext frames ' + J(plain.map(a => a.bodyEqual)) + ' (the unencrypted 1-byte header and 14-byte IV/trailer are excluded)');
   const spyHear = await spy.ev(`(async()=>{ const el = [...document.querySelectorAll('audio')]; const res = []; for (const a of el) { const ctx = (() => { try { return new AudioContext({ sinkId: { type: 'none' } }); } catch { return new AudioContext(); } })(); await ctx.resume(); const s = ctx.createMediaStreamSource(a.srcObject); const an = ctx.createAnalyser(); an.fftSize = 8192; s.connect(an); const buf = new Float32Array(an.frequencyBinCount); let best = 0; for (let k = 0; k < 12; k++) { await new Promise(r => setTimeout(r, 100)); an.getFloatFrequencyData(buf); let tot = 0; for (const v of buf) tot += Math.pow(10, v / 10); const bin = Math.round(500 / (ctx.sampleRate / 8192)); let pk = 0; for (let i = bin - 2; i <= bin + 2; i++) pk = Math.max(pk, Math.pow(10, buf[i] / 10)); best = Math.max(best, pk / tot); } res.push(+best.toFixed(3)); await ctx.close(); } return res; })()`);
   console.log('operator playback tone shares (plain control among them):', J(spyHear));
   await spy.ev(`window.__room.disconnect().then(() => true)`); await ctl.ev(`window.__r.disconnect().then(() => true)`);
@@ -338,17 +432,19 @@ try {
   // ---------------------------------------------------------------- I. the real UI
   const ui = page('dave');
   await call('dave', `c.leave()`);
-  await ui.ev(`document.querySelector('#btn-call').click()`);
-  await ui.waitFor(`!document.querySelector('#call-panel').hidden && document.querySelector('#c-join')`, 8000, 'panel');
-  await ui.ev(`document.querySelector('#c-join').click()`);
-  await ui.waitFor(`document.querySelector('.call-enc.ok')`, 20000, 'encrypted badge');
+  await ui.ev(`document.querySelector('#btn-call').click()`);   // the room header's Call button joins this room's call
+  await ui.waitFor(`!document.querySelector('#call-dock').hidden`, 8000, 'call dock');
+  await ui.waitFor(`!!document.querySelector('#call-dock .call-enc.ok')`, 20000, 'encrypted badge');
+  // The people are the ones under the room in the rail, not a list in the dock.
+  const peersShown = await until(async () => { const n = await ui.ev(`document.querySelectorAll('#rooms .room-live .live-p').length`); return n >= 3 ? n : 0; }, 20000, 'people under the room').catch(() => 0);
   await ui.ev(`document.querySelector('#c-set').click()`); await sleep(800);
-  const badge = await ui.ev(`document.querySelector('.call-enc').innerText`);
-  const peersShown = await ui.ev(`document.querySelectorAll('.cp').length`);
-  check('I1 UI: Call button opens the panel, Join voice connects, the badge says Encrypted', /Encrypted/.test(badge) && peersShown >= 3, `${badge}; ${peersShown} people listed`);
-  await ui.send('Page.bringToFront');
+  const settingsOpen = await ui.ev(`!document.querySelector('#call-settings').hidden && !!document.querySelector('#c-jf-url')`);
+  const badge = await ui.ev(`document.querySelector('#call-dock .call-enc').innerText`);
+  check('I1 UI: the Call button joins, the rail dock shows Encrypted and Settings, and the people under the room are listed', /Encrypted/.test(badge) && peersShown >= 3 && settingsOpen, `${badge}; ${peersShown} people in the rail; settings ${settingsOpen}`);
+  await ui.ev(`document.querySelector('#cs-close').click()`); await sleep(300);
+  await ui.send('Page.bringToFront'); await sleep(250);
   const shotRes = await ui.send('Page.captureScreenshot', { format: 'png' });
-  fs.writeFileSync(path.join(out, 'call-panel.png'), Buffer.from(shotRes.result.data, 'base64'));
+  fs.writeFileSync(path.join(out, 'call-dock.png'), Buffer.from(shotRes.result.data, 'base64'));
   await ui.ev(`document.querySelector('#c-leave')?.click()`);
 } catch (e) { if (e.only) console.log(e.message); else { console.error('TEST RUN ABORTED:', e); failed++; results.push({ name: 'run', ok: false, detail: String(e.stack || e) }); } }
 finally {

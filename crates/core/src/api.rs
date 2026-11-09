@@ -5,7 +5,7 @@ use crate::envelope::{check_name, safe_file_name, InviteLink, RelayLink};
 use crate::state::*;
 use crate::transport::{Api, HttpTransport};
 use crate::vault::KdfParams;
-use commons_proto::{b64, unb64};
+use commons_proto::{b64, unb64, LargeBeginReq};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -192,7 +192,7 @@ impl App {
         if in_call { self.saw_call(); }
         let r = self.dispatch(method, a);
         if in_call && r.is_ok() { self.saw_call(); }
-        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait" | "call_presence") { self.nudge(); }
+        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait" | "call_presence" | "live_poll" | "wall_get") { self.nudge(); }
         r
     }
 
@@ -215,6 +215,16 @@ impl App {
         let v = f(g.as_ref().ok_or("locked")?);
         self.seen.lock().unwrap().insert(key, v.clone());
         Ok(v)
+    }
+
+    /// A poll that does not wait: if the client is busy with something long it says so and the caller asks again a moment later.
+    fn try_read(&self, f: impl FnOnce(&Client) -> Value) -> R {
+        let g = match self.client.try_lock() {
+            Ok(g) => g,
+            Err(TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(TryLockError::WouldBlock) => return Ok(json!({"busy": true, "events": [], "head": 0, "cells": []})),
+        };
+        Ok(f(g.as_ref().ok_or("locked")?))
     }
 
     /// Before anything is created for a relay: is it there, and will it have us?
@@ -343,6 +353,51 @@ impl App {
             "delete" => self.with(|c| c.delete_message(&s(&a, "gid"), &s(&a, "id")).map(|_| json!({})).map_err(e)),
             "react" => self.with(|c| c.react(&s(&a, "gid"), &s(&a, "id"), &s(&a, "emoji"), a["on"].as_bool().unwrap_or(true)).map(|_| json!({})).map_err(e)),
             "typing" => self.with(|c| { c.send_typing(&s(&a, "gid")); Ok(json!({})) }),
+            "live_send" => self.with(|c| c.live_send(&s(&a, "gid"), &s(&a, "kind"), &s(&a, "data")).map(|sent| json!({"sent": sent})).map_err(e)),
+            // A poll: it never waits behind a long action (it answers "busy" and is asked again) and never wakes the sync loop.
+            "live_poll" => {
+                let (gid, since) = (s(&a, "gid"), a["since"].as_u64().unwrap_or(0));
+                self.try_read(|c| {
+                    let evs = c.live_poll(since, (!gid.is_empty()).then_some(gid.as_str()));
+                    json!({"events": evs.into_iter().map(|v| json!({"id": v.id, "gid": v.gid, "account": v.account, "kind": v.kind, "data": v.data, "ts": v.ts})).collect::<Vec<_>>(), "head": c.live_next})
+                })
+            }
+            // Owner only. `room` empty = the community's own card; `main` empty = back to the default colours.
+            "set_style" => self.with(|c| {
+                let (room, main, hi) = (s(&a, "room"), s(&a, "main"), s(&a, "hi"));
+                let duo = if main.is_empty() && hi.is_empty() { None } else { Some(crate::envelope::Duo { main, hi }) };
+                c.set_style(&s(&a, "cid"), (!room.is_empty()).then_some(room.as_str()), duo).map(|_| json!({})).map_err(e)
+            }),
+            // Owner only. `room` empty = the community's own card. `card` / `chat` (0..=31) and `dim` (0..=200) are numbers, or null / missing for automatic;
+            // all three missing puts the look back to automatic.
+            "set_look" => self.with(|c| {
+                let room = s(&a, "room");
+                let n = |k: &str| a[k].as_u64();
+                let (card, chat, dim) = (n("card"), n("chat"), n("dim"));
+                if [card, chat].iter().flatten().any(|v| *v > 255) || dim.is_some_and(|v| v > 65535) { return Err("a look has patterns 0 to 31 and a strength of 0 to 200 percent".to_string()); }
+                let look = crate::envelope::Look { card: card.map(|v| v as u8), chat: chat.map(|v| v as u8), dim: dim.map(|v| v as u16) };
+                c.set_look(&s(&a, "cid"), (!room.is_empty()).then_some(room.as_str()), Some(look)).map(|_| json!({})).map_err(e)
+            }),
+            // Owner only: `lock` is "1" / "0" / "" (leave), `clear` is true to start the wall over for everyone.
+            "set_wall" => self.with(|c| {
+                let lock = match s(&a, "lock").as_str() { "1" => Some(true), "0" => Some(false), _ => None };
+                c.set_wall(&s(&a, "cid"), &s(&a, "room"), lock, a["clear"].as_bool().unwrap_or(false)).map(|_| json!({})).map_err(e)
+            }),
+            "wall_draw" => self.with(|c| {
+                let cells: Vec<(u32, u32, u8, u8)> = a["cells"].as_array().map(|v| v.iter().filter_map(|x| { let x = x.as_array()?; Some((x.first()?.as_u64()? as u32, x.get(1)?.as_u64()? as u32, x.get(2)?.as_u64()? as u8, x.get(3)?.as_u64()? as u8)) }).collect()).unwrap_or_default();
+                c.wall_draw_to(&s(&a, "gid"), &cells, a["share"].as_bool().unwrap_or(true)).map(|sent| json!({"sent": sent})).map_err(e)
+            }),
+            // The wall as it stands. With `rev` equal to the last answer's, only the small header comes back.
+            "wall_get" => {
+                let (gid, rev) = (s(&a, "gid"), a["rev"].as_u64());
+                self.try_read(|c| {
+                    let v = c.wall_view(&gid);
+                    let same = rev == Some(v.rev);
+                    json!({"carrier": gid.strip_prefix(crate::wall::CWALL_PREFIX).and_then(|cid| c.wall_carrier(cid)), "gen": v.gen, "locked": v.locked, "rev": v.rev, "snap_at": v.snap_at, "peer_at": v.peer_at, "same": same,
+                        "cells": if same { vec![] } else { v.cells.iter().map(|(p, g, col, by)| json!([p, g, col, by])).collect::<Vec<_>>() }})
+                })
+            }
+            "wall_snapshot" => self.with(|c| c.wall_snapshot(&s(&a, "gid")).map(|chunks| json!({"chunks": chunks})).map_err(e)),
             "set_listening_sharing" => self.with(|c| c.set_listening_sharing(a["on"].as_bool().unwrap_or(false), &s(&a, "rune")).map(|_| json!({})).map_err(e)),
             "send_file" => {
                 let data = unb64(&s(&a, "data")).map_err(e)?;
@@ -386,8 +441,87 @@ impl App {
                 let at = a.get("offset").and_then(|x| x.as_u64()).unwrap_or(0).min(d.len() as u64) as usize;
                 Ok(json!({"data": b64(&d[at..(at + FILE_CHUNK).min(d.len())])}))
             }
+            // Large files: the UI hands over one chunk of the File at a time; the core encrypts and uploads it with
+            // the client free, and never holds more than that chunk. The relay remembers what arrived, so offering
+            // the same file again (after a drop or a restart) continues instead of starting over.
+            "file_upload_begin" => {
+                let (gid, name, mime, caption) = (s(&a, "gid"), s(&a, "name"), s(&a, "mime"), s(&a, "caption"));
+                let size = a.get("size").and_then(|x| x.as_u64()).ok_or("missing file size")?;
+                let lm = a.get("last_modified").and_then(|x| x.as_u64()).unwrap_or(0);
+                let (u, (api, k)) = self.with(|c| Ok((c.large_upload_begin(&gid, &name, &mime, size, lm, &caption).map_err(e)?, c.net_handle().map_err(e)?)))?;
+                let resp = api.large_begin(&k, &u.id, &LargeBeginReq { gid: gid.clone(), size, chunk_size: u.chunk_size }).map_err(e)?;
+                let u = self.with(|c| c.large_upload_started(&u.id, &resp).map_err(e))?;
+                Ok(json!({"id": u.id, "chunk_size": u.chunk_size, "chunks": u.chunks, "uploaded": u.uploaded, "expires": u.expires, "complete": u.complete, "name": u.name}))
+            }
+            "file_upload_chunk" => {
+                let id = s(&a, "id");
+                let index = a.get("index").and_then(|x| x.as_u64()).ok_or("missing chunk index")?;
+                let plain = unb64(&s(&a, "data")).map_err(e)?;
+                let prep = self.with(|c| c.large_chunk_prepare(&id, index, &plain).map_err(e))?;
+                if prep.needed {
+                    let (api, k, blob) = self.with(|c| {
+                        let blob = c.st.large_uploads.get(&id).map(|u| u.blob.clone()).ok_or("no such upload")?;
+                        let (api, k) = c.net_handle().map_err(e)?;
+                        Ok((api, k, blob))
+                    })?;
+                    api.large_put_chunk(&k, &blob, index, &prep.ct).map_err(e)?; // slow part, client free
+                }
+                self.with(|c| { c.large_chunk_done(&id, index); Ok(json!({"sent": prep.needed})) })
+            }
+            "file_upload_finish" => {
+                let id = s(&a, "id");
+                let (blob, root, (api, k)) = self.with(|c| {
+                    let (b, r) = c.large_finish_prepare(&id).map_err(e)?;
+                    Ok((b, r, c.net_handle().map_err(e)?))
+                })?;
+                api.large_finish(&k, &blob, &root).map_err(e)?;
+                self.with(|c| c.large_finish_done(&id).map(|mid| json!({"id": mid})).map_err(e))
+            }
+            "file_upload_cancel" => {
+                let id = s(&a, "id");
+                let blob = self.with(|c| c.large_upload_cancel(&id).map_err(e))?;
+                if let Some(b) = blob {
+                    // Best effort: a relay that cannot be reached now will remove the orphan when it expires.
+                    if let Ok((api, k)) = self.with(|c| c.net_handle().map_err(e)) { let _ = api.large_delete(&k, &b); }
+                }
+                Ok(json!({}))
+            }
+            "file_download_begin" => {
+                let folder = s(&a, "folder");
+                let d = self.with(|c| c.large_download_begin_in(&s(&a, "gid"), &s(&a, "id"), Some(&folder)).map_err(e))?;
+                Ok(json!({"done": d.done, "chunks": d.chunks, "size": d.size, "chunk_size": d.chunk_size, "save_name": d.save_name, "finished": d.finished, "path": d.path}))
+            }
+            "file_download_chunk" => {
+                let (gid, id) = (s(&a, "gid"), s(&a, "id"));
+                let st = self.with(|c| c.large_download_state(&id).ok_or_else(|| "no download in progress".to_string()))?;
+                if st.finished { return Ok(json!({"done": st.done, "chunks": st.chunks, "size": st.size, "finished": true, "path": st.path, "save_name": st.save_name})); }
+                let (api, k) = self.with(|c| c.net_handle().map_err(e))?;
+                let ct = api.large_get_chunk(&k, &st.blob, st.done).map_err(e)?; // slow part, client free
+                let step = self.with(|c| c.large_download_write(&gid, &id, &ct).map_err(e))?;
+                Ok(json!({"done": step.done, "chunks": step.chunks, "size": step.size, "finished": step.finished, "path": step.path, "save_name": st.save_name}))
+            }
+            "file_download_cancel" => self.with(|c| c.large_download_cancel(&s(&a, "id")).map(|_| json!({})).map_err(e)),
+            "file_show_in_folder" => self.with(|c| c.show_download_in_folder(&s(&a, "id")).map(|opened| json!({"opened": opened})).map_err(e)),
+            // Only the sender's account may do this, and only after the relay really let go of the bytes.
+            "file_delete" => {
+                let (gid, id) = (s(&a, "gid"), s(&a, "id"));
+                let blob = self.with(|c| c.large_delete_prepare(&gid, &id).map_err(e))?;
+                let (api, k) = self.with(|c| c.net_handle().map_err(e))?;
+                match api.large_delete(&k, &blob) {
+                    Ok(()) => {}
+                    Err(err) if crate::transport::relay_status(&err) == Some(404) => {}
+                    Err(err) => return Err(e(err)),
+                }
+                self.with(|c| c.large_delete_done(&gid, &id).map(|_| json!({})).map_err(e))
+            }
+            "pick_folder" => crate::large::pick_folder(&s(&a, "start")).map(|path| json!({"path": path})).map_err(e),
+            "set_download_dir" => self.with(|c| c.set_download_dir(&s(&a, "dir")).map(|dir| json!({"dir": dir})).map_err(e)),
             "create_community" => self.with(|c| c.create_community(&s(&a, "name")).map(|id| json!({"id": id})).map_err(e)),
-            "create_channel" => self.with(|c| c.create_channel(&s(&a, "cid"), &s(&a, "name")).map(|id| json!({"id": id})).map_err(e)),
+            "create_channel" => self.with(|c| {
+                // `kind` is optional: an app from before voice rooms sends none, and "" is a text room.
+                let kind = a.get("kind").and_then(|x| x.as_str()).unwrap_or("");
+                c.create_channel_kind(&s(&a, "cid"), &s(&a, "name"), kind).map(|id| json!({"id": id})).map_err(e)
+            }),
             "create_invite" => self.with(|c| {
                 let uses = a.get("uses").and_then(|x| x.as_u64()).map(|x| x as u32);
                 let ttl = a.get("ttl").and_then(|x| x.as_u64()).unwrap_or(7 * 86400);
@@ -519,7 +653,8 @@ impl App {
                 let people = self.with(|c| Ok(c.call_presence(&resp))).map_err(e)?;
                 let mut rooms = serde_json::Map::new();
                 for (gid, list) in people {
-                    rooms.insert(gid, json!(list.iter().map(|p| json!({"account": p.account, "name": p.name, "me": p.is_me})).collect::<Vec<_>>()));
+                    rooms.insert(gid, json!(list.iter().map(|p| json!({"account": p.account, "name": p.name, "me": p.is_me,
+                        "muted": p.muted, "deafened": p.deafened, "speaking": p.speaking})).collect::<Vec<_>>()));
                 }
                 Ok(json!({"rooms": rooms}))
             }
@@ -528,14 +663,22 @@ impl App {
     }
 }
 
+#[doc(hidden)]
+pub fn debug_snapshot(c: &Client) -> Value { snapshot(c) }
+
 fn snapshot(c: &Client) -> Value {
     let me = c.my_account();
     let comms: Vec<Value> = c.st.communities.values().map(|co| {
         let role = co.role_of(&me).unwrap_or(Role::Member);
         let list = c.channels_of(&co.id);
         let unread: usize = list.iter().map(|x| x.unread).sum();
-        let chans: Vec<Value> = list.into_iter().map(|ch| json!({"gid": ch.gid, "name": ch.name, "joined": ch.joined, "unread": ch.unread, "status": c.group_status(&ch.gid)})).collect();
-        json!({"id": co.id, "name": if co.name.is_empty() { "…".to_string() } else { co.name.clone() }, "role": role.name(), "removed": co.removed, "removed_reason": co.removed_reason, "channels": chans, "unread": unread,
+        let chans: Vec<Value> = list.into_iter().map(|ch| json!({"gid": ch.gid, "name": ch.name, "kind": ch.kind, "joined": ch.joined, "unread": ch.unread, "status": c.group_status(&ch.gid)})).collect();
+        let style = co.style.as_ref().map(|d| json!({"ver": d.ver, "ts": d.ts, "by": c.display_name(&co.owner), "community": d.community.as_ref().map(|x| x.lower()).map(|x| json!({"main": x.main, "hi": x.hi})),
+            "locked": d.locked.iter().filter(|g| **g == co.id || co.channels.iter().any(|ch| &ch.id == *g)).collect::<Vec<_>>(),
+            "looks": d.looks.iter().filter(|(g, _)| **g == co.id || co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, l)| (g.clone(), json!({"card": l.card, "chat": l.chat, "dim": l.dim}))).collect::<serde_json::Map<String, Value>>(),
+            "wall": d.wall.iter().filter(|(g, _)| **g == co.id || co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, n)| (g.clone(), json!(n))).collect::<serde_json::Map<String, Value>>(),
+            "rooms": d.rooms.iter().filter(|(g, _)| co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, x)| { let x = x.lower(); (g.clone(), json!({"main": x.main, "hi": x.hi})) }).collect::<serde_json::Map<String, Value>>()}));
+        json!({"id": co.id, "style": style, "name": if co.name.is_empty() { "…".to_string() } else { co.name.clone() }, "role": role.name(), "removed": co.removed, "removed_reason": co.removed_reason, "channels": chans, "unread": unread,
                "invites": co.invites.iter().map(|i| json!({"id": i.id, "expires": i.expires, "uses_left": i.uses_left, "mine": co.invite_sks.contains_key(&i.id)})).collect::<Vec<_>>(),
                "status": c.group_status(&co.id)})
     }).collect();
@@ -547,6 +690,7 @@ fn snapshot(c: &Client) -> Value {
     json!({"me": {"account": me, "name": c.st.name, "device": c.my_device()}, "relay": c.st.relay, "relay_secret": !c.st.relay_invite.is_empty(), "communities": comms, "joining": joining, "refused": refused,
            "typing_enabled": c.st.typing_enabled, "share_listening": c.st.share_listening, "rune_url": c.rune_url(), "listening": listening,
            "outbox": c.st.outbox.len(), "problems": problems, "net": net, "net_detail": c.net.detail, "revoked": c.st.self_revoked,
+           "download_dir": c.download_dir().display().to_string(),
            "mobile": cfg!(any(target_os = "ios", target_os = "android")), "version": c.activity})
 }
 
@@ -575,7 +719,16 @@ fn messages(c: &Client, gid: &str, limit: usize, around: &str) -> Value {
     let out: Vec<Value> = all[start..].iter().map(|m| {
         let (kind, text, file) = match &m.body {
             MsgBody::Text(t) => ("text", t.clone(), Value::Null),
-            MsgBody::File { name, mime, size, caption, .. } => ("file", caption.clone(), json!({"name": name, "mime": mime, "size": size})),
+            MsgBody::File { name, mime, size, caption, large, .. } => {
+                let mut f = json!({"name": name, "mime": mime, "size": large.as_ref().map(|l| l.size).unwrap_or(*size)});
+                if let Some(l) = large {
+                    f["large"] = json!({"size": l.size, "chunks": l.chunks, "chunk_size": l.chunk_size, "sha256": l.sha256, "expires": l.expires});
+                    if let Some(d) = c.large_download_state(&m.id) {
+                        f["download"] = json!({"done": d.done, "chunks": d.chunks, "size": d.size, "finished": d.finished, "path": d.path, "save_name": d.save_name});
+                    }
+                }
+                ("file", caption.clone(), f)
+            }
             MsgBody::Notice(t) => match member_line(c, t) { Some(line) => ("member", line, Value::Null), None => ("notice", t.clone(), Value::Null) },
         };
         let reply = m.reply.as_deref().and_then(|id| find.get(id)).map(|r| json!({"id": r.id, "name": c.display_name(&r.sender), "text": match &r.body { MsgBody::Text(t) if !r.deleted => t.chars().take(120).collect::<String>(), MsgBody::File { name, .. } => format!("[file] {name}"), _ => "(deleted)".into() }}));

@@ -92,7 +92,7 @@ export function startBridge(out, name, port) {
 
 export async function startChrome(out, name, dbgPort, toneHz, extra = []) {
   const toneFile = path.join(out, `tone-${toneHz}.wav`); if (!fs.existsSync(toneFile)) wav(toneFile, toneHz);
-  const p = run(CHROME, ['--headless=new', `--remote-debugging-port=${dbgPort}`, '--user-data-dir=' + path.join(out, 'chrome-' + name),
+  const p = run(CHROME, ['--headless=new', '--password-store=basic', '--use-mock-keychain', `--remote-debugging-port=${dbgPort}`, '--user-data-dir=' + path.join(out, 'chrome-' + name),
     '--use-gl=angle', '--use-angle=vulkan', '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu', '--ozone-platform=headless', '--disable-software-rasterizer',
     '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${toneFile}`, '--autoplay-policy=no-user-gesture-required', '--mute-audio', '--disable-audio-output', '--allow-loopback-in-peer-connection', '--disable-features=WebRtcHideLocalIpsWithMdns',
     '--no-first-run', '--no-default-browser-check', '--window-size=1280,800', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', ...extra, 'about:blank'],

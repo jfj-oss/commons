@@ -71,7 +71,7 @@
     if (!r.library) r.reasons.push('The call library (vendor/livekit-client.umd.js) did not load.');
     if (!r.secureContext) r.reasons.push('This page is not a secure context, so the browser hides camera, microphone and encryption APIs. Use https:// or http://127.0.0.1.');
     if (!r.webrtc) r.reasons.push('This browser or webview has no WebRTC (RTCPeerConnection), so it cannot make calls at all.');
-    if (r.webrtc && !r.e2ee) r.reasons.push('This browser or webview cannot encrypt call frames (no insertable streams / RTCRtpScriptTransform). Megatron will not start a call without end-to-end encryption.');
+    if (r.webrtc && !r.e2ee) r.reasons.push('This browser or webview cannot encrypt call frames (no insertable streams / RTCRtpScriptTransform). mega will not start a call without end-to-end encryption.');
     if (!r.worker || !r.subtle) r.reasons.push('This browser lacks Web Workers or WebCrypto, which the frame encryption needs.');
     if (!r.getUserMedia) r.reasons.push('This browser or webview does not offer microphone access (getUserMedia).');
     r.ok = r.reasons.length === 0;
@@ -100,6 +100,7 @@
       this.keyState = null; this.appliedEpoch = null; this._keyed = new Set(); this.members = new Map(); this.byAccount = new Map();
       this.muted = false; this.gameMuted = false; this.gameName = null; this.gameError = ''; this.deafened = false; this.pttHeld = false; this.sharing = false; this.camera = false;
       this.blocked = new Map(); this.decryptFail = new Map(); this.tracks = new Map(); this.audioEls = new Map(); this.speaking = new Set();
+      this._speakingSent = null; this._wantSpeaking = '0'; this._speakTimer = null; this._speakAt = 0;   // what the rail reads back, via the relay
       this.play = null; this.playHost = null;
       this.viewQuality = new Map(); this.attempt = 0; this.rotations = 0; this.lastRotation = 0; this.events = [];
       this._leaving = false; this._token = null;
@@ -144,7 +145,7 @@
           if (this._gameWatch !== mine) return;
           seq = st.seq;
           this.gameName = st.game || null; this.gameError = st.error || '';
-          if (st.muted !== this.gameMuted) { this.gameMuted = !!st.muted; this.log(st.muted ? 'muted by game key' : 'game key let go'); await this.gate.setGame(st.muted).catch(e => this.log('mic: ' + e.message)); }
+          if (st.muted !== this.gameMuted) { this.gameMuted = !!st.muted; this.log(st.muted ? 'muted by game key' : 'game key let go'); await this.gate.setGame(st.muted).catch(e => this.log('mic: ' + e.message)); this._announceSpeaking(true); }
           this.changed();
         } catch (e) {
           if (this._gameWatch !== mine) return;
@@ -163,7 +164,7 @@
       const m = (e && e.message) || String(e);
       if (/no call server configured/.test(m)) return new CallError('no-server', 'This relay has no call server configured. Ask whoever runs it to set up LiveKit (docs/DEPLOY.md).');
       if (/not a current member|not in this room|no longer a member/.test(m)) return new CallError('not-member', 'You are not a current member of this room, so you cannot join its call.');
-      if (/NotAllowed|Permission|denied/i.test(m)) return new CallError('permission', 'Microphone permission was denied. Allow microphone access for Megatron in your system or browser settings, then try again.');
+      if (/NotAllowed|Permission|denied/i.test(m)) return new CallError('permission', 'Microphone permission was denied. Allow microphone access for mega in your system or browser settings, then try again.');
       if (/NotFound|Requested device not found/i.test(m)) return new CallError('no-device', 'No microphone was found. Plug one in or pick another device in call settings.');
       if (/websocket|could not establish|signal|timeout|ECONN|Failed to fetch|NetworkError|connect/i.test(m)) return new CallError('network', 'Could not reach the call server. Check your connection; if you run the server, check that its address and ports (TCP 443/7881, UDP 7882 or the TURN ports) are reachable. (' + m + ')');
       return new CallError('other', m);
@@ -207,6 +208,8 @@
       for (let i = 0; i < 50 && !room.isE2EEEnabled; i++) await sleep(100);
       if (!room.isE2EEEnabled) throw new CallError('no-e2ee', 'The call connected but frame encryption did not start, so it was closed. Nothing was sent.');
       this.phase = 'connected'; this.log('connected, epoch ' + st.epoch);
+      if (this.deafened) this._announceDeafened();
+      this._announceSpeaking(true);
       // microphone: join muted when push-to-talk is on
       this.muted = p.ptt ? true : this.muted;
       this.gate.manual = this.muted; this.gate.game = this.gameMuted;
@@ -232,6 +235,7 @@
     }
 
     async _teardown() {
+      clearTimeout(this._speakTimer); this._speakTimer = null; this._speakingSent = null;
       this.gate.close();
       this._releasePlayback();                 // stop the movie's capture, audio graph and preview, even if the room is already gone
       const room = this.room; this.room = null;
@@ -342,7 +346,8 @@
       room.on(E.TrackUnsubscribed, (track, pub, rp) => { this.tracks.delete(rp.identity + '/' + pub.trackSid); if (track.kind === 'audio') this._dropAudio(rp.identity, pub.trackSid); this.changed(); });
       room.on(E.TrackUnpublished, (pub, rp) => { const k = rp.identity + '/' + pub.trackSid; this.tracks.delete(k); this.blocked.delete(k); this.viewQuality.delete(pub.trackSid); this._dropAudio(rp.identity, pub.trackSid); this.changed(); });
       room.on(E.TrackMuted, () => this.changed()); room.on(E.TrackUnmuted, () => this.changed());
-      room.on(E.ActiveSpeakersChanged, sp => { this.speaking = new Set(sp.map(s => s.identity)); this.changed(); });
+      if (E.ParticipantAttributesChanged) room.on(E.ParticipantAttributesChanged, () => this.changed());
+      room.on(E.ActiveSpeakersChanged, sp => { this.speaking = new Set(sp.map(s => s.identity)); this.changed(); this._announceSpeaking(); });
       room.on(E.Reconnecting, () => { this.phase = 'reconnecting'; this.log('connection lost; reconnecting'); this.changed(); });
       room.on(E.Reconnected, () => { this.phase = 'connected'; this.log('reconnected'); this._pollNow(); this.changed(); });
       room.on(E.SignalReconnecting, () => { this.log('signal reconnecting'); });
@@ -419,13 +424,41 @@
     async setMuted(m) {
       this.muted = m;
       try { await this.gate.setManual(m); } catch (e) { this.muted = true; this.gate.manual = true; const ce = this._explain(e); this.fail(ce.kind, ce.message); }
+      this._announceSpeaking(true);   // someone who is muted is not "speaking" to the rail, whatever the audio meter says
       this.changed();
     }
     async setDeafened(d) {
       this.deafened = d;
       this.audioEls.forEach(el => { el.muted = d; });
+      this._announceDeafened();
       if (d) await this.setMuted(true);   // deafen implies mute
       this.changed();
+    }
+    // Others see "deafened" from a participant attribute. An older relay does not grant it; then only we know.
+    _announceDeafened() {
+      const lp = this.room && this.room.localParticipant;
+      if (lp && lp.setAttributes) lp.setAttributes({ deaf: this.deafened ? '1' : '0' }).catch(e => this.log('could not share deafened state: ' + (e && e.message || e)));
+    }
+    // The media server's participant list has no speaker flag, so each call client publishes its own (the relay
+    // reads it back for members who are not in the call). Active-speaker events are chatty, so send at most one
+    // change per ~600 ms; mute changes the meaning of "speaking", so that one goes at once.
+    _announceSpeaking(now = false) {
+      const lp = this.room && this.room.localParticipant;
+      if (!lp || !lp.setAttributes || !this.me) return;
+      this._wantSpeaking = this.speaking.has(this.me) && !this.muted && !this.gameMuted ? '1' : '0';
+      if (this._wantSpeaking === this._speakingSent) return;
+      const send = () => {
+        this._speakTimer = null;
+        const v = this._wantSpeaking;
+        if (v === this._speakingSent) return;
+        const p = this.room && this.room.localParticipant;
+        if (!p || !p.setAttributes) return;
+        this._speakingSent = v; this._speakAt = Date.now();
+        p.setAttributes({ speaking: v }).catch(e => this.log('could not share speaking state: ' + (e && e.message || e)));
+      };
+      const wait = now ? 0 : 600 - (Date.now() - this._speakAt);
+      if (wait <= 0) send();
+      else if (!this._speakTimer) this._speakTimer = setTimeout(send, wait);
     }
     setPtt(on) { this.prefs.ptt = on; this.savePrefs(); if (on) this.setMuted(true); this.changed(); }
     setPttKey(code) { this.prefs.pttKey = code; this.savePrefs(); this.changed(); }
@@ -534,7 +567,7 @@
 
     // ---- Jellyfin: configured per device, in this browser's localStorage only. The token/key never leaves this device.
     // Sign-in is Quick Connect (the user types a code into Jellyfin, no API key to copy); a pasted API key remains as an
-    // advanced fallback. Both are sent as X-Emby-Token straight to the Jellyfin server.
+    // advanced fallback. Both go in the standard Authorization header (Token=...) straight to the Jellyfin server.
     jellyfinConfig() {
       const c = lsGet('commons.call.jellyfin', null) || {};
       return {
@@ -555,8 +588,10 @@
       return String(v);
     }
     // Jellyfin's client identity header. Quick Connect needs it even before there is a token.
-    jellyfinHeader() {
-      return 'MediaBrowser Client="Megatron", Device="Call", DeviceId="' + this.jellyfinDeviceId() + '", Version="0.2.3"';
+    // Sent as the standard Authorization header: Jellyfin 10.11+ refuses the old X-Emby-Authorization one with 400.
+    jellyfinHeader(token) {
+      const t = token ? ', Token="' + String(token).replace(/"/g, '') + '"' : '';
+      return 'MediaBrowser Client="Megatron", Device="Call", DeviceId="' + this.jellyfinDeviceId() + '", Version="0.2.5"' + t;
     }
     saveJellyfinConfig(url, key) {
       lsSet('commons.call.jellyfin', { url: String(url || '').trim().replace(/\/+$/, ''), key: String(key || '').trim() });
@@ -584,9 +619,8 @@
     async _jellyfinFetch(path, opts = {}) {
       const c = this.jellyfinConfig();
       this._jellyfinUrlCheck(c);
-      const headers = { 'X-Emby-Authorization': this.jellyfinHeader(), ...(opts.headers || {}) };
       const cred = opts.noToken ? '' : this.jellyfinCredential();
-      if (cred) headers['X-Emby-Token'] = cred;
+      const headers = { 'Authorization': this.jellyfinHeader(cred), ...(opts.headers || {}) };
       let r;
       try { r = await fetch(c.url + path, { ...opts, headers, mode: 'cors', credentials: 'omit' }); }
       catch (e) { throw new CallError('jellyfin', 'Could not reach Jellyfin at ' + c.url + '. Check the address and that Jellyfin is running, and that Jellyfin allows this page\'s origin (CORS). (' + (e.message || e) + ')'); }
@@ -652,7 +686,7 @@
       if (t) { u.searchParams.set('searchTerm', t); u.searchParams.set('SortBy', 'SortName'); u.searchParams.set('SortOrder', 'Ascending'); }
       else { u.searchParams.set('SortBy', 'DateCreated,SortName'); u.searchParams.set('SortOrder', 'Descending'); }
       let r;
-      try { r = await fetch(u.href, { headers: { 'X-Emby-Authorization': this.jellyfinHeader(), 'X-Emby-Token': this.jellyfinCredential() }, mode: 'cors', credentials: 'omit' }); }
+      try { r = await fetch(u.href, { headers: { 'Authorization': this.jellyfinHeader(this.jellyfinCredential()) }, mode: 'cors', credentials: 'omit' }); }
       catch (e) { throw new CallError('jellyfin', 'Could not reach Jellyfin at ' + c.url + '. Check the address and that Jellyfin is running, and that Jellyfin allows this page\'s origin (CORS). (' + (e.message || e) + ')'); }
       if (r.status === 401 || r.status === 403) throw new CallError('jellyfin', 'Jellyfin refused the sign-in. Sign in again in call Settings.');
       if (!r.ok) throw new CallError('jellyfin', 'Jellyfin answered ' + r.status + ' ' + r.statusText + '.');
@@ -668,8 +702,8 @@
       const c = this.jellyfinConfig();
       const cred = this.jellyfinCredential();
       if (!c.url || !item || !item.hasImage || !cred) return '';
-      // images cannot carry the X-Emby-Token header, so the key goes in the query; Jellyfin accepts api_key there
-      return c.url + '/Items/' + encodeURIComponent(item.id) + '/Images/Primary?maxHeight=360&quality=80&api_key=' + encodeURIComponent(cred);
+      // images cannot carry a header, so the key goes in the query as ApiKey (Jellyfin's current name for it)
+      return c.url + '/Items/' + encodeURIComponent(item.id) + '/Images/Primary?maxHeight=360&quality=80&ApiKey=' + encodeURIComponent(cred);
     }
     async startJellyfinPlayback(item, opts = {}) {
       const c = this.jellyfinConfig();
@@ -679,9 +713,9 @@
       const q = encodeURIComponent;
       const urls = [
         // direct play first: no transcoding load on the server and the best picture
-        c.url + '/Videos/' + q(item.id) + '/stream?static=true&api_key=' + q(cred),
+        c.url + '/Videos/' + q(item.id) + '/stream?static=true&ApiKey=' + q(cred),
         // h264/aac mp4 transcode when the container or codec will not play in this browser (MKV/HEVC/DTS and friends)
-        c.url + '/Videos/' + q(item.id) + '/stream.mp4?Static=false&VideoCodec=h264&AudioCodec=aac&AudioChannels=2&Container=mp4&MaxWidth=' + prof.width + '&MaxHeight=' + prof.height + '&api_key=' + q(cred),
+        c.url + '/Videos/' + q(item.id) + '/stream.mp4?Static=false&VideoCodec=h264&AudioCodec=aac&AudioChannels=2&Container=mp4&MaxWidth=' + prof.width + '&MaxHeight=' + prof.height + '&ApiKey=' + q(cred),
       ];
       return this._startPlayback({ title: item.name || 'Video', kind: 'jellyfin', urls, crossOrigin: true, profile: opts.profile });
     }
@@ -1179,6 +1213,7 @@
           identity, me, name: m ? m.name : 'Unknown device ' + identity.slice(0, 8), account: m ? m.account : null, member: !!m,
           speaking: me ? this.speaking.has(identity) && !this.muted && !this.gameMuted : this.speaking.has(identity),
           muted: me ? this.muted || this.gameMuted : (p ? !p.isMicrophoneEnabled : true), volume: me ? 1 : this.volumeOf(identity),
+          deafened: me ? this.deafened : !!(p && p.attributes && p.attributes.deaf === '1'),
           cantDecrypt: !!(fail && now - fail.last < 6000), decryptMsg: fail ? fail.msg : '',
           quality: p && !me ? p.connectionQuality : undefined,
         });

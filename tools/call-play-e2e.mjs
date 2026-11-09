@@ -28,7 +28,7 @@ const MP4 = fs.readFileSync(mp4);
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
 const CORS = {
   'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'X-Emby-Token, X-Emby-Authorization, Content-Type, Range', 'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
+  'Access-Control-Allow-Headers': 'Authorization, Content-Type, Range', 'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
 };
 
 // ---------------------------------------------------------------- stand-in Jellyfin, with Quick Connect
@@ -45,12 +45,16 @@ const jf = http.createServer(async (req, res) => {
   const send = (code, type, body, extra = {}) => { res.writeHead(code, { 'Content-Type': type, ...CORS, ...extra }); res.end(req.method === 'HEAD' ? undefined : body); };
   if (req.method === 'OPTIONS') return send(204, 'text/plain', '');
   const u = new URL(req.url, jfBase);
-  const client = req.headers['x-emby-authorization'] || '';
+  // Like Jellyfin 10.11+: the old X-Emby-Authorization header is refused outright; identity and token travel in
+  // the standard Authorization header (MediaBrowser Client=..., Token="...").
+  if (req.headers['x-emby-authorization']) { jfHits.legacyHeader = (jfHits.legacyHeader || 0) + 1; return send(400, 'text/plain', 'legacy authorization is disabled'); }
+  const client = req.headers['authorization'] || '';
+  const token = (client.match(/Token="([^"]*)"/) || [])[1] || '';
   if (client.includes('Client="Megatron"')) jfHits.clientHeaders++; else if (req.url.includes('QuickConnect') || req.url.includes('Authenticate')) jfHits.badClient++;
   if (u.pathname === '/Items' || u.pathname === '/Users/user1/Items') {
     const userRoute = u.pathname !== '/Items';
     const want = userRoute ? 'test-qc-token' : 'test-jellyfin-key';
-    if (req.headers['x-emby-token'] !== want) { jfHits.badKeys++; return send(401, 'text/plain', 'no'); }
+    if (token !== want) { jfHits.badKeys++; return send(401, 'text/plain', 'no'); }
     if (userRoute) jfHits.userItems++; else jfHits.items++;
     return send(200, 'application/json', JSON.stringify({ Items: JF_ITEMS }));
   }

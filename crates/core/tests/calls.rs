@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 const SECRET: &str = "unit-test-secret-0123456789abcdef-0123456789";
 
 fn net_with_calls() -> Net {
-    let cfg = LiveKitCfg { api_key: "k1".into(), api_secret: SECRET.into(), url: "wss://calls.example.test".into(), token_ttl_secs: 600, turn_port: None };
+    let cfg = LiveKitCfg { api_key: "k1".into(), api_secret: SECRET.into(), url: "wss://calls.example.test".into(), token_ttl_secs: 600, turn_port: None, api_url: None };
     Net::with_limits(commons_relay::Limits { livekit: Some(cfg), ..Default::default() })
 }
 
@@ -158,7 +158,7 @@ fn browser_bridge_is_one_room_one_secret_loopback_only() {
     // the page itself is served, without the secret in any request line
     let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     s.write_all(format!("GET /callpage.html HTTP/1.1\r\nHost: {h}\r\n\r\n").as_bytes()).unwrap(); let mut out = String::new(); let _ = s.read_to_string(&mut out);
-    assert!(out.contains("200 OK") && out.contains("Megatron call"));
+    assert!(out.contains("200 OK") && out.contains("mega call"));
 }
 
 #[test]

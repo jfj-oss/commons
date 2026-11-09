@@ -38,7 +38,8 @@ function fmtDay(ts) {
   if (d.toDateString() === y.toDateString()) return 'Yesterday';
   return d.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', ...(d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) });
 }
-const fmtSize = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+const fmtSize = n => n >= 1073741824 ? `${(n / 1073741824).toFixed(2)} GB` : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+const LARGE_OVER = 24 * 1024 * 1024;
 function fmtLeft(ts) {
   const s = ts - Date.now() / 1000; if (s <= 0) return 'expired';
   if (s < 3600) return `${Math.ceil(s / 60)} min left`;
@@ -228,7 +229,14 @@ const mobileApp = () => window.__commonsPlatform === 'mobile';
 // message box (and whatever is being typed) stays above the keyboard.
 (function fitKeyboard() {
   const vv = window.visualViewport; if (!vv) return;
-  const fit = () => { if (mobileApp()) document.documentElement.style.setProperty('--app-h', vv.height + 'px'); };
+  // iOS also scrolls the page up to show the focused box; the page itself is pinned (style.css), and the app is
+  // placed where the visible area really is (offsetTop), so the message box stays just above the keyboard.
+  const fit = () => {
+    if (!mobileApp()) return;
+    const r = document.documentElement.style;
+    r.setProperty('--app-h', vv.height + 'px'); r.setProperty('--app-top', vv.offsetTop + 'px');
+    if (window.scrollY) window.scrollTo(0, 0);
+  };
   vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit);
   window.addEventListener('orientationchange', fit);
   window.__fitKeyboard = fit;
@@ -237,11 +245,17 @@ async function boot() {
   const st = await rpc('state');
   window.__commonsPlatform = st.mobile ? 'mobile' : 'desktop';
   document.body.dataset.platform = window.__commonsPlatform;
+  if (st.mobile) {
+    // the phone app: no pinch zoom or zoom-on-focus (browsers keep normal zoom; this only runs in the iOS app)
+    const vp = document.querySelector('meta[name=viewport]');
+    if (vp) vp.content = 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover';
+    document.addEventListener('gesturestart', e => e.preventDefault(), { passive: false });
+  }
   if (window.__fitKeyboard) window.__fitKeyboard();
   if (!st.locked) return st.has_identity ? startApp() : pairScreen(await rpc('pairing_resume'));
   const el = $('#boot'); el.hidden = false; $('#app').hidden = true;
   if (st.exists) {
-    el.innerHTML = `<div class="boot-card">${BRAND}<h1>Megatron</h1><div class="tag">Private group chat. Only your devices can read it.</div>
+    el.innerHTML = `<div class="boot-card">${BRAND}<h1>mega</h1><div class="tag">Private group chat. Only your devices can read it.</div>
       <label for="pp">Passphrase for this device</label><input type="password" id="pp" autofocus>
       <div class="err" id="e" role="alert"></div><div class="boot-go"><button class="btn" id="go">Unlock</button></div></div>`;
     const go = async () => { try { await rpc('unlock', { passphrase: $('#pp').value }); if (!(await rpc('state')).has_identity) return pairScreen(await rpc('pairing_resume')); el.hidden = true; startApp(); } catch (e) { $('#e').textContent = e.message; } };
@@ -264,7 +278,7 @@ async function boot() {
     } catch (e) { invited = null; $('#lnk-note').textContent = e.message; throw e; }
   };
   const form = (title, extra, btn, run, links) => {
-    el.innerHTML = `<div class="boot-card">${BRAND}<h1>Megatron</h1><div class="tag">${title}</div>${extra}
+    el.innerHTML = `<div class="boot-card">${BRAND}<h1>mega</h1><div class="tag">${title}</div>${extra}
       <details class="relay-box"><summary>Relay server</summary><input type="text" id="relay" value="${relay}" aria-label="Relay server" spellcheck="false" placeholder="https://chat.example.org"><label for="inv">Invite secret (only if this relay asks for one)</label><input type="password" id="inv" autocomplete="off"></details>
       <div class="err" id="e" role="alert"></div><div class="boot-go"><button class="btn" id="go">${btn}</button></div><div class="boot-links">${links}</div></div>`;
     const pp = $('#pp'); if (pp && $('#pp2')) pp.oninput = () => { $('#pph').textContent = ppStrength(pp.value); };
@@ -290,7 +304,7 @@ async function boot() {
 // Waiting for a device you already use to approve this one. Also where a pairing resumes after a restart, and the way out of one that went nowhere.
 function pairScreen(r) {
   const el = $('#boot'); el.hidden = false; $('#app').hidden = true;
-  el.innerHTML = `<div class="boot-card">${BRAND}<h1>Approve this device</h1><div class="tag">Copy this code to a device where you already use Megatron (send it to yourself, for example). There, open Devices (the ${icon('devices', 'inline')} button at the bottom left), paste it under “Add a device” and press Approve.</div>
+  el.innerHTML = `<div class="boot-card">${BRAND}<h1>Approve this device</h1><div class="tag">Copy this code to a device where you already use mega (send it to yourself, for example). There, open Devices (the ${icon('devices', 'inline')} button at the bottom left), paste it under “Add a device” and press Approve.</div>
     <div class="code small-code">${esc(r.code)}</div><button type="button" class="linkish copy-line" id="cp-pair">${icon('copy')}Copy the code</button><div class="qr">${r.qr}</div><p>Check code <b class="mono">${esc(r.check)}</b>: the other device shows the same four digits when you paste the code. If they differ, do not approve.</p><div class="waiting"><span class="dots"><i></i><i></i><i></i></span> Waiting for approval…</div><div class="boot-links"><button type="button" class="linkish" id="l-over">Start over</button></div></div>`;
   const t = setInterval(async () => { try { const s = await rpc('pairing_status'); if (s.done) { clearInterval(t); el.hidden = true; startApp(); } } catch (e) { } }, 1500);
   $('#cp-pair').onclick = () => copy(r.code, 'Code copied');
@@ -334,7 +348,7 @@ function news(sn) {
   const fresh = seenUnread && [...now].some(([g, n]) => n > (seenUnread.get(g) || 0) && (away() || g !== S.gid));
   seenUnread = now;
   if (fresh && soundPref() === 'all') chime();
-  const t = (total ? `(${total > 99 ? '99+' : total}) ` : '') + 'Megatron';
+  const t = (total ? `(${total > 99 ? '99+' : total}) ` : '') + 'mega';
   if (t !== titleNow) { titleNow = t; document.title = t; try { T && T.window && T.window.getCurrentWindow().setTitle(t).catch(() => { }); } catch { } }
 }
 let seenMentions = 0;
@@ -375,7 +389,7 @@ async function tickOnce() {
       const k2 = JSON.stringify(m);
       if (k2 !== S.lastMsgs) { S.lastMsgs = k2; S.msgs = m; renderStream(); }
       const ch = currentChannel();
-      if (ch && ch.unread > 0 && document.visibilityState === 'visible') { await rpc('mark_read', { gid }); }
+      if (ch && ch.unread > 0 && document.visibilityState === 'visible' && !(window.__megaIdle && window.__megaIdle())) { await rpc('mark_read', { gid }); }   // mega: nothing is read while the cards are showing
     }
   } catch (e) { const st = $('#sync-status'); st.textContent = 'Not reachable: ' + e.message; st.className = 'sync bad down'; }
 }
@@ -385,7 +399,20 @@ const isPhone = () => matchMedia('(max-width: 760px)').matches;
 const humanCount = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 // The call in this room, as reported by the relay (which asks LiveKit). Absent means nobody, or a relay that
 // does not do calls: either way the rail simply shows nothing. Names were mapped from device ids by the core.
-const callPeople = gid => { const v = S.presence.get(gid); return Array.isArray(v) ? v : null; };
+// While this device is in a call, the call itself knows who is there and who is talking this instant; the relay's
+// list, which is all anyone outside the call has, runs a couple of seconds behind.
+const callLive = gid => {
+  try {
+    const c = window.__commonsCall;
+    if (!c || c.gid !== gid || c.phase === 'idle' || !c.room) return null;
+    return c.snapshot().peers.map(p => ({ account: p.account || '', name: p.name, me: p.me, muted: p.muted, deafened: p.deafened, speaking: p.speaking }));
+  } catch { return null; }
+};
+const callPeople = gid => { const live = callLive(gid); if (live && live.length) return live; const v = S.presence.get(gid); return Array.isArray(v) ? v : null; };
+window.__railCallChanged = () => {
+  const c = window.__commonsCall, gid = c && c.gid, sig = JSON.stringify([gid, gid ? callLive(gid) : null]);
+  if (sig !== S.callLiveSig) { S.callLiveSig = sig; if (S.snap) renderRail(); }
+};
 const inCallHere = gid => { try { const c = window.__commonsCall; return !!(c && c.gid === gid && c.phase !== 'idle'); } catch { return false; } };
 // Refresh at most every ~2 s; the relay keeps its own two-second cache, so several open windows ask LiveKit once.
 async function presenceTick() {
@@ -423,6 +450,7 @@ function openRoom(gid, jumpTo = null) {
   const inp = $('#input');
   if (gid !== S.gid) { if (S.gid) S.drafts.set(S.gid, inp.value); S.gid = gid; resetRoom(); inp.value = S.drafts.get(gid) || ''; sizeInput(); }
   S.jumpTo = jumpTo; railOpen(false); renderRail(); tick();
+  if (window.__megaOpened) window.__megaOpened(gid);
 }
 $('#rooms').addEventListener('click', async e => {
   // A person in a call, or the small Join beside them: open that room and join its call (one click, one gesture for
@@ -431,7 +459,9 @@ $('#rooms').addEventListener('click', async e => {
   if (cj) {
     const gid = cj.dataset.call;
     const ch = ((currentCommunity() || {}).channels || []).find(x => x.gid === gid);
-    if (gid !== S.gid) openRoom(gid); else railOpen(false);
+    // A voice room has no chat screen: a click joins its call and leaves the conversation where it was.
+    if (!ch || ch.kind !== 'voice') { if (gid !== S.gid) openRoom(gid); else railOpen(false); }
+    else railOpen(false);
     try {
       if (window.__callUI && window.__callUI.joinRoom) window.__callUI.joinRoom(gid, ch ? ch.name : '');
       else toast('Calls are not available in this window.');
@@ -440,26 +470,42 @@ $('#rooms').addEventListener('click', async e => {
   }
   const x = e.target.closest('[data-join]');
   if (x) { try { await rpc('cancel_join', { id: x.dataset.join }); tick(); } catch (er) { toast(er.message); } return; }
-  const b = e.target.closest('.room'); if (b) openRoom(b.dataset.g);
+  const b = e.target.closest('.room');
+  if (b) {
+    const ch = ((currentCommunity() || {}).channels || []).find(x => x.gid === b.dataset.g);
+    if (ch && ch.kind === 'voice') {
+      railOpen(false);
+      try {
+        if (window.__callUI && window.__callUI.joinRoom) window.__callUI.joinRoom(ch.gid, ch.name);
+        else toast('Calls are not available in this window.');
+      } catch (er) { toast(er.message); }
+    } else openRoom(b.dataset.g);
+  }
 });
 
 // What friends' names carry while they share music. Two short lines from rune, nothing else.
 const listenLine = l => `Listening to ${l.title}${l.artist ? ' · ' + l.artist : ''}`;
 const gone = new Set();
-const LIVE_SHOWN = 3;   // names under a room before the rest become a count
 // The people in a room's call: seals and names, then a count, and a Join. Each row is a button of its own (a
 // button may not hold other buttons), so the room's own row stays exactly as it was.
+//
+// A voice room is the call, so its people get a quiet vertical list under it for every member to see, with the
+// same speaking ring and microphone/deafen tint as the call panel. The whole room joins on a click, so there is
+// no separate Join button here.
 function liveRow(ch) {
   const list = callPeople(ch.gid);
   if (!list || !list.length) return '';
-  const n = list.length, shown = list.slice(0, LIVE_SHOWN), extra = n - shown.length;
-  const names = list.map(p => p.name).join(', ');
-  const people = shown.map(p => `<button type="button" class="live-p" data-call="${esc(ch.gid)}" title="${esc(p.name)}${p.me ? ' (you)' : ''}" aria-label="Join the call in ${esc(ch.name)}; ${p.me ? 'you are' : esc(p.name) + ' is'} in it">${seal(p.account, p.name, 'tiny')}<span class="live-n">${esc(p.me ? 'You' : p.name)}</span></button>`).join('');
-  const more = extra ? `<span class="live-more" title="${esc(names)}">+${extra}</span>` : '';
+  const n = list.length, names = list.map(p => p.name).join(', ');
+  const title = esc(n === 1 ? list[0].name + ' is in the call' : humanCount(n, 'person', 'people') + ' in the call: ' + names);
+  const person = p => `${seal(p.account, p.name, 'tiny')}<span class="live-n">${esc(p.me ? 'You' : p.name)}</span>`;
+  // data-account says whose volume the small right-click/long-press popover adjusts (see call-ui.js).
+  const who = p => `data-account="${esc(p.account || '')}" data-name="${esc(p.name)}"`;
+  const rows = list.map(p => `<button type="button" class="live-p vp${p.speaking ? ' speaking' : ''}${p.muted ? ' muted' : ''}${p.deafened ? ' deafened' : ''}" ${who(p)} data-call="${esc(ch.gid)}" title="${esc(p.name)}${p.me ? ' (you)' : ''}" aria-label="Join the call in ${esc(ch.name)}; ${p.me ? 'you are' : esc(p.name) + ' is'} in it">${person(p)}</button>`).join('');
+  if (ch.kind === 'voice') return `<div class="room-live voice" title="${title}">${rows}</div>`;
   const act = inCallHere(ch.gid)
     ? '<span class="live-you">you are in the call</span>'
     : `<button type="button" class="live-join" data-call="${esc(ch.gid)}" aria-label="Join the call in ${esc(ch.name)}">Join</button>`;
-  return `<div class="room-live"${inCallHere(ch.gid) ? ' data-in="1"' : ''} title="${esc(n === 1 ? list[0].name + ' is in the call' : humanCount(n, 'person', 'people') + ' in the call: ' + names)}">${people}${more}${act}</div>`;
+  return `<div class="room-live voice"${inCallHere(ch.gid) ? ' data-in="1"' : ''} title="${title}">${rows}${act}</div>`;
 }
 function renderRail() {
   const sn = S.snap;
@@ -478,16 +524,33 @@ function renderRail() {
   const isAdmin = c && (c.role === 'admin' || c.role === 'owner');
   $('#add-room').hidden = !isAdmin; $('#btn-invite').hidden = !isAdmin; $('#btn-people').hidden = !c;
   $('.search-wrap').hidden = !c; $('#btn-search').hidden = !c;
-  if (c && !c.channels.find(x => x.gid === S.gid)) { const first = c.channels.find(x => x.joined) || c.channels[0]; S.gid = first ? first.gid : null; resetRoom(); }
+  if (c && !c.channels.find(x => x.gid === S.gid)) {
+    // The chat pane is never a voice room: those open their call instead.
+    const first = c.channels.find(x => x.joined && x.kind !== 'voice') || c.channels.find(x => x.kind !== 'voice')
+      || c.channels.find(x => x.joined) || c.channels[0];
+    S.gid = first ? first.gid : null; resetRoom();
+  }
   if (!c) { S.gid = null; }
   const seen = document.visibilityState === 'visible';
-  patch($('#rooms'), (c ? c.channels.map(ch => {
+  const roomRow = ch => {
+    const voice = ch.kind === 'voice';
     const active = ch.gid === S.gid, un = (active && seen) || c.removed ? 0 : ch.unread, at = active ? 0 : (S.mention.get(ch.gid) || 0);
     const call = callPeople(ch.gid), inCall = call ? call.length : 0;
-    const said = [ch.name, inCall ? humanCount(inCall, 'person', 'people') + ' in the call' : '', un ? `${un} unread` : '', at ? `${at} mention${at === 1 ? '' : 's'} of you` : '', ch.joined ? '' : 'waiting for keys'].filter(Boolean).join(', ');
-    const speaker = inCall ? '<svg class="ic live-ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-wave"/></svg>' : '';
-    return { k: ch.gid, h: `<div class="room-wrap"><button class="room ${inCall ? 'live' : ''} ${active ? 'active' : ''} ${ch.joined ? '' : 'pending'} ${un ? 'unread' : ''} ${at ? 'mention' : ''}" data-g="${esc(ch.gid)}" aria-label="${esc(said)}"${active ? ' aria-current="true"' : ''}><svg class="kh" viewBox="0 0 12 14" aria-hidden="true"><use href="#i-keyhole"/></svg><span class="nm">${esc(ch.name)}</span>${speaker}${at ? '<span class="at-mark">@</span>' : ''}${un ? `<span class="pill">${un}</span>` : ''}</button>${liveRow(ch)}</div>` };
-  }) : []).concat(joinNotes(sn)), roomCache);
+    const said = [ch.name, voice ? 'voice room' : '', inCall ? humanCount(inCall, 'person', 'people') + ' in the call' : '', un ? `${un} unread` : '', at ? `${at} mention${at === 1 ? '' : 's'} of you` : '', ch.joined ? '' : 'waiting for keys'].filter(Boolean).join(', ');
+    // A voice room's icon is the speaker; a text room keeps the keyhole, and shows the wave only while people are in.
+    const icon = voice
+      ? '<svg class="kh speaker" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-speaker"/></svg>'
+      : '<svg class="kh" viewBox="0 0 12 14" aria-hidden="true"><use href="#i-keyhole"/></svg>';
+    const speaker = inCall && !voice ? '<svg class="ic live-ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-wave"/></svg>' : '';
+    return { k: ch.gid, h: `<div class="room-wrap"><button class="room ${inCall ? 'live' : ''} ${active ? 'active' : ''} ${ch.joined ? '' : 'pending'} ${un ? 'unread' : ''} ${at ? 'mention' : ''}" data-g="${esc(ch.gid)}" aria-label="${esc(said)}"${active ? ' aria-current="true"' : ''}>${icon}<span class="nm">${esc(ch.name)}</span>${speaker}${at ? '<span class="at-mark">@</span>' : ''}${un ? `<span class="pill">${un}</span>` : ''}</button>${liveRow(ch)}</div>` };
+  };
+  const chans = c ? c.channels : [];
+  const voice = chans.filter(ch => ch.kind === 'voice');
+  const rows = chans.filter(ch => ch.kind !== 'voice').map(roomRow);
+  // Voice rooms live in their own group under the text rooms.
+  if (voice.length) rows.push({ k: 'rail:voice', h: '<div class="rail-label voice-label"><span>Voice</span></div>' });
+  for (const ch of voice) rows.push(roomRow(ch));
+  patch($('#rooms'), rows.concat(joinNotes(sn)), roomCache);
   const ch = currentChannel();
   $('#chan-title').textContent = ch ? ch.name : (c ? c.name : 'Welcome');
   const people = S.membersFor === S.cid && S.members.length ? `${S.members.length} ${S.members.length === 1 ? 'person' : 'people'}` : '';
@@ -496,9 +559,16 @@ function renderRail() {
   if (!ch) paintEmpty(c, sn);
   else if (!ch.joined && !S.msgs) paint([{ k: 'e:keys', h: KEYS_WAIT }]);
   const st = $('#sync-status');
-  const unsent = sn.outbox ? `${sn.outbox} unsent · ` : '';
-  const link = sn.net === 'online' ? '' : sn.net === 'connecting' ? 'connecting… · ' : (/clock/.test(sn.net_detail) ? sn.net_detail : 'cannot reach the relay, retrying') + ' · ';
-  st.textContent = link + unsent + 'relay ' + sn.relay.replace(/^https?:\/\//, ''); st.className = 'sync' + (sn.outbox || sn.net === 'offline' ? ' bad' : ''); st.title = sn.net_detail || '';
+  const unsent = sn.outbox ? `${sn.outbox} unsent` : '';
+  // No relay line while connected: the relay address lives in Settings. Offline/reconnecting still says clearly what is wrong.
+  let link = '';
+  if (sn.net !== 'online') {
+    link = sn.net === 'connecting' ? 'Connecting…' : (/clock/.test(sn.net_detail || '') ? sn.net_detail : 'Cannot reach the relay, retrying');
+  }
+  st.textContent = [link, unsent].filter(Boolean).join(' · ');
+  st.className = 'sync' + (sn.outbox || sn.net !== 'online' ? ' bad' : '');
+  st.title = sn.net_detail || '';
+  st.hidden = !link && !unsent;
   const b = $('#banner');
   const log = '<button type="button" class="linkish" data-a="log">Open the activity log</button>';
   if (sn.revoked) { b.hidden = false; b.className = ''; b.innerHTML = `${icon('door')}<span>This device has been revoked, so it can no longer send or receive. What it already received stays readable here.</span>${log}`; }
@@ -512,6 +582,7 @@ function renderRail() {
   $('#activity-dot').hidden = !sn.problems.some(p => p.ts > seenLog);
   if (S.people) renderPeople();
   fillAvatars();
+  if (window.__megaRender) window.__megaRender();
 }
 // Joins live outside any community, so they show whichever community is open. A refusal stays until it is read.
 const joinNotes = sn => [
@@ -524,7 +595,7 @@ const KEYS_WAIT = emptyState('wait', 'The keys are on their way', 'You are in th
 function paintEmpty(c, sn) {
   S.msgs = null;
   if (c) return paint([{ k: 'e:norooms', h: emptyState('door', 'No rooms to read yet', 'This community has no rooms you can read yet.') }]);
-  if (sn.joining.length) return paint([{ k: 'e:joining', h: emptyState('wait', 'You are on the doorstep', 'You are let in by itself as soon as someone who can let you in has Megatron open. You can close Megatron and come back later.') }]);
+  if (sn.joining.length) return paint([{ k: 'e:joining', h: emptyState('wait', 'You are on the doorstep', 'You are let in by itself as soon as someone who can let you in has mega open. You can close mega and come back later.') }]);
   paint([{ k: 'e:none', h: emptyState('door', 'Come on in', 'Create a community or join one with an invite link.', `<div class="empty-acts"><button class="btn" data-a="new-community">New community</button><button class="btn ghost" data-a="join-community">Join with an invite link</button></div>`) }]);
 }
 function paint(rows, opts) { patch($('#stream'), rows, rowCache, opts); }
@@ -625,13 +696,23 @@ function msgRow(x, cont, m, byId, admin) {
   let body;
   if (x.deleted) body = `<div class="body gone">message deleted</div>`;
   else if (x.kind === 'file') {
-    const img = x.file.mime.startsWith('image/');
+    const L = x.file.large, saved = L && x.file.download && x.file.download.finished;
+    const img = x.file.mime.startsWith('image/') && !L; // a large picture is never fetched just because it scrolled by
     const ext = (/\.([a-z0-9]{1,8})$/i.exec(x.file.name) || [])[1];
-    const meta = `<span class="small">${esc(fmtSize(x.file.size))}${img ? '' : ` · ${esc((ext || x.file.mime.split('/')[1] || 'file').toUpperCase().slice(0, 12))}`}</span>`;
-    const dl = `<a href="#" class="dl" data-id="${esc(x.id)}" title="Download ${esc(x.file.name)}">${icon('download')}<span>Download</span></a>`;
+    const media = L ? null : mediaKind(x.file.mime, ext);   // large files stream to disk; small ones can play here
+    const meta = `<span class="small">${esc(fmtSize(x.file.size))}${img ? '' : ` · ${esc((ext || x.file.mime.split('/')[1] || 'file').toUpperCase().slice(0, 12))}`}${L ? ` · ${esc(fmtLeft(L.expires))} on the relay` : ''}</span>`;
+    const live = L && XFER.get('d:' + x.id);
+    const dl = L
+      ? (live ? `<button type="button" class="dl xget" data-a="cancel-get" data-id="${esc(x.id)}" title="Cancel download">${icon('x')}<span>Cancel</span></button>`
+        : saved ? `<button type="button" class="dl xshow" data-a="show" data-id="${esc(x.id)}" title="Show in folder">${icon('folder', 'fi')}<span>Show in folder</span></button><button type="button" class="dl xget again" data-a="get" data-id="${esc(x.id)}" title="Download again">${icon('download')}<span>Download again</span></button>`
+          : `<button type="button" class="dl xget" data-a="get" data-id="${esc(x.id)}" title="Download ${esc(x.file.name)}">${icon('download')}<span>Download</span></button>`)
+      : `<a href="#" class="dl" data-id="${esc(x.id)}" title="Download ${esc(x.file.name)}">${icon('download')}<span>Download</span></a>`;
+    const progress = live ? `<div class="xfer-inline"><div id="xdl-${esc(x.id)}">${xferBody(live)}</div></div>` : '';
     body = (img ? `<div class="imgslot" data-id="${esc(x.id)}"></div><div class="file photo" data-file="${esc(x.id)}"><span class="fname">${esc(x.file.name)}</span>${meta}${dl}</div>`
-      : `<div class="file" data-file="${esc(x.id)}">${icon('file', 'fi')}<div class="fbody"><div class="fname">${esc(x.file.name)}</div>${meta}</div>${dl}</div>`)
+      : `<div class="file" data-file="${esc(x.id)}">${icon('file', 'fi')}<div class="fbody"><div class="fname">${esc(x.file.name)}</div>${meta}</div>${dl}</div>${progress}`
+        + (media ? `<div class="mediaslot ${media}" data-id="${esc(x.id)}" data-kind="${media}"><button type="button" class="btn ghost slim media-play">${icon('play')}<span>Play ${media}</span></button></div>` : ''))
       + (x.text ? `<div class="body">${fmt(x.text)}</div>` : '');
+    if (saved) body += `<div class="small saved-line">${icon('check')} Saved to ${esc(x.file.download.save_name || x.file.name)}</div>`;
   } else body = `<div class="body${onlyEmoji(x.text) ? ' jumbo' : ''}">${fmt(x.text)}${x.edited ? '<span class="edited">(edited)</span>' : ''}</div>`;
   const src = x.reply && byId.get(x.reply.id);
   const quote = x.reply ? `<button type="button" class="quote" data-a="goto" data-id="${esc(x.reply.id)}" title="Go to this message">${seal(src ? src.sender : x.reply.name, x.reply.name, 'tiny')}<b>${esc(x.reply.name)}</b><span>${esc(plain(x.reply.text))}</span></button>` : '';
@@ -688,7 +769,7 @@ function renderStream() {
   });
   const t = m.typing.length ? m.typing.join(', ') + (m.typing.length > 1 ? ' are typing' : ' is typing') : '';
   const ty = $('#typing'); ty.innerHTML = t ? `<span>${esc(t)}</span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>` : ''; $('#hint').hidden = !!t;
-  fillImages();
+  fillImages(); fillMedia();
   if (S.jumpTo) { const el = $(`.msg[data-id="${CSS.escape(S.jumpTo)}"]`, st); S.jumpTo = null; if (el) flashTo(el); }
   else if (S.first) {
     const nl = $('.newline', st);
@@ -757,7 +838,10 @@ $('#stream').addEventListener('click', async e => {
     else if (a === 'goto') { const el = $(`.msg[data-id="${CSS.escape(id)}"]`); if (el) flashTo(el); else toast('That message is not on this device.'); }
     else if (a === 'reply') { S.reply = m; S.edit = null; renderComposer(); $('#input').focus(); }
     else if (a === 'edit') { startEdit(m); }
-    else if (a === 'del') { try { await rpc('delete', { gid: S.gid, id }); tick(); soon(); } catch (er) { toast(er.message); } }
+    else if (a === 'del') { try { await rpc(m && m.file && m.file.large ? 'file_delete' : 'delete', { gid: S.gid, id }); tick(); soon(); } catch (er) { toast(er.message); } }
+    else if (a === 'get') downloadLarge(m);
+    else if (a === 'show') showDownload(m);
+    else if (a === 'cancel-get') { const x = XFER.get('d:' + id); if (x) { x.cancelled = true; xferRender(); } }
     else if (a === 'react') emojiPop(b, m);
     return;
   }
@@ -772,6 +856,8 @@ $('#stream').addEventListener('click', async e => {
     return;
   }
   if (t.matches('.imgslot img')) { lightbox(t.src, t.alt); return; }
+  const mp = t.closest('.media-play');
+  if (mp) { playMedia(mp.closest('.mediaslot')); return; }
   // Touch has no hover: a tap on a message shows its tools.
   if (matchMedia('(hover: none)').matches) { const row = t.closest('.msg'); const was = row && row.classList.contains('open'); $$('.msg.open').forEach(x => x.classList.remove('open')); if (row && !was) row.classList.add('open'); }
 });
@@ -788,6 +874,123 @@ async function fileBlob(id) {
   const gid = S.gid, f = await rpc('file_open', { gid, id }), parts = [];
   for (let at = 0; at < f.size; at += f.chunk) parts.push(unb64((await rpc('file_read', { gid, id, offset: at })).data));
   return { name: f.save_name, blob: new Blob(parts, { type: f.mime }) };
+}
+const b64u = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+
+// ---- large files: one chunk at a time, in both directions ----
+// The core keeps only a chunk; this page does too. Nothing here downloads a large file unless the person pressed
+// Download, and every transfer can be cancelled without leaving a half file in the Downloads folder.
+const XFER = new Map();
+const xferRate = x => {
+  const secs = (performance.now() - x.started) / 1000;
+  if (secs < 0.7 || x.bytes <= 0) return { speed: 0, left: '' };
+  const speed = x.bytes / secs, rest = Math.max(0, x.total - x.bytes) / speed;
+  return { speed, left: rest < 60 ? `${Math.ceil(rest)}s left` : rest < 3600 ? `${Math.ceil(rest / 60)} min left` : `${(rest / 3600).toFixed(1)} h left` };
+};
+function xferBody(x) {
+  const pct = x.total ? Math.min(100, Math.round(x.bytes / x.total * 100)) : 0;
+  const { speed, left } = xferRate(x);
+  return `<div class="xfer-bar"><i style="width:${pct}%"></i></div><div class="small xfer-note">${pct}% · ${fmtSize(Math.min(x.bytes, x.total))} of ${fmtSize(x.total)}${speed ? ` · ${fmtSize(speed)}/s` : ''}${left ? ` · ${esc(left)}` : ''}</div>`;
+}
+function xferPanel() {
+  let el = $('#transfers');
+  if (!el) {
+    el = document.createElement('section'); el.id = 'transfers'; el.setAttribute('aria-live', 'polite');
+    el.onclick = e => { const b = e.target.closest('[data-xcancel]'); if (b) { const x = XFER.get(b.dataset.xcancel); if (x) { x.cancelled = true; xferRender(); } } };
+    document.body.appendChild(el);
+  }
+  return el;
+}
+function xferRender() {
+  const el = xferPanel(), rows = [...XFER.values()];
+  el.hidden = !rows.length;
+  el.innerHTML = `<div class="xfer-title">Transfers</div>` + rows.map(x => `<div class="xfer">
+    <div class="xfer-head"><span class="xfer-name" title="${esc(x.name)}">${esc(x.name)}</span><button type="button" class="mini" data-xcancel="${esc(x.key)}" title="Cancel" aria-label="Cancel ${esc(x.kind === 'up' ? 'upload' : 'download')}">${icon('x')}</button></div>
+    ${xferBody(x)}<div class="small xfer-state">${x.cancelled ? 'Cancelling…' : x.kind === 'up' ? 'Sending to the relay' : 'Saving to your Downloads folder'}</div></div>`).join('');
+  // The same live numbers appear next to the message being downloaded.
+  for (const x of rows) if (x.kind === 'down') { const slot = document.getElementById('xdl-' + x.id); if (slot) slot.innerHTML = xferBody(x); }
+}
+async function uploadLarge(f, name) {
+  const key = 'upload'; let info;
+  try {
+    info = await rpc('file_upload_begin', { gid: S.gid, name, mime: f.type || 'application/octet-stream', size: f.size, last_modified: Math.floor((f.lastModified || 0) / 1000), caption: '' });
+    const x = { key: info.id, kind: 'up', name, started: performance.now(), bytes: 0, total: f.size, done: 0, chunks: info.chunks, cancelled: false };
+    XFER.set(x.key, x); xferRender();
+    for (let i = 0; i < info.chunks; i++) {
+      if (x.cancelled) break;
+      const at = i * info.chunk_size, end = Math.min(at + info.chunk_size, f.size);
+      // Read only this slice of the File. The core hashes it even when the relay already holds it, so a resumed
+      // upload can still finish with the whole-file check.
+      const buf = new Uint8Array(await f.slice(at, end).arrayBuffer());
+      await rpc('file_upload_chunk', { id: info.id, index: i, data: b64u(buf) });
+      x.done = i + 1; x.bytes = end; xferRender();
+    }
+    if (x.cancelled) {
+      await rpc('file_upload_cancel', { id: info.id });
+      XFER.delete(x.key); xferRender(); toast('Upload cancelled.');
+      return;
+    }
+    await rpc('file_upload_finish', { id: info.id });
+    XFER.delete(x.key); xferRender(); toast(`${name} sent.`);
+    S.lastMsgs = ''; tick(); soon();
+  } catch (er) {
+    if (info) XFER.delete(info.id);
+    xferRender();
+    // The uploaded parts stay on the relay, so offering the same file again continues where this stopped.
+    toast(`Upload of ${name} stopped: ${er.message}. Drop the same file again to continue.`);
+  }
+}
+async function downloadLarge(m) {
+  const key = 'd:' + m.id;
+  if (XFER.has(key)) return;
+  // A partly saved file carries on where it is; a phone has one place to save.
+  const part = m.file.download && !m.file.download.finished && m.file.download.done > 0;
+  let folder = '';
+  if (!part && !mobileApp()) {
+    folder = await askSaveFolder(m.file.name);
+    if (folder === null || XFER.has(key)) return;
+    pref.set('dlFolder', folder);
+  }
+  let st;
+  try {
+    st = await rpc('file_download_begin', { gid: S.gid, id: m.id, folder });
+    if (st.finished) { toast('Already saved to ' + st.path); return; }
+    const x = { key, id: m.id, kind: 'down', name: m.file.name, started: performance.now(), bytes: st.done * st.chunk_size, done: st.done, chunks: st.chunks, total: st.size, cancelled: false, path: '' };
+    XFER.set(key, x); xferRender(); renderStream();
+    while (x.done < x.chunks && !x.cancelled) {
+      const r = await rpc('file_download_chunk', { gid: S.gid, id: m.id });
+      x.done = r.done; x.bytes = Math.min(r.done * st.chunk_size, st.size);
+      if (r.finished) { x.path = r.path; break; }
+      xferRender();
+    }
+    if (x.cancelled) { await rpc('file_download_cancel', { id: m.id }); toast('Download cancelled.'); }
+    else if (x.path) { toast('Saved to ' + x.path); S.lastMsgs = ''; tick(); }
+  } catch (er) {
+    // Keep the partial file: Download on the same message picks it up again, from the last verified chunk.
+    toast(`Download stopped: ${er.message}. Press Download again to continue.`);
+  } finally {
+    XFER.delete(key); xferRender();
+    const ms = S.msgs && S.msgs.messages.find(v => v.id === m.id);
+    if (ms) renderStream();
+  }
+}
+// Where this one file goes. The folder from Settings comes first until something else is chosen. null: cancelled.
+async function askSaveFolder(name) {
+  const start = pref.get('dlFolder') || S.snap.download_dir || '';
+  const r = await modal('Save to', `<p class="muted small">${esc(name)}</p><label for="dl-to">Folder</label><div class="dl-to"><input type="text" id="dl-to" value="${esc(start)}" spellcheck="false"><button type="button" class="btn ghost" id="dl-browse">Browse…</button></div>`,
+    [{ label: 'Cancel', primary: false }, { label: 'Save here', run: w => val(w, 'dl-to').trim() }]);
+  return typeof r === 'string' ? r : null;
+}
+async function browseSaveFolder(w) {
+  const input = $('#dl-to', w), err = $('#m-err', w), b = $('#dl-browse', w);
+  b.disabled = true; err.textContent = '';
+  try { const r = await rpc('pick_folder', { start: input.value }); if (r.path) input.value = r.path; }
+  catch (e) { err.textContent = e.message; }
+  b.disabled = false;
+}
+async function showDownload(m) {
+  try { const r = await rpc('file_show_in_folder', { id: m.id }); if (!r.opened) toast('The file is at ' + ((m.file.download && m.file.download.path) || 'your Downloads folder') + '.'); }
+  catch (er) { toast(er.message); }
 }
 // Object URLs, never strings of markup. The newest ones stay; an old image is simply fetched again from the local cache.
 const MAX_IMGS = 48;
@@ -807,6 +1010,46 @@ function fillImages() {
     if (u && !slot.firstChild) { const i = new Image(); i.src = u; i.alt = m && m.file ? m.file.name : ''; slot.appendChild(i); }
   });
 }
+// Video and audio attachments play right in the chat. Nothing is fetched until Play is pressed; the decrypted file
+// stays in memory as an object URL (the newest few, like pictures) so a repaint or scrolling back does not refetch it.
+function mediaKind(mime, ext) {
+  if (/^video\//.test(mime)) return 'video';
+  if (/^audio\//.test(mime)) return 'audio';
+  const e = (ext || '').toLowerCase();
+  if (['mp4', 'm4v', 'mov', 'webm', 'mkv'].includes(e)) return 'video';
+  if (['mp3', 'm4a', 'aac', 'wav', 'ogg', 'oga', 'opus', 'flac'].includes(e)) return 'audio';
+  return null;
+}
+const MAX_MEDIA = 6;
+function mountMedia(slot, url) {
+  const kind = slot.dataset.kind;
+  const el = document.createElement(kind === 'video' ? 'video' : 'audio');
+  el.controls = true; el.preload = 'metadata'; el.src = url;
+  if (kind === 'video') el.playsInline = true;
+  el.addEventListener('error', () => { slot.innerHTML = `<div class="img-fail">${icon('warn')}<span>This ${esc(kind)} format can't play here. Use Download.</span></div>`; });
+  slot.replaceChildren(el);
+  return el;
+}
+async function playMedia(slot) {
+  if (!slot) return;
+  const id = slot.dataset.id;
+  S.media = S.media || new Map();
+  let url = S.media.get(id);
+  if (!url) {
+    const label = slot.querySelector('.media-play span'); if (label) label.textContent = 'Decrypting…';
+    try { url = URL.createObjectURL((await fileBlob(id)).blob); }
+    catch (er) { slot.innerHTML = `<div class="img-fail">${icon('warn')}<span>${esc(er.message)}</span></div>`; return; }
+    S.media.set(id, url);
+    while (S.media.size > MAX_MEDIA) { const [k, u] = S.media.entries().next().value; S.media.delete(k); URL.revokeObjectURL(u); }
+  }
+  mountMedia(slot, url).play().catch(() => { });
+}
+// After a repaint, a slot that already played gets its player back (paused) instead of the Play button.
+function fillMedia() {
+  if (!S.media) return;
+  $$('.mediaslot').forEach(slot => { const u = S.media.get(slot.dataset.id); if (u && !slot.querySelector('video, audio')) mountMedia(slot, u); });
+}
+
 function startEdit(m) { S.edit = m; S.reply = null; $('#input').value = m.text; sizeInput(); renderComposer(); $('#input').focus(); }
 
 // ---- composer ----
@@ -881,10 +1124,11 @@ $('#input').onblur = () => setTimeout(mentionClose, 120);
 $('#attach').onclick = () => $('#file').click();
 async function uploadFile(f) {
   if (!S.gid) return toast('Open a room first.');
-  if (f.size > 24 * 1024 * 1024) return toast(`${f.name} is over the 24 MB limit.`);
-  const buf = new Uint8Array(await f.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
   // A pasted screenshot has no real name, so it gets one with the time.
   const name = f.name && f.name !== 'image.png' ? f.name : `Pasted image ${(d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}.${String(d.getMinutes()).padStart(2, '0')}.${String(d.getSeconds()).padStart(2, '0')}`)(new Date())}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`;
+  // Same paperclip and drop target; the size decides which way it goes.
+  if (f.size > LARGE_OVER) return uploadLarge(f, name);
+  const buf = new Uint8Array(await f.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
   toast('Encrypting and uploading…');
   try { await rpc('send_file', { gid: S.gid, name, mime: f.type || 'application/octet-stream', data: btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''), caption: '' }); S.lastMsgs = ''; tick(); soon(); } catch (er) { toast(er.message); }
 }
@@ -916,7 +1160,7 @@ async function renderPeople() {
     `<div class="p-foot">${c.role !== 'owner' ? '<button class="btn ghost" id="leave">Leave community</button>' : ''}${iAmAdmin ? '<button class="btn ghost" id="rename">Rename</button>' : ''}</div>`;
   el.querySelectorAll('button[data-a]').forEach(b => b.onclick = () => personAction(b.dataset, c));
   $('#people-close').onclick = () => $('#btn-people').click();
-  const lv = $('#leave'); if (lv) lv.onclick = async () => { if ((await modal('Leave ' + c.name + '?', '<p>You stop getting its messages. What you already received stays readable on this device. To come back later you need a new invite.</p>', [{ label: 'Cancel', primary: false }, { label: 'Leave', danger: true, run: async () => { await rpc('leave', { cid: c.id }); pref.set('left.' + c.id, '1'); } }])) === 1) { toast('Leaving. It is done as soon as an admin has Megatron open.'); tick(); } };
+  const lv = $('#leave'); if (lv) lv.onclick = async () => { if ((await modal('Leave ' + c.name + '?', '<p>You stop getting its messages. What you already received stays readable on this device. To come back later you need a new invite.</p>', [{ label: 'Cancel', primary: false }, { label: 'Leave', danger: true, run: async () => { await rpc('leave', { cid: c.id }); pref.set('left.' + c.id, '1'); } }])) === 1) { toast('Leaving. It is done as soon as an admin has mega open.'); tick(); } };
   const rn = $('#rename'); if (rn) rn.onclick = () => modal('Rename community', `<input type="text" id="n" value="${esc(c.name)}" aria-label="Community name">`, [{ label: 'Cancel', primary: false }, { label: 'Rename', run: async w => { await rpc('rename_community', { cid: c.id, name: val(w, 'n') }); } }]).then(tick);
   fillAvatars(el);
 }
@@ -964,7 +1208,7 @@ $('#switcher').onclick = e => {
 };
 document.addEventListener('click', e => { $('#sw-menu').hidden = true; closePop(); if (!e.target.closest('.search-wrap, #btn-search')) closeSearch(); });
 document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; closePop(); closeSearch(); $('#sw-menu').hidden = true; railOpen(false); });
-$('#add-room').onclick = () => modal('New room', `<label for="n">Name</label><input type="text" id="n" placeholder="e.g. music">`, [{ label: 'Cancel', primary: false }, { label: 'Create', run: async w => { const r = await rpc('create_channel', { cid: S.cid, name: val(w, 'n') }); S.gid = r.id; resetRoom(); } }]).then(() => tick());
+$('#add-room').onclick = () => modal('New room', `<label for="n">Name</label><input type="text" id="n" placeholder="e.g. music"><label>Kind</label>${seg('kind', [['text', 'Text'], ['voice', 'Voice']], 'text')}<p class="muted small">A voice room opens its call when you click it. Its people are always shown under it in the rail.</p>`, [{ label: 'Cancel', primary: false }, { label: 'Create', run: async w => { const kind = val(w, 'kind'); const r = await rpc('create_channel', { cid: S.cid, name: val(w, 'n'), kind }); if (kind === 'voice') railOpen(false); else { S.gid = r.id; resetRoom(); } } }]).then(() => tick());
 $('#btn-invite').onclick = () => {
   const c = currentCommunity(); let link = null;
   const open = (c.invites || []).filter(i => i.mine && i.expires > Date.now() / 1000);
@@ -1080,23 +1324,30 @@ $('#modal-root').addEventListener('change', async e => {
 });
 
 $('#btn-settings').onclick = () => {
-  const p = modal('Settings', `<label for="n">Display name</label><input type="text" id="n" value="${esc(S.snap.me.name)}">
+  const p = modal('Settings', `<h3 class="set-h">Profile</h3>
+  <label for="n">Display name</label><input type="text" id="n" value="${esc(S.snap.me.name)}">
   <label>Profile picture</label><div class="av-set"><span class="av-prev" id="av-prev">${seal(S.snap.me.account, S.snap.me.name, 'big')}</span><span class="av-btns"><button type="button" class="btn ghost slim" id="av-pick">Choose a picture…</button><button type="button" class="btn ghost slim" id="av-none" ${AVS.got.has(S.snap.me.account) ? '' : 'hidden'}>Remove</button></span></div><input type="file" id="av-file" accept="image/*" hidden>
-  <p class="muted small">Shown instead of your seal in every community and on your other devices. It is shrunk on this device and sent encrypted; older versions keep showing your seal.</p>
-  <label>Theme</label>${seg('th', [['', 'Match system'], ['light', 'Daylight'], ['dark', 'After hours']], pref.get('theme') || '')}
-  <label>Message font</label>${seg('rd', [['', 'Book'], ['plain', 'Plain']], pref.get('read') || '')}
-  <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when Megatron is in the background or the message is in another room. The window title shows how many are unread.</p>
-  <label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints (the relay can see that a message-sized packet was sent at that moment)</span></label>
+  <p class="muted small">Shown instead of your seal. Shrunk on this device and sent encrypted; older versions keep your seal.</p>
+  <h3 class="set-h">Appearance</h3>
+  <label>Theme</label>${seg('th', [['', 'Match system'], ['light', 'Daylight'], ['solar', 'Solarized'], ['dark', 'After hours'], ['wave', 'Wave']], pref.get('theme') || '')}
+  <div id="wave-row" ${pref.get('theme') === 'wave' ? '' : 'hidden'}><label for="wave-pal">Wave colours</label><select id="wave-pal">${(window.__waveDither ? window.__waveDither.palettes : []).map(([k, l]) => `<option value="${k}"${(pref.get('wavePalette') || 'blue') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+  <h3 class="set-h">Sound</h3>
+  <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when mega is in the background or the message is in another room.</p>
+  <h3 class="set-h">Advanced</h3>
+  <label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints — the relay can see that a message-sized packet was sent at that moment</span></label>
   <label class="check"><input type="checkbox" id="lstr" ${S.snap.share_listening ? 'checked' : ''}><span>Share what I'm listening to</span></label>
-  <label for="rune">rune address</label><input type="text" id="rune" value="${esc(S.snap.rune_url)}" spellcheck="false"><p class="muted small">Where rune, the music player on this computer, answers. The song title and artist go to the people in your communities, end to end encrypted, and stop showing when playback stops (ten minutes at most if the app closes). Nothing else is read or sent.</p>
-  ${mobileApp() ? '' : '<label>Calls</label><button type="button" class="btn ghost" id="set-gamekeys">Game keys…</button><p class="muted small">Mute yourself in Megatron while you talk to your game team.</p>'}
+  <label for="rune">rune address</label><input type="text" id="rune" value="${esc(S.snap.rune_url)}" spellcheck="false"><p class="muted small">Song title and artist go to your communities, end to end encrypted. Nothing else is read or sent.</p>
+  ${mobileApp() ? '' : `<label for="dl-dir">Large-file downloads folder</label><input type="text" id="dl-dir" value="${esc(S.snap.download_dir || '')}" spellcheck="false"><p class="muted small">Written here as they arrive, one verified piece at a time. Leave empty for your usual Downloads folder.</p>`}
+  ${window.__TAURI__ ? '' : '<label>Updates</label><button type="button" class="btn ghost" id="set-update">Check for updates</button>'}
+  ${mobileApp() ? '' : '<label>Calls</label><button type="button" class="btn ghost" id="set-gamekeys">Game keys…</button><p class="muted small">Mute yourself in mega while you talk to your game team.</p>'}
   <label for="rl">Relay address</label><input type="text" id="rl" value="${esc(S.snap.relay)}" spellcheck="false"><p class="muted small">Change this only if your relay moved. A different relay does not have your communities.<br>Your account id: <span class="mono">${esc(S.snap.me.account.slice(0, 16))}…</span></p>
-  <label for="rs">This server's sign-up secret</label><input type="password" id="rs" value="" spellcheck="false" autocomplete="off" placeholder="${S.snap.relay_secret ? 'Saved on this device — leave empty to keep it' : 'Not saved on this device — paste it here if you have it'}"><p class="muted small">A device added by pairing or recovery may not have it; without it, invite links from this device only work for people who already have an account here. It is checked with the relay and never shown again once saved.</p>`,
+  <label for="rs">This server's sign-up secret</label><input type="password" id="rs" value="" spellcheck="false" autocomplete="off" placeholder="${S.snap.relay_secret ? 'Saved on this device — leave empty to keep it' : 'Not saved on this device — paste it here if you have it'}"><p class="muted small">A device added by pairing may not have it; without it, invite links from this device only work for people who already have an account here. It is checked with the relay and never shown again once saved.</p>`,
   [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => {
     if (val(w, 'rl').trim() !== S.snap.relay) await rpc('set_relay', { relay: val(w, 'rl') });
     const secret = val(w, 'rs').trim();
     if (secret) await rpc('set_relay_invite', { secret });
-    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('theme', val(w, 'th')); pref.set('read', val(w, 'rd')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs();
+    if (!mobileApp() && val(w, 'dl-dir').trim() !== (S.snap.download_dir || '')) await rpc('set_download_dir', { dir: val(w, 'dl-dir') });
+    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('wavePalette', val(w, 'wave-pal')); pref.set('theme', val(w, 'th')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh();
   } }]);
   fillAvatars();
   p.then(tick);
@@ -1107,6 +1358,8 @@ $('#modal-root').addEventListener('click', e => {
   if (e.target.closest('#av-pick')) { const f = $('#av-file'); if (f) f.click(); return; }
   if (e.target.closest('#av-none')) { removeOwnAvatar(); return; }
   if (e.target.closest('#set-gamekeys')) gameKeys();
+  if (e.target.closest('[data-for=th]')) setTimeout(() => { const r = $('#wave-row'), t = $('#th'); if (r && t) r.hidden = t.value !== 'wave'; }, 0);
+  if (e.target.closest('#dl-browse')) browseSaveFolder(e.target.closest('.modal'));
 });
 const keyName = c => !c ? 'Press to set' : c.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Mouse(\d)/, 'Mouse button $1').replace(/(Left|Right)$/, ' $1');
 async function gameKeys() {
@@ -1123,7 +1376,7 @@ async function gameKeys() {
     $('#gk-pick', w).innerHTML = programs.map(p => `<option value="${esc(p)}"></option>`).join('');
   };
   const note = esc(got.note) + (got.hold ? '' : ' Holding a key cannot be seen here.') + (got.error ? `<br>Last problem: ${esc(got.error)}` : '');
-  const p = modal('Game keys', `<p class="muted small">While the game runs and you hold its key, your mic is off in the Megatron call, so friends do not hear what you say to your team. Set the game's own voice key here too. These settings stay on this device.</p>
+  const p = modal('Game keys', `<p class="muted small">While the game runs and you hold its key, your mic is off in the mega call, so friends do not hear what you say to your team. Set the game's own voice key here too. These settings stay on this device.</p>
     <div id="gk-list"></div>
     <label for="gk-add">Add a game (a running program)</label><div class="gk-add"><input type="text" id="gk-add" list="gk-pick" autocomplete="off" spellcheck="false" placeholder="Start typing, or pick one"><datalist id="gk-pick"></datalist><button type="button" class="btn ghost" id="gk-addb">Add</button></div>
     <p class="muted small" id="gk-note">${note}</p>
@@ -1145,8 +1398,10 @@ async function gameKeys() {
     const onM = ev => { if (ev.button === 3 || ev.button === 4) { ev.preventDefault(); ev.stopPropagation(); done('Mouse' + (ev.button + 1)); } else done(null); };
     setTimeout(() => { document.addEventListener('keydown', onK, true); document.addEventListener('mousedown', onM, true); }, 0);
   });
-  const allow = $('#gk-allow', w); if (allow) allow.onclick = () => rpc('game_keys_allow').then(() => toast('If macOS asked, switch Megatron on, then restart Megatron.')).catch(e => toast(e.message));
+  const allow = $('#gk-allow', w); if (allow) allow.onclick = () => rpc('game_keys_allow').then(() => toast('If macOS asked, switch mega on, then restart mega.')).catch(e => toast(e.message));
   return p;
 }
 
+// The call dock's Settings dialog links to the same game-key dialog, rather than copying it.
+window.__commonsGameKeys = gameKeys;
 boot();

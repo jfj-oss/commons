@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<title>Megatron</title>
+<title>mega</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -13,7 +13,9 @@
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="call.css">
 <link rel="stylesheet" href="fresco.css">
+<link rel="stylesheet" href="mega.css">
 <script src="fresco-rail-dither.js" defer></script>
+<script src="wave-dither.js" defer></script>
 </head>
 <body>
 <svg id="sprite" width="0" height="0" aria-hidden="true" focusable="false">
@@ -46,12 +48,16 @@
     <symbol id="i-down" viewBox="0 0 20 20"><path d="M10 4v12M5 11l5 5 5-5"/></symbol>
     <symbol id="i-file" viewBox="0 0 20 20"><path d="M5.5 2.5h6L15.5 6.5v11h-10zM11.5 2.5v4h4"/></symbol>
     <symbol id="i-download" viewBox="0 0 20 20"><path d="M10 3v9.5M6 8.5l4 4 4-4M4 16.5h12"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 20 20"><path d="M2.5 5.5h5l1.5 2h8.5v8.5h-15z"/></symbol>
     <symbol id="i-info" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><path d="M10 9.5v4M10 6.5v.1"/></symbol>
     <symbol id="i-warn" viewBox="0 0 20 20"><path d="M10 3.2 2.5 16.5h15zM10 8.5v3.5M10 14.2v.1"/></symbol>
     <symbol id="i-sync" viewBox="0 0 20 20"><path d="M16 8.2A6.2 6.2 0 0 0 4.8 6.5L3.5 8M4 11.8a6.2 6.2 0 0 0 11.2 1.7L16.5 12M3.5 4v4h4M16.5 16v-4h-4"/></symbol>
     <symbol id="i-clock" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><path d="M10 6v4l2.5 2"/></symbol>
     <!-- A small voice-in-progress mark beside a room with people in its call. -->
     <symbol id="i-wave" viewBox="0 0 20 20"><path d="M3 10v0M6 7v6M9 4.5v11M12 7v6M15 8.5v3M18 10v0"/></symbol>
+    <symbol id="i-play" viewBox="0 0 20 20"><path d="M6.5 4.5l9 5.5-9 5.5z"/></symbol>
+    <!-- A voice room: its call is the room. -->
+    <symbol id="i-speaker" viewBox="0 0 20 20"><path d="M3.5 7.5h3l4-3v11l-4-3h-3zM14 7.2a4 4 0 0 1 0 5.6"/></symbol>
   </g>
   <!-- The keyhole beside each room. -->
   <symbol id="i-keyhole" viewBox="0 0 12 14"><path fill="currentColor" d="M6 .8a3.7 3.7 0 0 1 1.8 6.9l.9 5a.6.6 0 0 1-.6.7H3.9a.6.6 0 0 1-.6-.7l.9-5A3.7 3.7 0 0 1 6 .8z"/></symbol>
@@ -101,6 +107,7 @@
     <div class="rail-label"><span>Rooms</span><button id="add-room" class="mini" title="New room" aria-label="New room" hidden><svg class="ic"><use href="#i-plus"/></svg></button></div>
     <nav id="rooms"></nav>
     <div class="grow"></div>
+    <div id="call-dock" hidden></div>
     <div id="sync-status" class="sync"></div>
     <div class="me">
       <span id="me-seal" class="me-seal"></span>
@@ -122,12 +129,13 @@
           <div id="search-pop" hidden></div>
         </div>
         <button id="btn-search" class="mini" title="Search" aria-label="Search"><svg class="ic"><use href="#i-search"/></svg></button>
-        <button id="btn-invite" class="btn" hidden><svg class="ic"><use href="#i-key"/></svg><span>Invite</span></button>
+        <button id="btn-invite" class="btn ghost" hidden><svg class="ic"><use href="#i-key"/></svg><span>Invite</span></button>
         <button id="btn-people" class="btn ghost" aria-label="People"><span id="people-stack" class="stack"></span><svg class="ic"><use href="#i-people"/></svg><span class="lbl">People</span></button>
       </div>
     </header>
     <div id="banner" hidden></div>
     <div id="upd" hidden></div>
+    <div id="call-stage" hidden></div>
     <div id="stream-wrap">
       <section id="stream" aria-live="polite" aria-relevant="additions"><div id="empty" class="empty"></div></section>
       <div id="day-float" aria-hidden="true"></div>
@@ -156,10 +164,15 @@
 <div id="toast" role="status" hidden></div>
 <script src="avatar.js"></script>
 <script src="app.js"></script>
+<script src="mega.js"></script>
 <script src="vendor/livekit-client.umd.js"></script>
 <script src="mic-gate.js"></script>
 <script src="call.js"></script>
 <script src="call-ui.js"></script>
+<script src="mega-live.js"></script>
+<script src="mega-wall.js"></script>
+<script src="mega-deck.js"></script>
 <script src="update-ui.js"></script>
+<script src="browser-update.js"></script>
 </body>
 </html>

@@ -17,6 +17,13 @@ pub const SYNC_MIN_BYTES: u64 = 64 * 1024;
 /// Most accounts one ACL request may name, so that one request cannot hold the relay's database for long.
 pub const MAX_ACL_BATCH: usize = 256;
 pub const MAX_BLOB_BYTES: usize = 25 * 1024 * 1024;
+/// Files larger than this take the chunked large-file path instead of a single blob. The UI uses the same number.
+pub const LARGE_FILE_THRESHOLD: u64 = 24 * 1024 * 1024;
+/// The chunk size a client picks for a large file. One chunk is all that is ever held in memory.
+pub const LARGE_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
+/// Largest chunk the relay accepts, and the most it holds in memory for one upload request.
+pub const MAX_LARGE_CHUNK_BYTES: u64 = 16 * 1024 * 1024;
+pub const MIN_LARGE_CHUNK_BYTES: u64 = 64 * 1024;
 pub const MAX_WELCOME_BYTES: usize = 1024 * 1024;
 pub const MAX_RENDEZVOUS_BYTES: usize = 8 * 1024;
 pub const AUTH_SKEW_SECS: u64 = 600;
@@ -223,10 +230,32 @@ pub fn call_room(gid: &str) -> String { hex::encode(sha256(&[b"commons/livekit-r
 /// its own MLS group, so no name ever leaves a member's device for this.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct CallPresenceReq { pub gids: Vec<String> }
+/// What one device's microphone and flags are doing. All false is the safe default (an older relay sends no state,
+/// and nothing is tinted). `speaking` is the participant's own attribute, refreshed by its call client from LiveKit's
+/// active-speaker events; the media server's participant list itself has no speaker flag.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CallPeerState {
+    #[serde(default)]
+    pub muted: bool,
+    #[serde(default)]
+    pub deafened: bool,
+    #[serde(default)]
+    pub speaking: bool,
+}
+impl CallPeerState {
+    pub fn is_plain(&self) -> bool { !self.muted && !self.deafened && !self.speaking }
+}
 /// Reply of `POST /v1/call-presence`: group id -> device ids in that room's call. A gid that is absent means
 /// nobody there (or the caller is not a current member of it). See `CallPresenceReq`.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct CallPresenceResp { pub rooms: std::collections::BTreeMap<String, Vec<String>> }
+pub struct CallPresenceResp {
+    pub rooms: std::collections::BTreeMap<String, Vec<String>>,
+    /// Per room, per device: microphone muted, deafened and speaking. Kept beside `rooms` rather than changing its
+    /// shape, so a client from before this field still reads the answer, and a newer client of an older relay sees
+    /// who is there with no tints.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub state: std::collections::BTreeMap<String, std::collections::BTreeMap<String, CallPeerState>>,
+}
 /// One link of the chain of owners: `from` hands the community to `to` as step `seq` (1 = from the founder).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct OwnerStep { pub seq: u64, pub from: String, pub to: String, pub sig: String }
@@ -264,6 +293,26 @@ pub struct SyncReq {
 pub struct Entry { pub seq: u64, pub id: String, pub data: String }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WelcomeEntry { pub id: String, pub data: String }
+// ---- large files: a resumable chunked area with its own quota and expiry ----
+/// Start (or rejoin) a large upload. `id` is chosen by the uploader: the same file offered again resumes the same
+/// upload, chunks already on the relay are listed in the answer and need not be sent again.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LargeBeginReq { pub gid: String, pub size: u64, pub chunk_size: u64 }
+/// What the relay knows about a large file, and which chunk indexes it already holds.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct LargeInfoResp {
+    pub size: u64,
+    pub chunk_size: u64,
+    pub chunks: u64,
+    pub complete: bool,
+    pub expires: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uploaded: Vec<u64>,
+}
+/// The whole-file hash: SHA-256 over a domain tag, the chunk count, the size, and every chunk's plaintext hash.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LargeFinishReq { pub sha256: String }
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct SyncResp {
     pub messages: std::collections::BTreeMap<String, Vec<Entry>>,
