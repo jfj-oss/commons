@@ -84,7 +84,7 @@
     P.busy = true;
     try {
       if (!(await chanOk())) return;   // the log fallback, an old relay or an old core: never send
-      if (document.visibilityState !== 'visible') return;
+      if (!P.on || document.visibilityState !== 'visible') return;   // the switch or the tab changed while the core was asked
       if (await emit(job.cid, job.body)) { P.lastSend = Date.now(); if (job.beat) P.stats.beats++; if (job.after) job.after(); }
     } finally { P.busy = false; }
   }

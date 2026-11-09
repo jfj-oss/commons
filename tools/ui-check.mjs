@@ -1569,8 +1569,10 @@ try {
     await focus(A, await optIdx(A)); await sleep(1500); await focus(A, await idx(A, textGid)); await sleep(3500);
     need(await sent(A) === fs0 && await A.ev(`(__megaLive.stats.kinds['pres.f'] || 0)`) === fk0, 'presence: events were sent on the log fallback');
     await chan(A, 'on');
-    // invalid events are ignored
-    await B.send('Page.bringToFront'); await B.ev(`__megaPres._reset(); 1`);
+    // invalid events are ignored (alice stops sending so that her real events cannot mix in)
+    await A.ev(`__megaPres.set(false)`); await sleep(1500);
+    await B.send('Page.bringToFront'); await sleep(2500);   // what alice sent before is read now
+    await B.ev(`__megaPres._reset(); 1`);
     const memB = await B.ev(`rpc('members', { cid: ${cj} }).then(m => m.find(x => !x.me).account)`);
     const ev = (o) => B.ev(`__megaPres.onEvent(${JSON.stringify({ id: 1, gid: textGid, account: memB, kind: 'pres.f', data: JSON.stringify({ v: 1, c: cid, r: '' }), ts: 1, ...o })}).then(() => __megaPres.peers().length)`);
     const bad0 = await B.ev(`__megaPres.stats.bad`);
@@ -1581,7 +1583,7 @@ try {
     ];
     for (const c of cases) need(await ev(c) === 0, 'presence: an invalid event was taken: ' + JSON.stringify(c).slice(0, 120));
     await B.ev(`new Promise(r => setTimeout(r, 300))`);
-    need(await B.ev(`__megaPres.stats.bad`) > bad0 && await allDots(B) === 0, 'presence: invalid events left a dot');
+    need(await B.ev(`__megaPres.stats.bad`) > bad0 && await allDots(B) === 0, 'presence: invalid events left a dot: ' + await B.ev(`JSON.stringify({ bad: __megaPres.stats.bad, peers: __megaPres.peers(), dots: document.querySelectorAll('.mpres .mpd').length })`) + ' bad0=' + bad0);
     need(await ev({}) === 1, 'presence: a valid event from a member was not taken');
     // at most 6 dots on a card, then +N
     await B.ev(`__megaPres._inject(Array.from({ length: 9 }, (_, i) => ({ a: 'acct' + i, c: ${cj}, r: ${gj}, name: 'Friend ' + i })))`); await sleep(500);
@@ -1589,6 +1591,7 @@ try {
     need(cap.dots === 6 && cap.more === '+3', 'presence: the cap is wrong: ' + JSON.stringify(cap));
     await B.shot('mega7-3-presence-cap');
     await B.ev(`__megaPres._reset(); 1`);
+    await A.ev(`__megaPres.set(true)`);
     await focus(A, await idx(A, textGid));
     await toSrv(B);
   }
