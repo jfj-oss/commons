@@ -77,7 +77,7 @@ void main() {
       '--card': mix(c.bg, w2, 0.14), '--raise': mix(c.bg, w2, 0.24), '--rail-2': mix(c.bg, w2, 0.2), '--rail-3': c.wave0,
       '--line': mix(c.bg, w2, 0.45), '--line-2': mix(c.bg, w2, 0.8), '--rail-line': mix(c.bg, w2, 0.45), '--glass-line': mix(c.bg, w2, 0.45),
       '--glass': c.bg + 'e0', '--glass-solid': c.bg,
-      '--wave-panel': c.bg + '99', '--rail-mute': m === 'dark' ? '#c4baa6' : '#4a4336', '--ink-3': m === 'dark' ? '#c4baa6' : '#4a4336',
+      '--wave-panel': c.bg + '8c', '--wave-sheen': m === 'dark' ? 'rgba(255, 255, 255, .035)' : 'rgba(255, 255, 255, .28)', '--wave-hi': m === 'dark' ? 'rgba(255, 255, 255, .1)' : 'rgba(255, 255, 255, .6)', '--wave-lo': m === 'dark' ? 'rgba(0, 0, 0, .34)' : 'rgba(0, 0, 0, .1)', '--rail-mute': m === 'dark' ? '#c4baa6' : '#4a4336', '--ink-3': m === 'dark' ? '#c4baa6' : '#4a4336',
       '--act': c.accent, '--act-ink': inkOn(c.accent), '--act-line': c.accent, '--act-soft': mix(c.bg, c.accent, 0.22),
       '--focus': c.accent, '--brass-line': c.accent, '--hover': c.accent + '14',
     };
