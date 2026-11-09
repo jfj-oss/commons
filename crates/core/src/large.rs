@@ -79,7 +79,7 @@ pub const CHANGED: &str = "the file has changed since this upload began";
 
 fn upload_start(id: &str, s: &LargeUpload, complete: bool) -> UploadStart {
     let need_read: Vec<u64> = (0..s.chunks).filter(|i| !s.uploaded.contains(i) || !s.hashes.contains_key(i)).collect();
-    // Up to 6 evenly spread hashed chunks, the first and the last: enough to notice an edited or swapped file.
+    // Up to 8 evenly spread hashed chunks, including the first and the last: enough to notice an edited or swapped file.
     let hashed: Vec<u64> = s.hashes.keys().copied().collect();
     let mut verify: Vec<u64> = vec![];
     if !need_read.is_empty() && !hashed.is_empty() {
@@ -284,10 +284,8 @@ impl Client {
                 done: 0, hashes: vec![], finished: false, path: final_path.display().to_string(), paused: false,
             });
         }
-        // The resume point is what was saved (each chunk is synced to disk before it is counted), but it is checked
-        // against the part file: every counted chunk is read back and must hash to what was recorded. The first one that
-        // does not, or anything past the count, is thrown away and fetched again, so a power cut or a damaged disk can
-        // never leave a bad chunk inside a file that is later reported as complete.
+        // The resume point is what was saved (each chunk is synced to disk before it is counted). Anything past the count
+        // is thrown away and fetched again, and the last few counted chunks are read back below.
         let (chunks, size, chunk_size, part, saved_done, saved) = {
             let d = self.st.large_downloads.get(msg_id).unwrap();
             (d.chunks, d.size, d.chunk_size, d.part.clone(), d.done, d.hashes.clone())
