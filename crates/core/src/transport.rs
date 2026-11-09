@@ -30,18 +30,31 @@ pub trait Transport: Send + Sync {
     fn request(&self, key: Option<&SigningKey>, method: &str, path: &str, body: &[u8], timeout: Duration) -> Result<HttpResp>;
 }
 
-pub struct HttpTransport { base: String, agent: ureq::Agent }
+pub struct HttpTransport { base: String, agent: ureq::Agent, bind: std::sync::Mutex<Option<(Option<String>, std::time::Instant)>> }
+/// How long an answer to "does this relay bind requests to its host" is kept.
+const BIND_TTL: Duration = Duration::from_secs(600);
 impl HttpTransport {
     pub fn new(base: &str) -> Self {
-        HttpTransport { base: base.trim_end_matches('/').to_string(), agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(5)).build() }
+        HttpTransport { base: base.trim_end_matches('/').to_string(), agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(5)).build(), bind: std::sync::Mutex::new(None) }
     }
-}
-impl HttpTransport { pub fn into_arc(self) -> std::sync::Arc<dyn Transport> { std::sync::Arc::new(self) } }
-impl Transport for HttpTransport {
-    fn request(&self, key: Option<&SigningKey>, method: &str, path: &str, body: &[u8], timeout: Duration) -> Result<HttpResp> {
+    /// The id to bind signed requests to, when this relay takes bound requests. `None`: sign the old way, as before. `fresh` asks the relay again.
+    fn bind_id(&self, fresh: bool) -> Option<String> {
+        if !fresh { if let Some((h, at)) = self.bind.lock().unwrap().as_ref() { if at.elapsed() < BIND_TTL { return h.clone(); } } }
+        let r = self.send(None, "GET", "/v1/info", &[], Duration::from_secs(5), None).ok()?;
+        let info: InfoResp = serde_json::from_slice(&r.body).ok()?;
+        let id = (r.status == 200 && info.bind && info.relay_id.len() == 32 && info.relay_id.bytes().all(|c| c.is_ascii_hexdigit())).then_some(info.relay_id);
+        *self.bind.lock().unwrap() = Some((id.clone(), std::time::Instant::now()));
+        id
+    }
+    fn send(&self, key: Option<&SigningKey>, method: &str, path: &str, body: &[u8], timeout: Duration, relay_id: Option<&str>) -> Result<HttpResp> {
         let url = format!("{}{}", self.base, path);
         let mut r = self.agent.request(method, &url).timeout(timeout);
-        if let Some(k) = key { r = r.set(AUTH_HEADER, &sign_request(k, method, path, body)); }
+        if let Some(k) = key {
+            r = match relay_id {
+                Some(h) => r.set(AUTH2_HEADER, &sign_request_for(k, method, path, body, h)),
+                None => r.set(AUTH_HEADER, &sign_request(k, method, path, body)),
+            };
+        }
         let res = if body.is_empty() && method == "GET" { r.call() } else { r.set("content-type", "application/octet-stream").send_bytes(body) };
         match res {
             Ok(resp) => {
@@ -59,6 +72,19 @@ impl Transport for HttpTransport {
             }
             Err(e) => Err(anyhow!("network: {e}")),
         }
+    }
+}
+impl HttpTransport { pub fn into_arc(self) -> std::sync::Arc<dyn Transport> { std::sync::Arc::new(self) } }
+impl Transport for HttpTransport {
+    fn request(&self, key: Option<&SigningKey>, method: &str, path: &str, body: &[u8], timeout: Duration) -> Result<HttpResp> {
+        let id = key.and_then(|_| self.bind_id(false));
+        let res = self.send(key, method, path, body, timeout, id.as_deref())?;
+        if id.is_some() && res.status == 401 {
+            // The relay's database was replaced (new id), or an older relay took its place: ask again, then say it again, bound or not.
+            let now = self.bind_id(true);
+            return self.send(key, method, path, body, timeout, now.as_deref());
+        }
+        Ok(res)
     }
 }
 use std::io::Read as _;

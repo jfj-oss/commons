@@ -160,6 +160,36 @@ pub fn sign_request(device_key: &SigningKey, method: &str, path: &str, body: &[u
     let sig = device_key.sign(&auth_msg(method, path, ts, body));
     format!("{}.{}.{}", hex::encode(device_key.verifying_key().to_bytes()), ts, hex::encode(sig.to_bytes()))
 }
+// ---- the same, bound to the relay the request is for ----
+// A request signed the old way is valid at any relay the device is registered on, for ten minutes. A relay that says in /v1/info that it
+// binds (`bind`, with its own random `relay_id`) gets requests signed over that id in `X-Commons-Auth2`, and no old-style header at all,
+// so a request captured on the wire (a plain-http relay, a log) is no good at another relay. A relay operator who lies about its id
+// to its own clients can still replay what they send to the relay whose id it claimed: that needs the clients to trust the operator.
+// Relays and clients from before this know nothing of it: they keep using the old header, which a new relay still accepts.
+pub const AUTH2_HEADER: &str = "x-commons-auth2";
+fn auth_msg_v2(method: &str, path: &str, ts: u64, body: &[u8], relay_id: &str) -> Vec<u8> {
+    let mut m = b"commons/req/v2".to_vec();
+    m.extend_from_slice(&sha256(&[method.as_bytes(), path.as_bytes(), &ts.to_be_bytes(), body, relay_id.as_bytes()]));
+    m
+}
+pub fn sign_request_for(device_key: &SigningKey, method: &str, path: &str, body: &[u8], relay_id: &str) -> String {
+    let ts = now_secs();
+    let sig = device_key.sign(&auth_msg_v2(method, path, ts, body, relay_id));
+    format!("{}.{}.{}", hex::encode(device_key.verifying_key().to_bytes()), ts, hex::encode(sig.to_bytes()))
+}
+pub fn verify_request_for(header: &str, method: &str, path: &str, body: &[u8], relay_id: &str) -> Result<String, ProtoError> {
+    let mut it = header.split('.');
+    let (d, ts, sig) = (it.next().ok_or(ProtoError::Length)?, it.next().ok_or(ProtoError::Length)?, it.next().ok_or(ProtoError::Length)?);
+    if it.next().is_some() { return Err(ProtoError::Length); }
+    let ts: u64 = ts.parse().map_err(|_| ProtoError::Length)?;
+    if now_secs().abs_diff(ts) > AUTH_SKEW_SECS { return Err(ProtoError::ClockSkew); }
+    let dk = unhex32(d)?;
+    let sig = hex::decode(sig).map_err(|e| ProtoError::Encoding(e.to_string()))?;
+    let sig = Signature::from_slice(&sig).map_err(|_| ProtoError::BadSignature)?;
+    VerifyingKey::from_bytes(&dk).map_err(|_| ProtoError::BadSignature)?
+        .verify(&auth_msg_v2(method, path, ts, body, relay_id), &sig).map_err(|_| ProtoError::BadSignature)?;
+    Ok(d.to_string())
+}
 /// Returns the authenticated device id (hex).
 pub fn verify_request(header: &str, method: &str, path: &str, body: &[u8]) -> Result<String, ProtoError> {
     let mut it = header.split('.');
@@ -281,6 +311,12 @@ pub struct InfoResp {
     /// This relay also tries `PwLookupReq::alt` in the same lookup (one miss, not two). Older relays do not say, which reads as false.
     #[serde(default)]
     pub pwalt: bool,
+    /// This relay accepts requests bound to its id (`X-Commons-Auth2`). Older relays do not say, which reads as false.
+    #[serde(default)]
+    pub bind: bool,
+    /// This relay's own random id (32 hex digits), the thing bound requests are signed over. Empty from older relays.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub relay_id: String,
 }
 /// A sealed copy of an invite link, filed under an id derived from the inviter's password.
 #[derive(Serialize, Deserialize, Debug, Clone)]

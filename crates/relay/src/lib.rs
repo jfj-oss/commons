@@ -314,7 +314,9 @@ pub fn open_db(path: &str) -> rusqlite::Result<Connection> {
          CREATE INDEX IF NOT EXISTS large_exp ON large_files(expires);
          CREATE TABLE IF NOT EXISTS pwinvites(lid TEXT PRIMARY KEY, blob BLOB NOT NULL, owner TEXT NOT NULL, expires INTEGER NOT NULL, fetches_left INTEGER NOT NULL);
          CREATE INDEX IF NOT EXISTS pwinv_owner ON pwinvites(owner);
-         CREATE TABLE IF NOT EXISTS usage(account TEXT PRIMARY KEY, entry_bytes INTEGER NOT NULL DEFAULT 0);",
+         CREATE TABLE IF NOT EXISTS usage(account TEXT PRIMARY KEY, entry_bytes INTEGER NOT NULL DEFAULT 0);
+         CREATE TABLE IF NOT EXISTS relay_meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
+         INSERT OR IGNORE INTO relay_meta(k,v) VALUES('id', lower(hex(randomblob(16))));",
     )?;
     Ok(c)
 }
@@ -394,9 +396,19 @@ pub async fn start_with(bind: SocketAddr, data_dir: PathBuf, limits: Limits) -> 
 
 struct Authed { device: String, account: String }
 
+/// This relay's own id, made once and kept in its database (an older relay's database simply gets the table).
+fn relay_id(db: &Connection) -> String { db.query_row("SELECT v FROM relay_meta WHERE k='id'", [], |r| r.get(0)).unwrap_or_default() }
+fn info(db: &Connection, gated: bool, ok: bool) -> Resp { json(&InfoResp { gated, ok, pwinvite: true, pwalt: true, bind: true, relay_id: relay_id(db) }) }
+
 fn authenticate(db: &Connection, headers: &HeaderMap, method: &str, path: &str, body: &[u8], require_registered: bool) -> Result<(String, Option<Authed>), Resp> {
-    let h = headers.get(AUTH_HEADER).and_then(|v| v.to_str().ok()).ok_or_else(|| status(StatusCode::UNAUTHORIZED, "missing auth"))?;
-    let dev = verify_request(h, method, path, body).map_err(|e| match e {
+    // A request bound to this relay's host (see commons_proto::sign_request_for) wins; the old header is still accepted for older clients.
+    let bound = headers.get(AUTH2_HEADER).and_then(|v| v.to_str().ok());
+    let h = bound.or_else(|| headers.get(AUTH_HEADER).and_then(|v| v.to_str().ok())).ok_or_else(|| status(StatusCode::UNAUTHORIZED, "missing auth"))?;
+    let verified = match bound {
+        Some(h) => verify_request_for(h, method, path, body, &relay_id(db)),
+        None => verify_request(h, method, path, body),
+    };
+    let dev = verified.map_err(|e| match e {
         // Says so plainly, with our time, so that the client can tell its user to fix the clock.
         ProtoError::ClockSkew => status(StatusCode::UNAUTHORIZED, &format!("clock skew: relay time is {}", now_secs())),
         _ => status(StatusCode::UNAUTHORIZED, "bad auth"),
@@ -624,7 +636,7 @@ async fn handle(State(st): State<Arc<RelayState>>, req: Request<Body>) -> Resp {
     let _permit = if limit > 4 * 1024 * 1024 {
         let known = {
             let db = st.db.lock().unwrap();
-            parts.headers.get(AUTH_HEADER).and_then(|v| v.to_str().ok()).and_then(|h| h.split('.').next()).is_some_and(|d| is_hex(d, 64)
+            parts.headers.get(AUTH2_HEADER).or_else(|| parts.headers.get(AUTH_HEADER)).and_then(|v| v.to_str().ok()).and_then(|h| h.split('.').next()).is_some_and(|d| is_hex(d, 64)
                 && matches!(db.query_row("SELECT revoked_sig FROM devices WHERE device=?1", [d], |r| r.get::<_, Option<String>>(0)).optional(), Ok(Some(None))))
         };
         if !known { return status(StatusCode::UNAUTHORIZED, "bad auth"); }
@@ -885,13 +897,13 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
     if *m == Method::GET && seg == ["health"] { return Ok(status(StatusCode::OK, "ok")); }
     let db = st.db.lock().unwrap();
     match (m.clone(), seg) {
-        (Method::GET, ["v1", "info"]) => Ok(json(&InfoResp { gated: lim.invite_secret.is_some(), ok: false, pwinvite: true, pwalt: true })),
+        (Method::GET, ["v1", "info"]) => Ok(info(&db, lim.invite_secret.is_some(), false)),
         // Lets an app check a secret before it creates anything on disk. Counts against guessing.
         (Method::POST, ["v1", "info"]) => {
             let r: InfoReq = parse(body)?;
-            let Some(secret) = &lim.invite_secret else { return Ok(json(&InfoResp { gated: false, ok: true, pwinvite: true, pwalt: true })) };
+            let Some(secret) = &lim.invite_secret else { return Ok(info(&db, false, true)) };
             st.limited("info".into(), lim.info_checks_per_window, "too many attempts, try again later")?;
-            Ok(json(&InfoResp { gated: true, ok: same_secret(secret, &r.invite), pwinvite: true, pwalt: true }))
+            Ok(info(&db, true, same_secret(secret, &r.invite)))
         }
         // ---- device registry ----
         (Method::POST, ["v1", "devices"]) => {
