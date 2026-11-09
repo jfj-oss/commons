@@ -412,6 +412,9 @@ impl App {
             // Test bridge only: a ring with a time of the caller's choosing, to show a stale one rings nobody.
             #[cfg(feature = "devbridge")]
             "debug_ring" => self.with(|c| c.debug_ring_aged(&s(&a, "gid"), a["age"].as_u64().unwrap_or(0)).map(|id| json!({"id": id})).map_err(e)),
+            // One-to-one calls (direct.rs): call a person, and stop (or allow again) calls from one.
+            "direct_call" => self.with(|c| c.direct_call(&s(&a, "peer")).map(|d| json!({"cid": d.cid, "room": d.room, "peer": d.peer, "invited": d.invited})).map_err(e)),
+            "direct_refuse" => self.with(|c| c.direct_refuse(&s(&a, "account"), a["on"].as_bool().unwrap_or(true)).map(|_| json!({})).map_err(e)),
             "ring_poll" => {
                 let since = a["since"].as_u64().unwrap_or(0);
                 self.try_read(|c| json!({"events": c.ring_poll(since).into_iter().map(|v| json!({"id": v.id, "gid": v.gid, "account": v.account, "ring": v.ring, "ts": v.ts, "end": v.end, "direct": v.direct})).collect::<Vec<_>>(), "head": c.ring_next}))
@@ -834,7 +837,7 @@ pub fn debug_snapshot(c: &Client) -> Value { snapshot(c) }
 
 fn snapshot(c: &Client) -> Value {
     let me = c.my_account();
-    let comms: Vec<Value> = c.st.communities.values().map(|co| {
+    let comms: Vec<Value> = c.st.communities.values().filter(|co| !c.is_direct(co)).map(|co| {
         let role = co.role_of(&me).unwrap_or(Role::Member);
         let list = c.channels_of(&co.id);
         let unread: usize = list.iter().map(|x| x.unread).sum();
@@ -848,12 +851,16 @@ fn snapshot(c: &Client) -> Value {
                "banned": if role >= Role::Admin { co.banned.iter().map(|a| json!({"account": a, "name": c.display_name(a)})).collect::<Vec<_>>() } else { vec![] }, "invites": co.invites.iter().map(|i| json!({"id": i.id, "expires": i.expires, "uses_left": i.uses_left, "mine": co.invite_sks.contains_key(&i.id), "password": c.st.pw_invites.contains_key(&i.id)})).collect::<Vec<_>>(),
                "status": c.group_status(&co.id)})
     }).collect();
-    let joining: Vec<Value> = c.st.joining.values().map(|l| json!({"id": l.community, "name": l.name, "sent": c.st.join_sent.contains(&l.community), "asked": c.st.join_asked.get(&l.community)})).collect();
-    let refused: Vec<Value> = c.st.join_refused.iter().map(|(id, r)| json!({"id": id, "name": r.name, "reason": r.reason, "ts": r.ts})).collect();
+    let joining: Vec<Value> = c.st.joining.values().filter(|l| !c.st.direct_joining.contains_key(&l.community)).map(|l| json!({"id": l.community, "name": l.name, "sent": c.st.join_sent.contains(&l.community), "asked": c.st.join_asked.get(&l.community)})).collect();
+    let refused: Vec<Value> = c.st.join_refused.iter().filter(|(id, _)| !c.st.direct_joining.contains_key(*id)).map(|(id, r)| json!({"id": id, "name": r.name, "reason": r.reason, "ts": r.ts})).collect();
     let problems: Vec<Value> = c.st.notices.iter().rev().filter(|n| matches!(n.kind.as_str(), "decrypt" | "broken" | "rollback" | "reject" | "gap" | "welcome" | "relay" | "state" | "clock" | "revoked")).take(5).map(|n| json!({"ts": n.ts, "kind": n.kind, "text": n.text})).collect();
+    // One-to-one calls are never among the communities: they have their own small list, named after the other person.
+    let direct: Vec<Value> = c.direct_list().into_iter().map(|d| json!({"id": d.cid, "peer": d.peer, "name": c.display_name(&d.peer), "room": d.room, "last": d.last, "members": d.members, "mine": d.founder_me,
+        "joined": c.channels_of(&d.cid).iter().find(|ch| ch.gid == d.room).is_some_and(|ch| ch.joined), "supported": c.direct_support(&d.peer)})).collect();
+    let direct_refused: Vec<Value> = c.st.direct_refused.iter().filter(|a| !a.starts_with("c:")).map(|a| json!({"account": a, "name": c.display_name(a)})).collect();
     let net = match c.net.state { NetState::Connecting => "connecting", NetState::Online => "online", NetState::Offline => "offline" };
     let listening = c.listening_of(&me).map(|l| json!({"title": l.title, "artist": l.artist}));
-    json!({"me": {"account": me, "name": c.st.name, "device": c.my_device(), "recovery_unsaved": c.st.recovery_unsaved}, "relay": c.st.relay, "relay_secret": !c.st.relay_invite.is_empty(), "communities": comms, "joining": joining, "refused": refused,
+    json!({"me": {"account": me, "name": c.st.name, "device": c.my_device(), "recovery_unsaved": c.st.recovery_unsaved}, "relay": c.st.relay, "relay_secret": !c.st.relay_invite.is_empty(), "communities": comms, "direct": direct, "direct_refused": direct_refused, "joining": joining, "refused": refused,
            "typing_enabled": c.st.typing_enabled, "share_listening": c.st.share_listening, "rune_url": c.rune_url(), "listening": listening,
            "outbox": c.st.outbox.len(), "problems": problems, "net": net, "net_detail": c.net.detail, "revoked": c.st.self_revoked,
            "download_dir": c.download_dir().display().to_string(),

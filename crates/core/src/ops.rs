@@ -65,8 +65,12 @@ impl Client {
     pub fn create_community(&mut self, name: &str) -> Result<String> {
         let name = name.trim();
         check_name("a community name", name).map_err(|e| anyhow!(e))?;
+        self.create_community_with(name, rand_hex(16), "general", "")
+    }
+
+    /// The same, with the nonce (a one-to-one community's carries its marker, see `direct.rs`) and the first room chosen.
+    pub(crate) fn create_community_with(&mut self, name: &str, nonce: String, room: &str, room_kind: &str) -> Result<String> {
         let owner = self.my_account();
-        let nonce = rand_hex(16);
         let cid = community_id(&owner, &nonce);
         let consents = vec![sign_consent(&self.acct_key()?, &cid, now_secs())];
         let ext = GroupExt::Control { name: name.into(), owner: owner.clone(), nonce: nonce.clone(), admins: vec![], channels: vec![], invites: vec![], banned: vec![], transfers: vec![], consents, style: None };
@@ -88,7 +92,7 @@ impl Client {
         self.synced.insert(cid.clone());
         self.st.profile_dirty = true;
         self.save()?;
-        if let Err(e) = self.create_channel(&cid, "general") {
+        if let Err(e) = self.create_channel_kind(&cid, room, room_kind) {
             // Without its first room a new community is only a thing to explain. Nobody else knows it yet.
             self.delete_group(&cid);
             self.st.communities.remove(&cid);
@@ -863,7 +867,7 @@ impl Client {
         for i in 0..self.st.outbox.len() {
             let (id, gid, ready) = { let it = &self.st.outbox[i]; (it.id.clone(), it.gid.clone(), it.cipher.is_some()) };
             let Some(gs) = self.st.groups.get(&gid).cloned() else { gone.insert(id); continue }; // group gone
-            let live_ts = match &self.st.outbox[i].env { Envelope::Live { ts, .. } | Envelope::Ring { ts, .. } => Some(*ts), _ => None };
+            let live_ts = match &self.st.outbox[i].env { Envelope::Live { ts, .. } | Envelope::Ring { ts, .. } | Envelope::Direct { ts, .. } => Some(*ts), _ => None };
             // Live data is for now: not kept past a few seconds, never reported when it goes, and never held back by a bad moment.
             if let Some(ts) = live_ts {
                 if gs.removed || ts + 10 < now_secs() || (!ready && !self.ready_to_encrypt(&gid)) { gone.insert(id); continue; }
@@ -885,7 +889,7 @@ impl Client {
                 Err(e) => {
                     let it = &mut self.st.outbox[i];
                     it.tries += 1;
-                    if matches!(it.env, Envelope::Live { .. } | Envelope::Ring { .. }) { gone.insert(id); continue; }
+                    if matches!(it.env, Envelope::Live { .. } | Envelope::Ring { .. } | Envelope::Direct { .. }) { gone.insert(id); continue; }
                     if it.tries > 20 { gone.insert(id); self.notice("outbox", format!("could not encrypt a message, giving up: {e}")); }
                 }
             }
@@ -1066,6 +1070,9 @@ impl Client {
         if c.banned.contains(&jr.cert.account) { return JoinCheck::Refuse(jr.cert.device, JOIN_BANNED); }
         if inv.expires < now_secs() || inv.uses_left == Some(0) { return JoinCheck::Refuse(jr.cert.device, JOIN_INVITE_GONE); }
         // A consent that does not check out is left out, and the joiner offers one again once in.
+        // A one-to-one community lets in the one person its nonce names, whoever holds the invite (the offer travels in a room
+        // other people share, and so does the secret in it).
+        if crate::direct::admits(&c.name, c.direct.is_some(), if c.founder.is_empty() { &c.owner } else { &c.founder }, &c.nonce, &jr.cert.account) == Some(false) { return JoinCheck::Refuse(jr.cert.device, JOIN_INVITE_GONE); }
         let consent = jr.consent.filter(|x| x.account == jr.cert.account && verify_consent(&c.id, x).is_ok());
         JoinCheck::Accept(jr.cert, jr.invite, consent)
     }
@@ -1327,7 +1334,7 @@ impl Client {
         let ts = now_secs();
         // the picture rides along too, so a status refresh never looks like "no picture" to a device that missed one
         let avatar = self.st.profiles.get(&self.my_account()).and_then(|p| p.avatar.clone());
-        for gid in &ctls { self.queue_env(gid, Envelope::Profile { name: name.clone(), ts, listen: value.clone(), avatar: avatar.clone(), avatar_cleared: false }); }
+        for gid in &ctls { self.queue_env(gid, Envelope::Profile { name: name.clone(), ts, listen: value.clone(), avatar: avatar.clone(), avatar_cleared: false, direct: true }); }
         if ctls.is_empty() { return false; }
         self.st.listening_sent = value;
         self.st.listening_sent_ts = ts;
