@@ -92,10 +92,12 @@
   function placeDock() {
     if (!dock) return;
     const rail = document.getElementById('rail'), main = document.getElementById('main');
-    if (isPhone() && main) {
+    // mega's card screens cover the chat on a phone, so there the dock floats on its own above them.
+    const cards = isPhone() && document.documentElement.classList.contains('mg-cards');
+    if (isPhone() && main && !cards) {
       if (dock.parentElement !== main) main.insertBefore(dock, document.getElementById('composer') || null);
       dock.classList.remove('standalone');
-    } else if (rail) {
+    } else if (rail && !cards) {
       if (dock.parentElement !== rail) rail.insertBefore(dock, document.getElementById('sync-status') || null);
       dock.classList.remove('standalone');
     } else {
@@ -103,6 +105,7 @@
       dock.classList.add('standalone');   // the stand-alone browser call page has no rail or chat
     }
   }
+  window.__placeCallDock = placeDock;
   // A phone has a whole row of controls beside the words, so say the shorter thing there.
   const statusWords = s => s.phase === 'connecting' ? 'Connecting…' : s.phase === 'reconnecting' ? 'Reconnecting…' : s.phase === 'error' ? 'Call ended' : isPhone() ? 'Connected' : 'Voice connected';
   function dockButtons(s, sup) {

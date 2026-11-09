@@ -358,6 +358,13 @@ html.mega #c-play { flex: none; }
   html.mega #mega-rail { top: var(--m-deckh); }
   html.mega #mega-deckshow { top: calc(10px + env(safe-area-inset-top, 0px)); left: auto; right: 10px; }
 }
+html.mega #input::placeholder { font-style: normal; }   /* Raster has no italic, and a slanted pixel font smears */
+/* the call controls in the dark room look; on a phone they float over the cards, so mute and hang up are always in reach */
+html.mega #call-dock { --rail-ink: var(--m-paper); --rail-mute: rgba(255, 255, 255, .58); --rail-line: rgba(255, 255, 255, .14); --rail-2: #15151b; --hover: rgba(255, 255, 255, .08); --glass-hi: transparent; }
+@media (max-width: 760px) {
+  html.mega #call-dock.standalone { left: max(10px, env(safe-area-inset-left, 0px)); right: max(10px, env(safe-area-inset-right, 0px)); bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
+  html.mega #c-shares .ctile select { display: none; }
+}
 @media (prefers-reduced-motion: reduce) { html.mega #call-stage, html.mega #app, html.mega #mega-rail, html.mega #mega, html.mega #mega-opts, html.mega #rail#rail { transition-duration: .01ms !important; } }
 
 /* ---- the shared wall (phase 4) ---- */

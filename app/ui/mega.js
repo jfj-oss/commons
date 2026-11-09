@@ -304,6 +304,7 @@
     mega.hidden = chat; rail.hidden = !chat;
     root.classList.toggle('mg-chat', chat); root.classList.toggle('mg-cards', !chat);
     if (!chat) { hideOpts(); closeRail(); }
+    if (window.__placeCallDock) window.__placeCallDock();
     syncRoom();
   }
   // Switching community through the same state the old switcher used, so drafts, members and call presence follow.
