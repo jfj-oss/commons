@@ -5,7 +5,7 @@
 //!
 //! Data lives in ~/.local/share/megatron-bot (override: MEGATRON_BOT_DATA). The account's passphrase is generated on
 //! first use and kept in that folder, readable by its owner only, so the unattended service can unlock it.
-use commons_bot::bot::{Bot, Config, Job, SharedClient, DEFAULT_NAME};
+use commons_bot::bot::{Bot, Config, Job, JobKind, SharedClient, DEFAULT_NAME};
 use commons_bot::gpu::{GpuGate, Pause};
 use commons_bot::llm::{DeepSeek, Ollama, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DEFAULT_OLLAMA};
 use commons_bot::search::{DuckDuckGo, WebSearch, DEFAULT_SEARCH_URL, SEARCH_TIMEOUT};
@@ -52,6 +52,10 @@ fn config() -> Config {
     cfg.studio_daily_video_cap = env_usize("MEGATRON_BOT_STUDIO_DAILY_VIDEO_CAP", cfg.studio_daily_video_cap)
         .min(cfg.studio_daily_cap);
     cfg.studio_queue_max = env_usize("MEGATRON_BOT_STUDIO_QUEUE_MAX", cfg.studio_queue_max);
+    cfg.chime_chance_pct = env_usize("MEGATRON_BOT_CHIME_PERCENT", 8).min(100);
+    cfg.chime_min_gap_secs = env_usize("MEGATRON_BOT_CHIME_GAP_SECS", cfg.chime_min_gap_secs as usize) as u64;
+    cfg.art_chance_pct = env_usize("MEGATRON_BOT_ART_PERCENT", 20).min(100);
+    cfg.art_daily_max = env_usize("MEGATRON_BOT_ART_DAILY", cfg.art_daily_max as usize) as u32;
     cfg
 }
 
@@ -249,6 +253,18 @@ fn serve(client: Client, bot: Arc<Bot>) {
             bot.poll(&mut c)
         };
         for job in jobs {
+            // Unasked: on its own thread, so a song being made for fun never holds up an answer to a real question.
+            if matches!(job.kind, JobKind::Chime) {
+                let bot = bot.clone();
+                let shared = shared.clone();
+                std::thread::spawn(move || {
+                    let mut chat = SharedClient(&shared);
+                    if let Some(sent) = bot.answer(&mut chat, &job) {
+                        eprintln!("[bot] joined in, in {} ({} chars)", job.gid, sent.text.chars().count());
+                    }
+                });
+                continue;
+            }
             let cap = bot.cfg.max_queue;
             let gid = job.gid.clone();
             let tx = rooms.entry(gid.clone()).or_insert_with(|| {

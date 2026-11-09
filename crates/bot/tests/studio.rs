@@ -379,3 +379,188 @@ fn songs_and_sounds_use_the_audio_route_and_their_own_lengths() {
         assert_eq!(server.hits("/aud/1"), 1);
     }
 }
+
+// ---------------------------------------------------------------- joining in without being asked
+
+fn chatty() -> Config {
+    Config { chime_chance_pct: 100, chime_min_gap_secs: 0, chime_min_messages: 1, chime_delay_secs: (0, 0), art_min_gap_secs: 0, ..Config::default() }
+}
+fn chime_job() -> Job { Job { gid: "g".into(), trigger: "t".into(), from: String::new(), text: String::new(), kind: JobKind::Chime } }
+fn chat_with_talk() -> FakeChat {
+    let mut chat = FakeChat::new(Role::Member);
+    chat.lines = vec![
+        Line { mine: false, name: "alice".into(), text: "best pasta shape?".into() },
+        Line { mine: false, name: "bob".into(), text: "penne obviously".into() },
+    ];
+    chat
+}
+struct BusyGpu;
+impl GpuCheck for BusyGpu { fn blocked(&self) -> Option<commons_bot::gpu::Pause> { Some(commons_bot::gpu::Pause::Studio) } }
+
+#[test]
+fn joining_in_posts_a_short_remark_that_pings_nobody() {
+    let ollama = fake_ollama(&["qwen3.5:9b"], "Oracle: @alice yuh mad, penne a fi fool dem");
+    let dir = tempfile::tempdir().unwrap();
+    let bot = make_bot(dir.path(), chatty(), &ollama.url(), Arc::new(DeadSearch), Arc::new(DeadStudio), Arc::new(NoGpu));
+    let mut chat = chat_with_talk();
+    bot.answer(&mut chat, &chime_job()).expect("a remark");
+    assert_eq!(chat.sent, vec!["alice yuh mad, penne a fi fool dem".to_string()]);
+    let body = ollama.requests().into_iter().find(|r| r.path == "/api/chat").unwrap().json();
+    assert!(body.get("tools").is_none_or(|t| t.as_array().is_none_or(|a| a.is_empty())), "no tools when it is only talking");
+}
+
+#[test]
+fn it_can_decide_it_has_nothing_to_say() {
+    let ollama = fake_ollama(&["qwen3.5:9b"], "PASS.");
+    let dir = tempfile::tempdir().unwrap();
+    let bot = make_bot(dir.path(), chatty(), &ollama.url(), Arc::new(DeadSearch), Arc::new(DeadStudio), Arc::new(NoGpu));
+    let mut chat = chat_with_talk();
+    assert!(bot.answer(&mut chat, &chime_job()).is_none());
+    assert!(chat.sent.is_empty());
+}
+
+#[test]
+fn it_never_loads_the_model_unasked_while_the_gpu_is_taken() {
+    let ollama = fake_ollama(&["qwen3.5:9b"], "words");
+    let dir = tempfile::tempdir().unwrap();
+    let bot = make_bot(dir.path(), chatty(), &ollama.url(), Arc::new(DeadSearch), Arc::new(DeadStudio), Arc::new(BusyGpu));
+    let mut chat = chat_with_talk();
+    assert!(bot.answer(&mut chat, &chime_job()).is_none());
+    assert_eq!(ollama.hits("/api/chat"), 0);
+    assert!(chat.sent.is_empty(), "no notice either: nobody asked");
+}
+
+fn arty() -> Config { Config { art_chance_pct: 100, ..chatty() } }
+fn posts_to_studio(s: &FakeHttp) -> usize { s.requests().iter().filter(|r| r.method == "POST" && r.path.starts_with("/api/jobs")).count() }
+
+#[test]
+fn it_makes_something_for_fun_and_posts_it() {
+    let studio = fake_studio(idle_state(), "PNGDATA");
+    let ollama = studio_ollama("picture", "a neon goat riding a bus");
+    let dir = tempfile::tempdir().unwrap();
+    let bot = make_bot(dir.path(), arty(), &ollama.url(), Arc::new(DeadSearch), studio_with(&studio, dir.path()), Arc::new(NoGpu));
+    let mut chat = chat_with_talk();
+    bot.answer(&mut chat, &chime_job()).expect("something made");
+    assert_eq!(chat.files.len(), 1);
+    assert_eq!(chat.files[0].3, "a neon goat riding a bus");
+    assert!(chat.sent.is_empty(), "no \"Making it…\" line: it is a surprise");
+}
+
+#[test]
+fn a_song_made_for_fun_is_always_short() {
+    let studio = fake_studio(idle_state(), "AUDIO");
+    let ollama = studio_ollama_args(json!({"kind": "song", "prompt": "warm reggae about pasta", "lyrics": "la la", "length": "180"}));
+    let dir = tempfile::tempdir().unwrap();
+    let bot = make_bot(dir.path(), arty(), &ollama.url(), Arc::new(DeadSearch), studio_with(&studio, dir.path()), Arc::new(NoGpu));
+    bot.answer(&mut chat_with_talk(), &chime_job()).expect("a song");
+    let sub = studio.requests().into_iter().find(|r| r.method == "POST" && r.path.starts_with("/api/jobs")).unwrap().json();
+    assert_eq!(sub["length"], "30");
+}
+
+#[test]
+fn video_is_never_made_for_fun_and_it_just_talks_instead() {
+    let studio = fake_studio(idle_state(), "VID");
+    let ollama = studio_ollama("video", "a goat");
+    let dir = tempfile::tempdir().unwrap();
+    let bot = make_bot(dir.path(), arty(), &ollama.url(), Arc::new(DeadSearch), studio_with(&studio, dir.path()), Arc::new(NoGpu));
+    let mut chat = chat_with_talk();
+    bot.answer(&mut chat, &chime_job());
+    assert_eq!(posts_to_studio(&studio), 0);
+    assert!(chat.files.is_empty());
+    assert_eq!(chat.sent, vec!["Aight, done.".to_string()]);
+}
+
+#[test]
+fn the_hard_block_covers_what_it_makes_for_fun() {
+    let studio = fake_studio(idle_state(), "PNG");
+    let ollama = studio_ollama("picture", "a nude teen");
+    let dir = tempfile::tempdir().unwrap();
+    let bot = make_bot(dir.path(), arty(), &ollama.url(), Arc::new(DeadSearch), studio_with(&studio, dir.path()), Arc::new(NoGpu));
+    let mut chat = chat_with_talk();
+    bot.answer(&mut chat, &chime_job());
+    assert_eq!(posts_to_studio(&studio), 0, "Studio is never contacted");
+    assert!(chat.files.is_empty());
+    assert!(!chat.sent.iter().any(|t| t == safety::REFUSAL), "no refusal for something nobody asked for");
+}
+
+#[test]
+fn a_game_means_no_art_for_fun() {
+    let studio = fake_studio(json!({"game": true, "paused": ""}), "PNG");
+    let ollama = fake_ollama(&["qwen3.5:9b"], "words instead");
+    let dir = tempfile::tempdir().unwrap();
+    let bot = make_bot(dir.path(), arty(), &ollama.url(), Arc::new(DeadSearch), studio_with(&studio, dir.path()), Arc::new(NoGpu));
+    let mut chat = chat_with_talk();
+    bot.answer(&mut chat, &chime_job());
+    assert_eq!(posts_to_studio(&studio), 0);
+    assert!(chat.files.is_empty());
+}
+
+#[test]
+fn art_for_fun_stops_at_the_daily_cap() {
+    let studio = fake_studio(idle_state(), "PNG");
+    let ollama = studio_ollama("picture", "a neon goat");
+    let dir = tempfile::tempdir().unwrap();
+    let bot = make_bot(dir.path(), Config { art_daily_max: 1, ..arty() }, &ollama.url(), Arc::new(DeadSearch), studio_with(&studio, dir.path()), Arc::new(NoGpu));
+    let mut chat = chat_with_talk();
+    bot.answer(&mut chat, &chime_job());
+    bot.answer(&mut chat, &chime_job());
+    assert_eq!(chat.files.len(), 1);
+    assert_eq!(posts_to_studio(&studio), 1);
+    assert_eq!(chat.sent.len(), 1, "after the cap it only talks");
+}
+
+#[test]
+fn joining_in_needs_a_live_conversation_and_respects_the_switches() {
+    let net = Net::new();
+    let mut alice = Peer::new(&net, "alice");
+    let mut oracle = Peer::new(&net, "Oracle");
+    let (_cid, gen) = community_with(&net, &mut alice, &mut [&mut oracle]);
+    let ollama = fake_ollama(&["qwen3.5:9b"], "pasta a fi pickney");
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = Config { chime_min_messages: 3, chime_min_gap_secs: 1000, ..chatty() };
+    let bot = make_bot(dir.path(), cfg, &ollama.url(), Arc::new(DeadSearch), Arc::new(DeadStudio), Arc::new(NoGpu));
+    assert!(bot.poll(&mut oracle.c).is_empty());
+
+    let say = |who: &mut Peer, other: &mut Peer, t: &str| { who.c.send_text(&gen, t, None).unwrap(); settle(&mut [who, other]); };
+    say(&mut alice, &mut oracle, "one");
+    say(&mut alice, &mut oracle, "two");
+    assert!(bot.poll(&mut oracle.c).is_empty(), "two messages is not a conversation yet");
+    say(&mut alice, &mut oracle, "three");
+    let jobs = bot.poll(&mut oracle.c);
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].kind, JobKind::Chime);
+    let sent = bot.answer(&mut oracle.c, &jobs[0]).expect("a remark");
+    settle(&mut [&mut alice, &mut oracle]);
+    assert!(has_text(&alice, &gen, &sent.text), "everyone sees it");
+    let last = alice.c.st.chans[&gen].msgs.iter().rev().find(|m| matches!(&m.body, MsgBody::Text(t) if *t == sent.text)).unwrap();
+    assert!(last.reply.is_none(), "it replies to nobody");
+
+    for t in ["four", "five", "six"] { say(&mut alice, &mut oracle, t); }
+    assert!(bot.poll(&mut oracle.c).is_empty(), "the gap holds it back");
+
+    // A second bot with no gap, to exercise the switches. A mention wins over joining in.
+    let dir2 = tempfile::tempdir().unwrap();
+    let bot = make_bot(dir2.path(), chatty(), &ollama.url(), Arc::new(DeadSearch), Arc::new(DeadStudio), Arc::new(NoGpu));
+    let _ = bot.poll(&mut oracle.c);
+    say(&mut alice, &mut oracle, "@Oracle hello");
+    let jobs = bot.poll(&mut oracle.c);
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].kind, JobKind::Answer { deepseek: false });
+
+    say(&mut alice, &mut oracle, "@Oracle quiet");
+    let jobs = bot.poll(&mut oracle.c);
+    assert_eq!(jobs[0].kind, JobKind::SetChime { on: false });
+    say(&mut alice, &mut oracle, "chatter");
+    assert!(bot.poll(&mut oracle.c).is_empty(), "quiet means quiet");
+    say(&mut alice, &mut oracle, "@Oracle chime in");
+    let jobs = bot.poll(&mut oracle.c);
+    assert_eq!(jobs[0].kind, JobKind::SetChime { on: true });
+    say(&mut alice, &mut oracle, "chatter again");
+    assert_eq!(bot.poll(&mut oracle.c)[0].kind, JobKind::Chime);
+
+    // In a DeepSeek room the words would leave the computer, and nobody asked for that.
+    say(&mut alice, &mut oracle, "@Oracle use deepseek");
+    let _ = bot.poll(&mut oracle.c);
+    say(&mut alice, &mut oracle, "more chatter");
+    assert!(bot.poll(&mut oracle.c).is_empty());
+}

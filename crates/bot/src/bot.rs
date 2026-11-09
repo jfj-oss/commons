@@ -16,7 +16,9 @@ use commons_core::client::Client;
 use commons_core::state::{MsgBody, Role};
 use commons_proto::now_secs;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::hash_map::RandomState;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::hash::{BuildHasher, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -46,12 +48,32 @@ pub struct Config {
     pub studio_daily_video_cap: usize,
     /// Studio jobs allowed to wait behind the one being made. More are told "busy".
     pub studio_queue_max: usize,
+    /// The chance, per new message in a live conversation, that the bot decides to join in unasked. 0 turns it off.
+    pub chime_chance_pct: usize,
+    /// At least this long between two unasked joins in one room.
+    pub chime_min_gap_secs: u64,
+    /// At least this many messages from other people since the bot last spoke.
+    pub chime_min_messages: usize,
+    /// Most unasked joins per room per day.
+    pub chime_daily_max: u32,
+    /// How long it waits after deciding, so it does not jump on a message the instant it lands.
+    pub chime_delay_secs: (u64, u64),
+    /// Hard cap on the size of an unasked remark, in characters.
+    pub chime_max_chars: usize,
+    /// When it joins in, the chance that it makes something in Studio instead of talking. 0 turns it off.
+    pub art_chance_pct: usize,
+    /// At least this long between two unasked Studio pieces in one room.
+    pub art_min_gap_secs: u64,
+    /// Most unasked Studio pieces per day, across every room together: they take the GPU from everything else.
+    pub art_daily_max: u32,
 }
 impl Default for Config {
     fn default() -> Self {
         Config {
             name: DEFAULT_NAME.into(), max_reply_chars: 1200, context_messages: 20, max_per_minute: 6, max_queue: 4,
             studio_daily_cap: usize::MAX, studio_daily_video_cap: usize::MAX, studio_queue_max: 10,
+            chime_chance_pct: 0, chime_min_gap_secs: 900, chime_min_messages: 4, chime_daily_max: 20, chime_delay_secs: (6, 40),
+            chime_max_chars: 320, art_chance_pct: 0, art_min_gap_secs: 5400, art_daily_max: 3,
         }
     }
 }
@@ -76,6 +98,10 @@ pub enum JobKind {
     NotAllowed,
     /// An admin turned Studio on or off for this room, or on for one account.
     SetStudio { on: bool, person: Option<String> },
+    /// The bot decided to join the conversation by itself. Nobody asked, so nothing is threaded to anyone.
+    Chime,
+    /// An admin told the bot to stay quiet in this room unless spoken to, or to go back to joining in.
+    SetChime { on: bool },
     /// "@Oracle allow studio for <name>" where nobody in the room has that name (or more than one does).
     StudioUnknownPerson(String),
 }
@@ -219,6 +245,44 @@ pub fn admin_command(text: &str, name: &str) -> Option<bool> {
     if said == phrase("use deepseek") { Some(true) } else if said == phrase("use local") { Some(false) } else { None }
 }
 
+/// "@Oracle quiet" and "@Oracle chime in". Like the model switch, only the exact words count.
+pub fn chime_command(text: &str, name: &str) -> Option<bool> {
+    let said: String = text.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
+    let said = said.trim_end_matches(['.', '!', '?', ' ', '\n', '\t']);
+    let phrase = |suffix: &str| format!("@{} {suffix}", name.to_lowercase());
+    if said == phrase("chime in") { Some(true) } else if said == phrase("quiet") { Some(false) } else { None }
+}
+
+/// A random number. Good enough to decide whether a chat bot says something; used for nothing else.
+fn random() -> u64 {
+    let mut h = RandomState::new().build_hasher();
+    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+    h.finish()
+}
+fn roll(pct: usize) -> bool { (random() % 100) < pct as u64 }
+fn spread((lo, hi): (u64, u64)) -> u64 { lo + random() % (hi.saturating_sub(lo) + 1) }
+
+const CHIME_RULES: &str = "For this one message nobody asked you anything. You are reading the group chat and butting in because you \
+    feel like it. One or two short sentences at most, the way someone types in a group chat. Do not greet anyone, do not explain why \
+    you are talking, and do not say that nobody asked. Do not @mention anyone. Never say anything sexual about anyone in this chat, \
+    and nothing sexual about minors. You have no tools for this message. If you really have nothing worth saying, reply with exactly PASS.";
+const CHIME_OPINION: &str = "Butt in now with your own opinion on what they are talking about.";
+const CHIME_THOUGHT: &str = "Butt in now with whatever random thing is on your mind, even if it has nothing to do with the chat.";
+const ART_ASK: &str = "Nobody asked, but you feel like making something just for the fun of it. Use studio_make once to make a picture \
+    (usually), a short sound effect, or a short song, inspired by the chat or by whatever is on your mind. Never a video. Nothing \
+    sexual, and nothing about anyone in this chat or any other real person. In your message text write one short funny line to go with it.";
+
+/// What an unasked remark may be after tidying: `None` means the model chose to pass or wrote nothing usable. Any @ goes,
+/// so an unasked remark never pings a person or sets off another bot.
+pub fn clean_chime(raw: &str, name: &str, max_chars: usize) -> Option<String> {
+    let mut t = strip_search_lines(raw).trim().trim_matches('"').trim().to_string();
+    let prefix = format!("{}:", name.to_lowercase());
+    if t.to_lowercase().starts_with(&prefix) { t = t.get(prefix.len()..).unwrap_or("").trim().to_string(); }
+    let bare = t.trim_end_matches(['.', '!']).to_uppercase();
+    if t.is_empty() || bare == "PASS" { return None; }
+    Some(cap(&t.replace('@', ""), max_chars))
+}
+
 /// A Studio permission phrase. Like the model switch, only the exact words count.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StudioCommand {
@@ -304,6 +368,17 @@ pub struct RoomState {
     /// Studio permission for this room.
     #[serde(default)]
     pub studio: StudioPerm,
+    /// An admin said "@Oracle quiet" here: it speaks only when spoken to.
+    #[serde(default)]
+    pub chime_off: bool,
+    #[serde(default)]
+    pub last_chime: u64,
+    #[serde(default)]
+    pub chime_day: u64,
+    #[serde(default)]
+    pub chime_count: u32,
+    #[serde(default)]
+    pub last_art: u64,
 }
 
 /// One person's Studio use for one day (days are counted in whole UTC days from the epoch).
@@ -323,6 +398,10 @@ pub struct BotState {
     pub rooms: BTreeMap<String, RoomState>,
     #[serde(default)]
     pub studio_use: BTreeMap<String, DailyUse>,
+    #[serde(default)]
+    pub art_day: u64,
+    #[serde(default)]
+    pub art_count: u32,
 }
 
 struct Store {
@@ -365,6 +444,17 @@ impl StudioQueue {
         let gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
         Some(StudioTicket { _gate: gate, taken: &self.taken })
     }
+
+    /// A ticket only if nothing is being made or waiting: something unasked never queues in front of a person's request.
+    fn enter_if_idle(&self) -> Option<StudioTicket<'_>> {
+        {
+            let mut taken = self.taken.lock().unwrap_or_else(|p| p.into_inner());
+            if *taken > 0 { return None; }
+            *taken += 1;
+        }
+        let gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
+        Some(StudioTicket { _gate: gate, taken: &self.taken })
+    }
 }
 
 struct StudioTicket<'a> {
@@ -388,6 +478,8 @@ pub struct Bot {
     store: Mutex<Store>,
     rate: Mutex<RateLimit>,
     studio_queue: StudioQueue,
+    /// Rooms where the bot has decided to join in, and when.
+    pending: Mutex<HashMap<String, u64>>,
 }
 
 impl Bot {
@@ -404,7 +496,7 @@ impl Bot {
         let studio_queue = StudioQueue { gate: Mutex::new(()), taken: Mutex::new(0), max: cfg.studio_queue_max + 1 };
         Bot {
             cfg, local, deepseek, search, studio, gpu, store: Mutex::new(Store::load(state_path.as_ref().to_path_buf())),
-            rate: Mutex::new(rate), studio_queue,
+            rate: Mutex::new(rate), studio_queue, pending: Mutex::new(HashMap::new()),
         }
     }
 
@@ -453,6 +545,7 @@ impl Bot {
             };
             let mut max_seq = start;
             let mut found: Vec<Job> = Vec::new();
+            let mut chatter = 0usize;
             let mut deepseek_now = known.as_ref().is_some_and(|r| r.deepseek);
             let roles = c.people_of(&cid);
             for m in &log.msgs {
@@ -463,7 +556,7 @@ impl Bot {
                     found.push(Job { gid: gid.clone(), trigger: m.id.clone(), from: m.sender.clone(), text: text.clone(), kind: JobKind::Reset });
                     continue;
                 }
-                if !mentions(text, &self.cfg.name) && !m.reply.as_deref().is_some_and(|id| own.contains(id)) { continue; }
+                if !mentions(text, &self.cfg.name) && !m.reply.as_deref().is_some_and(|id| own.contains(id)) { chatter += 1; continue; }
                 let role = roles.get(&m.sender).map(|(r, _)| *r).unwrap_or(Role::Member);
                 let kind = match admin_command(text, &self.cfg.name) {
                     Some(on) => {
@@ -493,7 +586,15 @@ impl Bot {
                             }
                             None => JobKind::StudioUnknownPerson(wanted),
                         },
-                        None => JobKind::Answer { deepseek: deepseek_now },
+                        None => match chime_command(text, &self.cfg.name) {
+                            Some(_) if role < Role::Admin => JobKind::NotAllowed,
+                            Some(on) => {
+                                let room = store.data.rooms.entry(gid.clone()).or_default();
+                                if room.chime_off == on { room.chime_off = !on; dirty = true; }
+                                JobKind::SetChime { on }
+                            }
+                            None => JobKind::Answer { deepseek: deepseek_now },
+                        },
                     },
                 };
                 found.push(Job { gid: gid.clone(), trigger: m.id.clone(), from: m.sender.clone(), text: text.clone(), kind });
@@ -501,6 +602,38 @@ impl Bot {
             let entry = store.data.rooms.entry(gid.clone()).or_default();
             if entry.last_seq != max_seq { entry.last_seq = max_seq; dirty = true; }
             if entry.deepseek != deepseek_now { entry.deepseek = deepseek_now; dirty = true; }
+            // Joining in by itself: only in a live conversation, only on the local model (nobody asked for these words to
+            // leave the computer), and a mention always wins. The dice are rolled per new message, then it waits a little.
+            let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+            if !found.is_empty() {
+                pending.remove(&gid);
+            } else if self.cfg.chime_chance_pct > 0 && !entry.chime_off && !entry.deepseek && (chatter > 0 || pending.contains_key(&gid)) {
+                let since_me = log.msgs.iter().rev().take_while(|m| m.sender != me).filter(|m| !m.deleted && matches!(m.body, MsgBody::Text(_))).count();
+                let newest = log.msgs.iter().rev().find(|m| m.sender != me).map_or(0, |m| m.ts);
+                let mine = log.msgs.iter().rev().find(|m| m.sender == me).map_or(0, |m| m.ts);
+                let day = now / 86_400;
+                let may = (entry.chime_day != day || entry.chime_count < self.cfg.chime_daily_max)
+                    && now >= entry.last_chime.saturating_add(self.cfg.chime_min_gap_secs)
+                    && since_me >= self.cfg.chime_min_messages
+                    && newest + 180 >= now
+                    && (self.cfg.chime_min_gap_secs == 0 || mine + 60 <= now);
+                if chatter > 0 && may && !pending.contains_key(&gid) && roll(self.cfg.chime_chance_pct) {
+                    pending.insert(gid.clone(), now + spread(self.cfg.chime_delay_secs));
+                }
+                if pending.get(&gid).is_some_and(|due| *due <= now) {
+                    pending.remove(&gid);
+                    if may && self.gpu.blocked().is_none() {
+                        if entry.chime_day != day { entry.chime_day = day; entry.chime_count = 0; }
+                        entry.chime_count += 1;
+                        entry.last_chime = now;
+                        dirty = true;
+                        if let Some(last) = log.msgs.last() {
+                            found.push(Job { gid: gid.clone(), trigger: last.id.clone(), from: String::new(), text: String::new(), kind: JobKind::Chime });
+                        }
+                    }
+                }
+            }
+            drop(pending);
             jobs.extend(found);
             if max_seq > start { c.mark_read(&gid); let _ = c.save(); }
         }
@@ -512,6 +645,9 @@ impl Bot {
     /// client free, while a typing hint is refreshed now and then.
     pub fn answer(&self, c: &mut dyn Chat, job: &Job) -> Option<Sent> {
         let (text, deepseek, sources) = match &job.kind {
+            JobKind::Chime => return self.chime(c, job),
+            JobKind::SetChime { on: true } => ("Aight, mi a go join in whenever mi feel like it inna dis room.".to_string(), false, vec![]),
+            JobKind::SetChime { on: false } => ("Cool, mi quiet now. Mi only talk inna dis room when yuh talk to mi.".to_string(), false, vec![]),
             JobKind::SetDeepSeek { on: true } => ("DeepSeek mode is on for this room. Answers here are written by DeepSeek, and the text of each question and answer leaves this computer.".to_string(), false, vec![]),
             JobKind::SetDeepSeek { on: false } => ("DeepSeek mode is off for this room. Answers stay on this computer.".to_string(), false, vec![]),
             JobKind::Reset => (RESET_REPLY.to_string(), false, vec![]),
@@ -547,6 +683,110 @@ impl Bot {
             }
         };
         self.post(c, job, &text, &sources, deepseek)
+    }
+
+    /// Join the conversation unasked: sometimes with something made in Studio, otherwise a remark. Everything here fails
+    /// silently: nobody asked, so nobody needs to hear that it did not happen.
+    fn chime(&self, c: &mut dyn Chat, job: &Job) -> Option<Sent> {
+        if self.gpu.blocked().is_some() { return None; }
+        let history = c.history(&job.gid, self.cfg.context_messages);
+        if history.len() < 2 { return None; }
+        let llm = self.local.as_ref();
+        let mode = llm.tool_mode();
+        let turns = |ask: &str| -> Vec<Msg> {
+            let mut m: Vec<Msg> = history.iter().map(|l| {
+                if l.mine { Msg::Assistant { content: l.text.clone(), tool_calls: vec![] } }
+                else { Msg::User(format!("{}: {}", l.name, l.text)) }
+            }).collect();
+            m.push(Msg::User(ask.to_string()));
+            m
+        };
+        if mode == ToolMode::FunctionCalling && roll(self.cfg.art_chance_pct) && self.art_allowed(&job.gid) {
+            if let Some(sent) = self.make_for_fun(c, job, llm, &turns(ART_ASK), mode) { return Some(sent); }
+        }
+        let ask = if roll(35) { CHIME_THOUGHT } else { CHIME_OPINION };
+        let reply = match llm.complete(&format!("{}\n\n{CHIME_RULES}", self.system_prompt(mode)), &turns(ask), &[]) {
+            Ok(r) => r,
+            Err(e) => { eprintln!("[bot] could not join in: {e:?}"); return None; }
+        };
+        let text = clean_chime(&reply.content, &self.cfg.name, self.cfg.chime_max_chars)?;
+        if let Some(why) = safety::reason(&safety::without_mention(&text, &self.cfg.name)) {
+            eprintln!("[bot] hard block: {why:?}, in an unasked remark");
+            return None;
+        }
+        if !self.rate.lock().unwrap_or_else(|p| p.into_inner()).allow() { return None; }
+        c.typing(&job.gid);
+        std::thread::sleep(Duration::from_millis((text.chars().count() as u64 * 25).clamp(self.typing_floor(), 4000)));
+        match c.send(&job.gid, &text, None) {
+            Ok(id) => Some(Sent { id, text, deepseek: false }),
+            Err(e) => { eprintln!("[bot] could not join in: {e}"); None }
+        }
+    }
+
+    /// Long enough for the typing hint to be seen; nothing in tests, which set no delay at all.
+    fn typing_floor(&self) -> u64 { if self.cfg.chime_delay_secs.1 == 0 { 0 } else { 900 } }
+
+    /// Whether a surprise piece is allowed here now: the room's gap and the day's cap across every room.
+    fn art_allowed(&self, gid: &str) -> bool {
+        let now = now_secs();
+        let store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+        let used = if store.data.art_day == now / 86_400 { store.data.art_count } else { 0 };
+        used < self.cfg.art_daily_max && store.data.rooms.get(gid).is_none_or(|r| now >= r.last_art.saturating_add(self.cfg.art_min_gap_secs))
+    }
+
+    /// Make a picture, sound or short song nobody asked for and post it. The hard block reads what the model wrote, as it
+    /// does for any request. Video is never made, and a person's request is never made to wait for this.
+    fn make_for_fun(&self, c: &mut dyn Chat, job: &Job, llm: &dyn Llm, messages: &[Msg], mode: ToolMode) -> Option<Sent> {
+        let state = self.studio.state().ok()?;
+        if state.game || !state.paused.is_empty() { return None; }
+        let reply = match llm.complete(&self.system_prompt(mode), messages, &[studio::studio_tool()]) {
+            Ok(r) => r,
+            Err(e) => { eprintln!("[bot] could not make something unasked: {e:?}"); return None; }
+        };
+        let call = reply.tool_calls.iter().find(|t| t.name == studio::TOOL_NAME)?;
+        let mut req = studio::Request::from_args(&call.arguments).ok()?;
+        if req.kind == studio::Kind::Video { return None; }
+        if req.kind == studio::Kind::Song { req.length = "30".into(); }
+        for (source, why) in [("prompt", safety::reason(&req.prompt)), ("lyrics", safety::reason_lyrics(&req.lyrics))] {
+            if let Some(why) = why {
+                eprintln!("[bot] hard block: {why:?}, in the {source} of something unasked");
+                return None;
+            }
+        }
+        let _ticket = self.studio_queue.enter_if_idle()?;
+        let id = match self.studio.submit(&req) {
+            Ok(id) => id,
+            Err(e) => { eprintln!("[bot] Studio refused something unasked: {e}"); return None; }
+        };
+        {
+            let now = now_secs();
+            let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            if store.data.art_day != now / 86_400 { store.data.art_day = now / 86_400; store.data.art_count = 0; }
+            store.data.art_count += 1;
+            store.data.rooms.entry(job.gid.clone()).or_default().last_art = now;
+            store.save();
+        }
+        let deadline = Instant::now() + studio::JOB_TIMEOUT;
+        let mut misses = 0u32;
+        loop {
+            match self.studio.status(id) {
+                Ok(JobState::Done) => break,
+                Ok(JobState::Failed(_)) | Ok(JobState::Cancelled) => return None,
+                Ok(JobState::Waiting) => misses = 0,
+                Err(_) => { misses += 1; if misses >= 5 { return None; } }
+            }
+            if Instant::now() >= deadline { return None; }
+            std::thread::sleep(studio::POLL_EVERY);
+        }
+        let data = self.studio.download(req.kind, id).ok()?;
+        let caption = clean_chime(&reply.content, &self.cfg.name, self.cfg.chime_max_chars)
+            .filter(|t| safety::reason(&safety::without_mention(t, &self.cfg.name)).is_none())
+            .unwrap_or_else(|| req.prompt.clone());
+        c.typing(&job.gid);
+        match c.send_file(&job.gid, &req.file_name(id), req.kind.mime(), &data, &caption) {
+            Ok(id) => Some(Sent { id, text: caption, deepseek: false }),
+            Err(e) => { eprintln!("[bot] could not post something unasked: {e}"); None }
+        }
     }
 
     /// Compose (answer, up to three source links, DeepSeek label), apply the hard size cap, count it against the post
