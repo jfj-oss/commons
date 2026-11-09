@@ -365,7 +365,7 @@ html.mega #c-play { flex: none; }
 #main > #mega-wallhit { position: absolute; inset: 0; z-index: 9; cursor: crosshair; touch-action: none; user-select: none; -webkit-user-select: none; }
 #main > #mega-wallbar { position: absolute; z-index: 12; left: 50%; top: 58px; transform: translateX(-50%); display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px; max-width: calc(100% - 20px); padding: 8px 12px; border-radius: 26px; background: #17151e; border: 1px solid rgb(255 255 255 / .14); color: var(--m-paper, #f2f0f6); box-shadow: 0 16px 40px rgb(0 0 0 / .6); font: 600 12px/1 var(--m-ui); letter-spacing: var(--m-small); }
 #mega-wallbar .mwb-tag { opacity: .6; font-weight: 500; padding: 0 4px; }
-#mega-wallbar .mwb-g, #mega-wallbar .mwb-c { display: flex; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 999px; background: rgb(255 255 255 / .07); }
+#mega-wallbar .mwb-g, #mega-wallbar .mwb-c { display: flex; flex-wrap: wrap; justify-content: center; gap: 2px; padding: 3px; border-radius: 20px; background: rgb(255 255 255 / .07); }
 #mega-wallbar button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; min-width: 30px; height: 30px; padding: 0 10px; border-radius: 999px; font-family: var(--m-mono, ui-monospace, monospace); font-weight: 700; font-size: 14px; }
 #mega-wallbar button:hover { background: rgb(255 255 255 / .12); }
 #mega-wallbar button[aria-pressed="true"] { background: var(--m-paper, #f2f0f6); color: var(--m-void, #050407); }
@@ -375,4 +375,4 @@ html.mega #c-play { flex: none; }
 #mega-wallbar .mwb-b { font-family: var(--m-ui); font-size: 12px; background: rgb(255 255 255 / .1); }
 #mega-wallbar :focus-visible { outline: 2px solid var(--m-paper, #fff); outline-offset: 2px; }
 html.mg-drawing #stream { user-select: none; -webkit-user-select: none; }
-@media (max-width: 760px) { #main > #mega-wallbar { top: 52px; } }
+@media (max-width: 760px) { #main > #mega-wallbar { top: 52px; width: calc(100% - 20px); border-radius: 22px; } #mega-wallbar .mwb-g { width: 100%; } #mega-wallbar button { min-width: 34px; } }
