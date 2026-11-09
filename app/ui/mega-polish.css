@@ -31,8 +31,9 @@ html.mega ::selection { background: var(--mg-hi); color: var(--mg-hi-ink); }
 html.mega * { scrollbar-color: rgb(255 255 255 / .22) transparent; }
 
 /* headings: the raster display face, on its grid, never serif */
-html.mega h1, html.mega h2, html.mega h3 { font-family: var(--m-sharp); font-weight: 400; font-variation-settings: normal; letter-spacing: var(--m-track); text-transform: lowercase; }
-html.mega h2 { font-size: 36px; line-height: 1; }
+/* a card's own title (.mti) has its own big type and keeps the name's capitals */
+html.mega h1, html.mega h2:not(.mti), html.mega h3 { font-family: var(--m-sharp); font-weight: 400; font-variation-settings: normal; letter-spacing: var(--m-track); text-transform: lowercase; }
+html.mega h2:not(.mti) { font-size: 36px; line-height: 1; }
 html.mega h3 { font-size: 24px; line-height: 1; }
 html.mega label { text-transform: lowercase; }
 
