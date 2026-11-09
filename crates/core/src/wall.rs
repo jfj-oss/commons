@@ -13,6 +13,8 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// A community card's wall is kept (and asked for) under this prefix plus the community id; a room's wall under the room's id.
+pub const CWALL_PREFIX: &str = "cw:";
 pub const WALL_COLS: u32 = 120;
 pub const WALL_ROWS: u32 = 54;
 pub const WALL_CELLS: u32 = WALL_COLS * WALL_ROWS;
@@ -112,12 +114,35 @@ struct WireS { g: u64, i: u64, n: u64, a: Vec<String>, c: Vec<[u64; 4]> }
 pub struct WallView { pub gen: u64, pub locked: bool, pub rev: u64, pub snap_at: u64, pub peer_at: u64, pub cells: Vec<(u16, u8, u8, String)> }
 
 impl Client {
-    /// (generation, locked, owner account) for a room, from the owner-signed style document of its community. A room we
+    /// The community and the style-document key a wall key belongs to: a room's id (its own key), or `cw:<community id>` for the community card's wall.
+    fn wall_scope(&self, key: &str) -> Option<(String, String)> {
+        if let Some(cid) = key.strip_prefix(CWALL_PREFIX) { return self.st.communities.contains_key(cid).then(|| (cid.to_string(), cid.to_string())); }
+        self.st.groups.get(key).map(|g| (g.community.clone(), key.to_string()))
+    }
+    /// (generation, locked, owner account) for a wall, from the owner-signed style document of its community. A wall we
     /// know nothing about has generation 0, is not locked and has no owner to defer to.
-    pub(crate) fn wall_rules(&self, gid: &str) -> (u64, bool, String) {
-        let Some(c) = self.st.groups.get(gid).and_then(|g| self.st.communities.get(&g.community)) else { return (0, false, String::new()) };
-        let (gen, locked) = c.style.as_ref().map_or((0, false), |s| (s.wall.get(gid).copied().unwrap_or(0), s.locked.contains(gid)));
+    pub(crate) fn wall_rules(&self, key: &str) -> (u64, bool, String) {
+        let Some(c) = self.wall_scope(key).and_then(|(cid, k)| self.st.communities.get(&cid).map(|c| (c, k))) else { return (0, false, String::new()) };
+        let (c, k) = c;
+        let (gen, locked) = c.style.as_ref().map_or((0, false), |s| (s.wall.get(&k).copied().unwrap_or(0), s.locked.contains(&k)));
         (gen, locked, c.owner.clone())
+    }
+    /// The room that carries a community card's wall events: the lowest-id text room this device can send in right now. Everyone accepts the
+    /// events from any room of the community they are in, so if the carrier changes (or two devices disagree) nothing breaks.
+    pub fn wall_carrier(&self, cid: &str) -> Option<String> {
+        let c = self.st.communities.get(cid).filter(|c| !c.removed)?;
+        let mut ids: Vec<&str> = c.channels.iter().filter(|ch| ch.kind != "voice").map(|ch| ch.id.as_str()).collect();
+        ids.sort_unstable();
+        ids.into_iter().find(|g| self.check_chan(g).is_ok() && self.ready_to_encrypt(g)).map(|g| g.to_string())
+    }
+    /// What a wall key sends through: (room that carries it, live kind of a stroke). Errors when the key is not ours to draw on.
+    fn wall_route(&self, key: &str) -> Result<(String, &'static str)> {
+        if let Some(cid) = key.strip_prefix(CWALL_PREFIX) {
+            if !self.st.communities.get(cid).is_some_and(|c| !c.removed) { bail!("not a community you are in"); }
+            return Ok((self.wall_carrier(cid).unwrap_or_default(), "cwall.d"));
+        }
+        self.check_chan(key)?;
+        Ok((key.to_string(), "wall.d"))
     }
     fn wall_mut(&mut self, gid: &str) -> &mut Wall {
         let (gen, _, _) = self.wall_rules(gid);
@@ -139,7 +164,7 @@ impl Client {
     /// As `wall_draw`; with `share` false the cells stay on this device (nobody is around to see them, so nothing is sent into the room).
     /// They reach others later in a snapshot when someone opens the room.
     pub fn wall_draw_to(&mut self, gid: &str, cells: &[(u32, u32, u8, u8)], share: bool) -> Result<bool> {
-        self.check_chan(gid)?;
+        let (carrier, kind) = self.wall_route(gid)?;
         if cells.is_empty() || cells.len() > WALL_BATCH { bail!("a stroke has 1 to {WALL_BATCH} cells"); }
         let mut flat = Vec::with_capacity(cells.len());
         for &(x, y, g, c) in cells {
@@ -149,14 +174,14 @@ impl Client {
         let (_, locked, owner) = self.wall_rules(gid);
         let me = self.my_account();
         if locked && me != owner { bail!("the owner has locked this wall"); }
-        if share && self.live_would_wait(gid, "wall.d") { return Ok(false); }
+        if share && (carrier.is_empty() || self.live_would_wait(&carrier, kind)) { return Ok(false); }
         let w = self.wall_mut(gid);
         let (gen, clock) = (w.gen, w.clock + 1);
         for f in &flat { w.put(f[0] as u32, (f[1] / 2) as u8, (f[1] % 2) as u8, clock, &me); }
         self.walls_dirty = true; self.wall_rev += 1;
         let data = format!("{{\"g\":{},\"k\":{},\"c\":[{}]}}", gen, clock, flat.iter().map(|f| format!("[{},{}]", f[0], f[1])).collect::<Vec<_>>().join(","));
         if !share { return Ok(true); }
-        self.live_send(gid, "wall.d", &data)
+        self.live_send(&carrier, kind, &data)
     }
 
     /// The wall as it stands (empty if we have none), with the owner's rules for it. Reads only, so the UI can poll it without
@@ -174,12 +199,17 @@ impl Client {
     }
     /// Snapshot chunks to hand to a member who asked: up to eight events, to be sent slowly.
     pub fn wall_snapshot(&mut self, gid: &str) -> Result<Vec<String>> {
-        self.check_chan(gid)?;
+        self.wall_route(gid)?;
         Ok(self.wall_mut(gid).snapshot())
     }
 
-    /// A `wall.d` or `wall.s` event from `acct`. Everything in it is untrusted.
-    pub(crate) fn take_wall(&mut self, gid: &str, acct: &str, kind: &str, data: &str) {
+    /// A `wall.d` / `wall.s` event (a room's wall) or a `cwall.d` / `cwall.s` event (the community card's wall) from `acct`, which arrived in room
+    /// `room`. Everything in it is untrusted. A `cwall.*` event can arrive in any room of the community and never touches that room's own wall.
+    pub(crate) fn take_wall(&mut self, room: &str, acct: &str, kind: &str, data: &str) {
+        let cw = kind.starts_with("cwall.");
+        let gid_owned = if cw { match self.st.groups.get(room) { Some(g) if self.st.communities.contains_key(&g.community) => format!("{CWALL_PREFIX}{}", g.community), _ => return } } else { room.to_string() };
+        let gid = gid_owned.as_str();
+        let kind = if cw { &kind[1..] } else { kind };
         let (gen, locked, owner) = self.wall_rules(gid);
         let from_owner = acct == owner;
         if acct != self.my_account() { self.wall_peer_seen.insert(gid.to_string(), commons_proto::now_secs()); }

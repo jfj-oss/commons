@@ -368,6 +368,16 @@ impl App {
                 let duo = if main.is_empty() && hi.is_empty() { None } else { Some(crate::envelope::Duo { main, hi }) };
                 c.set_style(&s(&a, "cid"), (!room.is_empty()).then_some(room.as_str()), duo).map(|_| json!({})).map_err(e)
             }),
+            // Owner only. `room` empty = the community's own card. `card` / `chat` (0..=31) and `dim` (0..=200) are numbers, or null / missing for automatic;
+            // all three missing puts the look back to automatic.
+            "set_look" => self.with(|c| {
+                let room = s(&a, "room");
+                let n = |k: &str| a[k].as_u64();
+                let (card, chat, dim) = (n("card"), n("chat"), n("dim"));
+                if [card, chat].iter().flatten().any(|v| *v > 255) || dim.is_some_and(|v| v > 65535) { return Err("a look has patterns 0 to 31 and a strength of 0 to 200 percent".to_string()); }
+                let look = crate::envelope::Look { card: card.map(|v| v as u8), chat: chat.map(|v| v as u8), dim: dim.map(|v| v as u16) };
+                c.set_look(&s(&a, "cid"), (!room.is_empty()).then_some(room.as_str()), Some(look)).map(|_| json!({})).map_err(e)
+            }),
             // Owner only: `lock` is "1" / "0" / "" (leave), `clear` is true to start the wall over for everyone.
             "set_wall" => self.with(|c| {
                 let lock = match s(&a, "lock").as_str() { "1" => Some(true), "0" => Some(false), _ => None };
@@ -383,7 +393,7 @@ impl App {
                 self.try_read(|c| {
                     let v = c.wall_view(&gid);
                     let same = rev == Some(v.rev);
-                    json!({"gen": v.gen, "locked": v.locked, "rev": v.rev, "snap_at": v.snap_at, "peer_at": v.peer_at, "same": same,
+                    json!({"carrier": gid.strip_prefix(crate::wall::CWALL_PREFIX).and_then(|cid| c.wall_carrier(cid)), "gen": v.gen, "locked": v.locked, "rev": v.rev, "snap_at": v.snap_at, "peer_at": v.peer_at, "same": same,
                         "cells": if same { vec![] } else { v.cells.iter().map(|(p, g, col, by)| json!([p, g, col, by])).collect::<Vec<_>>() }})
                 })
             }
@@ -653,6 +663,9 @@ impl App {
     }
 }
 
+#[doc(hidden)]
+pub fn debug_snapshot(c: &Client) -> Value { snapshot(c) }
+
 fn snapshot(c: &Client) -> Value {
     let me = c.my_account();
     let comms: Vec<Value> = c.st.communities.values().map(|co| {
@@ -661,8 +674,9 @@ fn snapshot(c: &Client) -> Value {
         let unread: usize = list.iter().map(|x| x.unread).sum();
         let chans: Vec<Value> = list.into_iter().map(|ch| json!({"gid": ch.gid, "name": ch.name, "kind": ch.kind, "joined": ch.joined, "unread": ch.unread, "status": c.group_status(&ch.gid)})).collect();
         let style = co.style.as_ref().map(|d| json!({"ver": d.ver, "ts": d.ts, "by": c.display_name(&co.owner), "community": d.community.as_ref().map(|x| x.lower()).map(|x| json!({"main": x.main, "hi": x.hi})),
-            "locked": d.locked.iter().filter(|g| co.channels.iter().any(|ch| &ch.id == *g)).collect::<Vec<_>>(),
-            "wall": d.wall.iter().filter(|(g, _)| co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, n)| (g.clone(), json!(n))).collect::<serde_json::Map<String, Value>>(),
+            "locked": d.locked.iter().filter(|g| **g == co.id || co.channels.iter().any(|ch| &ch.id == *g)).collect::<Vec<_>>(),
+            "looks": d.looks.iter().filter(|(g, _)| **g == co.id || co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, l)| (g.clone(), json!({"card": l.card, "chat": l.chat, "dim": l.dim}))).collect::<serde_json::Map<String, Value>>(),
+            "wall": d.wall.iter().filter(|(g, _)| **g == co.id || co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, n)| (g.clone(), json!(n))).collect::<serde_json::Map<String, Value>>(),
             "rooms": d.rooms.iter().filter(|(g, _)| co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, x)| { let x = x.lower(); (g.clone(), json!({"main": x.main, "hi": x.hi})) }).collect::<serde_json::Map<String, Value>>()}));
         json!({"id": co.id, "style": style, "name": if co.name.is_empty() { "…".to_string() } else { co.name.clone() }, "role": role.name(), "removed": co.removed, "removed_reason": co.removed_reason, "channels": chans, "unread": unread,
                "invites": co.invites.iter().map(|i| json!({"id": i.id, "expires": i.expires, "uses_left": i.uses_left, "mine": co.invite_sks.contains_key(&i.id)})).collect::<Vec<_>>(),

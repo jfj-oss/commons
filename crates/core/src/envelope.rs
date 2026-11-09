@@ -743,6 +743,32 @@ impl Duo {
     pub fn lower(&self) -> Duo { Duo { main: self.main.to_ascii_lowercase(), hi: self.hi.to_ascii_lowercase() } }
 }
 
+/// Most pattern numbers a look may name. The apps know only the first few (more can be added later); a number an app does not know
+/// means "automatic" to it, so the bound is a small fixed range rather than the current count.
+pub const MAX_LOOK_PATTERN: u8 = 31;
+/// Backdrop strength in percent of the app's usual look (100 = unchanged, 0 = off).
+pub const MAX_LOOK_DIM: u16 = 200;
+
+/// How the owner wants one room (or the community card) to look beyond its colours. Every part is optional; a missing part is "automatic".
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct Look {
+    /// The ASCII pattern on the card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<u8>,
+    /// The ASCII pattern behind the chat (rooms only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<u8>,
+    /// Backdrop strength behind the chat in percent (rooms only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dim: Option<u16>,
+}
+impl Look {
+    pub fn is_empty(&self) -> bool { self.card.is_none() && self.chat.is_none() && self.dim.is_none() }
+    pub fn valid(&self) -> bool {
+        !self.is_empty() && self.card.is_none_or(|n| n <= MAX_LOOK_PATTERN) && self.chat.is_none_or(|n| n <= MAX_LOOK_PATTERN) && self.dim.is_none_or(|n| n <= MAX_LOOK_DIM)
+    }
+}
+
 /// Everything the owner has chosen. A room with no entry uses the app's own default colours.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 pub struct StyleDoc {
@@ -761,6 +787,10 @@ pub struct StyleDoc {
     /// Absent in older documents: every wall is at generation 0.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub wall: std::collections::BTreeMap<String, u64>,
+    /// Per room (or the community's own card, keyed by the community id), the owner's choice of patterns and backdrop strength. Absent in older
+    /// documents, and an app that does not know it ignores it, so the signed text of a document without looks is byte for byte what it was.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub looks: std::collections::BTreeMap<String, Look>,
 }
 impl StyleDoc {
     pub fn validate(&self) -> Result<(), ParseError> {
@@ -769,6 +799,7 @@ impl StyleDoc {
         if self.rooms.len() > MAX_STYLE_ROOMS || self.rooms.iter().any(|(g, d)| !is_gid(g) || !d.valid()) { return bad("bad room colours"); }
         if self.locked.len() > MAX_STYLE_ROOMS || self.locked.iter().any(|g| !is_gid(g)) { return bad("bad locked rooms"); }
         if self.wall.len() > MAX_STYLE_ROOMS || self.wall.iter().any(|(g, n)| !is_gid(g) || *n > (1 << 53)) { return bad("bad wall generations"); }
+        if self.looks.len() > MAX_STYLE_ROOMS || self.looks.iter().any(|(g, l)| !is_gid(g) || !l.valid()) { return bad("bad looks"); }
         Ok(())
     }
 }

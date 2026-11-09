@@ -659,7 +659,7 @@ impl Client {
         if slot.0 != now { *slot = (now, 0); }
         if slot.1 >= LIVE_TAKE_PER_SEC { return; }
         slot.1 += 1;
-        if kind == "wall.d" || kind == "wall.s" { self.take_wall(gid, acct, &kind, &data); return; }
+        if matches!(kind.as_str(), "wall.d" | "wall.s" | "cwall.d" | "cwall.s") { self.take_wall(gid, acct, &kind, &data); return; }
         if self.live_rate.len() > 512 { self.live_rate.retain(|_, v| v.0 + 5 >= now); }
         self.live_next += 1;
         self.live_in.push_back(LiveEvent { id: self.live_next, gid: gid.to_string(), account: acct.to_string(), kind, data, ts });

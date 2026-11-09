@@ -362,6 +362,21 @@ impl Client {
         Ok(())
     }
 
+    /// The style document as it stands, with entries for rooms that no longer exist dropped (so it stays small). The community's own id is a
+    /// valid key too: its card has a colour pair, a look, a lock and a wall of its own.
+    fn style_base(&self, cid: &str) -> Result<StyleDoc> {
+        let c = self.st.communities.get(cid).ok_or_else(|| anyhow!("unknown community"))?;
+        let mut doc = c.style.clone().unwrap_or_default();
+        let mut live: BTreeSet<&str> = c.channels.iter().map(|ch| ch.id.as_str()).collect();
+        live.insert(cid);
+        doc.rooms.retain(|g, _| live.contains(g.as_str()));
+        doc.locked.retain(|g| live.contains(g.as_str()));
+        doc.wall.retain(|g, _| live.contains(g.as_str()));
+        doc.looks.retain(|g, _| live.contains(g.as_str()));
+        Ok(doc)
+    }
+    fn has_room(&self, cid: &str, room: &str) -> bool { self.st.communities.get(cid).is_some_and(|c| c.channels.iter().any(|ch| ch.id == room)) }
+
     /// The owner sets the colours of one room (`room` = its id) or of the community's own card (`room` = None). `None` for
     /// `duo` puts the default back. Anybody else is refused here, and their device would refuse to believe it anyway: the
     /// table only carries colours the owner's key signed.
@@ -369,14 +384,8 @@ impl Client {
         if self.my_role(cid) != Role::Owner { bail!("only the owner can change colours"); }
         let duo = duo.map(|d| d.lower());
         if duo.as_ref().is_some_and(|d| !d.valid()) { bail!("colours must look like #rrggbb"); }
-        let c = self.st.communities.get(cid).ok_or_else(|| anyhow!("unknown community"))?;
-        if let Some(r) = room { if !c.channels.iter().any(|ch| ch.id == r) { bail!("unknown room"); } }
-        let mut doc = c.style.clone().unwrap_or_default();
-        // Rooms that no longer exist drop out, so the document stays small.
-        let live: BTreeSet<&String> = c.channels.iter().map(|ch| &ch.id).collect();
-        doc.rooms.retain(|g, _| live.contains(g));
-        doc.locked.retain(|g| live.contains(g));
-        doc.wall.retain(|g, _| live.contains(g));
+        if let Some(r) = room { if !self.has_room(cid, r) { bail!("unknown room"); } }
+        let mut doc = self.style_base(cid)?;
         match (room, duo) {
             (Some(r), Some(d)) => { doc.rooms.insert(r.to_string(), d); }
             (Some(r), None) => { doc.rooms.remove(r); }
@@ -385,17 +394,29 @@ impl Client {
         self.publish_style(cid, doc, "colours")
     }
 
-    /// Owner only: lock a room's wall (`lock` = Some(true)) or open it again, and/or clear it (`clear`: its generation goes up by one, so every
+    /// Owner only: the look of one room (`room` = its id) or of the community's own card (`room` = None): the card pattern, the chat pattern and the
+    /// backdrop strength. `None` for `look` (or one with no part set) puts everything back to automatic. Nothing is published when nothing changes.
+    pub fn set_look(&mut self, cid: &str, room: Option<&str>, look: Option<Look>) -> Result<()> {
+        if self.my_role(cid) != Role::Owner { bail!("only the owner can change the look"); }
+        let look = look.filter(|l| !l.is_empty());
+        if look.as_ref().is_some_and(|l| !l.valid()) { bail!("a look has patterns 0 to {MAX_LOOK_PATTERN} and a strength of 0 to {MAX_LOOK_DIM} percent"); }
+        if let Some(r) = room { if !self.has_room(cid, r) { bail!("unknown room"); } }
+        if room.is_none() && look.as_ref().is_some_and(|l| l.chat.is_some() || l.dim.is_some()) { bail!("the community card has a card pattern only"); }
+        let mut doc = self.style_base(cid)?;
+        let key = room.unwrap_or(cid).to_string();
+        let cur = self.st.communities.get(cid).and_then(|c| c.style.as_ref()).and_then(|d| d.looks.get(&key)).cloned();
+        if cur == look { return Ok(()); }
+        match look { Some(l) => { doc.looks.insert(key, l); } None => { doc.looks.remove(&key); } }
+        self.publish_style(cid, doc, "look")
+    }
+
+    /// Owner only: lock a wall (`lock` = Some(true)) or open it again, and/or clear it (`clear`: its generation goes up by one, so every
     /// drawing and snapshot of the old generation is ignored from now on, by devices that were offline too). Both live in the signed style document.
+    /// `room` is a room's id, or the community's own id for the community card's wall.
     pub fn set_wall(&mut self, cid: &str, room: &str, lock: Option<bool>, clear: bool) -> Result<()> {
         if self.my_role(cid) != Role::Owner { bail!("only the owner can lock or clear a wall"); }
-        let c = self.st.communities.get(cid).ok_or_else(|| anyhow!("unknown community"))?;
-        if !c.channels.iter().any(|ch| ch.id == room) { bail!("unknown room"); }
-        let mut doc = c.style.clone().unwrap_or_default();
-        let live: BTreeSet<&String> = c.channels.iter().map(|ch| &ch.id).collect();
-        doc.rooms.retain(|g, _| live.contains(g));
-        doc.locked.retain(|g| live.contains(g));
-        doc.wall.retain(|g, _| live.contains(g));
+        if room != cid && !self.has_room(cid, room) { bail!("unknown room"); }
+        let mut doc = self.style_base(cid)?;
         match lock { Some(true) => { doc.locked.insert(room.to_string()); } Some(false) => { doc.locked.remove(room); } None => {} }
         if clear { let n = doc.wall.entry(room.to_string()).or_insert(0); *n += 1; }
         if lock.is_none() && !clear { return Ok(()); }
@@ -657,7 +678,7 @@ impl Client {
     pub fn live_poll(&self, since: u64, gid: Option<&str>) -> Vec<LiveEvent> {
         self.live_in.iter().filter(|e| e.id > since && gid.is_none_or(|g| g == e.gid) && self.st.groups.get(&e.gid).is_some_and(|g| !g.removed)).cloned().collect()
     }
-    fn ready_to_encrypt(&self, gid: &str) -> bool {
+    pub(crate) fn ready_to_encrypt(&self, gid: &str) -> bool {
         self.st.groups.get(gid).is_some_and(|g| !g.removed && !g.broken && !g.tainted && g.pending.is_none()) && self.synced.contains(gid)
     }
     fn encrypt_env(&mut self, gid: &str, env: &Envelope) -> Result<(Vec<u8>, String)> {
