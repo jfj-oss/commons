@@ -6,7 +6,7 @@ use crate::state::*;
 use crate::sync::BATCH;
 use anyhow::{anyhow, bail, Result};
 use chacha20poly1305::{aead::{Aead, KeyInit}, ChaCha20Poly1305, Nonce};
-use crate::transport::Api;
+use crate::transport::{relay_says, relay_status, Api};
 use commons_proto::*;
 use ed25519_dalek::{Signer as _, SigningKey, Verifier as _};
 use openmls::prelude::{tls_codec::*, *};
@@ -37,6 +37,7 @@ const RELAY_SECRET_RETRY_SECS: u64 = 6 * 3600;
 pub enum Outcome { Applied, Pending, Lost }
 
 /// An invite link, and whether it can sign up a friend who has no account on this relay yet.
+pub struct PwInviteMade { pub invite: String, pub expires: u64, pub signup_needs_secret: bool, pub link: String }
 pub struct InviteMade { pub link: String, pub signup_needs_secret: bool }
 
 impl Client {
@@ -192,6 +193,28 @@ impl Client {
         Ok(InviteMade { link: link.encode(), signup_needs_secret })
     }
 
+    /// An invite that a password opens. Makes the ordinary invite, then files a copy of its link, sealed by the password's
+    /// keys, on the relay. If the relay refuses the copy (a password already in use, an old relay), the invite is taken back.
+    pub fn create_invite_password(&mut self, cid: &str, d: &crate::pwinvite::Derived, uses: Option<u32>, ttl_secs: u64) -> Result<PwInviteMade> {
+        if self.my_role(cid) < Role::Admin { bail!("only admins can create invites"); }
+        let ttl = ttl_secs.clamp(3600, 30 * 86400);
+        let info = self.api.info(None).map_err(|e| anyhow!("could not reach the server: {e}"))?;
+        if !info.pwinvite { bail!("This server is too old for password invites. Make an invite link instead."); }
+        let made = self.create_invite_checked(cid, uses, ttl)?;
+        let link = InviteLink::decode(&made.link)?;
+        let filed = crate::pwinvite::put_body(d, &made.link, ttl, uses).and_then(|b| self.api.pw_put(&self.dev_key()?, &d.lid, &b));
+        if let Err(e) = filed {
+            let _ = self.revoke_invite(cid, &link.invite);
+            if relay_says(&e, 409, "") { bail!("Someone already uses that password for an invite. Choose another."); }
+            if relay_status(&e) == Some(429) { bail!("The server is holding as many password invites as it allows. Revoke one, or try again later."); }
+            return Err(e);
+        }
+        let expires = now_secs() + ttl;
+        self.st.pw_invites.insert(link.invite.clone(), PwInviteRec { lid: d.lid.clone(), expires });
+        self.save()?;
+        Ok(PwInviteMade { invite: link.invite, expires, signup_needs_secret: made.signup_needs_secret, link: made.link })
+    }
+
     // ------------------------------------------------------------------ the relay's sign-up secret, across one account's devices
     /// Pass this device's relay sign-up secret on to the same account's other devices, sealed under a key only that
     /// account's devices hold. The carrier is an ordinary consent, so an older version parses and verifies it without
@@ -238,10 +261,33 @@ impl Client {
     pub fn revoke_invite(&mut self, cid: &str, invite: &str) -> Result<()> {
         if self.my_role(cid) < Role::Admin { bail!("only admins can revoke invites"); }
         let mut t = self.ctl_ext(cid)?;
+        let listed = matches!(&t, GroupExt::Control { invites, .. } if invites.iter().any(|i| i.id == invite));
         if let GroupExt::Control { invites, .. } = &mut t { invites.retain(|i| i.id != invite); }
         let mut plan = Plan::empty("revoke invite");
         plan.gce = Some(t);
-        self.run_commit(cid, plan).map(|_| ())
+        if listed { self.run_commit(cid, plan)?; }
+        // The sealed copy goes too. The invite is already dead (admins refuse it), so a relay that cannot be reached
+        // now only means the copy lingers until it expires; the record stays so that revoking again retries.
+        if let Some(rec) = self.st.pw_invites.get(invite).cloned() {
+            self.api.pw_delete(&self.dev_key()?, &rec.lid).map_err(|e| anyhow!("The invite is revoked, but its copy could not be removed from the server just now ({e}). Revoke it again in a moment."))?;
+            self.st.pw_invites.remove(invite);
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    /// Take the sealed copies of password invites that are over (expired, or no longer listed) off the relay.
+    pub fn prune_pw_invites(&mut self) {
+        let now = now_secs();
+        let live: BTreeSet<String> = self.st.communities.keys().filter_map(|c| self.ctl_ext(c).ok()).flat_map(|t| match t { GroupExt::Control { invites, .. } => invites.into_iter().map(|i| i.id).collect::<Vec<_>>(), _ => vec![] }).collect();
+        let dead: Vec<String> = self.st.pw_invites.iter().filter(|(id, r)| r.expires <= now || !live.contains(*id)).map(|(id, _)| id.clone()).collect();
+        if dead.is_empty() { return; }
+        let Ok(k) = self.dev_key() else { return };
+        for id in dead {
+            let lid = self.st.pw_invites[&id].lid.clone();
+            if self.api.pw_delete(&k, &lid).is_ok() { self.st.pw_invites.remove(&id); }
+        }
+        let _ = self.save();
     }
 
     /// Joining only records the intent; the request goes out with the next round and an admin must be online

@@ -582,13 +582,57 @@ impl App {
                 let kind = a.get("kind").and_then(|x| x.as_str()).unwrap_or("");
                 c.create_channel_kind(&s(&a, "cid"), &s(&a, "name"), kind).map(|id| json!({"id": id})).map_err(e)
             }),
-            "create_invite" => self.with(|c| {
+            "create_invite" => {
                 let uses = a.get("uses").and_then(|x| x.as_u64()).map(|x| x as u32);
                 let ttl = a.get("ttl").and_then(|x| x.as_u64()).unwrap_or(7 * 86400);
-                let made = c.create_invite_checked(&s(&a, "cid"), uses, ttl).map_err(e)?;
-                let web = InviteLink::decode(&made.link).ok().and_then(|l| l.web());
-                Ok(json!({"link": web.as_deref().unwrap_or(&made.link), "qr": Client::qr_svg(web.as_deref().unwrap_or(&made.link)), "signup_needs_secret": made.signup_needs_secret}))
-            }),
+                let pw = s(&a, "password");
+                if !pw.trim().is_empty() {
+                    // The slow key derivation runs before the client is locked, so the app stays responsive.
+                    crate::pwinvite::check(&pw).map_err(e)?;
+                    let (relay, cid) = (self.with(|c| Ok(c.st.relay.clone()))?, s(&a, "cid"));
+                    let d = crate::pwinvite::derive(&pw, &relay, self.kdf).map_err(e)?;
+                    return self.with(|c| {
+                        c.prune_pw_invites();
+                        let made = c.create_invite_password(&cid, &d, uses, ttl).map_err(e)?;
+                        Ok(json!({"password": true, "id": made.invite, "expires": made.expires, "download": format!("{}/join", relay.trim_end_matches('/')), "relay": relay,
+                            "link": made.link, "signup_needs_secret": made.signup_needs_secret}))
+                    });
+                }
+                self.with(|c| {
+                    let made = c.create_invite_checked(&s(&a, "cid"), uses, ttl).map_err(e)?;
+                    let web = InviteLink::decode(&made.link).ok().and_then(|l| l.web());
+                    Ok(json!({"link": web.as_deref().unwrap_or(&made.link), "qr": Client::qr_svg(web.as_deref().unwrap_or(&made.link)), "signup_needs_secret": made.signup_needs_secret}))
+                })
+            }
+            // How good a password for an invite is, and a fresh suggestion. Needs no account.
+            "password_strength" => { let st = crate::pwinvite::strength(&s(&a, "password")); Ok(json!({"bits": st.bits, "ok": st.ok, "warn": st.warn})) }
+            "suggest_password" => Ok(json!({"password": crate::pwinvite::suggest()})),
+            // A new account that joins with only the inviter's password. Nothing is made unless the password finds an invite.
+            "create_account_password" => {
+                let relay = self.relay_arg(&a)?;
+                let (pass, name, pw) = (s(&a, "passphrase"), s(&a, "name"), s(&a, "password"));
+                if pass.len() < 8 { return Err("The password for this device must be at least 8 characters.".into()); }
+                if name.trim().is_empty() { return Err("Please choose a name.".into()); }
+                check_name("A display name", name.trim())?;
+                let api = Api { t: HttpTransport::new(&relay).into_arc() };
+                api.health().map_err(|x| unreachable_text(&relay, &format!("{x:#}")))?;
+                let link = crate::pwinvite::lookup(&api, &relay, &pw, self.kdf).map_err(e)?;
+                let l = InviteLink::decode(&link).map_err(|_| crate::pwinvite::NOT_FOUND.to_string())?;
+                if l.relay.trim_end_matches('/') != relay.trim_end_matches('/') { return Err(crate::pwinvite::NOT_FOUND.into()); }
+                self.probe(&relay, Some(l.secret.trim()))?;
+                self.open_with(|t| Client::create_with_invite(&self.dir, &pass, &relay, name.trim(), l.secret.trim(), self.kdf, t), &relay)?;
+                match self.with(|c| c.join_with_link(&link).map_err(e)) {
+                    Ok(id) => Ok(json!({"ok": true, "community": id, "name": l.name})),
+                    Err(m) => Ok(json!({"ok": true, "join_error": m})),
+                }
+            }
+            // An existing account joins another community with a password.
+            "join_password" => {
+                let (pw, relay) = (s(&a, "password"), self.with(|c| Ok(c.st.relay.clone()))?);
+                let api = Api { t: HttpTransport::new(&relay).into_arc() };
+                let link = crate::pwinvite::lookup(&api, &relay, &pw, self.kdf).map_err(e)?;
+                self.with(|c| c.join_with_link(&link).map(|id| json!({"id": id})).map_err(e))
+            }
             "join" => self.with(|c| c.join_with_link(&s(&a, "link")).map(|id| json!({"id": id})).map_err(e)),
             "cancel_join" => self.with(|c| c.cancel_join(&s(&a, "id")).map(|_| json!({})).map_err(e)),
             "kick" => self.with(|c| c.kick(&s(&a, "cid"), &s(&a, "account")).map(|_| json!({})).map_err(e)),
@@ -739,7 +783,7 @@ fn snapshot(c: &Client) -> Value {
             "wall": d.wall.iter().filter(|(g, _)| **g == co.id || co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, n)| (g.clone(), json!(n))).collect::<serde_json::Map<String, Value>>(),
             "rooms": d.rooms.iter().filter(|(g, _)| co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, x)| { let x = x.lower(); (g.clone(), json!({"main": x.main, "hi": x.hi})) }).collect::<serde_json::Map<String, Value>>()}));
         json!({"id": co.id, "style": style, "name": if co.name.is_empty() { "…".to_string() } else { co.name.clone() }, "role": role.name(), "removed": co.removed, "removed_reason": co.removed_reason, "channels": chans, "unread": unread,
-               "invites": co.invites.iter().map(|i| json!({"id": i.id, "expires": i.expires, "uses_left": i.uses_left, "mine": co.invite_sks.contains_key(&i.id)})).collect::<Vec<_>>(),
+               "invites": co.invites.iter().map(|i| json!({"id": i.id, "expires": i.expires, "uses_left": i.uses_left, "mine": co.invite_sks.contains_key(&i.id), "password": c.st.pw_invites.contains_key(&i.id)})).collect::<Vec<_>>(),
                "status": c.group_status(&co.id)})
     }).collect();
     let joining: Vec<Value> = c.st.joining.values().map(|l| json!({"id": l.community, "name": l.name, "sent": c.st.join_sent.contains(&l.community), "asked": c.st.join_asked.get(&l.community)})).collect();

@@ -9,6 +9,7 @@ pub mod state;
 pub mod transport;
 pub mod vault;
 pub mod ops;
+pub mod pwinvite;
 mod round;
 pub mod pcaudio;
 pub mod rune;

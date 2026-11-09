@@ -275,7 +275,17 @@ pub struct InfoResp {
     /// Only meaningful in answer to a POST carrying a secret.
     #[serde(default)]
     pub ok: bool,
+    /// This relay keeps sealed password invites. Older relays do not say, which reads as false.
+    #[serde(default)]
+    pub pwinvite: bool,
 }
+/// A sealed copy of an invite link, filed under an id derived from the inviter's password.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PwPutReq { pub blob: String, pub ttl: u64, pub fetches: u32 }
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PwLookupReq { pub lid: String }
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PwLookupResp { pub blob: String }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PostReq { pub id: String, pub data: String }
 #[derive(Serialize, Deserialize, Debug, Clone)]
