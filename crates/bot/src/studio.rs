@@ -42,7 +42,7 @@ impl Kind {
         match self { Kind::Picture => "picture", Kind::Song => "song", Kind::Sound => "sound", Kind::Video => "video" }
     }
     fn model(self) -> &'static str {
-        match self { Kind::Picture => "krea2", Kind::Song => "ace15", Kind::Sound => "sfx", Kind::Video => "wan_t2v" }
+        match self { Kind::Picture => "krea2", Kind::Song => "yue2", Kind::Sound => "sfx", Kind::Video => "wan_t2v" }
     }
     fn endpoint(self) -> &'static str {
         match self { Kind::Picture => "img", Kind::Song | Kind::Sound => "aud", Kind::Video => "vid" }
@@ -117,7 +117,8 @@ impl Request {
     pub fn file_name(&self, id: u64) -> String { format!("studio-{id}.{}", self.kind.ext()) }
 }
 
-/// A length the caller asked for, or the default when it asked for nothing. A wrong one is an error the model can fix.
+/// A length the caller asked for, or the default when it asked for nothing. "2 minutes", "2:00", "120s" and "90"
+/// all work: the length is snapped up to the next one Studio offers (or its longest). Only nonsense is an error.
 fn pick_length(given: &str, allowed: &[&str], default: &str) -> Result<String, String> {
     let g = given.trim().to_ascii_lowercase();
     if g.is_empty() { return Ok(default.to_string()); }
@@ -125,7 +126,103 @@ fn pick_length(given: &str, allowed: &[&str], default: &str) -> Result<String, S
     for a in allowed {
         if g == *a || bare == a.trim_end_matches('s') { return Ok((*a).to_string()); }
     }
+    let secs = duration_secs(&g).or_else(|| bare.trim().parse::<f64>().ok());
+    if let Some(v) = secs.and_then(|v| snap(v, allowed)) { return Ok(v); }
     Err(format!("The length must be one of: {}.", allowed.join(", ")))
+}
+
+/// The shortest allowed length at least `secs` long, or the longest one when `secs` is longer than all of them.
+fn snap(secs: f64, allowed: &[&str]) -> Option<String> {
+    if !(secs > 0.0) { return None; }
+    let n = |a: &str| a.trim_end_matches('s').parse::<f64>().ok();
+    allowed.iter().find(|a| n(a).is_some_and(|x| x >= secs - 0.5)).or_else(|| allowed.last()).map(|a| a.to_string())
+}
+
+/// The allowed length for a duration the person named in their own words ("a 2 minute song", "3 min", "2:30"),
+/// for songs and sounds. The person's words win over the length the model picked, which small models often drop.
+pub fn length_from_words(kind: Kind, words: &str) -> Option<String> {
+    let allowed: &[&str] = match kind {
+        Kind::Song => &["30", "60", "120", "180"],
+        Kind::Sound => &["3", "6", "10", "15"],
+        _ => return None,
+    };
+    snap(duration_secs(words)?, allowed)
+}
+
+/// The most songs one request can ask for.
+pub const MAX_BATCH: usize = 10;
+
+/// How many songs the person's own words ask for ("10 songs", "ten tracks", "5 versions"), up to [`MAX_BATCH`].
+pub fn count_from_words(text: &str) -> Option<usize> {
+    let lower = text.to_lowercase();
+    let cleaned: String = lower.chars().map(|c| if c.is_alphanumeric() { c } else { ' ' }).collect();
+    let words: Vec<&str> = cleaned.split_whitespace().collect();
+    let number = |w: &str| -> Option<usize> {
+        if let Ok(v) = w.parse::<usize>() { return Some(v); }
+        Some(match w {
+            "two" | "couple" => 2, "three" => 3, "four" => 4, "five" => 5, "six" => 6, "seven" => 7, "eight" => 8,
+            "nine" => 9, "ten" | "dozen" => 10,
+            _ => return None,
+        })
+    };
+    for pair in words.windows(2) {
+        let Some(n) = number(pair[0]) else { continue };
+        if n >= 1 && ["song", "songs", "track", "tracks", "tune", "tunes", "banger", "bangers", "version", "versions", "take", "takes"].contains(&pair[1]) {
+            return Some(n.min(MAX_BATCH));
+        }
+    }
+    None
+}
+
+/// The `count` the model passed, from 1 to [`MAX_BATCH`]; 1 when it passed none.
+pub fn count_from_args(arguments: &str) -> usize {
+    let v: Value = serde_json::from_str(arguments).unwrap_or_default();
+    let c = &v["count"];
+    let n = c.as_u64().or_else(|| c.as_str().and_then(|s| s.trim().parse().ok())).unwrap_or(1) as usize;
+    n.clamp(1, MAX_BATCH)
+}
+
+/// The first duration written in `text`, in seconds: "2 minutes", "2min", "1.5 mins", "two minutes",
+/// "a minute", "90 seconds", "30s", "2:30". Bare numbers ("2 dogs") are not durations.
+pub fn duration_secs(text: &str) -> Option<f64> {
+    let lower = text.to_lowercase();
+    // split "2min" / "30s" into "2 min" / "30 s"; keep ':' and '.' inside numbers
+    let mut spaced = String::new();
+    let mut prev_digit = false;
+    for ch in lower.chars() {
+        let is_digit = ch.is_ascii_digit();
+        if prev_digit && ch.is_alphabetic() { spaced.push(' '); }
+        spaced.push(if ch.is_alphanumeric() || ch == ':' || ch == '.' { ch } else { ' ' });
+        prev_digit = is_digit;
+    }
+    let words: Vec<&str> = spaced.split_whitespace().map(|w| w.trim_end_matches('.')).collect();
+    let number = |w: &str| -> Option<f64> {
+        if let Ok(v) = w.parse::<f64>() { return Some(v); }
+        Some(match w {
+            "a" | "an" | "one" => 1.0, "two" => 2.0, "three" => 3.0, "four" => 4.0, "five" => 5.0,
+            "six" => 6.0, "ten" => 10.0, "fifteen" => 15.0, "thirty" => 30.0, "sixty" => 60.0, "ninety" => 90.0,
+            _ => return None,
+        })
+    };
+    for (i, w) in words.iter().enumerate() {
+        if let Some((m, s)) = w.split_once(':') {
+            if let (Ok(m), Ok(s)) = (m.parse::<f64>(), s.parse::<f64>()) {
+                if s < 60.0 && !m.is_nan() { return Some(m * 60.0 + s); }
+            }
+        }
+        let Some(v) = number(w) else { continue };
+        let Some(unit) = words.get(i + 1) else { continue };
+        if unit.starts_with("min") || *unit == "m" {
+            // "a minute and a half", "two and a half minutes" are rare; "1.5 min" covers them
+            return Some(v * 60.0);
+        }
+        if unit.starts_with("sec") || *unit == "s" { return Some(v); }
+        if (*unit == "and") && words.get(i + 2) == Some(&"a") && words.get(i + 3) == Some(&"half")
+            && words.get(i + 4).is_some_and(|u| u.starts_with("min")) {
+            return Some(v * 60.0 + 30.0);
+        }
+    }
+    None
 }
 
 /// What Studio's `/api/state` says about whether it can start something now.
@@ -166,8 +263,9 @@ pub fn studio_tool() -> ToolSpec {
             "properties": {
                 "kind": {"type": "string", "enum": ["picture", "song", "sound", "video"], "description": "What to make."},
                 "prompt": {"type": "string", "description": "A detailed description of the picture, sound or video. For a song this is the musical style (for example 'warm reggae, live drums, horns')."},
-                "lyrics": {"type": "string", "description": "The words to sing (songs only)."},
-                "length": {"type": "string", "description": "song: 30, 60, 120 or 180 seconds; sound: 3, 6, 10 or 15 seconds; video: 2s, 4s or 5s."},
+                "lyrics": {"type": "string", "description": "The words to sing (songs only). Everyone in them is an adult: write woman or man, never girl, boy, baby, kid or young."},
+                "count": {"type": "integer", "description": "songs only: how many to make, 1 to 10. Use what the person asked for."},
+                "length": {"type": "string", "description": "song: 30, 60, 120 or 180 seconds (use what the person asked for: 2 minutes = 120); sound: 3, 6, 10 or 15 seconds; video: 2s, 4s or 5s."},
                 "size": {"type": "string", "description": "picture: square, portrait, landscape, wide, tall or small; video: vland, vtall, vhd or vhdtall."},
                 "style": {"type": "string", "description": "picture: none, gritty, harsh, grime, war, darksf, decay, cine or clean."}
             },
@@ -292,7 +390,7 @@ mod tests {
 
         let s = Request::from_args(r#"{"kind":"song","prompt":"warm reggae","lyrics":"la la","length":"60"}"#).unwrap();
         assert_eq!(s.length, "60");
-        assert_eq!(s.body()["model"], "ace15");
+        assert_eq!(s.body()["model"], "yue2");
         assert_eq!(s.body()["lyrics"], "la la");
 
         let f = Request::from_args(r#"{"kind":"sound","prompt":"a door slam"}"#).unwrap();
@@ -312,9 +410,41 @@ mod tests {
         assert!(Request::from_args(r#"{"prompt":"x"}"#).is_err());
         assert!(Request::from_args(r#"{"kind":"sculpture","prompt":"x"}"#).is_err());
         assert!(Request::from_args(r#"{"kind":"picture","prompt":"  "}"#).is_err());
-        assert!(Request::from_args(r#"{"kind":"song","prompt":"x","length":"45"}"#).is_err());
+        assert_eq!(Request::from_args(r#"{"kind":"song","prompt":"x","length":"45"}"#).unwrap().length, "60");
+        assert!(Request::from_args(r#"{"kind":"song","prompt":"x","length":"long"}"#).is_err());
         let long = "a".repeat(MAX_PROMPT_CHARS + 1);
         assert!(Request::from_args(&format!(r#"{{"kind":"picture","prompt":"{long}"}}"#)).is_err());
+    }
+
+    #[test]
+    fn song_counts_in_plain_words() {
+        assert_eq!(count_from_words("@Oracle make 10 songs about my cat"), Some(10));
+        assert_eq!(count_from_words("ten tracks please"), Some(10));
+        assert_eq!(count_from_words("give me 3 versions of it"), Some(3));
+        assert_eq!(count_from_words("make 25 songs"), Some(10));
+        assert_eq!(count_from_words("a 2 minute song about 2 dogs"), None);
+        assert_eq!(count_from_args(r#"{"count":4}"#), 4);
+        assert_eq!(count_from_args(r#"{"count":"7"}"#), 7);
+        assert_eq!(count_from_args(r#"{"count":99}"#), 10);
+        assert_eq!(count_from_args(r#"{}"#), 1);
+    }
+
+    #[test]
+    fn durations_in_plain_words() {
+        assert_eq!(duration_secs("make me a 2 minute song about cats"), Some(120.0));
+        assert_eq!(duration_secs("3min banger"), Some(180.0));
+        assert_eq!(duration_secs("a song, two minutes long"), Some(120.0));
+        assert_eq!(duration_secs("make it 2:30"), Some(150.0));
+        assert_eq!(duration_secs("90 seconds of jungle"), Some(90.0));
+        assert_eq!(duration_secs("two and a half minutes"), Some(150.0));
+        assert_eq!(duration_secs("a song about 2 dogs"), None);
+        assert_eq!(length_from_words(Kind::Song, "@Oracle make some blood curdling, belly boomin bass 400bpm reggaton, intense dancehall 2 min long"), Some("120".into()));
+        assert_eq!(length_from_words(Kind::Song, "a 2 minute song"), Some("120".into()));
+        assert_eq!(length_from_words(Kind::Song, "a song of 2.5 mins"), Some("180".into()));
+        assert_eq!(length_from_words(Kind::Song, "a 10 minute epic"), Some("180".into()));
+        assert_eq!(length_from_words(Kind::Song, "a song about my cat"), None);
+        assert_eq!(pick_length("2 minutes", &["30", "60", "120", "180"], "30").unwrap(), "120");
+        assert_eq!(pick_length("150", &["30", "60", "120", "180"], "30").unwrap(), "180");
     }
 
     #[test]

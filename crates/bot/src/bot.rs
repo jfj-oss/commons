@@ -16,7 +16,9 @@ use commons_core::client::Client;
 use commons_core::state::{MsgBody, Role};
 use commons_proto::now_secs;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::hash_map::RandomState;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::hash::{BuildHasher, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -46,12 +48,41 @@ pub struct Config {
     pub studio_daily_video_cap: usize,
     /// Studio jobs allowed to wait behind the one being made. More are told "busy".
     pub studio_queue_max: usize,
+    /// The chance, per new message in a live conversation, that the bot decides to join in unasked. 0 turns it off.
+    pub chime_chance_pct: usize,
+    /// At least this long between two unasked joins in one room.
+    pub chime_min_gap_secs: u64,
+    /// At least this many messages from other people since the bot last spoke.
+    pub chime_min_messages: usize,
+    /// Most unasked joins per room per day.
+    pub chime_daily_max: u32,
+    /// How long it waits after deciding, so it does not jump on a message the instant it lands.
+    pub chime_delay_secs: (u64, u64),
+    /// Hard cap on the size of an unasked remark, in characters.
+    pub chime_max_chars: usize,
+    /// When it joins in, the chance that it makes something in Studio instead of talking. 0 turns it off.
+    pub art_chance_pct: usize,
+    /// At least this long between two unasked Studio pieces in one room.
+    pub art_min_gap_secs: u64,
+    /// Most unasked Studio pieces per day, across every room together: they take the GPU from everything else.
+    pub art_daily_max: u32,
+    /// The chance, per new message in an active room, that the bot draws a small piece on the room's shared wall. 0 turns it off.
+    pub wall_chance_pct: usize,
+    /// At least this long between two wall drawings in one room.
+    pub wall_min_gap_secs: u64,
+    /// Most wall drawings per room per day.
+    pub wall_daily_max: u32,
+    /// Pause between two stroke events on the wall. The core's budget is two a second, so this is never below 500.
+    pub wall_stroke_gap_ms: u64,
 }
 impl Default for Config {
     fn default() -> Self {
         Config {
             name: DEFAULT_NAME.into(), max_reply_chars: 1200, context_messages: 20, max_per_minute: 6, max_queue: 4,
-            studio_daily_cap: 10, studio_daily_video_cap: 2, studio_queue_max: 3,
+            studio_daily_cap: usize::MAX, studio_daily_video_cap: usize::MAX, studio_queue_max: 10,
+            chime_chance_pct: 0, chime_min_gap_secs: 900, chime_min_messages: 4, chime_daily_max: 20, chime_delay_secs: (6, 40),
+            chime_max_chars: 320, art_chance_pct: 0, art_min_gap_secs: 5400, art_daily_max: 3,
+            wall_chance_pct: 0, wall_min_gap_secs: 1800, wall_daily_max: 2, wall_stroke_gap_ms: 500,
         }
     }
 }
@@ -76,6 +107,12 @@ pub enum JobKind {
     NotAllowed,
     /// An admin turned Studio on or off for this room, or on for one account.
     SetStudio { on: bool, person: Option<String> },
+    /// The bot decided to join the conversation by itself. Nobody asked, so nothing is threaded to anyone.
+    Chime,
+    /// The bot decided to draw a small piece on the room's shared wall.
+    Wall,
+    /// An admin told the bot to stay quiet in this room unless spoken to, or to go back to joining in.
+    SetChime { on: bool },
     /// "@Oracle allow studio for <name>" where nobody in the room has that name (or more than one does).
     StudioUnknownPerson(String),
 }
@@ -113,6 +150,33 @@ pub trait Chat {
     fn name_of(&self, account: &str) -> String { account.to_string() }
     /// The display name of the community owner, when this chat knows it.
     fn owner_of(&self, _gid: &str) -> Option<String> { None }
+    /// Whether the owner has switched the Oracle off in this room (the signed `oracle_quiet` look). Read live from the synced community state.
+    fn oracle_quiet(&self, _gid: &str) -> bool { false }
+    /// The room's wall as it stands, or `None` when this chat has no wall.
+    fn wall_info(&self, _gid: &str) -> Option<WallInfo> { None }
+    /// One stroke event on the room's wall: `(x, y, glyph index, colour)`. `Ok(false)` means "not sent, try again shortly".
+    fn wall_draw(&mut self, _gid: &str, _cells: &[(u32, u32, u8, u8)]) -> Result<bool, String> { Err("no wall".into()) }
+}
+
+/// What the bot needs to know about a room's wall before and while it draws.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WallInfo {
+    /// Raised by the owner's "clear"; a change mid-drawing means stop.
+    pub gen: u64,
+    /// The owner has locked the wall (the bot is never the owner).
+    pub locked: bool,
+    /// Cells that hold a mark (`y * columns + x`); erased cells are free.
+    pub marks: HashSet<u32>,
+}
+
+fn quiet_in(c: &Client, gid: &str) -> bool {
+    let Some(g) = c.st.groups.get(gid) else { return false };
+    c.look_of(&g.community, Some(gid)).and_then(|l| l.oracle_quiet).unwrap_or(false)
+}
+fn wall_info_of(c: &Client, gid: &str) -> Option<WallInfo> {
+    c.st.groups.get(gid)?;
+    let v = c.wall_view(gid);
+    Some(WallInfo { gen: v.gen, locked: v.locked, marks: v.cells.iter().filter(|(_, g, _, _)| *g != 0).map(|(p, ..)| *p as u32).collect() })
 }
 
 fn history_of(c: &Client, gid: &str, limit: usize) -> Vec<Line> {
@@ -132,7 +196,7 @@ fn history_of(c: &Client, gid: &str, limit: usize) -> Vec<Line> {
     // "/reset" draws a line: nothing before it (and not the bot's own "memory wiped" reply) is context any more
     let name = c.st.name.clone();
     if let Some(i) = out.iter().rposition(|l| is_reset(&l.text, &name)) { out.drain(..=i); }
-    out.retain(|l| !(l.mine && l.text == RESET_REPLY));
+    out.retain(|l| !(l.mine && (l.text == RESET_REPLY || l.text == safety::REFUSAL)));
     let start = out.len().saturating_sub(limit);
     out.split_off(start)
 }
@@ -162,6 +226,9 @@ impl Chat for Client {
     fn role_of(&self, gid: &str, account: &str) -> Role { role_in(self, gid, account) }
     fn name_of(&self, account: &str) -> String { self.display_name(account) }
     fn owner_of(&self, gid: &str) -> Option<String> { owner_in(self, gid) }
+    fn oracle_quiet(&self, gid: &str) -> bool { quiet_in(self, gid) }
+    fn wall_info(&self, gid: &str) -> Option<WallInfo> { wall_info_of(self, gid) }
+    fn wall_draw(&mut self, gid: &str, cells: &[(u32, u32, u8, u8)]) -> Result<bool, String> { Client::wall_draw(self, gid, cells).map_err(|e| format!("{e:#}")) }
 }
 
 /// A client shared with the background sync thread. Every call is a separate short lock, so a model answering for a
@@ -183,6 +250,9 @@ impl Chat for SharedClient<'_> {
     fn role_of(&self, gid: &str, account: &str) -> Role { role_in(&self.lock(), gid, account) }
     fn name_of(&self, account: &str) -> String { self.lock().display_name(account) }
     fn owner_of(&self, gid: &str) -> Option<String> { owner_in(&self.lock(), gid) }
+    fn oracle_quiet(&self, gid: &str) -> bool { quiet_in(&self.lock(), gid) }
+    fn wall_info(&self, gid: &str) -> Option<WallInfo> { wall_info_of(&self.lock(), gid) }
+    fn wall_draw(&mut self, gid: &str, cells: &[(u32, u32, u8, u8)]) -> Result<bool, String> { Client::wall_draw(&mut self.lock(), gid, cells).map_err(|e| format!("{e:#}")) }
 }
 
 /// A mention of the bot's name: "@Oracle", anywhere in the text, touching no letters on its ends (so "@Oracle's" counts
@@ -217,6 +287,131 @@ pub fn admin_command(text: &str, name: &str) -> Option<bool> {
     let said = said.trim_end_matches(['.', '!', '?', ' ', '\n', '\t']);
     let phrase = |suffix: &str| format!("@{} {suffix}", name.to_lowercase());
     if said == phrase("use deepseek") { Some(true) } else if said == phrase("use local") { Some(false) } else { None }
+}
+
+/// "@Oracle quiet" and "@Oracle chime in". Like the model switch, only the exact words count.
+pub fn chime_command(text: &str, name: &str) -> Option<bool> {
+    let said: String = text.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
+    let said = said.trim_end_matches(['.', '!', '?', ' ', '\n', '\t']);
+    let phrase = |suffix: &str| format!("@{} {suffix}", name.to_lowercase());
+    if said == phrase("chime in") { Some(true) } else if said == phrase("quiet") { Some(false) } else { None }
+}
+
+/// A random number. Good enough to decide whether a chat bot says something; used for nothing else.
+fn random() -> u64 {
+    let mut h = RandomState::new().build_hasher();
+    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+    h.finish()
+}
+fn roll(pct: usize) -> bool { (random() % 100) < pct as u64 }
+fn spread((lo, hi): (u64, u64)) -> u64 { lo + random() % (hi.saturating_sub(lo) + 1) }
+
+const CHIME_RULES: &str = "For this one message nobody asked you anything. You are reading the group chat and butting in because you \
+    feel like it. One or two short sentences at most, the way someone types in a group chat. Do not greet anyone, do not explain why \
+    you are talking, and do not say that nobody asked. Do not @mention anyone. Never say anything sexual about anyone in this chat, \
+    and nothing sexual about minors. You have no tools for this message. If you really have nothing worth saying, reply with exactly PASS.";
+const CHIME_OPINION: &str = "Butt in now with your own opinion on what they are talking about.";
+const CHIME_THOUGHT: &str = "Butt in now with whatever random thing is on your mind, even if it has nothing to do with the chat.";
+const ART_ASK: &str = "Nobody asked, but you feel like making something just for the fun of it. Use studio_make once to make a picture \
+    (usually), a short sound effect, or a short song, inspired by the chat or by whatever is on your mind. Never a video. Nothing \
+    sexual, and nothing about anyone in this chat or any other real person. In your message text write one short funny line to go with it.";
+
+const WALL_RULES: &str = "You are drawing a tiny picture on a shared ASCII wall in a group chat, just for fun. Nothing sexual, nothing about minors, \
+    and nothing that shows or names any real person or anyone in the chat. No words or letters spelled out in the picture.";
+const WALL_ASK: &str = "Draw a small ASCII picture of {theme}. At most 40 characters wide and 16 lines tall. Use only these characters: \
+    # * + . o = ~ / | - x and the space. Reply with the picture only, one line of the picture per line, no explanation.";
+const WALL_THEMES: [&str; 12] = ["a cat", "a rocket", "a tree", "a sailing ship", "a house", "a fish", "a mountain with a sun", "a snail", "a lighthouse",
+    "a robot face", "a cactus", "a kite"];
+/// The most columns and rows a wall piece may take.
+pub const WALL_ART_COLS: usize = 40;
+pub const WALL_ART_ROWS: usize = 16;
+/// Rows of art per stroke event: a piece appears a couple of rows at a time, well under the core's 200 cells per event.
+const WALL_ROWS_PER_STROKE: usize = 2;
+
+/// A parsed piece of wall art: rows of at most [`WALL_ART_COLS`] characters, each a wall glyph or a space, with no empty rows at the ends.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WallArt { pub rows: Vec<String> }
+impl WallArt {
+    pub fn width(&self) -> usize { self.rows.iter().map(|r| r.chars().count()).max().unwrap_or(0) }
+    pub fn height(&self) -> usize { self.rows.len() }
+    fn cells(&self) -> Vec<(usize, usize, u8)> {
+        let mut out = vec![];
+        for (y, row) in self.rows.iter().enumerate() {
+            for (x, ch) in row.chars().enumerate() {
+                if let Some(g) = commons_core::wall::WALL_GLYPHS.iter().position(|w| *w == ch).filter(|g| *g != 0) { out.push((x, y, g as u8)); }
+            }
+        }
+        out
+    }
+    /// The stroke events that draw this piece with its top left at `(ox, oy)`: spaces are never sent (they would erase), a few rows to an event.
+    pub fn strokes(&self, ox: u32, oy: u32) -> Vec<Vec<(u32, u32, u8, u8)>> {
+        let mut out: Vec<Vec<(u32, u32, u8, u8)>> = vec![];
+        for band in self.cells().chunk_by(|a, b| a.1 / WALL_ROWS_PER_STROKE == b.1 / WALL_ROWS_PER_STROKE) {
+            for part in band.chunks(commons_core::wall::WALL_BATCH) {
+                out.push(part.iter().map(|&(x, y, g)| (ox + x as u32, oy + y as u32, g, 0)).collect());
+            }
+        }
+        out
+    }
+}
+
+/// Read the model's answer as wall art, strictly: an optional code fence around it, every character a wall glyph or a space, at most
+/// 40 by 16, and enough marks to be a picture. Anything else (a sentence, a stray letter, a tab, too big) is not art and gives `None`.
+pub fn parse_wall_art(raw: &str) -> Option<WallArt> {
+    let mut lines: Vec<&str> = raw.trim_matches(|c| c == '\n' || c == '\r').lines().collect();
+    if lines.first().is_some_and(|l| l.trim_start().starts_with("```")) && lines.last().is_some_and(|l| l.trim() == "```") && lines.len() >= 2 {
+        lines.remove(0);
+        lines.pop();
+    }
+    let allowed = |c: char| commons_core::wall::WALL_GLYPHS.contains(&c);
+    let mut rows: Vec<String> = lines.iter().map(|l| l.trim_end().to_string()).collect();
+    while rows.first().is_some_and(|r| r.is_empty()) { rows.remove(0); }
+    while rows.last().is_some_and(|r| r.is_empty()) { rows.pop(); }
+    if rows.len() < 3 || rows.len() > WALL_ART_ROWS { return None; }
+    if rows.iter().any(|r| r.chars().count() > WALL_ART_COLS || !r.chars().all(allowed)) { return None; }
+    // Strip the common left margin, so a piece that was indented is not pushed against the box's far edge.
+    let margin = rows.iter().filter(|r| !r.is_empty()).map(|r| r.chars().take_while(|c| *c == ' ').count()).min().unwrap_or(0);
+    let rows: Vec<String> = rows.into_iter().map(|r| r.chars().skip(margin).collect()).collect();
+    let art = WallArt { rows };
+    let marks = art.cells().len();
+    if marks < 8 || art.width() < 3 { return None; }
+    Some(art)
+}
+
+/// Where to put a piece so it touches nothing already on the wall: first with a one cell margin, then without. `None` when there is no such
+/// place: the bot never draws over other people's marks.
+pub fn place_art(art: &WallArt, marks: &HashSet<u32>) -> Option<(u32, u32)> {
+    use commons_core::wall::{WALL_COLS, WALL_ROWS};
+    let (w, h) = (art.width() as u32, art.height() as u32);
+    if w == 0 || h == 0 || w > WALL_COLS || h > WALL_ROWS { return None; }
+    let cells: Vec<(u32, u32)> = art.cells().into_iter().map(|(x, y, _)| (x as u32, y as u32)).collect();
+    let clear = |ox: u32, oy: u32, m: u32| cells.iter().all(|&(x, y)| {
+        let (cx, cy) = (ox + x, oy + y);
+        (cy.saturating_sub(m)..=(cy + m).min(WALL_ROWS - 1)).all(|yy| (cx.saturating_sub(m)..=(cx + m).min(WALL_COLS - 1)).all(|xx| !marks.contains(&(yy * WALL_COLS + xx))))
+    });
+    let (mx, my) = (WALL_COLS - w, WALL_ROWS - h);
+    for m in [1u32, 0] {
+        // Start somewhere random so pieces do not all pile up in one corner, then try everywhere.
+        let (sx, sy) = ((random() % (mx as u64 + 1)) as u32, (random() % (my as u64 + 1)) as u32);
+        for dy in 0..=my {
+            for dx in 0..=mx {
+                let (ox, oy) = ((sx + dx) % (mx + 1), (sy + dy) % (my + 1));
+                if clear(ox, oy, m) { return Some((ox, oy)); }
+            }
+        }
+    }
+    None
+}
+
+/// What an unasked remark may be after tidying: `None` means the model chose to pass or wrote nothing usable. Any @ goes,
+/// so an unasked remark never pings a person or sets off another bot.
+pub fn clean_chime(raw: &str, name: &str, max_chars: usize) -> Option<String> {
+    let mut t = strip_search_lines(raw).trim().trim_matches('"').trim().to_string();
+    let prefix = format!("{}:", name.to_lowercase());
+    if t.to_lowercase().starts_with(&prefix) { t = t.get(prefix.len()..).unwrap_or("").trim().to_string(); }
+    let bare = t.trim_end_matches(['.', '!']).to_uppercase();
+    if t.is_empty() || bare == "PASS" { return None; }
+    Some(cap(&t.replace('@', ""), max_chars))
 }
 
 /// A Studio permission phrase. Like the model switch, only the exact words count.
@@ -304,6 +499,23 @@ pub struct RoomState {
     /// Studio permission for this room.
     #[serde(default)]
     pub studio: StudioPerm,
+    /// An admin said "@Oracle quiet" here: it speaks only when spoken to.
+    #[serde(default)]
+    pub chime_off: bool,
+    #[serde(default)]
+    pub last_chime: u64,
+    #[serde(default)]
+    pub chime_day: u64,
+    #[serde(default)]
+    pub chime_count: u32,
+    #[serde(default)]
+    pub last_art: u64,
+    #[serde(default)]
+    pub last_wall: u64,
+    #[serde(default)]
+    pub wall_day: u64,
+    #[serde(default)]
+    pub wall_count: u32,
 }
 
 /// One person's Studio use for one day (days are counted in whole UTC days from the epoch).
@@ -323,6 +535,10 @@ pub struct BotState {
     pub rooms: BTreeMap<String, RoomState>,
     #[serde(default)]
     pub studio_use: BTreeMap<String, DailyUse>,
+    #[serde(default)]
+    pub art_day: u64,
+    #[serde(default)]
+    pub art_count: u32,
 }
 
 struct Store {
@@ -365,6 +581,17 @@ impl StudioQueue {
         let gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
         Some(StudioTicket { _gate: gate, taken: &self.taken })
     }
+
+    /// A ticket only if nothing is being made or waiting: something unasked never queues in front of a person's request.
+    fn enter_if_idle(&self) -> Option<StudioTicket<'_>> {
+        {
+            let mut taken = self.taken.lock().unwrap_or_else(|p| p.into_inner());
+            if *taken > 0 { return None; }
+            *taken += 1;
+        }
+        let gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
+        Some(StudioTicket { _gate: gate, taken: &self.taken })
+    }
 }
 
 struct StudioTicket<'a> {
@@ -388,6 +615,10 @@ pub struct Bot {
     store: Mutex<Store>,
     rate: Mutex<RateLimit>,
     studio_queue: StudioQueue,
+    /// Rooms where the bot has decided to join in, and when.
+    pending: Mutex<HashMap<String, u64>>,
+    /// Rooms where a wall drawing is being made right now: one at a time per room.
+    wall_busy: Mutex<HashSet<String>>,
 }
 
 impl Bot {
@@ -404,7 +635,7 @@ impl Bot {
         let studio_queue = StudioQueue { gate: Mutex::new(()), taken: Mutex::new(0), max: cfg.studio_queue_max + 1 };
         Bot {
             cfg, local, deepseek, search, studio, gpu, store: Mutex::new(Store::load(state_path.as_ref().to_path_buf())),
-            rate: Mutex::new(rate), studio_queue,
+            rate: Mutex::new(rate), studio_queue, pending: Mutex::new(HashMap::new()), wall_busy: Mutex::new(HashSet::new()),
         }
     }
 
@@ -453,6 +684,7 @@ impl Bot {
             };
             let mut max_seq = start;
             let mut found: Vec<Job> = Vec::new();
+            let mut chatter = 0usize;
             let mut deepseek_now = known.as_ref().is_some_and(|r| r.deepseek);
             let roles = c.people_of(&cid);
             for m in &log.msgs {
@@ -463,7 +695,7 @@ impl Bot {
                     found.push(Job { gid: gid.clone(), trigger: m.id.clone(), from: m.sender.clone(), text: text.clone(), kind: JobKind::Reset });
                     continue;
                 }
-                if !mentions(text, &self.cfg.name) && !m.reply.as_deref().is_some_and(|id| own.contains(id)) { continue; }
+                if !mentions(text, &self.cfg.name) && !m.reply.as_deref().is_some_and(|id| own.contains(id)) { chatter += 1; continue; }
                 let role = roles.get(&m.sender).map(|(r, _)| *r).unwrap_or(Role::Member);
                 let kind = match admin_command(text, &self.cfg.name) {
                     Some(on) => {
@@ -493,7 +725,15 @@ impl Bot {
                             }
                             None => JobKind::StudioUnknownPerson(wanted),
                         },
-                        None => JobKind::Answer { deepseek: deepseek_now },
+                        None => match chime_command(text, &self.cfg.name) {
+                            Some(_) if role < Role::Admin => JobKind::NotAllowed,
+                            Some(on) => {
+                                let room = store.data.rooms.entry(gid.clone()).or_default();
+                                if room.chime_off == on { room.chime_off = !on; dirty = true; }
+                                JobKind::SetChime { on }
+                            }
+                            None => JobKind::Answer { deepseek: deepseek_now },
+                        },
                     },
                 };
                 found.push(Job { gid: gid.clone(), trigger: m.id.clone(), from: m.sender.clone(), text: text.clone(), kind });
@@ -501,6 +741,52 @@ impl Bot {
             let entry = store.data.rooms.entry(gid.clone()).or_default();
             if entry.last_seq != max_seq { entry.last_seq = max_seq; dirty = true; }
             if entry.deepseek != deepseek_now { entry.deepseek = deepseek_now; dirty = true; }
+            let quiet = quiet_in(c, &gid);
+            let addressed = !found.is_empty();
+            // Joining in by itself: only in a live conversation, only on the local model (nobody asked for these words to
+            // leave the computer), and a mention always wins. The dice are rolled per new message, then it waits a little.
+            let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+            if !found.is_empty() {
+                pending.remove(&gid);
+            } else if self.cfg.chime_chance_pct > 0 && !entry.chime_off && !quiet && !entry.deepseek && (chatter > 0 || pending.contains_key(&gid)) {
+                let since_me = log.msgs.iter().rev().take_while(|m| m.sender != me).filter(|m| !m.deleted && matches!(m.body, MsgBody::Text(_))).count();
+                let newest = log.msgs.iter().rev().find(|m| m.sender != me).map_or(0, |m| m.ts);
+                let mine = log.msgs.iter().rev().find(|m| m.sender == me).map_or(0, |m| m.ts);
+                let day = now / 86_400;
+                let may = (entry.chime_day != day || entry.chime_count < self.cfg.chime_daily_max)
+                    && now >= entry.last_chime.saturating_add(self.cfg.chime_min_gap_secs)
+                    && since_me >= self.cfg.chime_min_messages
+                    && newest + 180 >= now
+                    && (self.cfg.chime_min_gap_secs == 0 || mine + 60 <= now);
+                if chatter > 0 && may && !pending.contains_key(&gid) && roll(self.cfg.chime_chance_pct) {
+                    pending.insert(gid.clone(), now + spread(self.cfg.chime_delay_secs));
+                }
+                if pending.get(&gid).is_some_and(|due| *due <= now) {
+                    pending.remove(&gid);
+                    if may && self.gpu.blocked().is_none() {
+                        if entry.chime_day != day { entry.chime_day = day; entry.chime_count = 0; }
+                        entry.chime_count += 1;
+                        entry.last_chime = now;
+                        dirty = true;
+                        if let Some(last) = log.msgs.last() {
+                            found.push(Job { gid: gid.clone(), trigger: last.id.clone(), from: String::new(), text: String::new(), kind: JobKind::Chime });
+                        }
+                    }
+                }
+            }
+            drop(pending);
+            // Drawing on the wall: the same kind of dice, an active room, an unlocked wall, and never where the owner has said quiet.
+            // A mention or command this round means people are talking to it, not watching the wall.
+            if !addressed && chatter > 0 && !quiet && self.cfg.wall_chance_pct > 0 && log.msgs.iter().rev().find(|m| m.sender != me).is_some_and(|m| m.ts + 180 >= now)
+                && self.wall_allowed(entry, now) && c.wall_info(&gid).is_some_and(|w| !w.locked) && self.gpu.blocked().is_none() && roll(self.cfg.wall_chance_pct) {
+                if self.wall_busy.lock().unwrap_or_else(|p| p.into_inner()).insert(gid.clone()) {
+                    if let Some(last) = log.msgs.last() {
+                        found.push(Job { gid: gid.clone(), trigger: last.id.clone(), from: String::new(), text: String::new(), kind: JobKind::Wall });
+                    } else {
+                        self.wall_busy.lock().unwrap_or_else(|p| p.into_inner()).remove(&gid);
+                    }
+                }
+            }
             jobs.extend(found);
             if max_seq > start { c.mark_read(&gid); let _ = c.save(); }
         }
@@ -512,6 +798,13 @@ impl Bot {
     /// client free, while a typing hint is refreshed now and then.
     pub fn answer(&self, c: &mut dyn Chat, job: &Job) -> Option<Sent> {
         let (text, deepseek, sources) = match &job.kind {
+            JobKind::Chime => return self.chime(c, job),
+            JobKind::Wall => { self.draw_on_wall(c, job); return None; }
+            JobKind::SetChime { on: true } if c.oracle_quiet(&job.gid) => (
+                "The owner switched mi to quiet inna dis room, so mi nah join in unless yuh talk to mi. Dem a di only one who can switch it back.".to_string(), false, vec![],
+            ),
+            JobKind::SetChime { on: true } => ("Aight, mi a go join in whenever mi feel like it inna dis room.".to_string(), false, vec![]),
+            JobKind::SetChime { on: false } => ("Cool, mi quiet now. Mi only talk inna dis room when yuh talk to mi.".to_string(), false, vec![]),
             JobKind::SetDeepSeek { on: true } => ("DeepSeek mode is on for this room. Answers here are written by DeepSeek, and the text of each question and answer leaves this computer.".to_string(), false, vec![]),
             JobKind::SetDeepSeek { on: false } => ("DeepSeek mode is off for this room. Answers stay on this computer.".to_string(), false, vec![]),
             JobKind::Reset => (RESET_REPLY.to_string(), false, vec![]),
@@ -547,6 +840,208 @@ impl Bot {
             }
         };
         self.post(c, job, &text, &sources, deepseek)
+    }
+
+    /// Join the conversation unasked: sometimes with something made in Studio, otherwise a remark. Everything here fails
+    /// silently: nobody asked, so nobody needs to hear that it did not happen.
+    fn chime(&self, c: &mut dyn Chat, job: &Job) -> Option<Sent> {
+        if self.gpu.blocked().is_some() || c.oracle_quiet(&job.gid) { return None; }
+        let history = c.history(&job.gid, self.cfg.context_messages);
+        if history.len() < 2 { return None; }
+        let llm = self.local.as_ref();
+        let mode = llm.tool_mode();
+        let turns = |ask: &str| -> Vec<Msg> {
+            let mut m: Vec<Msg> = history.iter().map(|l| {
+                if l.mine { Msg::Assistant { content: l.text.clone(), tool_calls: vec![] } }
+                else { Msg::User(format!("{}: {}", l.name, l.text)) }
+            }).collect();
+            m.push(Msg::User(ask.to_string()));
+            m
+        };
+        if mode == ToolMode::FunctionCalling && roll(self.cfg.art_chance_pct) && self.art_allowed(&job.gid) {
+            if let Some(sent) = self.make_for_fun(c, job, llm, &turns(ART_ASK), mode) { return Some(sent); }
+        }
+        let ask = if roll(35) { CHIME_THOUGHT } else { CHIME_OPINION };
+        let reply = match llm.complete(&format!("{}\n\n{CHIME_RULES}", self.system_prompt(mode)), &turns(ask), &[]) {
+            Ok(r) => r,
+            Err(e) => { eprintln!("[bot] could not join in: {e:?}"); return None; }
+        };
+        let text = clean_chime(&reply.content, &self.cfg.name, self.cfg.chime_max_chars)?;
+        if let Some(why) = safety::reason(&safety::without_mention(&text, &self.cfg.name)) {
+            eprintln!("[bot] hard block: {why:?}, in an unasked remark");
+            return None;
+        }
+        if c.oracle_quiet(&job.gid) || !self.rate.lock().unwrap_or_else(|p| p.into_inner()).allow() { return None; }
+        c.typing(&job.gid);
+        std::thread::sleep(Duration::from_millis((text.chars().count() as u64 * 25).clamp(self.typing_floor(), 4000)));
+        match c.send(&job.gid, &text, None) {
+            Ok(id) => Some(Sent { id, text, deepseek: false }),
+            Err(e) => { eprintln!("[bot] could not join in: {e}"); None }
+        }
+    }
+
+    /// Whether a wall drawing is allowed in this room now: the room's gap and the day's cap for the room.
+    fn wall_allowed(&self, r: &RoomState, now: u64) -> bool {
+        let used = if r.wall_day == now / 86_400 { r.wall_count } else { 0 };
+        used < self.cfg.wall_daily_max && now >= r.last_wall.saturating_add(self.cfg.wall_min_gap_secs)
+    }
+    fn wall_allowed_in(&self, gid: &str) -> bool {
+        let now = now_secs();
+        let store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+        store.data.rooms.get(gid).map_or(self.cfg.wall_daily_max > 0, |r| self.wall_allowed(r, now))
+    }
+
+    /// Ask the local model for a small ASCII piece and draw it on the room's wall, a couple of rows at a time. Nobody asked, so every
+    /// failure is silent and draws nothing. Stops the moment the wall is locked or cleared, the owner says quiet, or the GPU is needed.
+    fn draw_on_wall(&self, c: &mut dyn Chat, job: &Job) {
+        struct Done<'a>(&'a Mutex<HashSet<String>>, String);
+        impl Drop for Done<'_> { fn drop(&mut self) { self.0.lock().unwrap_or_else(|p| p.into_inner()).remove(&self.1); } }
+        let gid = job.gid.as_str();
+        let _busy = Done(&self.wall_busy, gid.to_string());
+        let stop = |c: &dyn Chat| self.gpu.blocked().is_some() || c.oracle_quiet(gid);
+        if stop(c) || !self.wall_allowed_in(gid) { return; }
+        let Some(before) = c.wall_info(gid) else { return };
+        if before.locked { return; }
+        // A bot-made picture shares the GPU with Studio: never while a Studio job of ours is being made, and never queued in front of one.
+        let Some(_ticket) = self.studio_queue.enter_if_idle() else { return };
+        {
+            // The attempt counts for the gap whether or not the model delivers, so a model that keeps failing is not asked in a loop.
+            let now = now_secs();
+            let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            store.data.rooms.entry(gid.to_string()).or_default().last_wall = now;
+            store.save();
+        }
+        let theme = WALL_THEMES[(random() % WALL_THEMES.len() as u64) as usize];
+        let system = format!("{WALL_RULES}\n\n{}", WALL_ASK.replace("{theme}", theme));
+        // The fixed rules talk about what is forbidden, so it is the asked-for part (the theme) that is checked, not the rules.
+        if safety::reason(&WALL_ASK.replace("{theme}", theme)).is_some() { return; }
+        let llm = self.local.as_ref();
+        let mut art = None;
+        for _ in 0..2 {
+            let reply = match llm.complete(&system, &[Msg::User(WALL_ASK.replace("{theme}", theme))], &[]) {
+                Ok(r) => r,
+                Err(e) => { eprintln!("[bot] could not draw on the wall: {e:?}"); return; }
+            };
+            // The model's whole answer is read by the hard block, not only the rows: it may carry words of its own around the art.
+            if let Some(why) = safety::reason(&reply.content) {
+                eprintln!("[bot] hard block: {why:?}, in wall art");
+                return;
+            }
+            if let Some(a) = parse_wall_art(&reply.content) {
+                if let Some(why) = a.rows.iter().find_map(|r| safety::reason(r)) {
+                    eprintln!("[bot] hard block: {why:?}, in the rows of wall art");
+                    return;
+                }
+                if let Some(why) = safety::reason(&a.rows.join("\n")) {
+                    eprintln!("[bot] hard block: {why:?}, in the text of wall art");
+                    return;
+                }
+                art = Some(a);
+                break;
+            }
+        }
+        let Some(art) = art else { return };
+        if stop(c) { return; }
+        let Some(info) = c.wall_info(gid) else { return };
+        if info.locked || info.gen != before.gen { return; }
+        let Some((ox, oy)) = place_art(&art, &info.marks) else { return };
+        let strokes = art.strokes(ox, oy);
+        let gap = Duration::from_millis(self.cfg.wall_stroke_gap_ms);
+        let mut drawn = 0usize;
+        for stroke in strokes {
+            let mut tries = 0;
+            loop {
+                if stop(c) { return; }
+                match c.wall_info(gid) {
+                    Some(w) if !w.locked && w.gen == before.gen => {}
+                    _ => return,
+                }
+                match c.wall_draw(gid, &stroke) {
+                    Ok(true) => break,
+                    Ok(false) if tries < 4 => { tries += 1; std::thread::sleep(gap.max(Duration::from_millis(500))); }
+                    Ok(false) => return,
+                    Err(e) => { eprintln!("[bot] could not draw on the wall: {e}"); return; }
+                }
+            }
+            if drawn == 0 {
+                let now = now_secs();
+                let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+                let r = store.data.rooms.entry(gid.to_string()).or_default();
+                if r.wall_day != now / 86_400 { r.wall_day = now / 86_400; r.wall_count = 0; }
+                r.wall_count += 1;
+                store.save();
+            }
+            drawn += 1;
+            std::thread::sleep(gap);
+        }
+        eprintln!("[bot] drew on the wall in {gid} ({} strokes)", drawn);
+    }
+
+    /// Long enough for the typing hint to be seen; nothing in tests, which set no delay at all.
+    fn typing_floor(&self) -> u64 { if self.cfg.chime_delay_secs.1 == 0 { 0 } else { 900 } }
+
+    /// Whether a surprise piece is allowed here now: the room's gap and the day's cap across every room.
+    fn art_allowed(&self, gid: &str) -> bool {
+        let now = now_secs();
+        let store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+        let used = if store.data.art_day == now / 86_400 { store.data.art_count } else { 0 };
+        used < self.cfg.art_daily_max && store.data.rooms.get(gid).is_none_or(|r| now >= r.last_art.saturating_add(self.cfg.art_min_gap_secs))
+    }
+
+    /// Make a picture, sound or short song nobody asked for and post it. The hard block reads what the model wrote, as it
+    /// does for any request. Video is never made, and a person's request is never made to wait for this.
+    fn make_for_fun(&self, c: &mut dyn Chat, job: &Job, llm: &dyn Llm, messages: &[Msg], mode: ToolMode) -> Option<Sent> {
+        let state = self.studio.state().ok()?;
+        if state.game || !state.paused.is_empty() { return None; }
+        let reply = match llm.complete(&self.system_prompt(mode), messages, &[studio::studio_tool()]) {
+            Ok(r) => r,
+            Err(e) => { eprintln!("[bot] could not make something unasked: {e:?}"); return None; }
+        };
+        let call = reply.tool_calls.iter().find(|t| t.name == studio::TOOL_NAME)?;
+        let mut req = studio::Request::from_args(&call.arguments).ok()?;
+        if req.kind == studio::Kind::Video { return None; }
+        if req.kind == studio::Kind::Song { req.length = "30".into(); }
+        for (source, why) in [("prompt", safety::reason(&req.prompt)), ("lyrics", safety::reason_lyrics(&req.lyrics))] {
+            if let Some(why) = why {
+                eprintln!("[bot] hard block: {why:?}, in the {source} of something unasked");
+                return None;
+            }
+        }
+        let _ticket = self.studio_queue.enter_if_idle()?;
+        let id = match self.studio.submit(&req) {
+            Ok(id) => id,
+            Err(e) => { eprintln!("[bot] Studio refused something unasked: {e}"); return None; }
+        };
+        {
+            let now = now_secs();
+            let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            if store.data.art_day != now / 86_400 { store.data.art_day = now / 86_400; store.data.art_count = 0; }
+            store.data.art_count += 1;
+            store.data.rooms.entry(job.gid.clone()).or_default().last_art = now;
+            store.save();
+        }
+        let deadline = Instant::now() + studio::JOB_TIMEOUT;
+        let mut misses = 0u32;
+        loop {
+            match self.studio.status(id) {
+                Ok(JobState::Done) => break,
+                Ok(JobState::Failed(_)) | Ok(JobState::Cancelled) => return None,
+                Ok(JobState::Waiting) => misses = 0,
+                Err(_) => { misses += 1; if misses >= 5 { return None; } }
+            }
+            if Instant::now() >= deadline { return None; }
+            std::thread::sleep(studio::POLL_EVERY);
+        }
+        let data = self.studio.download(req.kind, id).ok()?;
+        let caption = clean_chime(&reply.content, &self.cfg.name, self.cfg.chime_max_chars)
+            .filter(|t| safety::reason(&safety::without_mention(t, &self.cfg.name)).is_none())
+            .unwrap_or_else(|| req.prompt.clone());
+        if c.oracle_quiet(&job.gid) { return None; }
+        c.typing(&job.gid);
+        match c.send_file(&job.gid, &req.file_name(id), req.kind.mime(), &data, &caption) {
+            Ok(id) => Some(Sent { id, text: caption, deepseek: false }),
+            Err(e) => { eprintln!("[bot] could not post something unasked: {e}"); None }
+        }
     }
 
     /// Compose (answer, up to three source links, DeepSeek label), apply the hard size cap, count it against the post
@@ -721,13 +1216,17 @@ impl Bot {
     /// first on the person's words and on the prompt the model wrote, then permission, then Studio's own readiness,
     /// then the daily cap, then the one-job queue. Studio is not contacted at all until every check has passed.
     fn studio_make(&self, call: &ToolCall, c: &mut dyn Chat, job: &Job) -> String {
-        let req = match studio::Request::from_args(&call.arguments) {
+        let mut req = match studio::Request::from_args(&call.arguments) {
             Ok(r) => r,
             Err(e) => return e,
         };
+        // A length the person named ("a 2 minute song") wins over the one the model picked or forgot.
+        if let Some(l) = studio::length_from_words(req.kind, &job.text) { req.length = l; }
         // The hard block. Both the person's own request and the model-written prompt (and lyrics) are read.
-        for text in [job.text.as_str(), req.prompt.as_str(), req.lyrics.as_str()] {
-            if safety::blocked(text) {
+        let asked = safety::without_mention(&job.text, &self.cfg.name);
+        for (source, why) in [("request", safety::reason(&asked)), ("prompt", safety::reason(&req.prompt)), ("lyrics", safety::reason_lyrics(&req.lyrics))] {
+            if let Some(why) = why {
+                eprintln!("[bot] hard block: {why:?}, in the {source}");   // the rule and the place, never the text
                 return self.studio_notice(
                     c, job, safety::REFUSAL,
                     "A hard rule refused this request. Do not try again, do not rephrase it, and do not describe it.",
@@ -816,6 +1315,43 @@ impl Bot {
             );
         };
 
+        // Songs can come in batches ("make 10 songs"): the same request rendered again and again, each its own take. The
+        // ticket is held for the whole batch, so anyone else's request waits behind it instead of cutting in.
+        let count = if req.kind == studio::Kind::Song {
+            studio::count_from_words(&job.text).unwrap_or_else(|| studio::count_from_args(&call.arguments))
+        } else { 1 };
+        if count == 1 {
+            let mut posted = false;
+            return self.studio_one(&req, c, job, day, false, &mut posted);
+        }
+        if let Err(e) = c.send(&job.gid, &format!("Making {count} songs, one after another…"), Some(job.trigger.clone())) {
+            eprintln!("[bot] could not post a Studio notice: {e}");
+        }
+        let mut made = 0usize;
+        for n in 1..=count {
+            if n > 1 {
+                // A game or a pause that starts part-way ends the batch: Studio gives way, and nothing waits for later.
+                match self.studio.state() {
+                    Ok(st) if !st.game && st.paused.is_empty() => {}
+                    _ => {
+                        let text = format!("Stopping after {made} of {count} songs: Studio has to give way right now.");
+                        return self.studio_notice(c, job, &text, "The batch stopped early because Studio is busy or paused.");
+                    }
+                }
+            }
+            let mut posted = false;
+            let result = self.studio_one(&req, c, job, day, true, &mut posted);
+            if !posted {
+                return format!("Studio made {made} of {count} songs before stopping. {result}");
+            }
+            made += 1;
+        }
+        format!("Studio made all {made} songs and they have been posted in the chat. Tell the person in one short sentence that they're there; do not claim to hear them.")
+    }
+
+    /// Submit one job, wait for it and post the file. `quiet` leaves out the "Making it…" line (a batch said so once).
+    /// `posted` is set only when the file reached the chat.
+    fn studio_one(&self, req: &studio::Request, c: &mut dyn Chat, job: &Job, day: u64, quiet: bool, posted: &mut bool) -> String {
         let id = match self.studio.submit(&req) {
             Ok(id) => id,
             Err(e) => return self.studio_notice(
@@ -835,8 +1371,10 @@ impl Bot {
             store.save();
         }
 
-        if let Err(e) = c.send(&job.gid, "Making it…", Some(job.trigger.clone())) {
-            eprintln!("[bot] could not post a Studio notice: {e}");
+        if !quiet {
+            if let Err(e) = c.send(&job.gid, "Making it…", Some(job.trigger.clone())) {
+                eprintln!("[bot] could not post a Studio notice: {e}");
+            }
         }
         c.typing(&job.gid);
 
@@ -888,11 +1426,11 @@ impl Bot {
             ),
         };
         match c.send_file(&job.gid, &req.file_name(id), req.kind.mime(), &data, &req.prompt) {
-            Ok(_) => format!(
+            Ok(_) => { *posted = true; format!(
                 "Studio made the {} and it has been posted in the chat with the prompt as its caption. Tell the person \
                  in one short sentence that it's there; do not claim to see or hear it in detail.",
                 req.kind.name()
-            ),
+            ) }
             Err(e) => {
                 eprintln!("[bot] could not post a Studio result: {e}");
                 "The result was made but could not be posted here. The person has been told.".to_string()

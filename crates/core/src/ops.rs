@@ -398,16 +398,29 @@ impl Client {
     /// backdrop strength. `None` for `look` (or one with no part set) puts everything back to automatic. Nothing is published when nothing changes.
     pub fn set_look(&mut self, cid: &str, room: Option<&str>, look: Option<Look>) -> Result<()> {
         if self.my_role(cid) != Role::Owner { bail!("only the owner can change the look"); }
-        let look = look.filter(|l| !l.is_empty());
+        let look = look.map(|mut l| { l.oracle_quiet = l.oracle_quiet.filter(|q| *q); l }).filter(|l| !l.is_empty());
         if look.as_ref().is_some_and(|l| !l.valid()) { bail!("a look has patterns 0 to {MAX_LOOK_PATTERN} and a strength of 0 to {MAX_LOOK_DIM} percent"); }
         if let Some(r) = room { if !self.has_room(cid, r) { bail!("unknown room"); } }
-        if room.is_none() && look.as_ref().is_some_and(|l| l.chat.is_some() || l.dim.is_some()) { bail!("the community card has a card pattern only"); }
+        if room.is_none() && look.as_ref().is_some_and(|l| l.chat.is_some() || l.dim.is_some() || l.oracle_quiet.is_some()) { bail!("the community card has a card pattern only"); }
         let mut doc = self.style_base(cid)?;
         let key = room.unwrap_or(cid).to_string();
         let cur = self.st.communities.get(cid).and_then(|c| c.style.as_ref()).and_then(|d| d.looks.get(&key)).cloned();
         if cur == look { return Ok(()); }
         match look { Some(l) => { doc.looks.insert(key, l); } None => { doc.looks.remove(&key); } }
         self.publish_style(cid, doc, "look")
+    }
+
+    /// The look the owner has set for a room (or the community card when `room` is None), if any.
+    pub fn look_of(&self, cid: &str, room: Option<&str>) -> Option<Look> {
+        self.st.communities.get(cid)?.style.as_ref()?.looks.get(room.unwrap_or(cid)).cloned()
+    }
+
+    /// Owner only: switch Oracle off (`on`) or back on for one room. Only that part of the room's look changes.
+    pub fn set_oracle_quiet(&mut self, cid: &str, room: &str, on: bool) -> Result<()> {
+        if self.my_role(cid) != Role::Owner { bail!("only the owner can change the look"); }
+        let mut look = self.look_of(cid, Some(room)).unwrap_or_default();
+        look.oracle_quiet = Some(on);
+        self.set_look(cid, Some(room), Some(look))
     }
 
     /// Owner only: lock a wall (`lock` = Some(true)) or open it again, and/or clear it (`clear`: its generation goes up by one, so every
