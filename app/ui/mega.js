@@ -166,7 +166,7 @@
   const ti = (t, cls = 'mti', tag = 'h2') => `<${tag} class="${cls}" aria-label="${esc(t)}">${letters(String(t))}</${tag}>`;
 
   // ---------------------------------------------------------------- state and data (everything comes from S.snap)
-  const M = { started: false, level: 'home', cid: null, list: null, rail: false, opts: false, busy: false, dirty: false, opening: false, sig: '', barSig: '', pal: null, closers: [] };
+  const M = { started: false, level: 'home', cid: null, list: null, rail: false, opts: false, adm: false, busy: false, dirty: false, opening: false, sig: '', barSig: '', pal: null, closers: [] };
   const mega = document.createElement('div'); mega.id = 'mega'; mega.hidden = true; mega.setAttribute('aria-label', 'mega');
   const fxl = document.createElement('div'); fxl.id = 'mega-fx'; fxl.setAttribute('aria-hidden', 'true');
   const rail = document.createElement('nav'); rail.id = 'mega-rail'; rail.setAttribute('aria-label', 'Rooms'); rail.hidden = true;
@@ -217,6 +217,7 @@
     };
     c.channels.filter(x => x.kind !== 'voice').forEach(x => out.push(room(x)));
     c.channels.filter(x => x.kind === 'voice').forEach(x => out.push(room(x)));
+    if (window.__megaAdmin && __megaAdmin.may(c)) out.push(mk({ key: 'adm:' + c.id, id: 'adm:' + c.id, cid: c.id, kind: 'admin', name: 'server settings', unread: 0, at: 0, act: 0, fx: 2 }, ['admin', c.role]));
     out.push(mk({ key: 'opt:' + c.id, id: 'opt:' + c.id, cid: c.id, kind: 'options', name: 'options', unread: 0, at: 0, act: 0, fx: 6 }, ['options']));
     return out;
   }
@@ -255,7 +256,8 @@
       if (x.locked) mid = '<div class="mpreview">this device does not have the keys for this room yet</div>';
       else mid += `<div class="mvact"><button class="mjoin" data-act="${x.here ? 'leave' : 'join'}" type="button">${x.here ? 'leave' : 'join'}</button></div>`;
       if (x.locked) sub = 'waiting for keys';
-    } else if (x.kind === 'options') { sub = 'only on this device'; mid = '<div class="mpreview">alerts, sound and look. Nobody else can see these.</div>'; }
+    } else if (x.kind === 'admin') { sub = 'owners and admins'; mid = '<div class="mpreview">name, rooms, members, invites. Everyone here sees what you change.</div>'; }
+    else if (x.kind === 'options') { sub = 'only on this device'; mid = '<div class="mpreview">alerts, sound and look. Nobody else can see these.</div>'; }
     else {
       sub = x.locked ? 'waiting for keys' : x.status ? x.status : x.unread ? 'unread' : 'caught up'; num = x.unread || '';
       if (x.locked) mid = '<div class="mpreview">this device does not have the keys for this room yet</div>';
@@ -420,7 +422,7 @@
 
   function homeItems() { const nw = window.__megaNew && __megaNew.item(); return [...(nw ? [nw] : []), ...comms().map(commItem), youItem()]; }
   function showHome(startCid, startKey) {
-    killList(); M.level = 'home'; M.opts = false; applyLevel();
+    killList(); M.level = 'home'; M.opts = false; M.adm = false; applyLevel();
     drawBar(); M.sig = '';
     const items = homeItems(), want = startCid || store.get('last', null) || S.cid;
     const ki = startKey ? items.findIndex(x => x.key === startKey) : -1, start = ki >= 0 ? ki : Math.max(0, items.findIndex(x => x.cid === want));
@@ -430,7 +432,7 @@
   function showServer(cid, startKey) {
     const c = comm(cid); if (!c) { showHome(); return; }
     setCommunity(cid); store.set('last', cid);
-    killList(); M.level = 'server'; M.cid = cid; M.opts = false; applyLevel();
+    killList(); M.level = 'server'; M.cid = cid; M.opts = false; M.adm = false; applyLevel();
     drawBar();
     const items = roomItems(c);
     let start = startKey ? items.findIndex(x => x.key === startKey) : items.findIndex(x => x.unread > 0 && x.kind === 'text');
@@ -466,7 +468,7 @@
   // the cards close into dots on the left, and the chat opens beside them
   const closeIntoDots = guard(async x => {
     const from = M.list ? M.list.visible() : [];
-    M.level = 'chat'; M.cid = x.cid; M.opts = x.kind === 'options';
+    M.level = 'chat'; M.cid = x.cid; M.opts = x.kind === 'options' || x.kind === 'admin'; M.adm = x.kind === 'admin';
     if (!M.opts) openRoomVia(x.gid);
     drawRail(true); killList(); applyLevel(); showOpts();
     if (calm() || !from.length) { rail.classList.remove('arriving'); return; }
@@ -481,7 +483,7 @@
   });
   // and the other way: the dots open back out into the cards
   const openFromDots = guard(async () => {
-    const cid = M.cid, key = M.opts ? 'opt:' + cid : S.gid;
+    const cid = M.cid, key = M.opts ? (M.adm ? 'adm:' : 'opt:') + cid : S.gid;
     if (calm()) { showServer(cid, key); return; }
     const dots = new Map($$('.mitem', rail).map(d => [d.dataset.key, d.getBoundingClientRect()]));
     showServer(cid, key); if (!M.list) return; M.list.el.style.visibility = 'hidden';
@@ -493,18 +495,18 @@
   function toChat(cid, gid) {
     setCommunity(cid);
     if (gid) openRoomVia(gid);
-    killList(); M.level = 'chat'; M.cid = cid; M.opts = !gid; drawRail(); applyLevel(); showOpts();
+    killList(); M.level = 'chat'; M.cid = cid; M.opts = !gid; M.adm = false; drawRail(); applyLevel(); showOpts();
   }
-  const toChatOpen = cid => { killList(); M.level = 'chat'; M.cid = cid; M.opts = false; drawRail(); applyLevel(); showOpts(); };
+  const toChatOpen = cid => { killList(); M.level = 'chat'; M.cid = cid; M.opts = false; M.adm = false; drawRail(); applyLevel(); showOpts(); };
 
   // ---------------------------------------------------------------- the dots
   function dotHTML(x, i) {
-    const vo = x.kind === 'voice', active = x.kind === 'options' ? M.opts : (!M.opts && x.gid === S.gid);
+    const vo = x.kind === 'voice', active = x.kind === 'options' ? M.opts && !M.adm : x.kind === 'admin' ? M.adm : (!M.opts && x.gid === S.gid);
     const say = [x.name, vo ? 'voice room' : '', vo && x.people.length ? x.people.length + ' in the call' : '', x.unread && !active ? x.unread + ' unread' : '', x.at ? x.at + ' mentions of you' : '', x.locked ? 'waiting for keys' : ''].filter(Boolean).join(', ');
     const un = x.unread && !active && !vo;
-    return `<button class="mitem ${vo ? 'voice' : ''} ${active ? 'active' : ''} ${un ? 'un' : ''} ${un && x.at ? 'at' : ''} ${vo && x.people.length ? 'live' : ''} ${vo && x.here ? 'here' : ''} ${x.kind === 'options' ? 'opt' : ''} ${x.locked ? 'pending' : ''}" type="button" data-key="${esc(x.key)}" aria-label="${esc(say)}"${active ? ' aria-current="true"' : ''} style="--c:${dotOf(x)};--mh:${markOf(x)};--m-cink:${bestInk(fieldOf(x))};--n:${i}">${x.at && !active ? `<span class="mbadge">${x.at}</span>` : ''}${vo ? `<span class="mvc">${x.people.length ? esc(x.people.map(p => p.me ? 'you' : p.name).join(', ')) : 'empty'}</span>` : ''}${ti(x.name, 'mlb', 'span')}${(vo ? x.people.length : un ? x.unread : 0) ? `<span class="mct">${vo ? x.people.length : x.unread}</span>` : ''}</button>`;
+    return `<button class="mitem ${vo ? 'voice' : ''} ${active ? 'active' : ''} ${un ? 'un' : ''} ${un && x.at ? 'at' : ''} ${vo && x.people.length ? 'live' : ''} ${vo && x.here ? 'here' : ''} ${x.kind === 'options' ? 'opt' : x.kind === 'admin' ? 'adm' : ''} ${x.locked ? 'pending' : ''}" type="button" data-key="${esc(x.key)}" aria-label="${esc(say)}"${active ? ' aria-current="true"' : ''} style="--c:${dotOf(x)};--mh:${markOf(x)};--m-cink:${bestInk(fieldOf(x))};--n:${i}">${x.at && !active ? `<span class="mbadge">${x.at}</span>` : ''}${vo ? `<span class="mvc">${x.people.length ? esc(x.people.map(p => p.me ? 'you' : p.name).join(', ')) : 'empty'}</span>` : ''}${ti(x.name, 'mlb', 'span')}${(vo ? x.people.length : un ? x.unread : 0) ? `<span class="mct">${vo ? x.people.length : x.unread}</span>` : ''}</button>`;
   }
-  const railSig = c => JSON.stringify([c.id, S.gid, M.opts, roomItems(c).map(x => x.sig), comms().map(o => o.id !== c.id && unreadIn(o) > 0)]);
+  const railSig = c => JSON.stringify([c.id, S.gid, M.opts, M.adm, roomItems(c).map(x => x.sig), comms().map(o => o.id !== c.id && unreadIn(o) > 0)]);
   function drawRail(arriving) {
     const c = comm(M.cid); if (!c) return;
     const items = roomItems(c), others = comms().some(o => o.id !== c.id && unreadIn(o) > 0), many = comms().length > 1;
@@ -552,8 +554,8 @@
     if (x.locked) { toast('This room is still waiting for keys.'); return; }
     if (x.kind === 'voice') { hideTip(); if (fromRail) closeRail(); joinVoice(x, x.here ? 'leave' : 'join'); return; }   // a click on a voice dot is an explicit join
     closeRail();
-    if (x.kind === 'options') { M.opts = true; showOpts(); }
-    else { M.opts = false; showOpts(); openRoomVia(x.gid); }
+    if (x.kind === 'options' || x.kind === 'admin') { M.opts = true; M.adm = x.kind === 'admin'; showOpts(); }
+    else { M.opts = false; M.adm = false; showOpts(); openRoomVia(x.gid); }
     drawRail();
   }
   const textRooms = () => { const c = comm(M.cid); return c ? roomItems(c).filter(x => x.kind === 'text' && !x.locked) : []; };
@@ -572,7 +574,7 @@
   function showOpts() {
     syncRoom();
     if (!M.opts || M.level !== 'chat') { hideOpts(); return; }
-    optsEl.innerHTML = optsHTML(); optsEl.hidden = false; optsEl.scrollTop = 0;
+    optsEl.innerHTML = M.adm && window.__megaAdmin ? __megaAdmin.html(M.cid) : optsHTML(); optsEl.hidden = false; optsEl.scrollTop = 0;
   }
   optsEl.addEventListener('click', e => {
     const b = e.target.closest('.seg button'); if (!b) return;
@@ -674,7 +676,7 @@
 
   // ---- the picker (owner only): square, hue, hex, presets, a warning when the two are too close, reset
   const PRESETS = DEF.slice(0, 8);
-  const canPaint = x => !!x && x.kind !== 'options' && x.kind !== 'you' && (comm(x.cid || x.id) || {}).role === 'owner';
+  const canPaint = x => !!x && x.kind !== 'options' && x.kind !== 'admin' && x.kind !== 'you' && (comm(x.cid || x.id) || {}).role === 'owner';
   const PT = { open: false, set() { } };
   const toHsv = h => { const [r, g, b] = rgb(h).map(v => v / 255), Mx = Math.max(r, g, b), d = Mx - Math.min(r, g, b); let hh = 0; if (d) hh = Mx === r ? ((g - b) / d + 6) % 6 : Mx === g ? (b - r) / d + 2 : (r - g) / d + 4; return [hh * 60, Mx ? d / Mx : 0, Mx]; };
   const fromHsv = (h, s, v) => { const f = n => { const k = (n + h / 60) % 6; return (v - v * s * Math.max(0, Math.min(k, 4 - k, 1))) * 255; }; return hex([f(5), f(3), f(1)]); };
@@ -846,6 +848,7 @@
       for (const it of roomItems(c)) {
         const sub = c.name;
         if (it.kind === 'voice') all.push({ x: it, label: it.name, sub, run: () => showServer(c.id, it.key) });
+        else if (it.kind === 'admin') all.push({ x: it, label: 'server settings', sub, run: () => { toChat(c.id, null); M.adm = true; showOpts(); drawRail(); } });
         else if (it.kind === 'options') all.push({ x: it, label: 'options', sub, run: () => toChat(c.id, null) });
         else all.push({ x: it, label: it.name, sub: it.locked ? sub + ', waiting for keys' : sub, run: () => { if (it.locked) { showServer(c.id, it.key); toast('This room is still waiting for keys.'); } else toChat(c.id, it.gid); } });
       }
@@ -1255,7 +1258,7 @@
     }
     const sig = railSig(c);
     if (sig !== M.sig) { if (M.rail) { M.sig = sig; } else drawRail(); }
-    if (M.opts) { /* the options room keeps its own state */ }
+    if (M.adm && window.__megaAdmin) __megaAdmin.refresh();   // server settings follow the snapshot; the options room keeps its own state
   }
   function start() {
     M.started = true;
@@ -1274,7 +1277,7 @@
   window.__megaOpened = gid => {
     if (M.opening || !M.started) return;
     const c = comms().find(o => o.channels.some(x => x.gid === gid)); if (!c) return;
-    if (M.level === 'chat' && M.cid === c.id) { M.opts = false; showOpts(); drawRail(); return; }
+    if (M.level === 'chat' && M.cid === c.id) { M.opts = false; M.adm = false; showOpts(); drawRail(); return; }
     toChatOpen(c.id);
   };
   M.bdApi = { bd: () => BD, heat: bdHeat, ripple, still };   // for mega-music.js
@@ -1291,6 +1294,7 @@
   M.bdInfo = () => (BD ? { gid: BD.gid, fx: BD.fx, fxAuto: BD.fxAuto, dim: BD.dim, heat: BD.heat, at: H(BD.at.toDataURL()), draws: ST.bdDraws } : null);
   window.__megaTheme = { colours(gid) { const c = comm(M.cid), x = c && roomItems(c).find(i => i.gid === gid && i.kind === 'text'); return x ? [lift(fieldOf(x), 5), lift(hiOf(x), 6)] : null; } };
   M.api = { comms, comm, roomItems, dotOf, hiOf, fieldOf, lift, mix, contrast, bestInk, cardVars, ti, letters, toChat, openRail, themeOf, dirty, DEF };
+  M.admExit = () => { M.adm = false; showOpts(); drawRail(); };   // mega-admin.js: no longer an admin, so back to the plain options room
   M.prev = PREV; M.shown = SHOWN; M.canPaint = canPaint;
   M.callTheme = gid => { const c = comms().find(x => x.channels.some(ch => ch.gid === gid)); return c ? targetOf(c.id, gid) : null; };
   M.inkOn = hex => { const n = parseInt(hex.slice(1), 16), f = v => { v /= 255; return v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }, l = .2126 * f(n >> 16) + .7152 * f((n >> 8) & 255) + .0722 * f(n & 255); return (l + .05) * (l + .05) > .0525 * 1.05 ? '#050407' : '#efedf2'; };

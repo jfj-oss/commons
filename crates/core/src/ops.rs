@@ -350,6 +350,54 @@ impl Client {
         self.save()
     }
 
+    /// Change the table's list of rooms. Admins may, like creating one; the table is the only place a room's name and existence live.
+    fn edit_rooms(&mut self, cid: &str, why: &str, f: impl FnOnce(&mut Vec<ChanMeta>) -> Result<()>) -> Result<()> {
+        let mut t = self.ctl_ext(cid)?;
+        let GroupExt::Control { channels, .. } = &mut t else { bail!("bad table") };
+        f(channels)?;
+        let mut plan = Plan::empty(why);
+        plan.gce = Some(t);
+        if self.run_commit(cid, plan)? == Outcome::Lost { bail!("the community changed at the same time; try again"); }
+        self.reconcile();
+        Ok(())
+    }
+
+    pub fn rename_channel(&mut self, cid: &str, room: &str, new_name: &str) -> Result<()> {
+        if self.my_role(cid) < Role::Admin { bail!("only admins can rename rooms"); }
+        let name = new_name.trim().to_lowercase().replace(' ', "-");
+        check_name("a room name", &name).map_err(|e| anyhow!(e))?;
+        self.edit_rooms(cid, "rename channel", |chs| {
+            if chs.iter().any(|c| c.id != room && name_key(&c.name) == name_key(&name)) { bail!("there is already a room called {name}"); }
+            let ch = chs.iter_mut().find(|c| c.id == room).ok_or_else(|| anyhow!("that room does not exist"))?;
+            ch.name = name.clone();
+            Ok(())
+        })
+    }
+
+    /// Takes the room out of the table: nobody lists it any more. Never the last room, as a community without one is only a thing to explain.
+    pub fn delete_channel(&mut self, cid: &str, room: &str) -> Result<()> {
+        if self.my_role(cid) < Role::Admin { bail!("only admins can delete rooms"); }
+        self.edit_rooms(cid, "delete channel", |chs| {
+            if !chs.iter().any(|c| c.id == room) { bail!("that room does not exist"); }
+            if chs.len() <= 1 { bail!("a community needs at least one room"); }
+            chs.retain(|c| c.id != room);
+            Ok(())
+        })
+    }
+
+    /// Lets a removed person be invited again. They are not added back; they need a new invite.
+    pub fn unban(&mut self, cid: &str, account: &str) -> Result<()> {
+        if self.my_role(cid) < Role::Admin { bail!("only admins can lift a ban"); }
+        let mut t = self.ctl_ext(cid)?;
+        let GroupExt::Control { banned, .. } = &mut t else { bail!("bad table") };
+        if !banned.iter().any(|a| a == account) { bail!("that person is not banned"); }
+        banned.retain(|a| a != account);
+        let mut plan = Plan::empty("unban");
+        plan.gce = Some(t);
+        if self.run_commit(cid, plan)? == Outcome::Lost { bail!("the community changed at the same time; try again"); }
+        Ok(())
+    }
+
     pub fn rename_community(&mut self, cid: &str, new_name: &str) -> Result<()> {
         if self.my_role(cid) < Role::Admin { bail!("only admins can rename"); }
         let new_name = new_name.trim();

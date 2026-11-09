@@ -596,6 +596,9 @@ impl App {
             "transfer_ownership" => self.with(|c| c.transfer_ownership(&s(&a, "cid"), &s(&a, "account")).map(|_| json!({})).map_err(e)),
             "leave" => self.with(|c| c.leave(&s(&a, "cid")).map(|_| json!({})).map_err(e)),
             "rename_community" => self.with(|c| c.rename_community(&s(&a, "cid"), &s(&a, "name")).map(|_| json!({})).map_err(e)),
+            "rename_channel" => self.with(|c| c.rename_channel(&s(&a, "cid"), &s(&a, "room"), &s(&a, "name")).map(|_| json!({})).map_err(e)),
+            "delete_channel" => self.with(|c| c.delete_channel(&s(&a, "cid"), &s(&a, "room")).map(|_| json!({})).map_err(e)),
+            "unban" => self.with(|c| c.unban(&s(&a, "cid"), &s(&a, "account")).map(|_| json!({})).map_err(e)),
             "revoke_invite" => self.with(|c| c.revoke_invite(&s(&a, "cid"), &s(&a, "id")).map(|_| json!({})).map_err(e)),
             "members" => { let cid = s(&a, "cid"); self.read(format!("members/{cid}"), |c| json!(c.members(&cid).into_iter().map(|m| json!({"account": m.account, "name": m.name, "role": m.role.name(), "devices": m.devices, "verified": m.verified, "me": m.is_me, "tag": m.tag, "same_name": m.same_name, "listening": m.listening.map(|l| json!({"title": l.title, "artist": l.artist}))})).collect::<Vec<_>>())) }
             "safety" => self.with(|c| {
@@ -739,7 +742,7 @@ fn snapshot(c: &Client) -> Value {
             "wall": d.wall.iter().filter(|(g, _)| **g == co.id || co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, n)| (g.clone(), json!(n))).collect::<serde_json::Map<String, Value>>(),
             "rooms": d.rooms.iter().filter(|(g, _)| co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, x)| { let x = x.lower(); (g.clone(), json!({"main": x.main, "hi": x.hi})) }).collect::<serde_json::Map<String, Value>>()}));
         json!({"id": co.id, "style": style, "name": if co.name.is_empty() { "…".to_string() } else { co.name.clone() }, "role": role.name(), "removed": co.removed, "removed_reason": co.removed_reason, "channels": chans, "unread": unread,
-               "invites": co.invites.iter().map(|i| json!({"id": i.id, "expires": i.expires, "uses_left": i.uses_left, "mine": co.invite_sks.contains_key(&i.id)})).collect::<Vec<_>>(),
+               "banned": if role >= Role::Admin { co.banned.iter().map(|a| json!({"account": a, "name": c.display_name(a)})).collect::<Vec<_>>() } else { vec![] }, "invites": co.invites.iter().map(|i| json!({"id": i.id, "expires": i.expires, "uses_left": i.uses_left, "mine": co.invite_sks.contains_key(&i.id)})).collect::<Vec<_>>(),
                "status": c.group_status(&co.id)})
     }).collect();
     let joining: Vec<Value> = c.st.joining.values().map(|l| json!({"id": l.community, "name": l.name, "sent": c.st.join_sent.contains(&l.community), "asked": c.st.join_asked.get(&l.community)})).collect();
