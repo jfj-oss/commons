@@ -322,3 +322,33 @@ fn measure_event_latency_new_path_against_the_log() {
     println!("LATENCY old path through log : {}", summary(old.clone()));
     assert!(!new.is_empty() && !old.is_empty());
 }
+
+#[test]
+fn a_live_event_that_depends_on_the_log_waits_for_it() {
+    // Alice clears the wall and draws on the fresh one while Bob is offline. When Bob returns, the new strokes can
+    // reach him before the entry that clears the wall (they come by different roads); they must wait for it, not be dropped.
+    let net = Net::new();
+    let (mut a, mut b) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"));
+    let (cid, gen) = community_with(&net, &mut a, &mut [&mut b]);
+    settle(&mut [&mut a, &mut b]);
+    a.c.wall_draw(&gen, &[(1, 1, 1, 0)]).unwrap();
+    settle(&mut [&mut a, &mut b]);
+    b.c.live_send(&gen, "warm", "1").unwrap();
+    settle(&mut [&mut a, &mut b]);
+    b.faults.lock().unwrap().offline = true;
+    a.c.set_wall(&cid, &gen, None, true).unwrap();
+    settle(&mut [&mut a]);
+    assert_eq!(a.c.wall_view(&gen).gen, 1);
+    a.c.wall_draw(&gen, &[(5, 5, 2, 0), (6, 5, 2, 0)]).unwrap();
+    a.tick();
+    // Bob comes back and polls the live buffer before he has read the log.
+    b.faults.lock().unwrap().offline = false;
+    let p = b.c.live_plan(true).expect("a poll");
+    let done = p.run(0);
+    b.c.live_finish(done);
+    assert_eq!(b.c.wall_view(&gen).gen, 0, "he has not read the clear yet");
+    settle(&mut [&mut a, &mut b]);
+    let v = b.c.wall_view(&gen);
+    assert_eq!(v.gen, 1);
+    assert_eq!(v.cells.iter().filter(|c| c.1 != 0).count(), 2, "the strokes that came first were kept until the clear was read");
+}

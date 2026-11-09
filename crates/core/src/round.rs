@@ -381,6 +381,7 @@ impl Client {
             }
             None => if let Some(e) = d.failure { result = Err(e); },
         }
+        self.live_retry_held(); // the log may have moved far enough for events that were waiting on it
         self.save()?;
         result
     }
