@@ -450,6 +450,8 @@ try {
   need(await A.ev(`__mega.list.item.kind === 'voice' && document.querySelector('.mslot.settled')`), 'the voice card did not come into focus');
   need(await A.ev(`window.__joined === null`), 'resting on a voice card joined its call');
   await A.shot('mega-4-voice-card');
+  // design: the section label above the voice cards steps aside while its card is the settled one (it used to sit under the bar's chips)
+  need(await A.ev(`(() => { const s = document.querySelector('.msect:has(+ .mslot.settled)'); return !s || getComputedStyle(s).opacity === '0'; })()`), 'design: the voice section label shows over the bar while the voice card is centred');
   await A.ev(`document.querySelector('.mslot.settled .mcard').dispatchEvent(new MouseEvent('click', { bubbles: true }))`); await sleep(300);
   need(await A.ev(`window.__joined === null`), 'clicking the body of a voice card joined its call');
   await key(A, 'Enter'); await sleep(300);
@@ -1441,6 +1443,9 @@ try {
     await A.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.name === 'Book club'), true)`); await sleep(1500);
     await key(A, 'Enter'); await sleep(250); await shotP(A, 'entering'); await sleep(1900); await shotP(A, 'rooms');
     await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(1200); await shotP(A, 'rooms-390');
+    // design: on a phone the card bar is one row (it used to wrap onto two or three, over the card) and the community name keeps some width
+    { const bar = await A.ev(`(() => { const b = document.querySelector('.mbar').getBoundingClientRect(), m = document.querySelector('.mmark').getBoundingClientRect(), c = document.querySelector('.mslot.settled .msq').getBoundingClientRect(); const tops = new Set([...document.querySelectorAll('.mbar .mchip')].map(x => Math.round(x.getBoundingClientRect().top))); return { h: b.height, rows: tops.size, mark: m.width, cardTop: c.top, barBottom: b.bottom }; })()`);
+      need(bar.rows === 1 && bar.h <= 60 && bar.mark >= 100 && bar.cardTop >= bar.barBottom - 1, 'design: the phone card bar wraps or crushes the name: ' + JSON.stringify(bar)); }
     await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(900);
     await A.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.kind === 'text'), true)`); await sleep(1500);
     await key(A, 'Enter'); await sleep(300); await shotP(A, 'enterroom'); await sleep(2500); await shotP(A, 'chat');
@@ -1460,9 +1465,14 @@ try {
     const quiet = { fps: +((e1 - e0) / du).toFixed(2), taskMsPerSec: +((val(q1, 'TaskDuration') - val(q0, 'TaskDuration')) * 1000 / du).toFixed(1), scriptMsPerSec: +((val(q1, 'ScriptDuration') - val(q0, 'ScriptDuration')) * 1000 / du).toFixed(1), heat: await A.ev(`+__mega.bdInfo().heat.toFixed(3)`) };
     console.log('parity quiet room', JSON.stringify(quiet)); fs.writeFileSync(path.join(pdir, 'quiet.json'), JSON.stringify(quiet));
     await shotP(A, 'chat-later');
-    await A.ev(`__mega.api.openRail()`); await sleep(900); await shotP(A, 'dots-open'); await A.ev(`document.querySelector('#mega-rail').dispatchEvent(new MouseEvent('mouseleave'))`); await sleep(900);
+    await A.ev(`__mega.api.openRail()`); await sleep(900); await shotP(A, 'dots-open');
+    // design: the pop-out labels are set letter by letter in <i>; they must not come out italic
+    need(await A.ev(`[...document.querySelectorAll('#mega-rail .mlb i')].every(i => getComputedStyle(i).fontStyle === 'normal')`), 'design: the pop-out labels are italic'); await A.ev(`document.querySelector('#mega-rail').dispatchEvent(new MouseEvent('mouseleave'))`); await sleep(900);
     await A.ev(`(() => { const a = __mega.bdApi.bd(); })()`);
     await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(1500); await shotP(A, 'chat-390');
+    // design: on a phone the chat header keeps the room name (five labelled chips once squeezed it to zero width) and nothing sticks out of the screen
+    { const hd = await A.ev(`(() => { const h = document.querySelector('#head').getBoundingClientRect(), t = document.querySelector('.head-title').getBoundingClientRect(), a = document.querySelector('.head-actions').getBoundingClientRect(); return { head: h.width, title: t.width, titleText: document.querySelector('#chan-title').textContent, right: a.right, w: innerWidth, h1: getComputedStyle(document.querySelector('#chan-title')).fontSize }; })()`);
+      need(hd.title >= Math.min(100, hd.head * .3) && hd.right <= hd.w + 1, 'design: the phone chat header crushes the room name: ' + JSON.stringify(hd)); }
     await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(900);
     if (!base) need(idle.fps >= 7 && idle.heat >= .11, 'parity: an idle room should keep drawing at about 10 fps: ' + JSON.stringify(idle));
     await key(A, 'Escape'); await sleep(300); await shotP(A, 'leaving'); await sleep(1600);
