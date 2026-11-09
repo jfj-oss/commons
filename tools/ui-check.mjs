@@ -44,7 +44,7 @@ let relayProc = startRelay();
 for (const [n, port] of [['alice', A_PORT], ['bob', B_PORT]]) {
   const env = { COMMONS_DATA: path.join(out, 'data', n), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1' };
   if (n === 'bob') Object.assign(env, { PATH: fakeBin + ':' + process.env.PATH, COMMONS_XDG_MARKER: xdgMarker, COMMONS_PICKED: path.join(out, 'downloads-bob') });
-  run(bin('dev_bridge'), [String(port), path.join(root, 'app/ui')], env);
+  run(bin('dev_bridge'), [String(port), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], env);
 }
 await sleep(1500);
 
@@ -762,7 +762,7 @@ try {
     need(await col(A) === '#12ab34' && await col(B) === '#12ab34', 'colours: the colour did not hold');
     // a client that joins later gets the colours out of the table
     const C_PORT = Number(process.env.COMMONS_UI_C_PORT || 7103);
-    run(bin('dev_bridge'), [String(C_PORT), path.join(root, 'app/ui')], { COMMONS_DATA: path.join(out, 'data', 'carol'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1' });
+    run(bin('dev_bridge'), [String(C_PORT), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], { COMMONS_DATA: path.join(out, 'data', 'carol'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1' });
     await sleep(1500);
     const C = await open(`http://127.0.0.1:${C_PORT}/`);
     // Carol is new: the invite password, her name and one password for her device are all she types.
@@ -1415,6 +1415,59 @@ try {
     await toServer(A); await toServer(B);
   }
   if (process.env.COMMONS_UI_STOP_AFTER === 'admin') { console.log('UI check stopped after the server settings phase (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
+
+  // ---- mega parity: full cards, a living idle room, and what each screen costs ----
+  {
+    const base = !!process.env.COMMONS_UI_PARITY_BASE, pdir = process.env.COMMONS_UI_PARITY_OUT || out;
+    const shotP = async (P, n) => { await P.send('Page.bringToFront'); await sleep(250); const r = await P.send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(pdir, n + '.png'), Buffer.from(r.result.data, 'base64')); };
+    fs.mkdirSync(pdir, { recursive: true });
+    const cidj = JSON.stringify(await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`));
+    const toLevel = async lv => { await A.send('Page.bringToFront'); for (let i = 0; i < 6 && await lvl(A) !== lv; i++) { await A.ev(`document.activeElement && document.activeElement.blur && document.activeElement.blur()`); await key(A, 'Escape'); await sleep(900); } };
+    await toLevel('home'); await sleep(2500);
+    if (!base) {
+      const card = await A.ev(`JSON.stringify(__mega.list.items.filter(x => x.kind === 'community').map(x => ({ name: x.name, members: x.members, pv: x.pv && x.pv.text, html: document.querySelector('.mslot[data-i="' + __mega.list.items.indexOf(x) + '"] .mtop span').textContent })))`);
+      console.log('parity cards', card);
+      need(JSON.parse(card).every(x => /^\d+ (people|person)$/.test(x.html)), 'parity: a community card does not say how many people: ' + card);
+      need(JSON.parse(card).some(x => x.pv), 'parity: no community card has its newest message: ' + card);
+      // who is in a call, for a community that is not the open one
+      await A.ev(`(() => { const c = S.snap.communities.find(x => x.name === 'Book club'); const v = c.channels.find(x => x.kind === 'voice'); if (v) { __mega.cp.set(v.gid, [{ name: 'Ann', account: 'a' }, { name: 'Ben', account: 'b' }]); __megaRender(); } return !!v; })()`);
+      await sleep(600);
+      console.log('parity call text', await A.ev(`[...document.querySelectorAll('.mfaces-row span:not(.mfaces)')].map(e => e.textContent).join('|')`));
+      await A.ev(`__mega.cp.clear(); __megaRender()`);
+    }
+    await sleep(800); await shotP(A, 'home');
+    await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(1200); await shotP(A, 'home-390');
+    await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(900);
+    await A.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.name === 'Book club'), true)`); await sleep(1500);
+    await key(A, 'Enter'); await sleep(250); await shotP(A, 'entering'); await sleep(1900); await shotP(A, 'rooms');
+    await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(1200); await shotP(A, 'rooms-390');
+    await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(900);
+    await A.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.kind === 'text'), true)`); await sleep(1500);
+    await key(A, 'Enter'); await sleep(300); await shotP(A, 'enterroom'); await sleep(2500); await shotP(A, 'chat');
+    // an idle room: the cost of the backdrop over 8 s with nothing happening
+    await A.send('Performance.enable');
+    const m0 = await A.send('Performance.getMetrics'), d0 = await A.ev(`__mega.bdInfo().draws`), t0 = Date.now();
+    await sleep(8000);
+    const m1 = await A.send('Performance.getMetrics'), d1 = await A.ev(`__mega.bdInfo().draws`), dt = (Date.now() - t0) / 1000;
+    const val = (m, n) => m.result.metrics.find(x => x.name === n).value;
+    const idle = { fps: +((d1 - d0) / dt).toFixed(2), taskMsPerSec: +((val(m1, 'TaskDuration') - val(m0, 'TaskDuration')) * 1000 / dt).toFixed(1), scriptMsPerSec: +((val(m1, 'ScriptDuration') - val(m0, 'ScriptDuration')) * 1000 / dt).toFixed(1), heat: await A.ev(`+__mega.bdInfo().heat.toFixed(3)`) };
+    console.log('parity idle room', JSON.stringify(idle)); fs.writeFileSync(path.join(pdir, 'idle.json'), JSON.stringify(idle));
+    // and a room that has been quiet for a long while (heat at its lowest the version allows)
+    await A.ev(`__mega.bdApi.bd().heat = 0`); await sleep(1500);
+    const q0 = await A.send('Performance.getMetrics'), e0 = await A.ev(`__mega.bdInfo().draws`), u0 = Date.now();
+    await sleep(8000);
+    const q1 = await A.send('Performance.getMetrics'), e1 = await A.ev(`__mega.bdInfo().draws`), du = (Date.now() - u0) / 1000;
+    const quiet = { fps: +((e1 - e0) / du).toFixed(2), taskMsPerSec: +((val(q1, 'TaskDuration') - val(q0, 'TaskDuration')) * 1000 / du).toFixed(1), scriptMsPerSec: +((val(q1, 'ScriptDuration') - val(q0, 'ScriptDuration')) * 1000 / du).toFixed(1), heat: await A.ev(`+__mega.bdInfo().heat.toFixed(3)`) };
+    console.log('parity quiet room', JSON.stringify(quiet)); fs.writeFileSync(path.join(pdir, 'quiet.json'), JSON.stringify(quiet));
+    await shotP(A, 'chat-later');
+    await A.ev(`__mega.api.openRail()`); await sleep(900); await shotP(A, 'dots-open'); await A.ev(`document.querySelector('#mega-rail').dispatchEvent(new MouseEvent('mouseleave'))`); await sleep(900);
+    await A.ev(`(() => { const a = __mega.bdApi.bd(); })()`);
+    await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(1500); await shotP(A, 'chat-390');
+    await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(900);
+    if (!base) need(idle.fps >= 7 && idle.heat >= .11, 'parity: an idle room should keep drawing at about 10 fps: ' + JSON.stringify(idle));
+    await key(A, 'Escape'); await sleep(300); await shotP(A, 'leaving'); await sleep(1600);
+    await toLevel('server'); await sleep(500);
+  }
   if (process.env.COMMONS_UI_STOP_AFTER === 'mega6') { console.log('UI check stopped after mega phase 6 (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
 
   // ---- large files ----
