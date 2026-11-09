@@ -1474,9 +1474,9 @@ $('#btn-settings').onclick = () => {
   <label for="n">Display name</label><input type="text" id="n" value="${esc(S.snap.me.name)}">
   <label>Profile picture</label><div class="av-set"><span class="av-prev" id="av-prev">${seal(S.snap.me.account, S.snap.me.name, 'big')}</span><span class="av-btns"><button type="button" class="btn ghost slim" id="av-pick">Choose a picture…</button><button type="button" class="btn ghost slim" id="av-none" ${AVS.got.has(S.snap.me.account) ? '' : 'hidden'}>Remove</button></span></div><input type="file" id="av-file" accept="image/*" hidden>
   <p class="muted small">Shown instead of your seal. Shrunk on this device and sent encrypted; older versions keep your seal.</p>
-  <h3 class="set-h">Appearance</h3>
+  <div ${document.documentElement.classList.contains('mega') ? 'hidden' : ''}><h3 class="set-h">Appearance</h3>
   <label>Theme</label>${seg('th', [['', 'Match system'], ['light', 'Daylight'], ['solar', 'Solarized'], ['dark', 'After hours'], ['wave', 'Wave']], pref.get('theme') || '')}
-  <div id="wave-row" ${pref.get('theme') === 'wave' ? '' : 'hidden'}><label for="wave-pal">Wave colours</label><select id="wave-pal">${(window.__waveDither ? window.__waveDither.palettes : []).map(([k, l]) => `<option value="${k}"${(pref.get('wavePalette') || 'blue') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+  <div id="wave-row" ${pref.get('theme') === 'wave' ? '' : 'hidden'}><label for="wave-pal">Wave colours</label><select id="wave-pal">${(window.__waveDither ? window.__waveDither.palettes : []).map(([k, l]) => `<option value="${k}"${(pref.get('wavePalette') || 'blue') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div></div>
   <h3 class="set-h">Sound</h3>
   <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when mega is in the background or the message is in another room.</p>
   <h3 class="set-h">Advanced</h3>
