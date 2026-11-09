@@ -1,22 +1,82 @@
 #!/usr/bin/env bash
+# megatron-launcher-protocol: 2
 # Megatron in your browser window. The app's own core (encryption, sync) runs here as a small local program and
 # Brave, Chrome, Chromium or Edge draws the window: on Linux that is much smoother than the desktop app's WebKitGTK.
-# It only listens on 127.0.0.1 and refuses other websites. Same account folder as the desktop app, so you can switch
-# between them (one at a time).   megatron          open it
-#                                  megatron --stop   stop the background part
+# It only listens on 127.0.0.1. Same account folder as the desktop app, so you can switch between them (one at a time).
+#   megatron          open it
+#   megatron --stop   stop the background part
+#
+# What keeps other programs out (docs/THREAT-MODEL.md, "The browser edition"):
+#  * a random secret per start of the background part, kept in a file only you can read, and handed to the window in the
+#    address after the "#" (which is never sent to a server). The window sends it with every request.
+#  * the window uses its own browser profile, so the extensions of your everyday browser profile do not see it.
+#  * before opening, this script asks whatever answers on the port to prove it knows the secret; if something else is
+#    there it refuses instead of showing your window to it.
 set -u
+umask 077
 D="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 PORT="${MEGATRON_PORT:-7420}"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/app.commons.chat"
+PROFILE="${XDG_DATA_HOME:-$HOME/.local/share}/app.commons.chat.browser-profile"
 RELAY="$(tr -d '\n' < "$D/relay.txt")"
-URL="http://127.0.0.1:$PORT/"
+SECRET_FILE="$D/.bridge-secret-$PORT"
+SECRET=""
+LEGACY=0   # 1: the background part is an older build that cannot take a secret; the window opens without one
 say() { command -v notify-send >/dev/null && notify-send "mega" "$1"; echo "$1" >&2; }
 up() { (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; }
+sha256() { if command -v sha256sum >/dev/null; then sha256sum | cut -d' ' -f1; elif command -v shasum >/dev/null; then shasum -a 256 | cut -d' ' -f1; else openssl dgst -sha256 | sed 's/^.* //'; fi; }
+new_secret() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+# GET path on the port with bash alone (no curl needed); prints the body.
+http_get() {
+  ( exec 3<>"/dev/tcp/127.0.0.1/$PORT" || exit 1
+    printf 'GET %s HTTP/1.1\r\nHost: 127.0.0.1:%s\r\nConnection: close\r\n\r\n' "$1" "$PORT" >&3
+    body=0; line=""
+    while IFS= read -r -t 3 line <&3 || [ -n "$line" ]; do
+      line="${line%$'\r'}"
+      if [ $body = 1 ]; then printf '%s\n' "$line"; elif [ -z "$line" ]; then body=1; fi
+      line=""
+    done ) 2>/dev/null
+}
+# Prints "ours" when the port's owner proves it knows the secret in $SECRET, "other" when it answers but cannot prove it
+# (an older background part, a different one, or something else), "none" when nothing answers.
+who_is_on_port() {
+  up || { echo none; return; }
+  [ -n "$SECRET" ] || { echo other; return; }
+  local nonce got
+  nonce="$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  got="$(http_get "/hello?c=$nonce" | tr -d ' \n')"
+  case "$got" in *"\"proof\":\"$(printf 'megatron-bridge-v1|%s|%s' "$SECRET" "$nonce" | sha256)\""*) echo ours;; *) echo other;; esac
+}
+read_secret() { SECRET=""; [ -f "$SECRET_FILE" ] && SECRET="$(tr -d ' \n' < "$SECRET_FILE")"; [ "${#SECRET}" -ge 32 ] || SECRET=""; }
+# The pid of a bridge of ours that holds the port but could not prove the secret: the one it names in /hello, or .pid.
+own_pids() {
+  local p
+  for p in $(http_get "/hello?c=x" | sed -n 's/.*"pid":\([0-9]*\).*/\1/p') $(cat "$D/.pid" 2>/dev/null); do
+    local exe; exe="$(readlink "/proc/$p/exe" 2>/dev/null)"; exe="${exe% (deleted)}"
+    case "$exe" in "$D/bridge"|"$D/.update-previous/bridge") echo "$p";; esac
+  done
+}
+stop_own() {
+  local p; for p in $(own_pids); do kill "$p" 2>/dev/null; done
+  rm -f "$D/.pid"
+  for _ in $(seq 1 50); do up || return 0; sleep 0.1; done
+  return 1
+}
 start_bridge() {
   mkdir -p "$DATA"
-  COMMONS_DATA="$DATA" COMMONS_RELAY="$RELAY" setsid "$D/bridge" "$PORT" "$D/ui" >"$D/bridge.log" 2>&1 < /dev/null &
-  echo $! > "$D/.pid"
-  for _ in $(seq 1 50); do up && break; sleep 0.1; done
+  SECRET="$(new_secret)"
+  printf '%s' "$SECRET" > "$SECRET_FILE.tmp" && chmod 600 "$SECRET_FILE.tmp" && mv -f "$SECRET_FILE.tmp" "$SECRET_FILE"
+  MEGATRON_SECRET="$SECRET" COMMONS_DATA="$DATA" COMMONS_RELAY="$RELAY" setsid "$D/bridge" "$PORT" "$D/ui" >"$D/bridge.log" 2>&1 < /dev/null &
+  BRIDGE_PID=$!
+  echo $BRIDGE_PID > "$D/.pid"
+  # Wait until it proves itself. A bridge that is alive but never proves it is an older build that ignores the secret.
+  for _ in $(seq 1 70); do
+    [ "$(who_is_on_port)" = ours ] && return 0
+    kill -0 "$BRIDGE_PID" 2>/dev/null || return 1
+    sleep 0.1
+  done
+  if up && kill -0 "$BRIDGE_PID" 2>/dev/null; then LEGACY=1; return 0; fi
+  return 1
 }
 # A failed start after an update: put the previous bridge and ui/ back, so a bad build cannot leave nothing working.
 restore_previous() {
@@ -28,9 +88,22 @@ restore_previous() {
   rm -rf "$D/.update-previous" "$D/.update-note.json"
   return 0
 }
-if [ "${1:-}" = "--stop" ]; then [ -f "$D/.pid" ] && kill "$(cat "$D/.pid")" 2>/dev/null; rm -f "$D/.pid"; exit 0; fi
+if [ "${1:-}" = "--stop" ]; then [ -f "$D/.pid" ] && kill "$(cat "$D/.pid")" 2>/dev/null; rm -f "$D/.pid" "$D"/.bridge-secret-*; exit 0; fi
 if pgrep -x commons-app >/dev/null; then say "Close the mega desktop app first: an account can be open in only one place."; exit 1; fi
-if ! up; then
+read_secret
+state="$(who_is_on_port)"
+if [ "$state" = other ]; then
+  # Something holds the port and cannot prove the secret: an older mega background part (fine, restart it with a secret)
+  # or a different program (refuse).
+  if [ -n "$(own_pids)" ]; then
+    stop_own || { say "mega could not take over port $PORT. Run: megatron --stop"; exit 1; }
+    state=none
+  else
+    say "Port $PORT is used by another program, not by mega, so mega will not open it there. Quit that program, or start mega on another port:  MEGATRON_PORT=7421 megatron"
+    exit 1
+  fi
+fi
+if [ "$state" = none ]; then
   # Signed update before the window opens (docs/UPDATES.md). At most about five seconds: offline, or a server that does
   # not answer, only delays the window a moment. The page shows what happened on this start.
   if [ -n "$RELAY" ] && [ -x "$D/bridge" ] && command -v timeout >/dev/null; then
@@ -42,19 +115,37 @@ if ! up; then
       timeout 5 "$D/bridge" --update "$RELAY" "$D" >>"$D/bridge.log" 2>&1 || true
     fi
   fi
-  start_bridge
-  if ! up && restore_previous; then
+  if ! start_bridge && restore_previous; then
     say "The new version did not start; going back to the one before."
     start_bridge
   fi
-  up || { say "mega could not start (see $D/bridge.log)."; exit 1; }
+  if ! up; then say "mega could not start (see $D/bridge.log)."; exit 1; fi
 fi
+if [ "$LEGACY" = 1 ]; then
+  say "This copy of mega's background part is too old to protect the window with a key. It works, but other programs on this computer could reach it. Install the newest mega to fix that."
+  URL="http://127.0.0.1:$PORT/"
+else
+  URL="http://127.0.0.1:$PORT/#s=$SECRET"
+fi
+# The window gets a browser profile of its own, so extensions in your everyday profile cannot see it. A snap browser may
+# only write under ~/snap, a flatpak under its own folder.
+open_with() {  # open_with <browser command...>
+  local b="$1"; shift
+  local prof="$PROFILE" real; real="$(readlink -f "$(command -v "$b")" 2>/dev/null)"
+  case "$real" in /snap/*|/var/lib/snapd/*) prof="$HOME/snap/${b##*/}/common/megatron-profile";; esac
+  mkdir -p "$prof" && chmod 700 "$prof"
+  exec "$b" "$@" --user-data-dir="$prof" --no-first-run --no-default-browser-check --app="$URL" >/dev/null 2>&1
+}
 for b in brave brave-browser google-chrome google-chrome-stable chromium chromium-browser microsoft-edge microsoft-edge-stable vivaldi; do
-  command -v "$b" >/dev/null && exec "$b" --app="$URL" >/dev/null 2>&1
+  command -v "$b" >/dev/null && open_with "$b"
 done
 if command -v flatpak >/dev/null; then
   for f in com.brave.Browser com.google.Chrome org.chromium.Chromium com.microsoft.Edge; do
-    flatpak info "$f" >/dev/null 2>&1 && exec flatpak run "$f" --app="$URL" >/dev/null 2>&1
+    if flatpak info "$f" >/dev/null 2>&1; then
+      prof="$HOME/.var/app/$f/data/megatron-profile"; mkdir -p "$prof" && chmod 700 "$prof"
+      exec flatpak run "$f" --user-data-dir="$prof" --no-first-run --no-default-browser-check --app="$URL" >/dev/null 2>&1
+    fi
   done
 fi
+say "No Brave, Chrome, Chromium or Edge found, so your default browser opens mega. That is less private (its extensions can see the page)."
 exec xdg-open "$URL"

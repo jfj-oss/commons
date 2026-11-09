@@ -12,6 +12,11 @@ const root = path.resolve(new URL('..', import.meta.url).pathname);
 const bin = p => path.join(root, 'target/debug', p);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const procs = [];
+// Every bridge here runs the way the browser version's launcher starts it: with a per-start secret that the page gets in the
+// URL fragment and sends back as a header (crates/core/src/bridge_auth.rs). A bridge without it would be open to any local program.
+const SECRETS = new Map();
+const secretFor = port => { if (!SECRETS.has(port)) SECRETS.set(port, crypto.randomBytes(32).toString('hex')); return SECRETS.get(port); };
+const pageUrl = port => `http://127.0.0.1:${port}/#s=${secretFor(port)}`;
 const run = (cmd, args, env = {}) => { const p = spawn(cmd, args, { env: { ...process.env, ...env }, stdio: ['ignore', 'inherit', 'inherit'] }); procs.push(p); return p; };
 process.on('exit', () => procs.forEach(p => { try { p.kill(); } catch { } }));
 
@@ -42,7 +47,7 @@ fs.writeFileSync(path.join(fakeBin, 'xdg-open'), '#!/bin/sh\nprintf "%s\\n" "$1"
 const startRelay = () => run(bin('commons-relay'), ['--bind', `127.0.0.1:${RELAY_PORT}`, '--data', path.join(out, 'data/relay')]);
 let relayProc = startRelay();
 for (const [n, port] of [['alice', A_PORT], ['bob', B_PORT]]) {
-  const env = { COMMONS_DATA: path.join(out, 'data', n), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1' };
+  const env = { COMMONS_DATA: path.join(out, 'data', n), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(port) };
   if (n === 'bob') Object.assign(env, { PATH: fakeBin + ':' + process.env.PATH, COMMONS_XDG_MARKER: xdgMarker, COMMONS_PICKED: path.join(out, 'downloads-bob') });
   run(bin('dev_bridge'), [String(port), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], env);
 }
@@ -112,8 +117,11 @@ function hashFile(file) {
 
 let A, B;
 try {
-  A = await open(`http://127.0.0.1:${A_PORT}/`); B = await open(`http://127.0.0.1:${B_PORT}/`);
+  A = await open(pageUrl(A_PORT)); B = await open(pageUrl(B_PORT));
   await sleep(800);
+  // The bridge needs its secret: the page took it from the address and sent it, and a bare request without it is refused.
+  if ((await A.ev(`location.hash`)) !== '') throw new Error('bridge secret: it is still in the address bar');
+  if ((await A.ev(`fetch('/rpc',{method:'POST',body:'{"method":"state","args":{}}'}).then(r=>r.status)`)) !== 403) throw new Error('bridge secret: an RPC without the secret was not refused');
   // The first screen asks for an invite password, a name and one device password. Starting a community of your own, or using an old link, is one tap away.
   await A.waitFor(`!!document.querySelector('#ipw') && !!document.querySelector('#mi-eye') && !document.querySelector('#pp2')`);
   await A.shot('01-onboarding');
@@ -762,9 +770,9 @@ try {
     need(await col(A) === '#12ab34' && await col(B) === '#12ab34', 'colours: the colour did not hold');
     // a client that joins later gets the colours out of the table
     const C_PORT = Number(process.env.COMMONS_UI_C_PORT || 7103);
-    run(bin('dev_bridge'), [String(C_PORT), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], { COMMONS_DATA: path.join(out, 'data', 'carol'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1' });
+    run(bin('dev_bridge'), [String(C_PORT), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], { COMMONS_DATA: path.join(out, 'data', 'carol'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(C_PORT) });
     await sleep(1500);
-    const C = await open(`http://127.0.0.1:${C_PORT}/`);
+    const C = await open(pageUrl(C_PORT));
     // Carol is new: the invite password, her name and one password for her device are all she types.
     await C.waitFor(`!!document.querySelector('#ipw')`);
     const cpw = await A.ev(`rpc('create_invite', { cid: ${JSON.stringify(cid)}, uses: 1, password: 'maple-otter-kayak-31' }).then(r => r.password && 'maple-otter-kayak-31')`);
@@ -1601,7 +1609,7 @@ try {
   fs.rmSync(dlDir, { recursive: true, force: true });
 
   // Phone-width layout: the rail folds away, the composer stays on screen, and desktop-only settings are gone.
-  const P = await open(`http://127.0.0.1:${A_PORT}/`);
+  const P = await open(pageUrl(A_PORT));
   await P.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
   await P.waitFor(`!document.querySelector('#app').hidden`, 20000);
   await P.waitFor(`document.querySelectorAll('.room').length>=1`, 20000);

@@ -1,11 +1,36 @@
 'use strict';
 // ---- bridge: Tauri command when packaged, local HTTP bridge for development/headless checks ----
 const T = window.__TAURI__;
+// The browser version's launcher opens this page at /#s=<secret>. The fragment is never sent to the server; the page keeps
+// the secret for this window only (sessionStorage), takes it out of the address, and sends it as a header on every call.
+// Without one (an older launcher, a test rig) nothing is sent and the bridge decides whether that is allowed.
+const BRIDGE = (() => {
+  let s = '';
+  try { s = sessionStorage.getItem('mega.bridge') || ''; } catch { }
+  const m = /(?:^#|&)s=([0-9A-Za-z]{32,256})(?:&|$)/.exec(location.hash);
+  if (m) {
+    s = m[1];
+    try { sessionStorage.setItem('mega.bridge', s); } catch { }
+    try { history.replaceState(null, '', location.pathname + location.search); } catch { }
+  }
+  const headers = (h = {}) => (s ? { ...h, 'X-Megatron-Secret': s } : h);
+  let shown = false;
+  const refused = () => {
+    if (shown) return; shown = true;
+    const d = document.createElement('div');
+    d.setAttribute('role', 'alert');
+    d.style.cssText = 'position:fixed;inset:0;z-index:99999;display:grid;place-items:center;padding:24px;background:#0b0b10;color:#f2f2f5;font:16px/1.5 system-ui,sans-serif;text-align:center';
+    d.textContent = 'This window is not connected to mega\u2019s background part any more (it was restarted, or this window was opened another way). Close this window and open mega again from your app menu.';
+    document.body.appendChild(d);
+  };
+  return { headers, refused, fetch: (u, o = {}) => fetch(u, { ...o, headers: headers(o.headers) }).then(r => { if (r.status === 403) refused(); return r; }) };
+})();
+window.__bridgeFetch = BRIDGE.fetch;
 async function rpc(method, args = {}) {
   if (T && T.core) {
     try { return await T.core.invoke('rpc', { method, args }); } catch (e) { throw new Error(typeof e === 'string' ? e : (e && e.message) || String(e)); }
   }
-  const r = await fetch('/rpc', { method: 'POST', body: JSON.stringify({ method, args }) });
+  const r = await BRIDGE.fetch('/rpc', { method: 'POST', body: JSON.stringify({ method, args }) });
   const j = await r.json();
   if (j.err !== undefined) throw new Error(j.err);
   return j.ok;

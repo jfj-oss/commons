@@ -1,9 +1,12 @@
 //! Development bridge: serves the UI over http://127.0.0.1 and exposes the same `rpc` the Tauri shell has.
-//! Used for headless UI checks and for trying the app in two browser tabs without Tauri. Loopback only, NO authentication.
+//! Used for headless UI checks, for trying the app in two browser tabs without Tauri, and (as `bridge`) by the browser
+//! versions. Loopback only. With MEGATRON_SECRET set (the launchers do) every /rpc and /update-* call must present it
+//! (commons_core::bridge_auth); without it the bridge is open to the Host/Origin rules only, as before.
 //!   COMMONS_DATA=/tmp/alice COMMONS_RELAY=http://127.0.0.1:8787 dev_bridge 7001 ../../app/ui
 //! A small thread-per-connection HTTP/1.1 server (every response closes its connection). It replaced tiny_http, whose
 //! fixed worker pool made a browser's parallel script downloads (the 600 KB call library) stall for seconds or forever.
 use commons_core::api::{bridge_request_ok, App};
+use commons_core::bridge_auth::{self, Auth};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -12,6 +15,8 @@ use std::sync::Arc;
 
 /// One Update click at a time.
 static INSTALLING: AtomicBool = AtomicBool::new(false);
+/// This start replaced an older launcher script in the install folder (Linux).
+static LAUNCHER_REFRESHED: AtomicBool = AtomicBool::new(false);
 
 // Same policy as the desktop shell, widened only for what calls need: the LiveKit signalling socket, the frame-encryption worker, media streams.
 // http:/https: on img-src, connect-src and media-src are for the owner's Jellyfin server, configured per device at an arbitrary
@@ -86,14 +91,14 @@ fn restart(install: &std::path::Path, ui: &std::path::Path, port: u16) -> ! {
     std::process::exit(if child.is_ok() { 0 } else { 1 })
 }
 
-fn handle(mut s: TcpStream, app: Arc<App>, ui: Arc<PathBuf>, port: u16) {
+fn handle(mut s: TcpStream, app: Arc<App>, ui: Arc<PathBuf>, port: u16, auth: Auth) {
     let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(30)));
     let mut r = BufReader::new(s.try_clone().expect("clone"));
     let mut line = String::new();
     if r.read_line(&mut line).unwrap_or(0) == 0 { return; }
     let mut parts = line.split_whitespace();
     let (method, url) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
-    let (mut len, mut host, mut origin) = (0usize, None::<String>, None::<String>);
+    let (mut len, mut host, mut origin, mut presented) = (0usize, None::<String>, None::<String>, None::<String>);
     loop {
         let mut h = String::new();
         if r.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" || h == "\n" { break; }
@@ -101,8 +106,25 @@ fn handle(mut s: TcpStream, app: Arc<App>, ui: Arc<PathBuf>, port: u16) {
         if let Some(v) = low.strip_prefix("content-length:") { len = v.trim().parse().unwrap_or(0); }
         if let Some(v) = low.strip_prefix("host:") { host = Some(v.trim().to_string()); }
         if let Some(v) = low.strip_prefix("origin:") { origin = Some(v.trim().to_string()); }
+        if low.starts_with(bridge_auth::HEADER) && low[bridge_auth::HEADER.len()..].starts_with(':') { presented = Some(h[bridge_auth::HEADER.len() + 1..].trim().to_string()); }
     }
     if !bridge_request_ok(host.as_deref(), origin.as_deref(), port) { return reply(&mut s, 403, "text/plain", b"forbidden"); }
+    // Another user's program on this computer can reach the port too. Linux can tell whose socket is on the other end.
+    if let (Ok(peer), Ok(local)) = (s.peer_addr(), s.local_addr()) {
+        if !bridge_auth::peer_is_same_user(peer, local) { return reply(&mut s, 403, "text/plain", b"forbidden"); }
+    }
+    let (route, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
+    if method == "GET" && route == "/hello" {
+        // The launcher's challenge: only a bridge that knows the secret can answer with the right proof.
+        let nonce = query.split('&').find_map(|kv| kv.strip_prefix("c=")).unwrap_or("");
+        return reply(&mut s, 200, "application/json", auth.hello(nonce).to_string().as_bytes());
+    }
+    if method == "GET" && route == "/mode" {
+        let body = serde_json::json!({"secret": !auth.is_open(), "packaged": updatable(&ui).is_some(), "launcher_updated": LAUNCHER_REFRESHED.load(Ordering::SeqCst)});
+        return reply(&mut s, 200, "application/json", body.to_string().as_bytes());
+    }
+    let protected = route == "/rpc" || route == "/update-note" || route == "/update-check" || route == "/update-install";
+    if protected && !auth.allows(presented.as_deref()) { return reply(&mut s, 403, "text/plain", b"bad secret"); }
     if method == "GET" && url == "/update-note" {
         // What the launcher's update check left for the page (packaging/linux-browser/megatron). Read once, then gone.
         let note = ui.parent().and_then(commons_core::browser_update::take_note);
@@ -184,6 +206,7 @@ fn main() {
     let data = std::env::var("COMMONS_DATA").unwrap_or_else(|_| format!("./dev-data-{port}"));
     let relay = std::env::var("COMMONS_RELAY").unwrap_or_else(|_| "http://127.0.0.1:8787".into());
     let kdf = if std::env::var("COMMONS_FAST_KDF").is_ok() { commons_core::vault::KdfParams::TEST } else { commons_core::vault::KdfParams::STRONG };
+    let auth = Auth::from_env();
     let app = App::with_kdf(data.into(), &relay, kdf);
     app.start_background();
     // After an Update on Windows the previous bridge may still be leaving, so give it a moment to free the port.
@@ -199,9 +222,16 @@ fn main() {
     if let Some(dir) = ui.parent() {
         commons_core::browser_update::cleanup_previous(dir);
     }
-    eprintln!("dev bridge on http://127.0.0.1:{port}  (ui: {})", ui.display());
+    // An installed copy whose launcher script is older than this bridge gets the current one (Linux; the old file is kept as
+    // megatron.old). A launcher that speaks the secret protocol is what turns the protection on at the next start.
+    if updatable(&ui).is_some() && ui.parent().is_some_and(bridge_auth::refresh_linux_launcher) {
+        LAUNCHER_REFRESHED.store(true, Ordering::SeqCst);
+        eprintln!("replaced the older launcher script with the current one");
+    }
+    eprintln!("dev bridge on http://127.0.0.1:{port}  (ui: {}; {})", ui.display(),
+        if auth.is_open() { "open mode: no secret was given" } else { "secret required" });
     for conn in listener.incoming().flatten() {
-        let (app, ui) = (app.clone(), ui.clone());
-        std::thread::spawn(move || handle(conn, app, ui, port));
+        let (app, ui, auth) = (app.clone(), ui.clone(), auth.clone());
+        std::thread::spawn(move || handle(conn, app, ui, port, auth));
     }
 }

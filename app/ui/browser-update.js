@@ -20,16 +20,21 @@
   const failedBar = why => show(`<span>The update did not install: ${esc(why)} Nothing was changed.</span><button type="button" class="btn ghost slim" data-u="install">Try again</button>`, 'need');
   const settingsButton = () => document.getElementById('set-update');
 
-  fetch('/update-note', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(n => {
+  (window.__bridgeFetch || fetch)('/update-note', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(n => {
     if (!n || !n.kind) return;
     const v = n.version ? ' ' + esc(n.version) : '';
     if (n.kind === 'updated') show(`<span>Updated to${v}.</span>`);
     else if (n.kind === 'available') show(`<span>Update available${v ? ' (' + esc(n.version) + ')' : ''}: ${esc(n.reason || 'it could not be installed.')}</span>`, 'need');
+  }).catch(() => {}).then(() => fetch('/mode', { cache: 'no-store' })).then(r => r.ok ? r.json() : null).then(m => {
+    // An installed copy that was started without the per-start key (an older launcher, or your own script or service).
+    // It still works; this says plainly what is missing. A test rig or a source checkout is not "packaged" and says nothing.
+    if (!m || !m.packaged || m.secret || !bar.hidden) return;
+    show(`<span>This mega was started by an older launcher, so other programs on this computer can talk to it. ${m.launcher_updated ? 'The launcher has just been updated: close mega and open it again from your app menu.' : 'Close mega and open it again from your app menu; if you start it with your own script or service, that needs the newer launcher (see docs/UPDATES.md).'}</span>`, 'need');
   }).catch(() => {});
 
   async function check() {
     U.last = Date.now();
-    const r = await (await fetch('/update-check', { cache: 'no-store' })).json();
+    const r = await (await (window.__bridgeFetch || fetch)('/update-check', { cache: 'no-store' })).json();
     U.offer = r.available ? r.version : null;
     if (U.offer && !U.busy) offerBar();
     return r;
@@ -51,7 +56,7 @@
     U.busy = true;
     show('<span>Downloading the update…</span>');
     let r;
-    try { r = await (await fetch('/update-install', { method: 'POST', cache: 'no-store' })).json(); }
+    try { r = await (await (window.__bridgeFetch || fetch)('/update-install', { method: 'POST', cache: 'no-store' })).json(); }
     catch (e) { U.busy = false; failedBar('mega stopped answering.'); return; }
     if (r.restarting) { comeBack(r.version); return; }
     U.busy = false;
