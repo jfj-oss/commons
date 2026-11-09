@@ -960,8 +960,13 @@
     const pad = e => { const r = e.getBoundingClientRect(); hit({ left: r.left - 6, right: r.right + 6, top: r.top - 6, bottom: r.bottom + 6, width: r.width, height: r.height }); };
     const st = $('#stream');
     for (const el of kidsIn(st, st.scrollTop - 60, st.scrollTop + st.clientHeight + 60)) {
-      if (el.classList.contains('msg')) { $$('.body', el).forEach(text); $$('.who,.quote,.file,.react,.imgslot,.mediaslot,time.when', el).forEach(box); }
+      if (el.classList.contains('msg')) {
+        // only the words and pictures themselves: a row's cells are wider than what is in them, and clearing those left black boxes in empty space
+        $$('.body,.who .name,.quote,time.when', el).forEach(text);
+        $$('.who > :not(.name):not(.sr),.file,.react > *,.imgslot,.mediaslot', el).forEach(box);
+      }
       else if (el.classList.contains('day')) $$('span,button', el).forEach(box);
+      else if (el.classList.contains('sys')) text(el);
       else box(el);
     }
     $$('#chan-title,#chan-sub', mainEl).forEach(text);
@@ -1268,6 +1273,7 @@
     requestAnimationFrame(asciiTick);
   }
   M.typingDraw = typingDraw;
+  M.eachRect = eachRect;
   window.__megaRender = render;
   window.__megaIdle = () => M.started && (M.level !== 'chat' || M.opts);
   // a room was opened by something other than mega (a search hit, the old rail's handlers)
