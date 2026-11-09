@@ -439,7 +439,7 @@ try {
   // ---------------------------------------------------------------- I. the real UI
   const ui = page('dave');
   await call('dave', `c.leave()`);
-  await ui.ev(`document.querySelector('#btn-call').click()`);   // the room header's Call button joins this room's call
+  await ui.ev(`window.__callUI.joinRoom(S.gid, 'general')`);   // a text room's call, joined as the rail's Join does (the Call button is gone)
   await ui.waitFor(`!document.querySelector('#call-dock').hidden`, 8000, 'call dock');
   await ui.waitFor(`!!document.querySelector('#call-dock .call-enc.ok')`, 20000, 'encrypted badge');
   // The people are the ones under the room in the rail, not a list in the dock.
@@ -454,6 +454,51 @@ try {
   fs.writeFileSync(path.join(out, 'call-dock.png'), Buffer.from(shotRes.result.data, 'base64'));
   await ui.ev(`document.querySelector('#c-leave')?.click()`);
   await sleep(1500);
+
+  // ---------------------------------------------------------------- K. ringing a voice room: one rings, the others see it and join, a stale ring rings nobody
+  {
+    for (const n of ['alice', 'bob', 'carol', 'dave']) { await call(n, `c.phase === 'idle' ? true : c.leave()`).catch(() => { }); await page(n).ev(`(pref.set('sound', 'off'), true)`); }   // silent: no ring tone in any test
+    const vg = (await page('alice').ev(`rpc('create_channel', { cid: S.cid, name: 'lounge', kind: 'voice' })`)).id;
+    for (const n of ['bob', 'carol', 'dave']) await until(() => page(n).ev(`!!S.snap.communities.flatMap(c => c.channels).find(x => x.gid === ${J(vg)} && x.joined)`), 40000, n + ' has the voice room');
+    const cards = n => page(n).ev(`[...document.querySelectorAll('#mega-ring .rg-card')].map(c => c.innerText.replace(/\\s+/g, ' ').trim())`);
+    await call('alice', `c.join(${J(vg)}, 'lounge')`); await until(() => call('alice', `c.phase === 'connected'`), 30000, 'alice in the voice room');
+    // a stale ring (a device catching up on an old log) rings nobody, even though it is a perfectly good envelope from a member
+    await page('alice').ev(`rpc('debug_ring', { gid: ${J(vg)}, age: 100 })`);
+    await sleep(3500);
+    const stale = [await cards('bob'), await cards('carol'), await cards('dave')];
+    check('K1 a stale ring (older than the allowed age) rings nobody', stale.every(c => c.length === 0), J(stale));
+    // the real thing, from the ring button's own code path
+    const dockHas = await page('alice').ev(`(__callUI.render(), document.querySelector('#call-dock').innerHTML.includes('id="c-ring"'))`);
+    check('K2 the dock has a ring button inside a voice room call, and a text room has no Call button', dockHas && await page('alice').ev(`!document.getElementById('btn-call')`));
+    await page('alice').ev(`__megaRing.ringAll()`);
+    const seen = {};
+    for (const n of ['bob', 'carol', 'dave']) seen[n] = await until(async () => { const c = await cards(n); return c.length === 1 ? c : null; }, 20000, n + ' sees the ring').catch(() => null);
+    check('K3 everyone in the community who is not in the call sees who is calling and from which room', ['bob', 'carol', 'dave'].every(n => seen[n] && /alice/i.test(seen[n][0]) && /lounge/.test(seen[n][0])), J(seen));
+    check('K4 the caller is not rung', (await cards('alice')).length === 0);
+    // joining from the card is the normal join
+    await page('bob').ev(`document.querySelector('#mega-ring .rg-b.yes').click()`);
+    await until(() => call('bob', `c.phase === 'connected' && c.gid === ${J(vg)}`), 30000, 'bob joined from the ring');
+    check('K5 join on the card joins the voice room through the normal encrypted join', await call('bob', `c.room.isE2EEEnabled`) && (await cards('bob')).length === 0);
+    await page('carol').ev(`document.querySelector('#mega-ring .rg-b.no').click()`);
+    await sleep(500);
+    check('K6 decline closes the card', (await cards('carol')).length === 0);
+    // one person from their row: only they are rung
+    const daveAcct = await page('dave').ev(`S.snap.me.account`);
+    await page('dave').ev(`document.querySelector('#mega-ring .rg-b.no').click()`); await sleep(300);
+    await page('alice').ev(`__megaRing.ringOne(${J(daveAcct)}, 'Dave')`);
+    const one = await until(async () => { const c = await cards('dave'); return c.length === 1 ? c : null; }, 20000, 'dave is rung directly').catch(() => null);
+    await sleep(1500);
+    check('K7 ringing one person rings only them, and says it is for them', one && /calling you/.test(one[0]) && (await cards('carol')).length === 0, J({ one, carol: await cards('carol') }));
+    // a ring that is taken back, and one that is not answered, end
+    await page('alice').ev(`__megaRing.ringOne(${J(daveAcct)}, 'Dave')`);   // second press stops it
+    await until(async () => (await cards('dave')).length === 0, 20000, 'dave\'s ring is taken back');
+    check('K8 the caller taking a ring back ends it', true);
+    await page('dave').ev(`rpc('ring_send', { gid: ${J(vg)}, to: '' })`).catch(() => { });   // dave is not in the call; the room is still ringable by a member
+    const aliceSees = await until(async () => { const c = await cards('alice'); return c.length === 0 ? null : c; }, 3000).catch(() => null);
+    check('K9 a member who is already in the call is not rung for it', !aliceSees, J(aliceSees));
+    for (const n of ['alice', 'bob']) await call(n, `c.leave()`).catch(() => { });
+    await sleep(1500);
+  }
 
   // ---------------------------------------------------------------- R. voice reliability: joining, healing, nothing left behind
   for (const n of ['alice', 'bob', 'dave']) await call(n, `c.phase === 'idle' ? true : c.leave()`).catch(() => { });

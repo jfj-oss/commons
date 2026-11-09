@@ -368,6 +368,9 @@ impl App {
             "live_send" => self.with(|c| c.live_send(&s(&a, "gid"), &s(&a, "kind"), &s(&a, "data")).map(|sent| json!({"sent": sent})).map_err(e)),
             "ring_send" => self.with(|c| { let to = s(&a, "to"); c.ring_send(&s(&a, "gid"), (!to.is_empty()).then_some(to.as_str())).map(|id| json!({"id": id})).map_err(e) }),
             "ring_end" => self.with(|c| { let to = s(&a, "to"); c.ring_end(&s(&a, "gid"), &s(&a, "id"), (!to.is_empty()).then_some(to.as_str())).map(|_| json!({})).map_err(e) }),
+            // Test bridge only: a ring with a time of the caller's choosing, to show a stale one rings nobody.
+            #[cfg(feature = "devbridge")]
+            "debug_ring" => self.with(|c| c.debug_ring_aged(&s(&a, "gid"), a["age"].as_u64().unwrap_or(0)).map(|id| json!({"id": id})).map_err(e)),
             "ring_poll" => {
                 let since = a["since"].as_u64().unwrap_or(0);
                 self.try_read(|c| json!({"events": c.ring_poll(since).into_iter().map(|v| json!({"id": v.id, "gid": v.gid, "account": v.account, "ring": v.ring, "ts": v.ts, "end": v.end, "direct": v.direct})).collect::<Vec<_>>(), "head": c.ring_next}))

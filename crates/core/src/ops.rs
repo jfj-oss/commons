@@ -721,6 +721,15 @@ impl Client {
         self.save()?;
         Ok(())
     }
+    /// Test bridge only: a ring stamped `age` seconds ago, to show that a stale one rings nobody.
+    #[cfg(feature = "devbridge")]
+    #[doc(hidden)]
+    pub fn debug_ring_aged(&mut self, gid: &str, age: u64) -> Result<String> {
+        let id = rand_hex(16);
+        self.queue_env(gid, Envelope::Ring { id: id.clone(), ts: now_secs().saturating_sub(age), to: None, end: false });
+        self.save()?;
+        Ok(id)
+    }
     /// Rings newer than `since` (0 for all still held), oldest first, from rooms we are still in.
     pub fn ring_poll(&self, since: u64) -> Vec<RingEvent> {
         self.ring_in.iter().filter(|e| e.id > since && self.st.groups.get(&e.gid).is_some_and(|g| !g.removed)).cloned().collect()
