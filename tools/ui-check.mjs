@@ -538,6 +538,11 @@ try {
     const ty = await A.ev(`({ who: document.querySelector('#mega-typing .mmascot')?.dataset.who, words: document.querySelector('#typing').innerText, dots: getComputedStyle(document.querySelector('#typing .dots') || document.body).display })`);
     need(/typing/.test(ty.words) && ty.who && ty.dots === 'none', 'the typing mascot is wrong: ' + JSON.stringify(ty));
     await A.shot('mega2-3-mascot');
+    need((await A.ev(`document.querySelector('#mega-typing .mtwho').textContent`)) === 'Bob is typing', 'typing: the words beside the mascot are wrong');
+    const twoTyping = await A.ev(`(() => { __mega.typingDraw(['Bob', 'Kai']); const m = [...document.querySelectorAll('#mega-typing .mmascot:not([data-out])')].map(e => e.getBoundingClientRect()), w = document.querySelector('#mega-typing .mtwho'), r = w.getBoundingClientRect(); return { n: m.length, text: w.textContent, joined: m.length === 2 && Math.abs(m[1].left - m[0].right) < 3, right: r.left >= m[m.length - 1].right, onScreen: r.width > 20 && r.right <= innerWidth }; })()`);
+    need(twoTyping.n === 2 && twoTyping.text === 'Bob and Kai are typing' && twoTyping.joined && twoTyping.right && twoTyping.onScreen, 'typing: two mascots should sit together with one label to their right: ' + JSON.stringify(twoTyping));
+    await A.shot('mega2-3b-two-typing');
+    await A.ev(`__mega.typingDraw(['Bob']); 1`);
     await A.waitFor(`document.querySelectorAll('#mega-typing .mmascot:not([data-out])').length === 0`, 15000);
     // a reaction Bob adds to Alice's message flies in and updates the count
     const mineId = await A.ev(`[...document.querySelectorAll('#stream .msg.mine')].pop().dataset.id`);

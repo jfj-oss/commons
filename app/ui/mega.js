@@ -966,7 +966,7 @@
     }
     $$('#chan-title,#chan-sub', mainEl).forEach(text);
     $$('#head .head-actions > *,#head #btn-rooms', mainEl).forEach(pad);
-    $$('.slip,#mega-note,#typing,#mega-typing .mmascot,#mega-typing .mripple:not(:empty),#hint:not([hidden]),#jump:not([hidden]),#replybar:not([hidden]),#banner:not([hidden]),#upd:not([hidden])', mainEl).forEach(box);
+    $$('.slip,#mega-note,#typing,#mega-typing .mmascot,#mega-typing .mtwho:not(:empty),#mega-typing .mripple:not(:empty),#hint:not([hidden]),#jump:not([hidden]),#replybar:not([hidden]),#banner:not([hidden]),#upd:not([hidden])', mainEl).forEach(box);
   }
   function bdMask() {
     const a = BD; if (!a || !a.mask) return;
@@ -1146,12 +1146,14 @@
   function typingBox() {
     let t = $('#mega-typing'); if (t) return t;
     const slip = $('#composer .slip'); if (!slip) return null;
-    t = document.createElement('div'); t.id = 'mega-typing'; t.setAttribute('aria-hidden', 'true'); t.innerHTML = '<div class="mtin"><span class="mmascots"></span><span class="mripple"></span></div>'; slip.before(t); return t;
+    t = document.createElement('div'); t.id = 'mega-typing'; t.setAttribute('aria-hidden', 'true'); t.innerHTML = '<div class="mtin"><span class="mmascots"></span><span class="mtwho"></span><span class="mripple"></span></div>'; slip.before(t); return t;
   }
   function typingDraw(names) {
     const t = typingBox(); if (!t) return;
     const box = $('.mmascots', t), rip = $('.mripple', t), want = roomOn() ? [...new Set(names)].slice(0, 6) : [];
     const key = want.join('\n'); if (key === typingDraw.key) return; typingDraw.key = key;
+    const n = want.length, shown = want.slice(0, 3);
+    $('.mtwho', t).textContent = !n ? '' : n === 1 ? want[0] + ' is typing' : (n <= 3 ? shown.slice(0, -1).join(', ') + ' and ' + shown[n - 1] : shown.join(', ') + ' and ' + (n - 3) + ' more') + ' are typing';
     $$('.mmascot', box).forEach(e => { if (!want.includes(e.dataset.who) && !e.dataset.out) { e.dataset.out = '1'; if (still()) e.remove(); else e.animate([{ transform: 'none' }, { transform: 'translateY(26px)' }], { duration: 200, easing: 'ease-in', fill: 'forwards' }).onfinish = () => e.remove(); } });
     for (const w of want) {
       if ($$('.mmascot', box).some(e => e.dataset.who === w && !e.dataset.out)) continue;
@@ -1263,6 +1265,7 @@
     document.fonts.ready.then(remaskAll);
     requestAnimationFrame(asciiTick);
   }
+  M.typingDraw = typingDraw;
   window.__megaRender = render;
   window.__megaIdle = () => M.started && (M.level !== 'chat' || M.opts);
   // a room was opened by something other than mega (a search hit, the old rail's handlers)
