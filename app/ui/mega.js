@@ -843,7 +843,9 @@
   function menu(items, x, y) { const p = popAt(`<div class="mmenu" role="menu">${items.map((m, i) => `<button role="menuitem" type="button" data-m="${i}">${esc(m[0])}</button>`).join('')}</div>`, x, y); p.onclick = e => { const b = e.target.closest('[data-m]'); if (b) { closePops(); items[+b.dataset.m][1](); } }; }
   function moreMenu(btn) {
     const r = btn.getBoundingClientRect();
-    menu([['settings', () => $('#btn-settings').click()], ['devices and recovery', () => $('#btn-devices').click()], ['activity log', () => $('#btn-activity').click()], ...(M.level === 'server' ? [['new community', () => newCommunityHere()], ['join with an invite password', () => joinCommunity()]] : [])], Math.min(r.left, innerWidth - 220), r.bottom + 6);
+    // on a phone the colours and draw chips leave the bar (mega-design.css) and wait here, when they apply to the card in focus
+    const phoneOnly = matchMedia('(max-width: 760px)').matches ? ['paint', 'draw'].map(k => $(`[data-m="${k}"]`, mega)).filter(b => b && !b.hidden).map(b => [b.textContent, () => b.click()]) : [];
+    menu([...phoneOnly, ['settings', () => $('#btn-settings').click()], ['devices and recovery', () => $('#btn-devices').click()], ['activity log', () => $('#btn-activity').click()], ...(M.level === 'server' ? [['new community', () => newCommunityHere()], ['join with an invite password', () => joinCommunity()]] : [])], Math.min(r.left, innerWidth - 220), r.bottom + 6);
   }
   mega.addEventListener('click', e => {
     const j = e.target.closest('[data-join]');

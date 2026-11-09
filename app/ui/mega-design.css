@@ -81,3 +81,38 @@ html.mega .sync.bad { color: var(--warn); }
 html.mega .sync.bad::before { background: var(--warn); }
 @media (max-width: 760px) { html.mega #people { width: 100vw; } }
 html.mega .seg button { text-transform: lowercase; }
+
+/* ---- lowercase words: placeholders and the summaries that open a fold. The composer is left out of the rule because its
+   placeholder carries the room's name, which is never changed; app.js writes that one lowercase around the name. ---- */
+html.mega input::placeholder, html.mega textarea:not(#input)::placeholder { text-transform: lowercase; }
+html.mega summary { text-transform: lowercase; }
+
+/* ---- a mention at the bumped sizes is a tint, not a block the width of a word: the highlight at 28% behind the highlight ---- */
+html.mega.mg-room .msg[data-mz] .body .at.self { background: color-mix(in srgb, var(--mg-hi) 28%, transparent); color: var(--mg-hi); }
+
+/* ---- a phone's card bar: "colours" and "draw" move into "more" (moreMenu in mega.js), so the four chips that matter fit ---- */
+@media (max-width: 760px) { .mbar .mchip[data-m="paint"], .mbar .mchip[data-m="draw"] { display: none; } }
+
+/* ---- chat on a computer: the avatar sits on the left, the small name and time over the words, as in the prototype. The
+   150 px the right-aligned name column took go to the conversation. A narrow stream keeps its stacked layout (style.css). ---- */
+@container main (min-width: 661px) {
+  html.mega #stream > *, html.mega #composer > * { --gutter: 58px; --timecol: 0px; --measure: 800px; }
+  html.mega .msg, html.mega .sys { grid-template-columns: 36px minmax(0, max-content) minmax(0, 1fr); column-gap: 0; padding-inline: 10px; }
+  html.mega .msg > .who, html.mega .sys > .who { display: contents; }
+  html.mega .msg .who .name, html.mega .sys .who .name { grid-column: 2; grid-row: 1; align-self: center; display: block; text-align: left; padding: 0; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; margin-left: 12px; }
+  html.mega .msg .who > :not(.name):not(.sr), html.mega .sys .who > :not(.name):not(.sr) { grid-column: 1; grid-row: 1 / span 2; align-self: start; justify-self: start; margin: 3px 0 0; }
+  html.mega .msg .who .seal { --s: 36px; }
+  html.mega .msg .who .name .chip { vertical-align: middle; margin-left: 6px; }
+  html.mega .msg > .txt, html.mega .sys > .txt { grid-column: 2 / -1; grid-row: 2; margin-left: 12px; }
+  html.mega .msg > .when, html.mega .sys > .when { grid-column: 3; grid-row: 1; align-self: center; justify-self: start; padding: 0 0 0 10px; text-align: left; font: 400 11px/1.3 var(--m-name); letter-spacing: 0; color: var(--m-mute); }
+  html.mega .msg > .when .state, html.mega .sys > .when .state { display: inline-flex; margin-left: 6px; }
+  /* a continued message: no avatar, no name; its time waits in the avatar column until the row is pointed at */
+  html.mega .msg.cont > .txt { grid-row: 1; margin-top: 0; }
+  html.mega .msg.cont > .when { grid-column: 1; grid-row: 1; align-self: start; justify-self: stretch; padding: 5px 0 0; text-align: center; font-size: 10px; }
+  html.mega .msg.cont > .when .state { display: none; }   /* the dimmed words already say it is sending */
+  html.mega .newline { padding-left: 58px; }
+}
+/* a stacked row (a phone, or a narrow stream): the time is as small as it is beside the name on a computer */
+@container main (max-width: 660px) {
+  html.mega .msg > .when, html.mega .sys > .when { font: 400 11px/1.3 var(--m-name); letter-spacing: 0; color: var(--m-mute); }
+}

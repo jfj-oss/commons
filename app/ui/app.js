@@ -1205,7 +1205,7 @@ function renderComposer() {
   else r.hidden = true;
   $('#composer').classList.toggle('editing', !!S.edit);
   $('#send-label').textContent = S.edit ? 'Save' : 'Send';
-  const ch = currentChannel(); const ph = ch ? `Write to ${ch.name}` : 'Write a message'; $('#input').placeholder = ph; $('#input').setAttribute('aria-label', ph);
+  const ch = currentChannel(); const ph = ch ? `${document.documentElement.classList.contains('mega') ? 'write' : 'Write'} to ${ch.name}` : 'Write a message'; $('#input').placeholder = ph; $('#input').setAttribute('aria-label', ph);
   const c = $('#cancel'); if (c) c.onclick = cancelCompose;
 }
 function cancelCompose() { if (S.edit) $('#input').value = ''; S.reply = null; S.edit = null; sizeInput(); renderComposer(); }
