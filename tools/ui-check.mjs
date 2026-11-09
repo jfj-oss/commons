@@ -396,12 +396,19 @@ try {
       stream: s.width > 200 && s.left >= r.getBoundingClientRect().right - 1, oldRailGone: document.querySelector('#rooms').getBoundingClientRect().width === 0 }; })()`);
   need(chat.rail && chat.dots >= 4 && chat.active === 1 && chat.voice >= 1 && chat.opt === 1 && chat.stream && chat.oldRailGone, 'the chat does not show the dots beside the stream: ' + JSON.stringify(chat));
   await A.shot('mega-1-chat');
+  // the one-time hint beside the dots: says what they are, and goes for good once the cards have been opened from them
+  await A.ev(`localStorage.removeItem('commons.dotsHint'); __megaNew.showHint()`); await sleep(500);
+  const hint1 = await A.ev(`(() => { const h = document.querySelector('#mega-hint'); return h ? { text: h.innerText, button: !!h.querySelector('.mh-x'), shown: __megaNew.state().hint } : null; })()`);
+  need(hint1 && hint1.shown && /dots are your rooms/.test(hint1.text) && /scroll on them to open the cards/.test(hint1.text) && hint1.button, 'dots hint: not shown to a first-time user: ' + JSON.stringify(hint1));
+  await A.shot('mega-1b-dots-hint');
   // Esc closes the People sheet first when it is open
   if (await A.ev(`S.people`)) { await key(A, 'Escape'); await sleep(400); need(await A.ev(`!S.people && !document.querySelector('#people:not([hidden])')`), 'Esc did not close the People sheet'); }
   // wheel over the dots pops them out as small cards; Esc closes that first, leaving the chat where it was
   await A.ev(`document.querySelector('#mega-rail').dispatchEvent(new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true }))`); await sleep(700);
   need(await A.ev(`document.querySelector('#mega-rail').classList.contains('open')`), 'wheel over the dots did not pop them out');
   await A.shot('mega-2-popout');
+  need(await A.ev(`!document.querySelector('#mega-hint') && __megaNew.state().hintState.used === 1`), 'dots hint: opening the cards from the dots should dismiss it for good: ' + await A.ev(`JSON.stringify(__megaNew.state())`));
+  await A.ev(`__megaNew.showHint()`); need(await A.ev(`!document.querySelector('#mega-hint')`), 'dots hint: it came back after it was used');
   await key(A, 'Escape'); await sleep(500);
   need(!(await A.ev(`document.querySelector('#mega-rail').classList.contains('open')`)) && await lvl(A) === 'chat', 'Esc should only close the pop-out first');
   // options room: client-only, with the existing controls and their ids
@@ -607,6 +614,7 @@ try {
     await A.ev(`__megaMusic._sources(null); window.AudioContext = window.__realAC; 1`);
   }
 
+  if (!process.env.COMMONS_UI_ONLY6) {   // COMMONS_UI_ONLY6=1 skips phases 3 to 5 while working on phase 6
   // ---- mega phase 3: owner colours (through the encrypted core) and the live channel ----
   {
     const cid = await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`);
@@ -958,9 +966,9 @@ try {
     await A.ev(`document.querySelector('#mega [data-m="draw"]').click()`); await sleep(500);
     need(await A.ev(`!!document.querySelector('#mega-wallhit-card') && __megaWall.state().gid === ${JSON.stringify('cw:' + cid)}`), 'cards: the pen did not open on the community card');
     // starting to draw asks once whether anyone is around; bob's focused community card answers, and only then do strokes go out
-    // (a page in the background does not poll, as in the real app, so bob's page comes to the front for a moment to hear the request and answer it)
-    for (let i = 0; i < 4 && !(await wst(A)).present; i++) { await B.send('Page.bringToFront'); await sleep(3500); await A.send('Page.bringToFront'); await sleep(1500); }
-    await wf(A, `__megaWall.state().present`, 20000).catch(async () => { throw new Error('mega: cards: nobody answered the community wall request: ' + JSON.stringify([await wst(A), await wst(B), await stat(A)])); });
+    // a page in the background does not poll the live channel: let each side be the visible one in turn
+    for (let i = 0; i < 3; i++) { await B.send('Page.bringToFront'); await sleep(2200); await A.send('Page.bringToFront'); await sleep(2200); if (await A.ev(`__megaWall.state().present`)) break; }
+    await wf(A, `__megaWall.state().present`, 20000).catch(async () => { throw new Error('mega: cards: nobody answered the community wall request: ' + JSON.stringify([await wst(A), await wst(B), await stat(A)]) + ' ' + await B.ev(`JSON.stringify({ vis: document.visibilityState, items: __mega.list && __mega.list.items.map(x => x.key.slice(0, 6)), cur: __mega.list && __mega.list.item.key.slice(0, 6), settled: __mega.list && __mega.list.settled, lvl: __mega.level })`)); });
     const c0 = await stat(A);
     await hitDraw(A, '#mega-wallhit-card', 60, 27, 24, 4000);
     await sleep(1800);
@@ -993,6 +1001,156 @@ try {
     need(await lvl(A) === 'chat', 'cards: could not get back to the chat');
   }
   if (process.env.COMMONS_UI_STOP_AFTER === 'mega5') { console.log('UI check stopped after mega phase 5 (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
+
+  }
+  // ---- mega phase 6: the "what's new" card, unread marks on the dots, and chat density per room ----
+  {
+    const cid = await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`), cidj = JSON.stringify(cid);
+    const rooms = await A.ev(`S.snap.communities.find(c => c.id === ${cidj}).channels.filter(x => x.kind !== 'voice').map(x => x.gid)`);
+    const musicGid = rooms.find(r => r !== textGid), g = JSON.stringify(textGid), mg = JSON.stringify(musicGid);
+    need(!!musicGid, 'whatsnew: the club needs a second text room');
+    const me = await A.ev(`S.snap.me.name`);
+    const sendB = t => B.ev(`rpc('send_text', { gid: ${JSON.stringify(t[0])}, text: ${JSON.stringify(t[1])}, reply: null }).then(() => 1)`);
+    const unreads = P => P.ev(`JSON.stringify(S.snap.communities.map(c => c.channels.map(x => x.gid.slice(0, 6) + ':' + x.unread)))`);
+    const toHomeA = async () => { await A.send('Page.bringToFront'); for (let i = 0; i < 5 && await lvl(A) !== 'home'; i++) { await A.ev(`document.activeElement && document.activeElement.blur && document.activeElement.blur()`); await key(A, 'Escape'); await sleep(1000); } need(await lvl(A) === 'home', 'whatsnew: could not reach home'); };
+    const newsItem = () => A.ev(`JSON.stringify(((__mega.list && __mega.list.items) || []).filter(x => x.kind === 'news').map(x => ({ rows: x.rows.map(r => ({ gid: r.gid, n: r.n, at: r.at, text: r.text, comm: r.comm, room: r.room })), unread: x.unread })))`).then(JSON.parse);
+    // everything read first, then home
+    await A.send('Page.bringToFront');
+    await A.ev(`Promise.all(S.snap.communities.flatMap(c => c.channels.filter(x => x.unread > 0).map(x => rpc('mark_read', { gid: x.gid })))).then(() => 1)`);
+    await A.waitFor(`S.snap.communities.every(c => c.channels.every(x => !x.unread))`, 20000).catch(() => { });
+    await toHomeA();
+    await A.waitFor(`__mega.list && __mega.list.items.length >= 3`, 8000); await sleep(600);
+    need((await newsItem()).length === 0, 'whatsnew: the card should not exist when everything is read');
+    // bob writes: one line in the general room, two in music of which the last names alice
+    const keyBefore = await A.ev(`__mega.list.item.key`), topBefore = await A.ev(`Math.round(__mega.list.rectOf(__mega.list.cur).top)`);
+    await sendB([textGid, 'whatsnew plain line']); await sleep(1300);
+    await sendB([musicGid, 'whatsnew music one']); await sleep(1300);
+    await sendB([musicGid, '@' + me + ' whatsnew mention']);
+    await A.waitFor(`__mega.list.items.some(x => x.kind === 'news' && x.rows.length === 2 && x.rows[0].at >= 1 && x.rows[0].text.includes('whatsnew mention') && x.rows[1].text.includes('whatsnew plain'))`, 40000).catch(async e => { throw new Error('whatsnew: the card did not appear with both rooms: ' + JSON.stringify(await newsItem()) + await unreads(A)); });
+    const n1 = (await newsItem())[0];
+    need(n1.rows[0].gid === musicGid && n1.rows[1].gid === textGid && n1.rows[0].comm === 'Book club' && n1.unread === n1.rows.reduce((a, r) => a + r.n, 0), 'whatsnew: mentions first, then the rest: ' + JSON.stringify(n1));
+    need(await A.ev(`__mega.list.items[0].kind === 'news'`), 'whatsnew: the card should be first');
+    // the list did not move under the user: the same card is in the middle, in the same place
+    need(await A.ev(`__mega.list.item.key`) === keyBefore, 'whatsnew: the focused card changed when the news card appeared');
+    await sleep(900);
+    const topAfter = await A.ev(`Math.round(__mega.list.rectOf(__mega.list.cur).top)`);
+    need(Math.abs(topAfter - topBefore) <= 3, `whatsnew: the focused card moved ${topBefore} -> ${topAfter} when the news card appeared`);
+    // rest on the card: it shows both rows, and neither showing nor scrolling past it reads anything
+    const un0 = await unreads(A);
+    await A.ev(`__mega.list.go(0, true)`); await A.waitFor(`__mega.list.settled && __mega.list.item.kind === 'news'`, 8000); await sleep(600);
+    const view = await A.ev(`(() => { const rs = [...document.querySelectorAll('.mnrow')]; const b = rs.map(r => r.getBoundingClientRect()), card = document.querySelector('.mslot.settled .msq').getBoundingClientRect(); return { n: rs.length, text: rs.map(r => r.innerText.replace(/\\s+/g, ' ')), inside: b.every(x => x.top >= card.top - 1 && x.bottom <= card.bottom + 1), title: document.querySelector('.mslot.settled .mti').getAttribute('aria-label') }; })()`);
+    need(view.n === 2 && view.inside && /Book club/.test(view.text[0]) && /music/.test(view.text[0]) && /whatsnew mention/.test(view.text[0]) && /@1/.test(view.text[0]) && /general|./.test(view.text[1]) && /whatsnew plain line/.test(view.text[1]), 'whatsnew: the rows are wrong: ' + JSON.stringify(view));
+    await A.shot('mega6-1-news-card');
+    await A.ev(`__mega.list.go(2, true)`); await sleep(1200); await A.ev(`__mega.list.go(0, true)`); await sleep(2800);
+    need(await unreads(A) === un0, 'whatsnew: showing or scrolling past the card changed what is unread: ' + un0 + ' -> ' + await unreads(A));
+    // 390 px
+    await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(900);
+    await A.shot('mega6-1b-news-card-390');
+    const ph = await A.ev(`(() => { const c = document.querySelector('.mslot.settled .msq').getBoundingClientRect(); return { w: innerWidth, cardR: c.right, rows: [...document.querySelectorAll('.mnrow')].every(r => r.getBoundingClientRect().right <= c.right + 1) }; })()`);
+    need(ph.cardR <= ph.w + 1 && ph.rows, 'whatsnew: the card overflows at 390 px: ' + JSON.stringify(ph));
+    await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(900);
+    await A.ev(`__mega.list.go(0, true)`); await A.waitFor(`__mega.list.settled && __mega.list.item.kind === 'news'`, 8000);
+    // choosing the mention row goes straight into that room, at its first unread message
+    await A.ev(`document.querySelector('.mnrow[data-gid="${JSON.stringify(musicGid).slice(1, -1)}"]').click()`);
+    await A.waitFor(`__mega.level === 'chat' && S.gid === ${mg}`, 15000).catch(async e => { throw new Error('whatsnew: the row did not open the room: ' + await A.ev(`JSON.stringify({ lvl: __mega.level, gid: S.gid })`)); });
+    await A.waitFor(`document.querySelector('#stream .newline')`, 15000).catch(() => { throw new Error('whatsnew: the room did not open at its first unread message'); });
+    need(/2 new/i.test(await A.ev(`document.querySelector('#stream .newline').innerText`)), 'whatsnew: wrong first unread line: ' + await A.ev(`document.querySelector('#stream .newline').innerText`));
+    await A.waitFor(`S.snap.communities.every(c => c.channels.filter(x => x.gid === ${mg}).every(x => !x.unread))`, 15000);
+    // unread on the dots: the general room is unread (a plain ring), then a mention in it (a stronger one), in its own highlight colour and with no number
+    const dot = () => A.ev(`(() => { const d = document.querySelector('#mega-rail .mitem[data-key="${JSON.stringify(textGid).slice(1, -1)}"]'); if (!d) return null; const cs = getComputedStyle(d); return { un: d.classList.contains('un'), at: d.classList.contains('at'), anim: cs.animationName, mh: d.style.getPropertyValue('--mh'), text: d.querySelector('.mct') ? 'count' : '', bg: cs.backgroundColor }; })()`);
+    const d1 = await dot();
+    need(d1 && d1.un && !d1.at && d1.anim === 'mn-un' && /^#[0-9a-f]{6}$/i.test(d1.mh), 'dots: an unread room should pulse a ring in its highlight colour: ' + JSON.stringify(d1));
+    await sendB([textGid, '@' + me + ' whatsnew second']);
+    await A.waitFor(`document.querySelector('#mega-rail .mitem[data-key="${JSON.stringify(textGid).slice(1, -1)}"]')?.classList.contains('at')`, 30000).catch(() => { throw new Error('dots: a mention did not get its stronger mark'); });
+    const d2 = await dot();
+    need(d2.un && d2.at && d2.anim === 'mn-at' && d2.mh === d1.mh, 'dots: a mention should have a stronger mark in the same colour: ' + JSON.stringify([d1, d2]));
+    await A.shot('mega6-2-dots-marks');
+    // back to the cards: the card is live (both mentions now count in the general row) and still reads nothing
+    await toHomeA(); await A.waitFor(`__mega.list.items[0].kind === 'news'`, 15000);
+    await A.waitFor(`__mega.list.items[0].rows.length === 1 && __mega.list.items[0].rows[0].gid === ${g} && __mega.list.items[0].rows[0].n === 2 && __mega.list.items[0].rows[0].at >= 1`, 20000).catch(async () => { throw new Error('whatsnew: the card did not follow the new state: ' + JSON.stringify(await newsItem())); });
+    // read on another device (here: the core): the card goes away and the list does not jump
+    await A.ev(`__mega.list.go(1, true)`); await A.waitFor(`__mega.list.settled && __mega.list.item.kind === 'community'`, 8000); await sleep(500);
+    const k2 = await A.ev(`__mega.list.item.key`), t2 = await A.ev(`Math.round(__mega.list.rectOf(__mega.list.cur).top)`);
+    await A.ev(`rpc('mark_read', { gid: ${g} }).then(() => 1)`);
+    await A.waitFor(`!__mega.list.items.some(x => x.kind === 'news')`, 30000).catch(() => { throw new Error('whatsnew: the card did not go when everything was read'); });
+    await sleep(500);
+    need(await A.ev(`__mega.list.item.key`) === k2 && Math.abs(await A.ev(`Math.round(__mega.list.rectOf(__mega.list.cur).top)`) - t2) <= 3, 'whatsnew: the list jumped when the card went');
+    need(await A.ev(`document.querySelectorAll('.mnrow').length === 0`), 'whatsnew: rows are still on screen');
+
+    // ---- density: per room, with a toggle for every room
+    await A.ev(`localStorage.removeItem('commons.dens'); localStorage.removeItem('commons.densAll'); localStorage.removeItem('commons.dens.' + ${g}); localStorage.removeItem('commons.dens.' + ${mg}); 1`);
+    await A.ev(`__mega.api.toChat(${cidj}, ${g})`); await A.waitFor(`__mega.level === 'chat' && S.gid === ${g} && document.querySelectorAll('#stream .msg').length > 12`, 15000);
+    await sleep(900);
+    const px = P => P.ev(`(() => { const m = [...document.querySelectorAll('#stream .msg:not([data-mz])')].find(m => m.querySelector('.body') && m.textContent.length > 30); return m ? { fs: getComputedStyle(m.querySelector('.body')).fontSize, mt: getComputedStyle(m).paddingTop, attr: document.documentElement.dataset.mdens || '' } : null; })()`);
+    const styleVer = () => A.ev(`(S.snap.communities.find(c => c.id === ${cidj}).style || {}).ver || 0`);
+    const ver0 = await styleVer();
+    const base = await px(A);
+    need(base && base.fs === '24px' && base.attr === '', 'density: the default must be today\'s look (24px): ' + JSON.stringify(base));
+    need(await A.ev(`!!document.querySelector('#btn-density') && !document.querySelector('#btn-density').hidden`), 'density: no header button in a room');
+    await A.ev(`document.querySelector('#btn-density').click()`); await sleep(300);
+    need(await A.ev(`!!document.querySelector('#mega-dens #md-r') && !!document.querySelector('#mega-dens #md-all') && !document.querySelector('#md-all').checked`), 'density: the slider and the toggle are missing');
+    const setDens = v => A.ev(`(() => { const r = document.querySelector('#md-r'); r.value = ${v}; r.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await setDens(-2); await sleep(500);
+    const small = await px(A);
+    need(small.fs === '12px' && small.attr === 'm2' && parseFloat(small.mt) < parseFloat(base.mt), 'density: the slider did not change this room live: ' + JSON.stringify(small));
+    need(await A.ev(`localStorage.getItem('commons.dens.' + ${g}) === '-2' && !localStorage.getItem('commons.dens')`), 'density: it should be stored for this room, on this device');
+    await A.shot('mega6-3-density-menu');
+    need(await styleVer() === ver0, 'density: it touched the owner document');
+    await key(A, 'Escape'); await sleep(400);
+    need(await A.ev(`!document.querySelector('#mega-dens') && __mega.level === 'chat'`), 'density: Esc should close the menu first and stay in the chat');
+    // the other room is unchanged
+    await A.ev(`document.querySelector('#mega-rail .mitem[data-key="${JSON.stringify(musicGid).slice(1, -1)}"]').click()`);
+    await A.waitFor(`S.gid === ${mg} && document.querySelectorAll('#stream .msg').length >= 1`, 15000); await sleep(900);
+    const other = await px(A);
+    need(other && other.fs === '24px' && other.attr === '', 'density: another room changed with it: ' + JSON.stringify(other));
+    // the toggle: this value everywhere, then each room its own again
+    await A.ev(`document.querySelector('#mega-rail .mitem[data-key="${JSON.stringify(textGid).slice(1, -1)}"]').click()`);
+    await A.waitFor(`S.gid === ${g} && document.querySelectorAll('#stream .msg').length > 12`, 15000); await sleep(700);
+    need((await px(A)).fs === '12px', 'density: the room did not keep its own value');
+    await A.ev(`document.querySelector('#btn-density').click()`); await sleep(300);
+    await A.ev(`document.querySelector('#md-all').click()`); await sleep(400);
+    need(await A.ev(`localStorage.getItem('commons.densAll') === '1' && localStorage.getItem('commons.dens') === '-2'`), 'density: the toggle did not store one value for every room');
+    await A.ev(`document.querySelector('#mega-rail .mitem[data-key="${JSON.stringify(musicGid).slice(1, -1)}"]').click()`);
+    await A.waitFor(`S.gid === ${mg}`, 15000); await sleep(900);
+    const all = await px(A);
+    need(all && all.fs === '12px' && all.attr === 'm2', 'density: "same in every room" did not apply to the other room: ' + JSON.stringify(all));
+    await A.ev(`document.querySelector('#btn-density').click()`); await sleep(300);
+    await A.ev(`document.querySelector('#md-all').click()`); await sleep(400);
+    need(await A.ev(`!localStorage.getItem('commons.densAll')`) && (await px(A)).fs === '12px', 'density: off should leave the room as it shows: ' + JSON.stringify(await px(A)));
+    await setDens(0); await sleep(500);
+    need((await px(A)).fs === '24px', 'density: this room did not go back to the default on its own');
+    await key(A, 'Escape'); await sleep(300);
+    await A.ev(`document.querySelector('#mega-rail .mitem[data-key="${JSON.stringify(textGid).slice(1, -1)}"]').click()`);
+    await A.waitFor(`S.gid === ${g} && document.querySelectorAll('#stream .msg').length > 12`, 15000); await sleep(700);
+    need((await px(A)).fs === '12px', 'density: each room should keep its own once the toggle is off');
+    // at the largest stop the centre focus and the arrival animation still work
+    await A.ev(`document.querySelector('#mega-rail .mitem[data-key="${JSON.stringify(textGid).slice(1, -1)}"]').click()`);
+    await A.waitFor(`S.gid === ${g} && document.querySelectorAll('#stream .msg').length > 12`, 15000); await sleep(700);
+    await A.ev(`document.querySelector('#btn-density').click()`); await sleep(300);
+    await setDens(2); await sleep(700); await key(A, 'Escape'); await sleep(300);
+    need((await px(A)).fs === '48px', 'density: the largest stop should be 48px: ' + JSON.stringify(await px(A)));
+    await A.ev(`(() => { const s = document.querySelector('#stream'); s.scrollTop = s.scrollHeight; })()`); await sleep(500);
+    need(await A.ev(`[...document.querySelectorAll('#stream .msg')].filter(m => m.style.transform || m.style.opacity).length === 0`), 'density: at the latest message every row must be full size');
+    await A.ev(`(() => { const s = document.querySelector('#stream'); s.scrollTop = s.scrollHeight / 2; })()`); await sleep(700);
+    const fo = await A.ev(`(() => { const rows = [...document.querySelectorAll('#stream .msg')]; return { scaled: rows.filter(m => m.style.transform.startsWith('scale')).length, scroll: document.querySelector('#stream').scrollHeight > document.querySelector('#stream').clientHeight }; })()`);
+    need(fo.scroll && fo.scaled >= 2, 'density: centre focus stopped working at the largest stop: ' + JSON.stringify(fo));
+    await A.ev(`(() => { const s = document.querySelector('#stream'); s.scrollTop = s.scrollHeight; })()`); await sleep(500);
+    const dec0 = await A.ev(`__mega.stats.decodes`);
+    await A.send('Page.bringToFront'); await sendB([textGid, 'dens arrive']); await sleep(2500);
+    need(await A.ev(`__mega.stats.decodes`) > dec0, 'density: a new message no longer resolves out of glyphs at the largest stop');
+    await A.shot('mega6-4-density-largest');
+    // 390 px: the menu fits
+    await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(900);
+    await A.ev(`document.querySelector('#btn-density').click()`); await sleep(400);
+    const pm = await A.ev(`(() => { const r = document.querySelector('#mega-dens').getBoundingClientRect(); return { l: r.left, r: r.right, w: innerWidth, t: r.top, b: r.bottom, h: innerHeight }; })()`);
+    need(pm.l >= 0 && pm.r <= pm.w && pm.t >= 0 && pm.b <= pm.h, 'density: the menu does not fit at 390 px: ' + JSON.stringify(pm));
+    await A.shot('mega6-5-density-390');
+    await key(A, 'Escape'); await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(700);
+    // leave everything as it was
+    await A.ev(`localStorage.removeItem('commons.dens'); localStorage.removeItem('commons.densAll'); localStorage.removeItem('commons.dens.' + ${g}); localStorage.removeItem('commons.dens.' + ${mg}); __megaNew.room(S.gid); 1`);
+    await A.waitFor(`S.snap.communities.every(c => c.channels.every(x => !x.unread))`, 20000).catch(() => { });
+  }
+  if (process.env.COMMONS_UI_STOP_AFTER === 'mega6') { console.log('UI check stopped after mega phase 6 (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
 
   // ---- large files ----
   // Over the 24 MB line the same paperclip takes the chunked path: the page reads 8 MB slices of the picked file,
