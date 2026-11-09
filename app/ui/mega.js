@@ -1120,6 +1120,9 @@
   };
   M.eachRect = eachRect; M.relook = () => dirty(false);
   window.__megaTheme = { colours(gid) { const c = comm(M.cid), x = c && roomItems(c).find(i => i.gid === gid && i.kind === 'text'); return x ? [lift(fieldOf(x), 5), lift(hiOf(x), 6)] : null; } };
-  M.prev = PREV; M.shown = SHOWN; M.canPaint = canPaint; window.__mega = M;
+  M.prev = PREV; M.shown = SHOWN; M.canPaint = canPaint;
+  M.callTheme = gid => { const c = comms().find(x => x.channels.some(ch => ch.gid === gid)); return c ? targetOf(c.id, gid) : null; };
+  M.inkOn = hex => { const n = parseInt(hex.slice(1), 16), f = v => { v /= 255; return v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }, l = .2126 * f(n >> 16) + .7152 * f((n >> 8) & 255) + .0722 * f(n & 255); return (l + .05) * (l + .05) > .0525 * 1.05 ? '#050407' : '#efedf2'; };
+  window.__mega = M;
   if (S.snap && !$('#app').hidden) render();   // the first snapshot may have arrived while this file was still loading
 })();

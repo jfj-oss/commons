@@ -176,7 +176,10 @@ try {
       const dock = await page('bob').ev(`(() => { const b = document.querySelector('#call-dock .cd-acts .cd-b:last-of-type'), r = b && b.getBoundingClientRect(); if (!r) return null; const e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { h: r.height, top: r.top, bottom: r.bottom, vh: innerHeight, hit: !!(e && e.closest('#call-dock')) }; })()`);
       check('K14 on a phone the call controls are on screen and can be pressed, on the cards too', !!dock && dock.hit && dock.h >= 20 && dock.top >= 0 && dock.bottom <= dock.vh, J(dock));
       check('K13 on a phone the stack is a scrollable strip across the top, tiles side by side, and the dots do not slide', ph.stage[0] <= 1 && ph.stage[1] <= 1 && ph.stage[2] >= 380 && ph.stage[3] >= 80 && ph.stage[3] <= 140 && ph.tiles.length === 2 && ph.tiles[1][0] >= ph.tiles[0][0] + ph.tiles[0][2] - 1 && ph.tiles.every(t => t[3] >= 60) && (ph.railLeft === null || ph.railLeft <= 1) && ph.overflowX === 'auto' && !ph.hscroll, J(ph));
-      await page('bob').send('Emulation.clearDeviceMetricsOverride'); await sleep(800);
+      await page('bob').send('Emulation.clearDeviceMetricsOverride'); await sleep(1200);
+      const strip = await page('bob').ev(`(() => { window.dispatchEvent(new Event('resize')); const d = document.querySelector('#call-dock').getBoundingClientRect(), m = document.querySelector('#mega').getBoundingClientRect(), b = document.querySelector('#call-dock .cd-acts .cd-b:last-of-type').getBoundingClientRect(), e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return { left: d.left, right: d.right, w: d.width, h: d.height, vw: innerWidth, megaRight: m.right, hit: !!(e && e.closest('#call-dock')) }; })()`);
+      await shotOf('bob', 'K-strip');
+      check('K15 on a computer the call controls are a vertical strip on the right and the app makes room', strip.right >= strip.vw - 16 && strip.w <= 72 && strip.h > strip.w * 2 && strip.megaRight <= strip.left + 1 && strip.hit, J(strip));
     }
     await call('alice', `c.stopShare()`);
     const noShare = await until(async () => { const t = await tilesOf('bob'); return t.length === 1 && isCam(t[0]) ? t : null; }, 8000, 'share gone').catch(async () => tilesOf('bob'));

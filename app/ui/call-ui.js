@@ -93,7 +93,13 @@
     if (!dock) return;
     const rail = document.getElementById('rail'), main = document.getElementById('main');
     // mega's card screens cover the chat on a phone, so there the dock floats on its own above them.
-    const cards = isPhone() && document.documentElement.classList.contains('mg-cards');
+    const root = document.documentElement, mega = root.classList.contains('mega');
+    const cards = mega && (!isPhone() || root.classList.contains('mg-cards'));   // on a computer mega keeps it as a strip on the right, everywhere
+    root.classList.toggle('mg-dock', mega && !isPhone() && !dock.hidden);
+    if (mega && window.__mega && __mega.callTheme && call && call.gid) {
+      const t = __mega.callTheme(call.gid);
+      if (t) { dock.style.setProperty('--dk-main', t[0]); dock.style.setProperty('--dk-hi', t[1]); dock.style.setProperty('--dk-ink', __mega.inkOn(t[0])); dock.style.setProperty('--dk-hink', __mega.inkOn(t[1])); }
+    }
     if (isPhone() && main && !cards) {
       if (dock.parentElement !== main) main.insertBefore(dock, document.getElementById('composer') || null);
       dock.classList.remove('standalone');

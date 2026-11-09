@@ -389,3 +389,24 @@ html.mg-drawing #stream { user-select: none; -webkit-user-select: none; }
 @media (max-width: 760px) { #main > #mega-wallbar { top: 52px; width: calc(100% - 20px); border-radius: 22px; } #mega-wallbar .mwb-g { width: 100%; } #mega-wallbar button { min-width: 34px; } }
 /* people's names: Raster Grotesk Rounded, on its 12 px grid */
 html.mega .who .name, html.mega .mwho > span, html.mega #typing, html.mega .person .nm > b:not(.mono) { font-family: var(--m-name); font-size: 12px; font-weight: 400; font-style: normal; line-height: 1.3; letter-spacing: 0; }
+
+/* in a call, on a computer: the controls are a strip on the right, a small card in the voice room's colours, and the app makes room for it */
+@media (min-width: 761px) {
+  html.mega.mg-dock, html.mega.mg-dock body { background: var(--m-void); }
+  html.mega.mg-dock #app { padding-right: 72px; background: var(--m-void); transition: padding-right .5s var(--m-spring); }
+  html.mega.mg-dock #mega { right: 72px; transition: right .5s var(--m-spring), left .5s var(--m-spring); }
+  html.mega.mg-dock #people { right: 72px; }
+  html.mega #call-dock.standalone { position: fixed; z-index: 30; left: auto; right: max(10px, env(safe-area-inset-right, 0px)); top: 50%; bottom: auto; transform: translateY(-50%); width: 60px; max-width: none; max-height: calc(100vh - 24px); margin: 0; padding: 10px 6px 6px; display: flex; flex-direction: column; align-items: center; gap: 6px; border: 0; border-radius: 22px; background: var(--dk-main, #15151b); color: var(--dk-ink, var(--m-paper)); box-shadow: 0 18px 50px rgb(0 0 0 / .45); animation: none; overflow: visible; font-family: var(--m-name); }
+  html.mega #call-dock.standalone .cd-top { flex-direction: column; gap: 6px; color: inherit; }
+  html.mega #call-dock.standalone .cd-phase, html.mega #call-dock.standalone .cd-dot-sep { display: none; }
+  html.mega #call-dock.standalone .cd-dot { border-radius: 3px; width: 10px; height: 10px; background: var(--dk-hi, var(--m-paper)); box-shadow: none; opacity: 1; }
+  html.mega #call-dock.standalone .cd-room { flex: 0 1 auto; writing-mode: vertical-rl; transform: rotate(180deg); max-height: 150px; font: 400 round(down, 24px, 12px)/1 var(--m-sharp); letter-spacing: var(--m-track); color: inherit; }
+  html.mega #call-dock.standalone .cd-acts { flex-direction: column; gap: 4px; margin: 0; }
+  html.mega #call-dock.standalone .cd-b { flex: none; width: 48px; max-width: none; height: 32px; border-radius: 12px; background: rgb(5 4 7 / .86); color: var(--m-paper); opacity: 1; }
+  html.mega #call-dock.standalone .cd-b:hover { background: rgb(5 4 7 / .68); }
+  html.mega #call-dock.standalone .cd-b.on { background: var(--m-paper); color: #050407; }
+  html.mega #call-dock.standalone .cd-b:last-of-type { background: var(--dk-hi, var(--m-paper)); color: var(--dk-hink, #050407); }
+  html.mega #call-dock.standalone .cd-err, html.mega #call-dock.standalone .cd-note, html.mega #call-dock.standalone .cd-row { position: absolute; right: 70px; top: 0; width: 240px; margin: 0; padding: 8px 10px; border-radius: 12px; background: var(--m-glass); color: var(--m-paper); font-family: var(--m-ui); }
+  @supports (corner-shape: squircle) { html.mega #call-dock.standalone { border-radius: 40px; corner-shape: squircle; } html.mega #call-dock.standalone .cd-b { border-radius: 22px; corner-shape: squircle; } }
+}
+
