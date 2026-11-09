@@ -1,0 +1,7 @@
+#!/bin/sh
+S="$FAKE_STATE"
+name=""
+while [ $# -gt 0 ]; do case "$1" in -n) name="$2"; shift;; esac; shift; done
+echo "$name $$" >> "$S/loopbacks.log"
+case "$name" in megatron_pcaudio_loop) echo $$ > "$S/loop.pid";; esac
+while :; do sleep 0.2; done

@@ -120,6 +120,7 @@ impl App {
     pub fn shutdown(&self) {
         *self.stop.lock().unwrap() = true;
         self.nudge();
+        crate::pcaudio::shutdown();   // an app's sound being shared goes back where it was
         // The browser bridge's listener thread holds the app alive, so it has to be ended here.
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         {
@@ -201,7 +202,7 @@ impl App {
         if in_call { self.saw_call(); }
         let r = self.dispatch(method, a);
         if in_call && r.is_ok() { self.saw_call(); }
-        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait" | "call_presence" | "live_poll" | "wall_get") { self.nudge(); }
+        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait" | "call_presence" | "live_poll" | "wall_get" | "pcaudio_status" | "pcaudio_caps" | "pcaudio_streams") { self.nudge(); }
         r
     }
 
@@ -279,6 +280,8 @@ impl App {
 
     fn dispatch(&self, m: &str, a: Value) -> R {
         match m {
+            // Sending one app's sound into a call (Linux, PipeWire). Runs local programs with fixed arguments: see pcaudio.rs.
+            m if m.starts_with("pcaudio_") => crate::pcaudio::rpc(m, &a),
             "state" => {
                 // Told before unlocking, so the UI can leave out what a phone cannot do (game keys, updates).
                 let mobile = cfg!(any(target_os = "ios", target_os = "android"));

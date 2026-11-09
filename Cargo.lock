@@ -754,6 +754,7 @@ dependencies = [
  "flate2",
  "hex",
  "jsonwebtoken",
+ "libc",
  "log",
  "minisign-verify",
  "openmls",

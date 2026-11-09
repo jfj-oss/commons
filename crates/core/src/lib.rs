@@ -10,6 +10,7 @@ pub mod transport;
 pub mod vault;
 pub mod ops;
 mod round;
+pub mod pcaudio;
 pub mod rune;
 pub mod sync;
 pub mod wall;

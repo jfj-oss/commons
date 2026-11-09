@@ -1217,6 +1217,7 @@
     _releasePlayback(p = this.play) {
       if (!p) return;
       if (p.canvasStop) { try { p.canvasStop(); } catch { } }
+      if (p.cleanup) { try { p.cleanup(); } catch { } }   // PC audio: ends the capture and the sound route (call-pcaudio.js)
       if (this._playCanvasStop) { try { this._playCanvasStop(); } catch { } this._playCanvasStop = null; }
       for (const t of [p.vtrack, p.atrack]) { try { t && t.stop(); } catch { } }
       try { p.actx && p.actx.close(); } catch { }

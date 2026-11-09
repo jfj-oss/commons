@@ -1,0 +1,32 @@
+#!/bin/sh
+S="$FAKE_STATE"
+echo "pactl $*" >> "$S/pactl.log"
+loop_up() { [ -f "$S/loop.pid" ] && kill -0 "$(cat "$S/loop.pid")" 2>/dev/null; }
+sink_of() { if [ -f "$S/sink_of_$1" ]; then cat "$S/sink_of_$1"; else echo 63; fi; }
+inputs() {
+  first=1; printf '['
+  for id in $(cat "$S/ids"); do
+    [ $first = 1 ] || printf ','; first=0
+    case $id in
+      52) printf '{"index":52,"sink":%s,"corked":false,"properties":{"media.name":"Sea Power - Waving Flags","application.name":"spotify","application.process.binary":"spotify"}}' "$(sink_of 52)";;
+      77) printf '{"index":77,"sink":%s,"corked":false,"properties":{"media.name":"Playback","application.name":"Brave","application.process.binary":"brave"}}' "$(sink_of 77)";;
+      90) printf '{"index":90,"sink":65,"properties":{"media.name":"output","application.name":"megatron_pcaudio_listen","application.process.binary":"pw-loopback"}}';;
+    esac
+  done
+  printf ']\n'
+}
+case "$*" in
+  "-f json list sink-inputs") inputs;;
+  "-f json list sinks")
+    printf '[{"index":63,"name":"alsa_output.fake.analog-stereo"}'
+    if loop_up; then printf ',{"index":64,"name":"megatron_pcaudio_sink"}'; fi
+    printf ']\n';;
+  "get-default-sink") echo alsa_output.fake.analog-stereo;;
+  "get-default-source") echo alsa_input.fake.analog-stereo;;
+  move-sink-input*)
+    id=$2; to=$3
+    case "$to" in megatron_pcaudio_sink) to=64;; @DEFAULT_SINK@) to=63;; esac
+    echo "$id $to" >> "$S/moves.log"; echo "$to" > "$S/sink_of_$id";;
+  set-default-*) echo "$*" >> "$S/defaults.log";;
+  *) echo "unexpected: $*" >> "$S/unexpected.log"; exit 1;;
+esac
