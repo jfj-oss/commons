@@ -28,6 +28,9 @@ pub const WALL_MAX_WALLS: usize = 16;
 /// Changes reach the saved state at most this often.
 pub const WALL_FLUSH_SECS: u64 = 20;
 const MAX_CLOCK: u64 = 1 << 40;
+/// How far past the highest clock this device has seen one batch may claim to be. An honest device moves up by one per stroke, so this only stops
+/// a forged clock from jumping to the ceiling, where nobody could draw any more until the owner cleared the wall.
+const MAX_CLOCK_STEP: u64 = 1 << 20;
 const MAX_ACCTS: usize = 1024;
 
 /// glyph index, colour (0 = the room's main colour, 1 = its highlight), logical clock, index into `Wall::accts`.
@@ -187,6 +190,7 @@ impl Client {
             if locked && !from_owner { return; }
             if d.c.iter().any(|c| c[0] >= WALL_CELLS as u64 || c[1] >= WALL_GLYPHS.len() as u64 * 2) { return; }
             let w = self.wall_mut(gid);
+            if d.k > w.clock.saturating_add(MAX_CLOCK_STEP) { return; }
             for c in &d.c { changed |= w.put(c[0] as u32, (c[1] / 2) as u8, (c[1] % 2) as u8, d.k, acct); }
         } else if kind == "wall.s" {
             let Ok(s) = serde_json::from_str::<WireS>(data) else { return };
@@ -197,6 +201,7 @@ impl Client {
             for c in &s.c {
                 // A snapshot is second-hand. While the wall is locked it may only fill cells that are still empty, so it cannot be used to draw.
                 if locked && !from_owner && w.cells.contains_key(&(c[0] as u16)) { continue; }
+                if c[2] > w.clock.saturating_add(MAX_CLOCK_STEP) { continue; }
                 changed |= w.put(c[0] as u32, (c[1] / 2) as u8, (c[1] % 2) as u8, c[2], &s.a[c[3] as usize]);
             }
             self.wall_snap_seen.insert(gid.to_string(), commons_proto::now_secs());

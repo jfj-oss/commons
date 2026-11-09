@@ -340,3 +340,18 @@ fn a_ring_drawn_in_batches_over_four_seconds_arrives_whole() {
     assert_eq!(glyphs(&mut b, &gid), mine);
     assert_eq!(glyphs(&mut c, &gid), mine);
 }
+
+#[test]
+fn a_forged_clock_cannot_jam_the_wall() {
+    let (_n, mut a, mut b, mut c, _cid, gid) = trio();
+    let ceiling = 1u64 << 40;
+    let d = format!("{{\"g\":0,\"k\":{ceiling},\"c\":[[100,2]]}}");
+    b.c.debug_send_envelope(&gid, Envelope::Live { kind: "wall.d".into(), data: d, ts: now_secs() }).unwrap();
+    let snap = format!("{{\"g\":0,\"i\":0,\"n\":1,\"a\":[\"{}\"],\"c\":[[200,2,{ceiling},0]]}}", acct(1));
+    b.c.debug_send_envelope(&gid, Envelope::Live { kind: "wall.s".into(), data: snap, ts: now_secs() }).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    assert!(glyphs(&mut a, &gid).is_empty(), "forged clocks are dropped");
+    assert!(a.c.wall_draw(&gid, &[(5, 5, 3, 0)]).unwrap());
+    settle(&mut [&mut a, &mut b, &mut c]);
+    assert_eq!(glyphs(&mut c, &gid), vec![(5 * WALL_COLS as u16 + 5, 3)], "drawing still works for everyone");
+}

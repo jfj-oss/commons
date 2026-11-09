@@ -89,6 +89,7 @@
       const r = await rpc('wall_get', { gid, rev: W.rev });
       if (W.gid !== gid || r.busy) return;
       W.gen = r.gen; W.peerAt = (r.peer_at || 0) * 1000; W.snapAt = (r.snap_at || 0) * 1000;
+      shareBack();
       const lockChanged = W.locked !== r.locked; W.locked = r.locked;
       if (!r.same) {
         W.rev = r.rev; W.cells = new Map(r.cells.filter(c => c[1] !== 0).map(c => [c[0], [c[1], c[2]]]));
@@ -130,6 +131,7 @@
     W.flushing = true; W.lastSend = Date.now();
     const keys = [...W.out.keys()].slice(0, BATCH), cells = keys.map(p => [p % COLS, (p / COLS) | 0, W.out.get(p)[0], W.out.get(p)[1]]);
     const share = present();
+    if (!share) { W.localOnly = gid; ask('draw'); }   // nobody seen yet: it stays here until someone turns up, and is then sent as a snapshot
     let r = null; try { r = await rpc('wall_draw', { gid, cells, share }); } catch (e) { r = { error: true }; }
     W.flushing = false;
     if (W.gid !== gid) return;
@@ -151,6 +153,7 @@
     if (!W.gid || e.gid !== W.gid) return;
     if (e.kind === 'wall.q') { W.heard = Date.now(); wantAnswer(Date.now()); }
     else if (e.kind === 'wall.h') { W.heard = Date.now(); clearTimeout(W.answer); W.answer = 0; }
+    shareBack();
   }
   function wantAnswer(since) {
     if (W.answer) return;
@@ -159,10 +162,19 @@
       W.answer = 0; if (W.gid !== gid) return;
       await refresh();
       if (W.snapAt > since) return;   // somebody else already answered
-      let chunks = []; try { chunks = (await rpc('wall_snapshot', { gid })).chunks || []; } catch { }
-      if (!chunks.length) { __megaLive.send(gid, 'wall.h', '{}'); return; }
-      for (let i = 0; i < chunks.length && W.gid === gid; i++) { if (i) await new Promise(r => setTimeout(r, 650)); await __megaLive.send(gid, 'wall.s', chunks[i]); }
+      if (!(await sendSnapshot(gid))) __megaLive.send(gid, 'wall.h', '{}');
     }, 300 + Math.random() * 1200);
+  }
+  async function sendSnapshot(gid) {
+    let chunks = []; try { chunks = (await rpc('wall_snapshot', { gid })).chunks || []; } catch { }
+    for (let i = 0; i < chunks.length && W.gid === gid; i++) { if (i) await new Promise(r => setTimeout(r, 650)); await __megaLive.send(gid, 'wall.s', chunks[i]); }
+    return chunks.length;
+  }
+  // What was drawn while nobody seemed to be around goes out once, as soon as someone is.
+  function shareBack() {
+    const gid = W.gid; if (!gid || W.localOnly !== gid || !present()) return;
+    W.localOnly = null;
+    setTimeout(() => { if (W.gid === gid) sendSnapshot(gid); }, 300 + Math.random() * 700);
   }
 
   // ------------------------------------------------------------------ the header button and the toolbar
