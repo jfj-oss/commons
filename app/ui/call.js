@@ -15,6 +15,18 @@
   const OLD_KEY_GRACE_MS = 3000;     // how long the previous epoch's key stays usable for late frames
   const POLL_MS = 1500;              // how often the Rust core is asked for the current epoch
   const TOKEN_REFRESH_MARGIN = 60;   // seconds
+  const RPC_TIMEOUT_MS = 15000;      // the app's own bridge can stall; a call must not sit in "connecting" for ever because of that
+  // Waits between attempts when a session is gone and a fresh one has to be built. Attempts are cheap (the token is reused, and a
+  // server that is still down refuses at once), and every second of backoff is a second of silence once it is back: measured, an
+  // 8 s server outage took 15.7 s to heal with the old 1, 2, 4, 8 s backoff. After a minute of trying it slows down.
+  const REJOIN_DELAYS = [400, 400, 800, 1000, 1500, 2000];
+  const REJOIN_SLOW_AFTER_MS = 60000, REJOIN_SLOW_DELAY_MS = 5000;
+  // Waits before trying a first join again when the server cannot be reached, before telling the user.
+  const JOIN_RETRY_DELAYS = [700, 1500, 3000, 5000];
+  const MEDIA_DOWN_POLLS = 7;        // ~10 s of polls with no working media path before the call is rebuilt
+  // How long a fresh session may take to get its media path up. A first join keeps the SDK's 15 s; a rejoin starts tighter, so one attempt
+  // that hangs (seen: 15 s of silence) costs less, and goes back to 15 s if tight attempts keep failing (a really slow link).
+  const REJOIN_PC_TIMEOUT_MS = 8000, REJOIN_PC_TIMEOUT_AFTER = 3;
 
   // "Play into the call": a movie is captured on the sender and published as the same screen-share sources as a real
   // screen share, so the existing tiled view shows it and every frame goes through the same E2EE pipeline. These are the
@@ -32,6 +44,7 @@
 
   const b64d = s => { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; const bin = atob(s); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; };
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const within = (p, ms, what) => { let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error('timeout: ' + what)), ms); })]).finally(() => clearTimeout(t)); };
   const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } };
   const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { } };
 
@@ -103,7 +116,7 @@
       this._speakingSent = null; this._wantSpeaking = '0'; this._speakTimer = null; this._speakAt = 0;   // what the rail reads back, via the relay
       this.play = null; this.playHost = null;
       this.viewQuality = new Map(); this.attempt = 0; this.rotations = 0; this.lastRotation = 0; this.events = [];
-      this._leaving = false; this._token = null;
+      this._leaving = false; this._token = null; this._gen = this._gen || 0;
     }
 
     log(msg) { this.events.push({ ts: Date.now(), msg }); if (this.events.length > 100) this.events.shift(); }
@@ -115,17 +128,31 @@
     async join(gid, roomName) {
       if (this.phase !== 'idle' && this.phase !== 'error') await this.leave();
       this.reset(); this.gid = gid; this.roomName = roomName || ''; this.phase = 'connecting'; this.changed();
+      const gen = ++this._gen;
       const sup = describeSupport();
       if (!sup.ok) { this.phase = 'error'; this.fail('unsupported', sup.reasons.join(' ')); throw new CallError('unsupported', sup.reasons.join(' ')); }
-      try {
-        await this._connect();
-        this.attempt = 0;
-      } catch (e) {
-        this.phase = 'error';
-        const ce = e instanceof CallError ? e : this._explain(e);
-        this.fail(ce.kind, ce.message);
-        await this._teardown();
-        throw ce;
+      // A server that cannot be reached right now (restarting, a network still coming up) gets a few more tries before the user hears about it.
+      for (let i = 0; ; i++) {
+        try {
+          await this._connect(gen, i > 0);
+          this.attempt = 0;
+          break;
+        } catch (e) {
+          const ce = e instanceof CallError ? e : this._explain(e);
+          if (gen !== this._gen || ce.kind === 'stale') return;        // left, or another join took over, while this one was under way
+          if (ce.kind === 'network' && i < JOIN_RETRY_DELAYS.length) {
+            if (e && (e.status === 401 || e.status === 403)) this._token = null;
+            this.attempt = i + 1; this.log('could not connect (attempt ' + (i + 1) + '), trying again: ' + ce.message); this.changed();
+            await this._teardown();
+            await this._retryWait(JOIN_RETRY_DELAYS[i], gen);
+            if (gen !== this._gen) return;
+            continue;
+          }
+          this.phase = 'error';
+          this.fail(ce.kind, ce.message);
+          await this._teardown();
+          throw ce;
+        }
       }
       document.addEventListener('keydown', this._keydown); document.addEventListener('keyup', this._keyup);
       this._startPoll();
@@ -170,14 +197,32 @@
       return new CallError('other', m);
     }
 
-    async _fetchCredentials() {
-      const [st, tok] = await Promise.all([this.rpc('call_state', { gid: this.gid }), this.rpc('call_token', { gid: this.gid })]);
+    // A retry within one join or one outage reuses the token it already has: the relay limits how many a device may ask for, and the
+    // first attempt after any join or outage still asks, so the relay's membership check is never skipped.
+    async _fetchCredentials(reuse = false) {
+      const now = Date.now() / 1000;
+      const keep = reuse && this._token && (!this._token.expires || this._token.expires - now > TOKEN_REFRESH_MARGIN) ? this._token : null;
+      const [st, tok] = await within(Promise.all([this.rpc('call_state', { gid: this.gid }), keep || this.rpc('call_token', { gid: this.gid })]), RPC_TIMEOUT_MS, 'the app did not answer in time');
       return { st, tok };
     }
+    // Waits between attempts, but stops early when the system says the network is back or the window is looked at again (a laptop waking up).
+    _retryWait(ms, gen) {
+      return new Promise(resolve => {
+        const done = () => { clearTimeout(t); clearInterval(watch); removeEventListener('online', done); document.removeEventListener('visibilitychange', vis); resolve(); };
+        const vis = () => { if (document.visibilityState === 'visible') done(); };
+        const t = setTimeout(done, ms);
+        const watch = setInterval(() => { if (gen !== this._gen) done(); }, 250);   // left or joined elsewhere meanwhile
+        addEventListener('online', done); document.addEventListener('visibilitychange', vis);
+      });
+    }
 
-    async _connect() {
+    // Everything after an await checks that this attempt still counts: leaving, or a new join, must not leave a call behind it.
+    async _connect(gen = this._gen, reuseToken = false, pcTimeoutMs = 15000, attemptBudgetMs = 0) {
       const LK = this.LK;
-      const { st, tok } = await this._fetchCredentials();
+      const stale = () => gen !== this._gen || this._leaving;
+      this._established = false;
+      const { st, tok } = await this._fetchCredentials(reuseToken);
+      if (stale()) throw new CallError('stale', 'superseded');
       this._token = tok;
       this.me = st.me;
       // Per-sender keys: every device in the group gets its own key, so no two senders ever share a key/nonce space.
@@ -193,21 +238,30 @@
         videoCaptureDefaults: { deviceId: p.camId || undefined, resolution: LK.VideoPresets.h360 },
         audioOutput: p.outId ? { deviceId: p.outId } : undefined,
         stopLocalTrackOnUnpublish: true,
-        // One quick resume (same session, ICE restart) is left to the SDK. If that fails the SDK would republish tracks into the old
-        // frame-encryption pipeline, which broke decryption for some pairs after a server restart in testing; so a lost session ends
-        // here and a fresh room, worker, keys and token are built (_autoRejoin).
-        reconnectPolicy: { nextRetryDelayInMs: ctx => (ctx.retryCount === 0 ? 300 : null) },
+        // One quick resume (same session, ICE restart) is left to the SDK; a full reconnect by the SDK never is. It would republish tracks into
+        // the old frame-encryption pipeline, which broke decryption for some pairs after a server restart in testing. So when the SDK is
+        // about to escalate (a failed resume, or the server asking for a reconnect), or the resume did not work, a fresh room, worker,
+        // keys and token are built instead (_autoRejoin).
+        reconnectPolicy: { nextRetryDelayInMs: ctx => (ctx.retryCount === 0 && !(room && room.engine && room.engine.fullReconnectOnNext) ? 300 : null) },
       });
       this.room = room;
       this._wire(room);
+      const abandon = async () => { try { room.removeAllListeners(); await room.disconnect(true); } catch { } try { worker.terminate(); } catch { } if (this._worker === worker) this._worker = null; if (this.room === room) this.room = null; throw new CallError('stale', 'superseded'); };
       await this._applyKeys(st);          // keys are in place before the room is allowed to carry any media
       await room.setE2EEEnabled(true);    // marks everything we will publish as encrypted
       if (!room.localParticipant.isE2EEEnabled) throw new CallError('no-e2ee', 'Frame encryption could not be switched on, so the call was not started.');
-      await room.connect(tok.url, tok.token, { autoSubscribe: false });
+      if (stale()) await abandon();
+      // The session can die while it is being set up (the server drops the signal connection); the SDK then leaves connect() waiting for its
+      // own timeout, so a drop ends the attempt here, and a rejoin attempt has a budget of its own.
+      const dropped = new Promise((_, rej) => room.once(LK.RoomEvent.Disconnected, () => rej(new CallError('network', 'connect: the connection dropped while it was being set up'))));
+      dropped.catch(() => { });
+      const up = Promise.race([room.connect(tok.url, tok.token, { autoSubscribe: false, peerConnectionTimeout: pcTimeoutMs }), dropped]);
+      await (attemptBudgetMs ? within(up, attemptBudgetMs, 'the call did not come up in time') : up);
+      if (stale()) await abandon();
       // The worker confirms once it holds the keys and has switched our sender to encrypt. Nothing is published before this.
-      for (let i = 0; i < 50 && !room.isE2EEEnabled; i++) await sleep(100);
+      for (let i = 0; i < 50 && !room.isE2EEEnabled; i++) { if (stale()) await abandon(); await sleep(100); }
       if (!room.isE2EEEnabled) throw new CallError('no-e2ee', 'The call connected but frame encryption did not start, so it was closed. Nothing was sent.');
-      this.phase = 'connected'; this.log('connected, epoch ' + st.epoch);
+      this.phase = 'connected'; this._established = true; this.log('connected, epoch ' + st.epoch);
       if (this.deafened) this._announceDeafened();
       this._announceSpeaking(true);
       this._subscribeAll(room);
@@ -216,6 +270,7 @@
       this.gate.manual = this.muted; this.gate.game = this.gameMuted;
       try { await this.gate.open(); }
       catch (e) { this.log('microphone unavailable: ' + (e.message || e)); const ce = this._explain(e); this.muted = true; this.gate.manual = true; this.fail(ce.kind === 'other' ? 'mic' : ce.kind, ce.message + ' You are in the call muted and can still listen.'); }
+      if (stale()) await abandon();
       this._subscribeAll(room);
       this.changed();
     }
@@ -239,6 +294,7 @@
 
     async leave() {
       this._leaving = true;
+      this._gen++;
       this._gameWatch = null;
       clearInterval(this._poll); clearTimeout(this._rejoinTimer);
       document.removeEventListener('keydown', this._keydown); document.removeEventListener('keyup', this._keyup);
@@ -305,8 +361,10 @@
     _startPoll() {
       clearInterval(this._poll);
       this._polling = false;
+      this._mediaDown = 0;
       this._poll = setInterval(async () => {
         if (this._polling || !this.room || this.phase === 'idle') return;
+        this._watchMediaPath();
         this.audioEls.forEach(e => { if (e.paused && !this.deafened) this._play(e); });
         this._polling = true;
         try {
@@ -364,7 +422,7 @@
       room.on(E.Reconnecting, () => { this.phase = 'reconnecting'; this.log('connection lost; reconnecting'); this.changed(); });
       room.on(E.Reconnected, () => { this.phase = 'connected'; this.log('reconnected'); this._pollNow(); this.changed(); });
       room.on(E.SignalReconnecting, () => { this.log('signal reconnecting'); });
-      room.on(E.Disconnected, reason => { this.log('disconnected: ' + reason); if (!this._leaving && this.room === room) this._autoRejoin(reason); });
+      room.on(E.Disconnected, reason => { this.log('disconnected: ' + reason); if (!this._leaving && this.room === room && this._established) this._autoRejoin(reason); });   // an attempt that never got in is ended and retried by whoever made it
       room.on(E.EncryptionError, (err, rp) => {
         const id = rp ? rp.identity : 'unknown';
         // self-heal: the worker may have lost this member's key (it forgets keys when a participant drops out and returns)
@@ -375,6 +433,17 @@
       room.on(E.LocalTrackPublished, pub => { if (!pub.isEncrypted && this.room === room) { this.log('local track not encrypted: unpublishing'); room.localParticipant.unpublishTrack(pub.track); this.fail('no-e2ee', 'A track of yours was not encrypted and was stopped.'); } this.changed(); });
       room.on(E.LocalTrackUnpublished, pub => { if (pub.source === LK.Track.Source.ScreenShare) { this.sharing = false; } if (pub.source === LK.Track.Source.Camera) this.camera = false; this.changed(); });
       room.on(E.ParticipantEncryptionStatusChanged, () => this.changed());
+    }
+
+    // The SDK can spend many seconds resuming a session whose media path has already failed (seen: 36 s of silence with TURN over TLS while the
+    // call said "connected"). If the media path stays down for ~10 s of polls, the call is rebuilt. Counted in polls, not wall-clock time, so a
+    // machine that slept does not look like a long outage the moment it wakes.
+    _watchMediaPath() {
+      if (this._rejoining) { this._mediaDown = 0; return; }
+      const pc = this.room && this.room.engine && this.room.engine.pcManager && this.room.engine.pcManager.publisher;
+      const st = pc && typeof pc.getConnectionState === 'function' ? pc.getConnectionState() : 'connected';
+      this._mediaDown = st === 'connected' ? 0 : this._mediaDown + 1;
+      if (this._mediaDown >= MEDIA_DOWN_POLLS) { this._mediaDown = 0; this.log('media path down (' + st + '); rebuilding the call'); this._autoRejoin('media path down'); }
     }
 
     _pollNow() { if (this._poll) { this._polling = false; } this.rpc('call_state', { gid: this.gid }).then(st => this._applyKeys(st)).catch(() => { }); }
@@ -412,20 +481,23 @@
       if (this._rejoining) return; this._rejoining = true;
       this.phase = 'reconnecting'; this.changed();
       const run = async () => {
-        const delays = [1000, 2000, 4000, 8000, 15000];
+        const delays = REJOIN_DELAYS;
         const started = Date.now();
-        for (let i = 0; !this._leaving; i++) {
+        const gen = this._gen;
+        for (let i = 0; !this._leaving && gen === this._gen; i++) {
           await this._teardown();
           try {
             this.keyState = null; this.appliedEpoch = null; this._keyed = new Set(); this.blocked.clear(); this.tracks.clear();
-            await this._connect(); this.attempt = 0; this.error = null; this.log('rejoined automatically'); this._rejoining = false; this.changed(); return;
+            await this._connect(gen, i > 0, i < REJOIN_PC_TIMEOUT_AFTER ? REJOIN_PC_TIMEOUT_MS : 15000, i < REJOIN_PC_TIMEOUT_AFTER ? REJOIN_PC_TIMEOUT_MS + 2000 : 20000); this.attempt = 0; this.error = null; this.log('rejoined automatically'); this._rejoining = false; this.changed(); return;
           } catch (e) {
             const ce = e instanceof CallError ? e : this._explain(e);
+            if (ce.kind === 'stale' || gen !== this._gen) { this._rejoining = false; return; }
             this.log('rejoin attempt ' + (i + 1) + ' failed: ' + ce.message);
             if (ce.kind === 'not-member' || /no longer a member/.test(ce.message) || ce.kind === 'unsupported') { this._rejoining = false; await this.leave(); this.phase = 'error'; this.fail(ce.kind, ce.message); return; }
             this.attempt = i + 1; this.error = { kind: 'network', msg: 'Connection lost; trying again (attempt ' + (i + 1) + ')…' }; this.changed();
             if (Date.now() - started > 10 * 60 * 1000) { this._rejoining = false; this.phase = 'error'; this.fail('network', 'Could not get back into the call after 10 minutes. ' + ce.message); await this._teardown(); return; }
-            await sleep(delays[Math.min(i, delays.length - 1)]);
+            if (e && (e.status === 401 || e.status === 403)) this._token = null;   // a refused token is not reused
+            await this._retryWait(Date.now() - started > REJOIN_SLOW_AFTER_MS ? REJOIN_SLOW_DELAY_MS : delays[Math.min(i, delays.length - 1)], gen);
           }
         }
         this._rejoining = false;
