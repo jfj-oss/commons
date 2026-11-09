@@ -646,6 +646,14 @@ try {
     // it reaches the other client, identical
     await wf(B, `__megaWall.state().marks === ${nA}`, 20000).catch(async () => { throw new Error('mega: wall: bob never got the stroke: ' + JSON.stringify([nA, await ws(B), await stat(A), await B.ev(`rpc('wall_get', { gid: ${g} }).then(r => [r.gen, r.cells.length, r.peer_at, r.locked])`), await A.ev(`rpc('wall_get', { gid: ${g} }).then(r => [r.gen, r.cells.length, r.peer_at, r.locked])`), await B.ev(`rpc('notices').then(n => n.slice(0, 4).map(x => x.kind + ':' + x.text.slice(0, 80)))`)])); });
     need(await cells(A) === await cells(B), 'wall: the two walls differ');
+    // somebody who opens the room asks for the wall and one member answers with a snapshot (here bob asks; alice's page answers, bob's core takes it)
+    { const t0 = Math.floor(Date.now() / 1000) - 1, s0 = await stat(A);
+      await A.send('Page.bringToFront'); await sleep(300);
+      await B.ev(`rpc('live_send', { gid: ${g}, kind: 'wall.q', data: '{}' }).then(() => 1)`);
+      let snapAt = 0; for (let i = 0; i < 40 && snapAt < t0; i++) { await sleep(500); snapAt = await B.ev(`rpc('wall_get', { gid: ${g} }).then(r => r.snap_at)`); }
+      const s1 = await stat(A);
+      need(snapAt >= t0 && (s1.kinds['wall.s'] || 0) > (s0.kinds['wall.s'] || 0), 'wall: nobody answered a request for the wall with a snapshot: ' + JSON.stringify([snapAt, t0, s0.kinds, s1.kinds]));
+      need((s1.kinds['wall.s'] || 0) - (s0.kinds['wall.s'] || 0) <= 8, 'wall: a snapshot took more than 8 events'); }
     // and a stroke of his reaches her (merged cell by cell)
     await scribble(B, 60, 27, 8, 1500, 5); await sleep(1500);
     await wf(A, `__megaWall.state().marks === ${(await ws(B)).marks}`, 20000).catch(() => { throw new Error('mega: wall: his stroke did not reach her'); });
