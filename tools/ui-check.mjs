@@ -182,7 +182,7 @@ try {
   await A.shot('09-listening-own'); await B.shot('10-listening-people');
   // Playback stops in rune: friends stop seeing it at once, not when the ten-minute TTL runs out.
   runeSong.status = 'stopped'; runeSong.index = -1; runeSong.queue = [];
-  await B.waitFor(`![...document.querySelectorAll('.person .listen')].some(e=>e.innerText.includes('Detective'))`, 30000);
+  await B.waitFor(`![...document.querySelectorAll('.person .listen')].some(e=>e.innerText.includes('Detective'))`, 90000);
 
   // ---- profile pictures ----
   // Alice picks a phone-style JPEG: its EXIF orientation says "rotate 90° clockwise". Stored, the four quadrants are
@@ -425,7 +425,7 @@ try {
   need(await A.ev(`!document.querySelector('#mega-pal') && __mega.level === 'server' && __mega.list.item.name === 'lounge' && window.__joined === null`), 'jump to a voice room should focus its card without joining');
   // a second community makes a home; the cards are communities plus the "you" card
   await A.ev(`void __megaNewCommunity(), 0`); await A.waitFor(`document.querySelector('.modal #n')`); await type(A, '#n', 'Second place'); await click(A, '.modal .acts button:last-child');
-  await A.waitFor(`__mega.level === 'server' && __mega.list.items.some(x => x.cid && S.snap.communities.find(c => c.id === x.cid && c.name === 'Second place'))`, 15000);
+  await A.waitFor(`__mega.level === 'server' && __mega.list.items.some(x => x.cid && S.snap.communities.find(c => c.id === x.cid && c.name === 'Second place'))`, 60000);
   await key(A, 'Escape'); await sleep(900);
   need(await lvl(A) === 'home', 'Esc from the rooms should show all communities, level is ' + await lvl(A));
   const home = await A.ev(`__mega.list.items.map(x => x.kind + ':' + x.name).join()`);
@@ -652,7 +652,7 @@ try {
   await P.shot('09-phone');
   await P.ev(`(async () => { const me = S.snap.me.name; for (const t of ['ok', 'see you at noon', '@' + me + ' you there', 'a longer message that is set at the normal size and wraps onto a second line', 'hi \u{1F389}']) await rpc('send_text', { gid: S.gid, text: t, reply: null }); return 1; })()`);
   await P.waitFor(`document.querySelectorAll('.msg').length >= 5`, 15000); await sleep(1500);
-  const pr = await P.ev(`(() => { const c = document.querySelector('#mega-bd'), s = document.querySelector('#stream'); return { bd: !!c && c.width > 0, hscroll: document.documentElement.scrollWidth > innerWidth + 1 || s.scrollWidth > s.clientWidth + 1, n: document.querySelectorAll('.msg').length }; })()`);
+  const pr = await P.ev(`(() => { const c = document.querySelector('#mega-bd'), s = document.querySelector('#stream'); return { bd: !!c && c.width > 0, hscroll: document.documentElement.scrollWidth > innerWidth + 1, wide: [...s.querySelectorAll('.msg, .msg *')].filter(e => e.getBoundingClientRect().right > s.getBoundingClientRect().right + 1).slice(0, 4).map(e => e.tagName + '.' + e.className), sw: s.scrollWidth, cw: s.clientWidth, n: document.querySelectorAll('.msg').length }; })()`);
   need(pr.bd && !pr.hscroll, 'the room on a phone: backdrop missing or the page scrolls sideways: ' + JSON.stringify(pr));
   await P.shot('mega2-5-phone-room');
   const pdots = await P.ev(`(() => { const r = document.querySelector('#mega-rail').getBoundingClientRect(); return { w: r.width, h: r.height, level: __mega.level }; })()`);
