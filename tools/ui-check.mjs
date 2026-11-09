@@ -386,6 +386,8 @@ try {
       stream: s.width > 200 && s.left >= r.getBoundingClientRect().right - 1, oldRailGone: document.querySelector('#rooms').getBoundingClientRect().width === 0 }; })()`);
   need(chat.rail && chat.dots >= 4 && chat.active === 1 && chat.voice >= 1 && chat.opt === 1 && chat.stream && chat.oldRailGone, 'the chat does not show the dots beside the stream: ' + JSON.stringify(chat));
   await A.shot('mega-1-chat');
+  // Esc closes the People sheet first when it is open
+  if (await A.ev(`S.people`)) { await key(A, 'Escape'); await sleep(400); need(await A.ev(`!S.people && !document.querySelector('#people:not([hidden])')`), 'Esc did not close the People sheet'); }
   // wheel over the dots pops them out as small cards; Esc closes that first, leaving the chat where it was
   await A.ev(`document.querySelector('#mega-rail').dispatchEvent(new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true }))`); await sleep(700);
   need(await A.ev(`document.querySelector('#mega-rail').classList.contains('open')`), 'wheel over the dots did not pop them out');
@@ -421,7 +423,7 @@ try {
   await key(A, 'Enter'); await sleep(900);
   need(await A.ev(`!document.querySelector('#mega-pal') && __mega.level === 'server' && __mega.list.item.name === 'lounge' && window.__joined === null`), 'jump to a voice room should focus its card without joining');
   // a second community makes a home; the cards are communities plus the "you" card
-  await A.ev(`__megaNewCommunity()`); await A.waitFor(`document.querySelector('.modal #n')`); await type(A, '#n', 'Second place'); await click(A, '.modal .acts button:last-child');
+  await A.ev(`void __megaNewCommunity(), 0`); await A.waitFor(`document.querySelector('.modal #n')`); await type(A, '#n', 'Second place'); await click(A, '.modal .acts button:last-child');
   await A.waitFor(`__mega.level === 'server' && __mega.list.items.some(x => x.cid && S.snap.communities.find(c => c.id === x.cid && c.name === 'Second place'))`, 15000);
   await key(A, 'Escape'); await sleep(900);
   need(await lvl(A) === 'home', 'Esc from the rooms should show all communities, level is ' + await lvl(A));
@@ -565,7 +567,7 @@ try {
   await P.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
   await P.waitFor(`!document.querySelector('#app').hidden`, 20000);
   await P.waitFor(`document.querySelectorAll('.room').length>=1`, 20000);
-  if (await P.ev(`document.querySelector('#composer').hidden`)) { await P.ev(`document.querySelectorAll('.room')[0].click()`); }
+  await P.ev(`document.querySelectorAll('.room')[0].click()`);   // mega opens on the cards; go into a chat for the layout checks below
   await P.waitFor(`!document.querySelector('#composer').hidden`, 10000); await sleep(500);
   const phone = await P.ev(`(() => { const r = document.querySelector('#rail').getBoundingClientRect(), c = document.querySelector('#composer').getBoundingClientRect(); return { w: innerWidth, railAway: r.right <= 1, composerIn: c.height > 0 && c.top > 0 && c.bottom <= innerHeight + 1 }; })()`);
   if (phone.w > 760 || !phone.railAway || !phone.composerIn) throw new Error('narrow layout is wrong: ' + JSON.stringify(phone));

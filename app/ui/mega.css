@@ -20,7 +20,13 @@ html.mega {
 }
 html.mega[data-read="plain"] { --m-readfb: var(--sans); }
 @supports (corner-shape: squircle) { html.mega { --m-sq: 76px; } .msq, .mfly { corner-shape: squircle; } }
-@media (max-width: 760px) { html.mega { --m-railw: 40px; --m-sq: 36px; } }
+@media (max-width: 760px) {
+  html.mega { --m-railw: 40px; --m-sq: 36px; }
+  .mhide-s { display: none !important; }
+  .mbar { gap: 6px; }
+  .mchip { min-height: 36px; padding: 0 11px; gap: 5px; }
+  .mmark { font-size: round(down, 30px, var(--m-dsnap)); max-width: 40vw; }
+}
 @media (max-width: 760px) { @supports (corner-shape: squircle) { html.mega { --m-sq: 58px; } } }
 
 /* ---- the old chat, beside the dots ---- */
@@ -31,6 +37,8 @@ html.mega #btn-rooms { display: none !important; }
 html.mega { --read: var(--m-msg); --read-size: 24px; --read-lead: 1.05; }
 html.mega .body, html.mega #input { letter-spacing: calc(var(--m-small) * .5); }
 html.mega #chan-title { font-family: var(--m-sharp); font-weight: 400; font-size: round(down, 36px, 12px); line-height: 1; letter-spacing: var(--m-track); }
+html.mega .body.gone { font-style: normal; }
+@media (max-width: 760px) { html.mega #chan-title { font-size: round(down, 24px, 12px); } }
 html.mega .empty h3 { font-family: var(--m-sharp); font-weight: 400; }
 /* the dock stays where it was, as a small card in the bottom left corner; the rest of the old rail is gone */
 @media (min-width: 761px) {
@@ -73,7 +81,7 @@ html.mega #people { position: fixed; right: 0; top: 0; bottom: 0; z-index: 30; w
 .mpreview b { font: 600 15px var(--m-ui); letter-spacing: var(--m-small); }
 .mti { grid-area: ti; margin: 0; align-self: end; font-family: var(--m-blend); font-weight: 400; font-size: round(down, calc(clamp(44px, 10cqw, 138px) * var(--m-dz)), var(--m-dsnap)); line-height: .9; letter-spacing: round(calc(var(--m-track) + .045em), var(--m-lsnap)); text-wrap: balance; transition: letter-spacing .75s var(--m-spring); overflow-wrap: anywhere; }
 .mti i, .mnu i { font-style: inherit; margin-left: round(calc(var(--k, 0) * 1em), var(--m-lsnap)); }
-.mti i.sp, .mopts-in h1 i.sp { margin-left: -.1em; }
+.mti i.sp, .mopts-in h1 i.sp { margin-left: .06em; }
 .mopts-in h1 i { font-style: normal; margin-left: round(calc(var(--k, 0) * 1em), var(--m-lsnap)); }
 .mslot.settled .mti { font-family: var(--m-sharp); letter-spacing: round(var(--m-track), var(--m-lsnap)); }
 .mnu { grid-area: nu; align-self: end; margin: 0; font-family: var(--m-sharp); font-weight: 400; font-size: round(down, clamp(76px, 15cqw, 210px), var(--m-dsnap)); line-height: .78; letter-spacing: round(-.08em, var(--m-lsnap)); padding-right: .08em; opacity: .85; }
