@@ -989,9 +989,14 @@ async function xferRefresh() {
     if (j !== xferRefresh.last) { xferRefresh.last = j; XLIST = r; xferRender(); }
     // A finished-on-the-relay upload needs only its saved hashes: send its message without asking for the file.
     for (const u of r.uploads) {
-      if (u.ready && !XFER.has('u:' + u.id) && !xferRefresh.tried.has(u.id) && u.uploaded === u.chunks) {
-        xferRefresh.tried.add(u.id);
-        try { await rpc('file_upload_finish', { id: u.id }); toast(`${u.name} sent.`); S.lastMsgs = ''; tick(); soon(); xferRefresh.last = ''; } catch { }
+      if (u.ready && !XFER.has('u:' + u.id) && !xferRefresh.tried.has(u.id)) {
+        // Ask the relay what it holds (the saved count can lag a crash); if it has everything, send the message.
+        try {
+          const sy = await rpc('file_upload_sync', { id: u.id });
+          if (!sy.complete && sy.uploaded.length < sy.chunks) continue;
+          xferRefresh.tried.add(u.id);
+          await rpc('file_upload_finish', { id: u.id }); toast(`${u.name} sent.`); S.lastMsgs = ''; tick(); soon(); xferRefresh.last = '';
+        } catch { }
       }
     }
   } catch { }
