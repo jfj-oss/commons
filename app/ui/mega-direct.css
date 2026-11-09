@@ -1,0 +1,17 @@
+/* mega: calling one person directly. A phone on each person's row, and a small "direct" list in the People drawer. */
+.dr-ic { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.p-acts .dr-row { color: var(--m-speak, #4df0c0); }
+.p-head .dr-open { margin-left: auto; margin-right: 6px; padding: 5px 12px; border-radius: 999px; font: 600 13px/1 var(--m-ui, sans-serif); letter-spacing: var(--m-small, -.018em); box-shadow: inset 0 0 0 1px rgb(255 255 255 / .22); text-transform: lowercase; }
+.p-head .dr-open[aria-expanded=true] { background: var(--m-speak, #4df0c0); color: #050407; box-shadow: none; }
+.dr-area { margin: 10px 0 4px; padding: 10px 12px; border-radius: 18px; background: rgb(255 255 255 / .05); box-shadow: inset 0 0 0 1px rgb(255 255 255 / .1); }
+@supports (corner-shape: squircle) { .dr-area { corner-shape: squircle; border-radius: 30px; } }
+.dr-list { display: flex; flex-direction: column; gap: 6px; }
+.dr-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.dr-nm { display: flex; flex-direction: column; min-width: 0; flex: 1 1 8em; }
+.dr-nm b { font: 500 15px/1.2 var(--m-name, sans-serif); letter-spacing: var(--m-small, -.018em); overflow-wrap: anywhere; }
+.dr-nm small, .dr-note, .dr-none { font: 500 12px/1.35 var(--m-ui, sans-serif); letter-spacing: var(--m-small, -.018em); opacity: .75; }
+.dr-none, .dr-note { margin: 4px 0 0; }
+.dr-btns { display: flex; gap: 6px; }
+.dr-b { padding: 6px 14px; border-radius: 999px; font: 600 13px/1 var(--m-ui, sans-serif); letter-spacing: var(--m-small, -.018em); background: var(--m-speak, #4df0c0); color: #050407; opacity: 1; }
+.dr-b.dim { background: none; color: inherit; box-shadow: inset 0 0 0 1px rgb(255 255 255 / .25); opacity: .85; }
+.dr-b:focus-visible, .dr-open:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }

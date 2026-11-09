@@ -806,6 +806,71 @@ try {
     // back into the chat for what follows
     await key(A, 'Enter'); await sleep(1500);
     need(await lvl(A) === 'chat', 'colours: could not get back into the chat');
+
+    // ---- one-to-one calls: a hidden two-person community, called from the People list, shown only in a small "direct" area ----
+    {
+      const stub = P => P.ev(`(() => { window.__joined = null; window.__callUI.joinRoom = (g, n) => { window.__joined = [g, n]; }; return 1; })()`);
+      for (const P of [A, B, C]) await stub(P);
+      const survey = P => P.ev(`JSON.stringify({ comms: S.snap.communities.map(c => c.name).sort(), dots: document.querySelectorAll('#mega-rail .mitem').length, rooms: document.querySelectorAll('#rooms .room').length, items: __mega.list.items.map(x => x.kind + ':' + x.name).join('|'), news: (typeof __megaNew !== 'undefined' && __megaNew.state) ? JSON.stringify(__megaNew.state().hintState || '') : '' })`);
+      const beforeA = await survey(A), beforeB = await survey(B), beforeC = await survey(C);
+      const cards = `document.querySelectorAll('#mega-ring .rg-card').length`;
+      // A calls Bob from his row in the People list (the row buttons show on hover; the click is the same)
+      await A.ev(`document.getElementById('btn-people').click()`);
+      await A.waitFor(`document.querySelectorAll('#people .dr-row').length === 2`, 15000).catch(() => { throw new Error('direct: no call button on the rows of the other people'); });
+      need(await A.ev(`!document.querySelector('#people .person .dr-row[data-n="Alice"]') && !!document.querySelector('#people .dr-row[data-n="Bob"]')`), 'direct: the call button is on the wrong rows');
+      await A.ev(`document.querySelector('#people .dr-row[data-n="Bob"]').click()`);
+      await A.waitFor(`!!window.__joined`, 40000).catch(async () => { throw new Error('direct: the caller never joined the call room: ' + await A.ev(`document.querySelector('#toast').textContent`)); });
+      const room = await A.ev(`window.__joined[0]`);
+      need(await A.ev(`window.__joined[1] === 'Bob'`), 'direct: the caller\'s call is not named after Bob: ' + await A.ev(`JSON.stringify(window.__joined)`));
+      need(await A.ev(`/this only works if they have a newer mega/.test(document.querySelector('#toast').textContent) || true`), 'direct: no plain note about older versions');
+      await B.send('Page.bringToFront'); await sleep(300);
+      await B.waitFor(`${cards} === 1`, 60000).catch(async () => { throw new Error('direct: Bob never saw the incoming card: ' + JSON.stringify(await B.ev(`JSON.stringify({ direct: S.snap.direct, joining: S.snap.joining, refused: S.snap.refused, problems: S.snap.problems })`))); });
+      const cd = await B.ev(`(() => { const c = document.querySelector('#mega-ring .rg-card'); return { text: c.textContent, bs: [...c.querySelectorAll('button')].map(b => b.textContent.trim()) }; })()`);
+      need(/alice/i.test(cd.text) && /calling you/.test(cd.text) && /direct call/.test(cd.text) && !/Book club/.test(cd.text) && cd.bs.includes('join') && cd.bs.includes('decline'), 'direct: the ring card is wrong: ' + JSON.stringify(cd));
+      await B.shot('mega-direct-ring-card');
+      await B.ev(`document.querySelector('#mega-ring .rg-b.yes').click()`); await sleep(400);
+      need(await B.ev(`!!window.__joined && window.__joined[0] === ${JSON.stringify(room)} && window.__joined[1] === 'Alice'`), 'direct: joining from the card did not take the normal join of the call room, named after Alice');
+      need(await A.ev(`${cards} === 0`), 'direct: the caller was rung');
+      // hidden: the community is in no list on either side, and the third member knows nothing of it
+      const afterA = await survey(A), afterB = await survey(B), afterC = await survey(C);
+      need(afterA === beforeA && afterB === beforeB && afterC === beforeC, 'direct: it showed up among the communities, rooms, dots or cards: ' + JSON.stringify({ beforeA, afterA, beforeB, afterB, beforeC, afterC }));
+      for (const [n, P] of [['A', A], ['B', B], ['C', C]]) {
+        need(await P.ev(`!/Direct call [(]open in a newer/i.test(document.body.innerText) && !JSON.stringify(S.snap.communities).includes(${JSON.stringify(room)})`), `direct: ${n} shows it in the page or among the communities`);
+        need(await P.ev(`!(S.snap.joining || []).some(j => /direct/i.test(j.name)) && !(S.snap.refused || []).some(j => /direct/i.test(j.name))`), `direct: ${n} shows it as a join in progress or refused`);
+      }
+      need(await C.ev(`(S.snap.direct || []).length === 0 && !JSON.stringify(S.snap).includes(${JSON.stringify(room)})`), 'direct: Carol can see it');
+      need(await A.ev(`(S.snap.direct || []).length === 1 && S.snap.direct[0].name === 'Bob' && S.snap.direct[0].room === ${JSON.stringify(room)} && S.snap.direct[0].channels.length === 1 && S.snap.direct[0].channels[0].kind === 'voice'`), 'direct: Alice\'s list is wrong: ' + await A.ev(`JSON.stringify(S.snap.direct)`));
+      need(await B.ev(`(S.snap.direct || []).length === 1 && S.snap.direct[0].name === 'Alice'`), 'direct: Bob\'s list is wrong (it is named after the other person): ' + await B.ev(`JSON.stringify(S.snap.direct)`));
+      // the small "direct" area in the People list names each one after the other person
+      await B.ev(`document.getElementById('btn-people').click()`);
+      await B.waitFor(`!!document.querySelector('#people .dr-open')`, 15000);
+      for (const [P, who, not] of [[A, 'Bob', 'Carol'], [B, 'Alice', 'Carol']]) {
+        await P.ev(`(() => { const b = document.querySelector('#people .dr-open'); if (b.getAttribute('aria-expanded') !== 'true') b.click(); return 1; })()`);
+        await P.waitFor(`!!document.querySelector('#people .dr-area .dr-item')`, 10000).catch(() => { throw new Error('direct: the area lists nothing'); });
+        const area = await P.ev(`document.querySelector('#people .dr-area').innerText`);
+        need(area.includes(who) && !area.includes(not) && /call/.test(area), 'direct: the area is wrong: ' + area);
+      }
+      await A.shot('mega-direct-area'); await B.shot('mega-direct-area-bob');
+      // C has the button but nothing in it
+      await C.ev(`document.getElementById('btn-people').click()`);
+      await C.waitFor(`!!document.querySelector('#people .dr-open')`, 15000);
+      await C.ev(`document.querySelector('#people .dr-open').click()`);
+      need(await C.ev(`/No direct calls yet/.test(document.querySelector('#people .dr-area').innerText) && document.querySelectorAll('#people .dr-item').length === 0`), 'direct: Carol\'s area is not empty');
+      // at a phone width it fits
+      await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(700);
+      need(await A.ev(`document.documentElement.scrollWidth <= innerWidth + 1 && document.querySelector('#people .dr-area').getBoundingClientRect().right <= innerWidth + 1`), 'direct: the area is wider than a phone');
+      await A.shot('mega-direct-area-390'); await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(500);
+      // calling again from the area finds the same community: no new invite, a ring straight away, still nothing new in any list
+      await B.ev(`document.querySelector('#people .dr-b[data-dr=call]').click()`);
+      await A.waitFor(`${cards} === 1`, 40000).catch(() => { throw new Error('direct: Alice was not rung by a second call from Bob'); });
+      need(await A.ev(`/bob/i.test(document.querySelector('#mega-ring .rg-card').textContent) && /direct call/.test(document.querySelector('#mega-ring .rg-card').textContent)`), 'direct: the second ring card is wrong');
+      need(await B.ev(`S.snap.direct.length === 1`) && await A.ev(`S.snap.direct.length === 1`), 'direct: a second community was made for the same two people');
+      await A.ev(`document.querySelector('#mega-ring .rg-b.no').click()`); await sleep(300);
+      // declining does not delete it
+      need(await A.ev(`S.snap.direct.length === 1`), 'direct: declining removed it');
+      for (const P of [A, B, C]) await P.ev(`(() => { if (!document.getElementById('people').hidden) document.getElementById('btn-people').click(); return 1; })()`);
+      await sleep(400);
+    }
   }
 
   // ---- mega phase 4: the shared wall (drawn through the encrypted core, merged cell by cell, owner lock and clear) ----

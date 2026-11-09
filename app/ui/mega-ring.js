@@ -25,7 +25,7 @@
   const bell = '<svg class="rg-ic" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M5 14V9a5 5 0 0 1 10 0v5l1.5 1.5h-13zM8.5 17.5h3"/></svg>';
   const callObj = () => window.__commonsCall;
   const myCall = () => { try { const c = callObj(); return c && c.gid && c.phase !== 'idle' && c.phase !== 'error' ? c : null; } catch { return null; } };
-  const comms = () => (typeof S !== 'undefined' && S.snap ? S.snap.communities : []);
+  const comms = () => (typeof S !== 'undefined' && S.snap ? S.snap.communities.concat(S.snap.direct || []) : []);   // a direct call's room is found here only, never listed
   const findRoom = gid => { for (const c of comms()) { const ch = c.channels.find(x => x.gid === gid); if (ch) return { c, ch }; } return null; };
   const voiceCall = () => { const c = myCall(); if (!c) return null; const f = findRoom(c.gid); return f && f.ch.kind === 'voice' ? { gid: c.gid, ...f, call: c } : null; };
   const inCall = (gid, acct) => { try { return (callPeople(gid) || []).some(p => p.account === acct); } catch { return false; } };
@@ -54,7 +54,7 @@
   }
   // The ring button in the dock: only inside a voice room's call.
   function dockButton(s) {
-    const v = voiceCall(); if (!v || s.phase !== 'connected') return '';
+    const v = voiceCall(); if (!v || v.c.direct || s.phase !== 'connected') return '';   // a direct call has nobody else to ring
     const on = R.outs.has('*');
     const label = on ? 'Stop ringing' : 'Ring everyone in this community who is not in the call';
     return `<button type="button" class="cd-b${on ? ' on' : ''}" id="c-ring" title="${esc(label)}" aria-label="${esc(label)}" aria-pressed="${on ? 'true' : 'false'}">${bell}</button>`;
@@ -79,7 +79,7 @@
     const c0 = myCall(); if (c0 && c0.gid === ev.gid) return;               // already in this call: nothing to answer
     const age = Math.max(0, now() - ev.ts);
     if (age >= TTL) return;
-    const card = { ring: ev.ring, gid: ev.gid, cid: f.c.id, room: f.ch.name, comm: f.c.name, account: ev.account, name: ev.account.slice(0, 6), direct: !!ev.direct, until: now() + TTL - age };
+    const card = { ring: ev.ring, gid: ev.gid, cid: f.c.id, oneToOne: !!f.c.direct, room: f.ch.name, comm: f.c.name, account: ev.account, name: ev.account.slice(0, 6), direct: !!ev.direct, until: now() + TTL - age };
     R.cards.set(ev.ring, card);
     card.name = await nameOf(f.c.id, ev.account);
     R.stats.shown++;
@@ -144,7 +144,7 @@
         const c = R.cards.get(b.dataset.ring); if (!c) return;
         if (b.dataset.r === 'join') {
           R.cards.delete(c.ring); redraw();
-          try { if (window.__callUI && window.__callUI.joinRoom) window.__callUI.joinRoom(c.gid, c.room); else toast_('Calls are not available in this window.'); } catch (er) { toast_(er.message); }
+          try { if (window.__callUI && window.__callUI.joinRoom) window.__callUI.joinRoom(c.gid, c.oneToOne ? c.name : c.room); else toast_('Calls are not available in this window.'); } catch (er) { toast_(er.message); }
         } else if (b.dataset.r === 'no') { R.declined.add(c.ring); R.cards.delete(c.ring); redraw(); }
         else if (b.dataset.r === 'allow') { try { Notification.requestPermission().then(() => redraw()); } catch { } }
       });
@@ -168,7 +168,7 @@
     h.innerHTML = list.map(c => {
       const [a, b, ink] = colours(c.gid);
       return `<article class="rg-card" data-ring="${esc(c.ring)}" style="--rg-a:${a};--rg-b:${b};--rg-ink:${ink}">
-        <div class="rg-who"><small>${c.direct ? 'calling you' : 'ringing the room'}</small><b>${esc(c.name)}</b><span>${esc(c.room)} · ${esc(c.comm)}</span></div>
+        <div class="rg-who"><small>${c.direct ? 'calling you' : 'ringing the room'}</small><b>${esc(c.name)}</b><span>${c.oneToOne ? 'direct call' : `${esc(c.room)} · ${esc(c.comm)}`}</span></div>
         <div class="rg-acts">${canAsk ? `<button type="button" class="rg-link" data-r="allow" data-ring="${esc(c.ring)}">notify me when away</button>` : ''}<button type="button" class="rg-b no" data-r="no" data-ring="${esc(c.ring)}" aria-label="Decline the call from ${esc(c.name)}">decline</button><button type="button" class="rg-b yes" data-r="join" data-ring="${esc(c.ring)}" aria-label="Join ${esc(c.room)}, called by ${esc(c.name)}">join</button></div>
       </article>`;
     }).join('');

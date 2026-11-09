@@ -856,7 +856,8 @@ fn snapshot(c: &Client) -> Value {
     let problems: Vec<Value> = c.st.notices.iter().rev().filter(|n| matches!(n.kind.as_str(), "decrypt" | "broken" | "rollback" | "reject" | "gap" | "welcome" | "relay" | "state" | "clock" | "revoked")).take(5).map(|n| json!({"ts": n.ts, "kind": n.kind, "text": n.text})).collect();
     // One-to-one calls are never among the communities: they have their own small list, named after the other person.
     let direct: Vec<Value> = c.direct_list().into_iter().map(|d| json!({"id": d.cid, "peer": d.peer, "name": c.display_name(&d.peer), "room": d.room, "last": d.last, "members": d.members, "mine": d.founder_me,
-        "joined": c.channels_of(&d.cid).iter().find(|ch| ch.gid == d.room).is_some_and(|ch| ch.joined), "supported": c.direct_support(&d.peer)})).collect();
+        "joined": c.channels_of(&d.cid).iter().find(|ch| ch.gid == d.room).is_some_and(|ch| ch.joined), "supported": c.direct_support(&d.peer), "direct": true, "removed": false,
+        "channels": c.channels_of(&d.cid).into_iter().map(|ch| json!({"gid": ch.gid, "name": ch.name, "kind": ch.kind, "joined": ch.joined, "unread": 0})).collect::<Vec<_>>()})).collect();
     let direct_refused: Vec<Value> = c.st.direct_refused.iter().filter(|a| !a.starts_with("c:")).map(|a| json!({"account": a, "name": c.display_name(a)})).collect();
     let net = match c.net.state { NetState::Connecting => "connecting", NetState::Online => "online", NetState::Offline => "offline" };
     let listening = c.listening_of(&me).map(|l| json!({"title": l.title, "artist": l.artist}));
