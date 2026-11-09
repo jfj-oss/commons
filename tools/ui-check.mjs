@@ -900,6 +900,8 @@ try {
     await A.ev(`document.querySelector('#mega [data-m="draw"]').click()`); await sleep(500);
     need(await A.ev(`!!document.querySelector('#mega-wallhit-card') && __megaWall.state().gid === ${JSON.stringify('cw:' + cid)}`), 'cards: the pen did not open on the community card');
     // starting to draw asks once whether anyone is around; bob's focused community card answers, and only then do strokes go out
+    // a page in the background does not poll the live channel: let each side be the visible one in turn
+    for (let i = 0; i < 3; i++) { await B.send('Page.bringToFront'); await sleep(2200); await A.send('Page.bringToFront'); await sleep(2200); if (await A.ev(`__megaWall.state().present`)) break; }
     await wf(A, `__megaWall.state().present`, 20000).catch(async () => { throw new Error('mega: cards: nobody answered the community wall request: ' + JSON.stringify([await wst(A), await wst(B), await stat(A)]) + ' ' + await B.ev(`JSON.stringify({ vis: document.visibilityState, items: __mega.list && __mega.list.items.map(x => x.key.slice(0, 6)), cur: __mega.list && __mega.list.item.key.slice(0, 6), settled: __mega.list && __mega.list.settled, lvl: __mega.level })`)); });
     const c0 = await stat(A);
     await hitDraw(A, '#mega-wallhit-card', 60, 27, 24, 4000);
