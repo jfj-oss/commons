@@ -396,11 +396,12 @@ try {
   need(!(await A.ev(`document.querySelector('#mega-rail').classList.contains('open')`)) && await lvl(A) === 'chat', 'Esc should only close the pop-out first');
   // options room: client-only, with the existing controls and their ids
   await A.ev(`document.querySelector('#mega-rail .mitem.opt').click()`); await sleep(500);
-  const op = await A.ev(`(() => { const o = document.querySelector('#mega-opts'); return { open: !o.hidden, ids: ['snd', 'th', 'rd', 'ty', 'dl-dir'].filter(i => !o.querySelector('#' + i)), privacy: o.innerText.includes('the relay can see that a message-sized packet was sent at that moment'), noRelay: !o.querySelector('#rl') && !o.querySelector('#n') }; })()`);
+  const op = await A.ev(`(() => { const o = document.querySelector('#mega-opts'); return { open: !o.hidden, ids: ['snd', 'th', 'ty', 'dl-dir'].filter(i => !o.querySelector('#' + i)), privacy: o.innerText.includes('the relay can see that a message-sized packet was sent at that moment'), noRelay: !o.querySelector('#rl') && !o.querySelector('#n') }; })()`);
   need(op.open && !op.ids.length && op.privacy && op.noRelay, 'the options room is wrong: ' + JSON.stringify(op));
-  await A.ev(`document.querySelector('#mega-opts #ty').click()`); await sleep(500);
-  need(await A.ev(`S.snap.typing_enabled === true`), 'the typing switch in options did not reach the core');
-  await A.ev(`document.querySelector('#mega-opts #ty').click()`); await sleep(500);
+  await A.ev(`document.querySelector('#mega-opts #ty').click()`);
+  await A.waitFor(`S.snap.typing_enabled === true`, 8000).catch(() => { throw new Error('mega: the typing switch in options did not reach the core'); });
+  await A.ev(`document.querySelector('#mega-opts #ty').click()`);
+  await A.waitFor(`S.snap.typing_enabled === false`, 8000).catch(() => { throw new Error('mega: the typing switch in options did not turn off again'); });
   await A.shot('mega-3-options');
   // Esc from chat -> the community's rooms; resting on the voice card never joins, Enter does
   await key(A, 'Escape'); await sleep(900);
@@ -451,6 +452,83 @@ try {
   await key(A, 'Enter'); await sleep(1500);
   need(await lvl(A) === 'chat', 'could not get back into the chat');
 
+  // ---- mega phase 2: the living chat room ----
+  {
+    const st = P => P.ev(`JSON.stringify(__mega.stats)`).then(JSON.parse);
+    const bdLive = () => A.ev(`(() => { const c = document.querySelector('#mega-bd'); if (!c) return -1; const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 3; i < d.length; i += 4 * 7) if (d[i]) n++; return n; })()`);
+    // the backdrop draws in a room, and is gone (stopped) on card levels
+    await sleep(800);
+    need(await A.ev(`document.documentElement.classList.contains('mg-room')`), 'the dark room look is not on while a room is open');
+    need(await bdLive() > 50, 'the backdrop canvas did not draw');
+    need(await A.ev(`getComputedStyle(document.querySelector('#main')).backgroundColor === 'rgb(5, 4, 7)' || getComputedStyle(document.querySelector('#main')).backgroundImage.includes('radial-gradient')`), 'the room does not sit on the mega room background');
+    await A.shot('mega2-1-room');
+    console.log('DBG composer', await A.ev(`(() => { const i = document.querySelector('#input'), r = i.getBoundingClientRect(), cs = getComputedStyle(i), row = document.querySelector('.slip .row').getBoundingClientRect(), at = document.elementFromPoint(r.left + 20, r.top + 10); return JSON.stringify({ r, color: cs.color, vis: cs.visibility, op: cs.opacity, fs: cs.fontSize, ff: cs.fontFamily, row, at: at && (at.tagName + '#' + at.id + '.' + at.className), ph: i.placeholder, hidden: document.querySelector('#composer').hidden }); })()`));
+    await key(A, 'Escape'); await sleep(900);
+    need(await lvl(A) === 'server' && await A.ev(`!document.querySelector('#mega-bd') && !document.documentElement.classList.contains('mg-room')`), 'the backdrop must stop completely on the card levels');
+    await key(A, 'Enter'); await sleep(1500);
+    need(await lvl(A) === 'chat' && await bdLive() > 50, 'the backdrop did not come back with the room');
+    // history never decodes or ripples: open the other room, then this one again
+    const s0 = await st(A);
+    await A.ev(`document.querySelector('#mega-rail .mitem:not(.voice):not(.opt):not(.active)').click()`); await sleep(1800);
+    await A.ev(`document.querySelector('#mega-rail .mitem:not(.voice):not(.opt):not(.active)').click()`); await sleep(1800);
+    const s1 = await st(A);
+    need(s1.decodes === s0.decodes && s1.ripples === s0.ripples && s1.lands === s0.lands, 'opening rooms (history) must not decode or ripple: ' + JSON.stringify([s0, s1]));
+    need(await A.ev(`S.gid === ${JSON.stringify(textGid)}`), 'could not get back to the club room');
+    // Bob must be in the same room to talk to it
+    await B.ev(`openRoom(${JSON.stringify(textGid)})`); await sleep(1200);
+    const bsay = t => B.ev(`rpc('send_text', { gid: ${JSON.stringify(textGid)}, text: ${JSON.stringify(t)}, reply: null }).then(() => 1)`);
+    // a live short message: big type, resolves out of glyphs, ripples; its text in the page is never altered
+    await bsay('ok'); await A.waitFor(`[...document.querySelectorAll('.msg')].some(m => m.querySelector('.body')?.textContent === 'ok')`, 15000);
+    await sleep(700);
+    const s2 = await st(A);
+    need(s2.decodes === s1.decodes + 1 && s2.ripples > s1.ripples, 'a live message should decode once and ripple: ' + JSON.stringify([s1, s2]));
+    const ok = await A.ev(`(() => { const m = [...document.querySelectorAll('.msg')].find(m => m.querySelector('.body')?.textContent === 'ok'); const b = m.querySelector('.body'); return { mz: m.dataset.mz, fs: getComputedStyle(b).fontSize, dec: !!m.querySelector('.mdec'), html: b.innerHTML }; })()`);
+    need(ok.mz === '3' && ok.fs === '72px' && !ok.dec && ok.html === 'ok', 'a 2 letter message should be 72px and untouched afterwards: ' + JSON.stringify(ok));
+    // sizes by length, and a mention goes one step up and is highlighted
+    await bsay('see you at noon'); await sleep(400);   // 15 chars -> 36
+    const me = await A.ev(`S.snap.me.name`);
+    await sleep(2200);
+    await bsay('@' + me + ' you there'); await A.waitFor(`[...document.querySelectorAll('.msg')].some(m => m.querySelector('.body')?.textContent.includes('you there'))`, 15000); await sleep(500);
+    const sz = await A.ev(`(() => { const f = t => { const m = [...document.querySelectorAll('.msg')].find(m => m.querySelector('.body')?.textContent.includes(t)); return m ? getComputedStyle(m.querySelector('.body')).fontSize : null; }; const mm = [...document.querySelectorAll('.msg')].find(m => m.querySelector('.body')?.textContent.includes('you there')); return { noon: f('see you at noon'), men: f('you there'), hl: !!(mm && mm.querySelector('.at.self')), hlbg: mm && mm.querySelector('.at.self') ? getComputedStyle(mm.querySelector('.at.self')).backgroundColor : '', body: f('Great choice') }; })()`);
+    need(sz.noon === '36px' && sz.men === '48px' && sz.hl && sz.body === '24px', 'sizes by length are wrong: ' + JSON.stringify(sz));
+    need((await st(A)).lands > s2.lands, 'a mention should land with the pulse');
+    // centre focus: nothing is scaled at the latest message
+    for (let i = 0; i < 18; i++) await A.ev(`rpc('send_text', { gid: ${JSON.stringify(textGid)}, text: 'filler line number ${i} to make the room long enough to scroll back through', reply: null }).then(() => 1)`);
+    await A.waitFor(`document.querySelectorAll('.msg').length > 22`, 15000); await sleep(1500);
+    await A.ev(`(() => { const s = document.querySelector('#stream'); s.scrollTop = s.scrollHeight; })()`); await sleep(500);
+    const f1 = await A.ev(`[...document.querySelectorAll('#stream .msg')].filter(m => m.style.transform || m.style.opacity).length`);
+    need(f1 === 0, 'at the latest message every row must be full size, but ' + f1 + ' are scaled');
+    await A.ev(`(() => { const s = document.querySelector('#stream'); s.scrollTop = s.scrollHeight / 2; })()`); await sleep(600);
+    const f2 = await A.ev(`(() => { const rows = [...document.querySelectorAll('#stream .msg')]; const sc = rows.filter(m => m.style.transform.startsWith('scale')); const s = document.querySelector('#stream').getBoundingClientRect(), mid = (s.top + s.bottom) / 2; const inMid = rows.filter(m => { const r = m.getBoundingClientRect(); return r.top < mid && r.bottom > mid; }); return { scaled: sc.length, midScaled: inMid.filter(m => m.style.transform).length, mid: inMid.length, minOp: Math.min(...sc.map(m => +m.style.opacity)) }; })()`);
+    need(f2.scaled >= 3 && f2.mid >= 1 && f2.midScaled === 0 && f2.minOp >= .44 && f2.minOp < .8, 'scrolled back, rows away from the middle should shrink and fade: ' + JSON.stringify(f2));
+    await A.shot('mega2-2-scrolled-back');
+    // something new while scrolled back: the existing back-to-latest button is there and says so
+    await bsay('are we still on?'); await A.waitFor(`[...document.querySelectorAll('#stream .msg')].some(m => m.textContent.includes('are we still on'))`, 15000); await sleep(600);
+    need(await A.ev(`(() => { const j = document.querySelector('#jump'); return document.querySelectorAll('#jump').length === 1 && !j.hidden && /new/.test(j.textContent); })()`), 'scrolled back with a new message, "back to latest" should show the count');
+    await click(A, '#jump'); await sleep(1200);
+    need(await A.ev(`[...document.querySelectorAll('#stream .msg')].filter(m => m.style.transform || m.style.opacity).length === 0`), 'back at the latest, nothing should stay scaled');
+    // the mascot for a typing peer
+    for (const P of [A, B]) await P.ev(`rpc('set_typing_enabled', { on: true }).then(() => 1)`);
+    await sleep(1500);
+    const sendHint = () => B.ev(`rpc('typing', { gid: ${JSON.stringify(textGid)} }).then(() => 1)`);
+    await sendHint();
+    try { await A.waitFor(`(() => { return document.querySelectorAll('#mega-typing .mmascot').length >= 1; })()`, 8000); }
+    catch (e) { throw new Error(e.message + ' | typing=' + await A.ev(`JSON.stringify([S.msgs.typing, S.snap.typing_enabled, document.querySelector('#typing').innerText])`) + ' bob=' + await B.ev(`S.snap.typing_enabled`)); }
+    const ty = await A.ev(`({ who: document.querySelector('#mega-typing .mmascot')?.dataset.who, words: document.querySelector('#typing').innerText, dots: getComputedStyle(document.querySelector('#typing .dots') || document.body).display })`);
+    need(/typing/.test(ty.words) && ty.who && ty.dots === 'none', 'the typing mascot is wrong: ' + JSON.stringify(ty));
+    await A.shot('mega2-3-mascot');
+    await A.waitFor(`document.querySelectorAll('#mega-typing .mmascot:not([data-out])').length === 0`, 15000);
+    // a reaction Bob adds to Alice's message flies in and updates the count
+    const mineId = await A.ev(`[...document.querySelectorAll('#stream .msg.mine')].pop().dataset.id`);
+    const t0 = (await st(A)).throws;
+    await B.ev(`rpc('react', { gid: ${JSON.stringify(textGid)}, id: ${JSON.stringify(mineId)}, emoji: '🎉', on: true }).then(() => 1)`);
+    await A.waitFor(`!!document.querySelector('.msg[data-id=${JSON.stringify(mineId)}] .react[data-e="🎉"]')`, 15000);
+    await sleep(1800);
+    const rx = await A.ev(`(() => { const p = document.querySelector('.msg[data-id=${JSON.stringify(mineId)}] .react[data-e="🎉"]'); return { n: p.querySelector('.n').textContent, hold: p.classList.contains('rhold'), vis: getComputedStyle(p).visibility }; })()`);
+    need(rx.n === '1' && !rx.hold && rx.vis === 'visible' && (await st(A)).throws > t0, 'a live reaction should fly in and show its true count: ' + JSON.stringify([rx, await st(A), t0]));
+    await A.shot('mega2-4-after');
+  }
+
   // ---- large files ----
   // Over the 24 MB line the same paperclip takes the chunked path: the page reads 8 MB slices of the picked file,
   // the core encrypts and sends one at a time. Nothing large is ever downloaded unless Download is pressed.
@@ -467,7 +545,7 @@ try {
   await click(B, '#btn-settings'); await B.waitFor(`document.querySelector('#dl-dir')`);
   await type(B, '#dl-dir', dlDir); await click(B, '.modal .acts button:last-child');
   await B.waitFor(`!document.querySelector('.modal')`);
-  await B.waitFor(`S.snap.download_dir === ${JSON.stringify(dlDir)}`, 5000);
+  await B.waitFor(`S.snap.download_dir === ${JSON.stringify(dlDir)}`, 20000).catch(async e => { throw new Error(e.message + ' | ' + await B.ev(`(async () => JSON.stringify({ dd: S.snap.download_dir, toast: document.querySelector('#toast').innerText, modal: !!document.querySelector('.modal'), sync: document.querySelector('#sync-status').innerText, lvl: __mega.level, busy: tick.busy, core: await rpc('snapshot').then(x => x.download_dir), snapKey: S.last.length }))()`)); });
 
   // Upload it once, watch the tray (percentage, speed, time left), then cancel before it finishes.
   await A.setFiles('#file', bigPath);
@@ -572,6 +650,11 @@ try {
   const phone = await P.ev(`(() => { const r = document.querySelector('#rail').getBoundingClientRect(), c = document.querySelector('#composer').getBoundingClientRect(); return { w: innerWidth, railAway: r.right <= 1, composerIn: c.height > 0 && c.top > 0 && c.bottom <= innerHeight + 1 }; })()`);
   if (phone.w > 760 || !phone.railAway || !phone.composerIn) throw new Error('narrow layout is wrong: ' + JSON.stringify(phone));
   await P.shot('09-phone');
+  await P.ev(`(async () => { const me = S.snap.me.name; for (const t of ['ok', 'see you at noon', '@' + me + ' you there', 'a longer message that is set at the normal size and wraps onto a second line', 'hi \u{1F389}']) await rpc('send_text', { gid: S.gid, text: t, reply: null }); return 1; })()`);
+  await P.waitFor(`document.querySelectorAll('.msg').length >= 5`, 15000); await sleep(1500);
+  const pr = await P.ev(`(() => { const c = document.querySelector('#mega-bd'), s = document.querySelector('#stream'); return { bd: !!c && c.width > 0, hscroll: document.documentElement.scrollWidth > innerWidth + 1 || s.scrollWidth > s.clientWidth + 1, n: document.querySelectorAll('.msg').length }; })()`);
+  need(pr.bd && !pr.hscroll, 'the room on a phone: backdrop missing or the page scrolls sideways: ' + JSON.stringify(pr));
+  await P.shot('mega2-5-phone-room');
   const pdots = await P.ev(`(() => { const r = document.querySelector('#mega-rail').getBoundingClientRect(); return { w: r.width, h: r.height, level: __mega.level }; })()`);
   if (pdots.level !== 'chat' || pdots.w < 20 || pdots.w > 60) throw new Error('mega: the dots are wrong on a phone: ' + JSON.stringify(pdots));
   // phones swipe in from the left edge instead of scrolling over the dots
