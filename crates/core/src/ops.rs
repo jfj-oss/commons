@@ -1194,15 +1194,24 @@ impl Client {
                 for a in admins.iter_mut() {
                     if verify_grant(me, &c.id, &a.account, &a.sig).is_err() { *a = sign_grant(&ak, &c.id, &a.account); changed = true; }
                 }
-                // The colours we know about but the table lacks (an older app rewrote it, or ownership just changed hands):
-                // put them back under our own signature, but not more than once every ten minutes whatever happens.
+                // The colours we know about but the table lacks or holds an older version of (an older app rewrote it, a member put an
+                // old document back, or ownership just changed hands): put them back under our own signature. The first repair is
+                // immediate; the next waits 30 s, then twice as long while repairs keep being needed, up to ten minutes, so a
+                // hostile member cannot make the owner commit faster than that.
                 if let (Some(doc), GroupExt::Control { style, .. }) = (self.st.communities.get(&c.id).and_then(|x| x.style.clone()), &mut t) {
-                    let in_force = style.as_ref().and_then(|s| verify_style(me, &c.id, s).ok()).is_some_and(|d| d.ver >= doc.ver);
-                    let due = self.st.communities.get(&c.id).is_some_and(|x| now_secs() >= x.style_repub + 600);
+                    let in_force = style.as_ref().and_then(|s| verify_style(me, &c.id, s).ok()).is_some_and(|d| (d.ver, d.ts) >= (doc.ver, doc.ts));
+                    let (last, gap) = self.st.communities.get(&c.id).map(|x| (x.style_repub, x.style_repub_gap)).unwrap_or((0, 0));
+                    let due = now_secs() >= last + gap;
                     if !in_force && due {
                         let mut doc = doc;
                         doc.ver += 1; doc.ts = now_secs();
-                        if let Ok(s) = sign_style(&ak, &c.id, &doc) { *style = Some(s); changed = true; if let Some(x) = self.st.communities.get_mut(&c.id) { x.style_repub = now_secs(); } }
+                        if let Ok(s) = sign_style(&ak, &c.id, &doc) {
+                            *style = Some(s); changed = true;
+                            if let Some(x) = self.st.communities.get_mut(&c.id) {
+                                x.style_repub_gap = if now_secs() < last + 600 { (gap * 2).clamp(30, 600) } else { 30 };
+                                x.style_repub = now_secs();
+                            }
+                        }
                     }
                 }
             }

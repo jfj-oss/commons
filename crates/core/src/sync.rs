@@ -802,7 +802,7 @@ pub(crate) fn join_signature_ok(inv: &InviteMeta, community: &str, jr: &JoinRequ
 /// in a group whose table has not caught up. Nothing else about a table can be changed that way.
 pub fn ext_change_allowed(gid: &str, old: &GroupExt, new: &GroupExt, sender: Role, sender_account: &str) -> std::result::Result<(), String> {
     match (old, new) {
-        (GroupExt::Control { owner: o1, nonce: n1, admins: a1, name: nm1, channels: c1, invites: i1, banned: b1, transfers: t1, consents: s1, .. }, GroupExt::Control { owner: o2, nonce: n2, admins: a2, name: nm2, channels: c2, invites: i2, banned: b2, transfers: t2, consents: s2, .. }) => {
+        (GroupExt::Control { owner: o1, nonce: n1, admins: a1, name: nm1, channels: c1, invites: i1, banned: b1, transfers: t1, consents: s1, style: st1, .. }, GroupExt::Control { owner: o2, nonce: n2, admins: a2, name: nm2, channels: c2, invites: i2, banned: b2, transfers: t2, consents: s2, style: st2, .. }) => {
             if o1 != o2 || n1 != n2 { return Err("the founder cannot change".into()); }
             let (new_owner, _) = new.verify_control(gid).map_err(|e| e.to_string())?;
             if !t2.starts_with(t1) { return Err("the chain of owners cannot be rewritten".into()); }
@@ -811,6 +811,18 @@ pub fn ext_change_allowed(gid: &str, old: &GroupExt, new: &GroupExt, sender: Rol
             if a1 != a2 && !owner { return Err("only the owner can change admins".into()); }
             if (nm1 != nm2 || c1 != c2 || i1 != i2 || b1 != b2 || s1 != s2) && sender < Role::Admin { return Err("only admins can change channels, invites or the name".into()); }
             if s2.iter().filter(|c| !s1.contains(c)).any(|c| verify_consent(gid, c).is_err()) { return Err("a consent in the table is not signed by its account".into()); }
+            // The owner's colours, wall locks and wall generations. Anyone but the owner may carry a document only forward: one the
+            // owner signed, newer than the one in the table. Putting an older one back would hand it to every device that reads the
+            // table afresh (a new member, a re-added device). Leaving the field out is still allowed, because an older app that does
+            // not know it rewrites the table without it; the owner's device puts it back (ops.rs) and members keep the one they hold.
+            if st1 != st2 && !owner {
+                if let Some(n) = st2 {
+                    let nd = verify_style(&new_owner, gid, n).map_err(|_| "only the owner can change the colours".to_string())?;
+                    if let Some(od) = st1.as_ref().and_then(|o| verify_style(&new_owner, gid, o).ok()) {
+                        if (nd.ver, nd.ts) <= (od.ver, od.ts) { return Err("the colours can only move forward".into()); }
+                    }
+                }
+            }
             Ok(())
         }
         (GroupExt::Channel { community: c1, owner: o1, nonce: n1, admins: a1, name: nm1, transfers: t1 }, GroupExt::Channel { community: c2, owner: o2, nonce: n2, admins: a2, name: nm2, transfers: t2 }) => {

@@ -231,6 +231,10 @@ pub struct Community {
     /// When this device (as owner) last put the colours back into the table on its own.
     #[serde(default)]
     pub style_repub: u64,
+    /// How long to wait after `style_repub` before putting them back again: 0 for the first time, then 30 s, doubling while
+    /// repairs keep being needed within ten minutes (up to ten minutes). A hostile member cannot make the owner commit faster.
+    #[serde(default)]
+    pub style_repub_gap: u64,
 }
 impl Community {
     /// Take a verified document if it is newer than the one in force: higher version, then later time, then the
