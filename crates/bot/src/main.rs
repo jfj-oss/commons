@@ -56,6 +56,8 @@ fn config() -> Config {
     cfg.chime_min_gap_secs = env_usize("MEGATRON_BOT_CHIME_GAP_SECS", cfg.chime_min_gap_secs as usize) as u64;
     cfg.art_chance_pct = env_usize("MEGATRON_BOT_ART_PERCENT", 20).min(100);
     cfg.art_daily_max = env_usize("MEGATRON_BOT_ART_DAILY", cfg.art_daily_max as usize) as u32;
+    cfg.wall_chance_pct = env_usize("MEGATRON_BOT_WALL_PERCENT", 3).min(100);
+    cfg.wall_daily_max = env_usize("MEGATRON_BOT_WALL_DAILY", cfg.wall_daily_max as usize) as u32;
     cfg
 }
 
@@ -106,6 +108,7 @@ fn usage() -> ! {
         \n  MEGATRON_BOT_STUDIO_LOCK, MEGATRON_BOT_STUDIO_TOKEN_FILE (default ~/.config/homebase/token),\
         \n  MEGATRON_BOT_STUDIO_DAILY_CAP (default: no limit), MEGATRON_BOT_STUDIO_DAILY_VIDEO_CAP (default: no limit),\
         \n  MEGATRON_BOT_STUDIO_QUEUE_MAX (default 3), MEGATRON_BOT_VOICE_SETTINGS,\
+        \n  MEGATRON_BOT_WALL_PERCENT (default 3), MEGATRON_BOT_WALL_DAILY (default 2 per room),\
         \n  MEGATRON_BOT_MAX_PER_MINUTE, MEGATRON_BOT_MAX_REPLY_CHARS");
     std::process::exit(2)
 }
@@ -254,7 +257,7 @@ fn serve(client: Client, bot: Arc<Bot>) {
         };
         for job in jobs {
             // Unasked: on its own thread, so a song being made for fun never holds up an answer to a real question.
-            if matches!(job.kind, JobKind::Chime) {
+            if matches!(job.kind, JobKind::Chime | JobKind::Wall) {
                 let bot = bot.clone();
                 let shared = shared.clone();
                 std::thread::spawn(move || {

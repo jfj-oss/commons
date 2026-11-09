@@ -761,9 +761,13 @@ pub struct Look {
     /// Backdrop strength behind the chat in percent (rooms only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dim: Option<u16>,
+    /// Rooms only. When on, the Oracle bot stays out of the room on its own initiative (no chiming in, no surprise art, no wall drawing); a direct
+    /// @mention is still answered. Only ever stored as `true`: unset means "as the room's own `@Oracle quiet` / `chime in` words say".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oracle_quiet: Option<bool>,
 }
 impl Look {
-    pub fn is_empty(&self) -> bool { self.card.is_none() && self.chat.is_none() && self.dim.is_none() }
+    pub fn is_empty(&self) -> bool { self.card.is_none() && self.chat.is_none() && self.dim.is_none() && self.oracle_quiet.is_none() }
     pub fn valid(&self) -> bool {
         !self.is_empty() && self.card.is_none_or(|n| n <= MAX_LOOK_PATTERN) && self.chat.is_none_or(|n| n <= MAX_LOOK_PATTERN) && self.dim.is_none_or(|n| n <= MAX_LOOK_DIM)
     }
