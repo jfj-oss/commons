@@ -129,8 +129,12 @@ fn signed_part(gid: &str, epoch: u64, device: &[u8; 32], nonce: &[u8; 12], kind:
 
 /// Seal one event. `signer` is this device's key; its public half is the device id.
 pub fn seal(key: &[u8; 32], gid: &str, epoch: u64, signer: &SigningKey, kind: &str, data: &str, ts: u64) -> Result<Vec<u8>, LiveErr> {
+    seal_as(key, gid, epoch, &signer.verifying_key().to_bytes(), signer, kind, data, ts)
+}
+/// `seal` naming a device other than the signer's own: only a hostile sender does that (the tests do, to see it fail).
+pub fn seal_as(key: &[u8; 32], gid: &str, epoch: u64, device: &[u8; 32], signer: &SigningKey, kind: &str, data: &str, ts: u64) -> Result<Vec<u8>, LiveErr> {
     if !valid_live_kind(kind) || data.len() > MAX_LIVE { return Err(LiveErr::Oversized); }
-    let device = signer.verifying_key().to_bytes();
+    let device = *device;
     let mut nonce = [0u8; 12];
     rand::rngs::OsRng.fill_bytes(&mut nonce);
     let sig = signer.sign(&signed_part(gid, epoch, &device, &nonce, kind, ts, data));
@@ -192,6 +196,8 @@ pub struct LiveChan {
     future: Vec<(String, String, Vec<u8>, u64)>,
     /// Set when the app runs its own sender and poller threads: the ordinary round then only sends.
     pub background: bool,
+    /// Test builds only: behave like a version from before the channel (send through the log, never poll).
+    pub legacy: bool,
     /// What the channel did, for tests and the debug view.
     pub stats: LiveStats,
 }
@@ -252,10 +258,32 @@ impl LiveDone {
 
 impl Client {
     /// Whether to send live data over the unstored channel (anything but a relay known not to carry it).
-    pub(crate) fn live_chan_on(&self) -> bool { !matches!(self.live.support, Support::No(_)) }
+    pub(crate) fn live_chan_on(&self) -> bool { !self.live.legacy && !matches!(self.live.support, Support::No(_)) }
     pub fn live_support(&self) -> Support { self.live.support }
     pub fn live_stats(&self) -> LiveStats { self.live.stats.clone() }
     pub fn set_live_background(&mut self, on: bool) { self.live.background = on; }
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_live_legacy(&mut self, on: bool) { self.live.legacy = on; }
+    /// Pretend the wait before asking a relay again is over.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_live_recheck_now(&mut self) { if let Support::No(_) = self.live.support { self.live.support = Support::No(0); } }
+    /// All of this device's MLS state, as bytes: a test compares it before and after live traffic.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_mls_dump(&self) -> Vec<u8> { self.prov.dump() }
+    /// Seal `n` events at once, past the send-rate limit, and post them: a member who sends far more than the app would.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_live_burst(&mut self, gid: &str, n: usize) -> usize {
+        let mut sealed = 0;
+        for chunk in 0..n.div_ceil(50) {
+            for i in 0..50.min(n - chunk * 50) { if self.live_chan_seal(gid, "burst", &i.to_string()) { sealed += 1; } }
+            if let Some(p) = self.live_plan_with(true, false) { let d = p.run(0); self.live_finish(d); }
+        }
+        sealed
+    }
 
     /// Can this room seal live events now? The group is ours and in working order. Unlike a message it needs no
     /// fresh state of its own; it only needs the key of the epoch we are at.
@@ -302,7 +330,7 @@ impl Client {
     pub fn live_plan(&mut self, poll: bool) -> Option<LivePlan> { self.live_plan_with(true, poll) }
     /// As `live_plan`, choosing which halves to plan: the app's sender thread posts only, its poller thread polls only.
     pub fn live_plan_with(&mut self, send: bool, poll: bool) -> Option<LivePlan> {
-        if !self.has_identity() || self.st.self_revoked { return None; }
+        if !self.has_identity() || self.st.self_revoked || self.live.legacy { return None; }
         let now_m = now_ms();
         let mut sends: BTreeMap<String, Vec<Vec<u8>>> = BTreeMap::new();
         while send {
@@ -375,5 +403,179 @@ impl Client {
     pub fn live_tick(&mut self) {
         self.flush_live();
         if let Some(p) = self.live_plan(true) { let d = p.run(0); self.live_finish(d); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::rngs::OsRng;
+
+    const GID: &str = "aabbccddeeff00112233445566778899";
+    struct W { a: SigningKey, b: SigningKey, keys: RoomKeys, seen: Seen }
+    fn w() -> W {
+        let (a, b) = (SigningKey::generate(&mut OsRng), SigningKey::generate(&mut OsRng));
+        let mut keys = RoomKeys::default();
+        keys.advance(4, [4; 32], BTreeMap::new());
+        let roster = BTreeMap::from([(hex::encode(a.verifying_key().to_bytes()), "alice".to_string()), (hex::encode(b.verifying_key().to_bytes()), "bob".to_string())]);
+        keys.advance(5, [5; 32], roster);
+        W { a, b, keys, seen: Seen::default() }
+    }
+    fn dev(k: &SigningKey) -> String { hex::encode(k.verifying_key().to_bytes()) }
+    fn now() -> u64 { now_secs() }
+
+    #[test]
+    fn an_event_round_trips_and_carries_who_sent_it() {
+        let mut w = w();
+        let blob = seal(&[5; 32], GID, 5, &w.a, "tile", "{\"x\":1}", now()).unwrap();
+        let o = open(&w.keys, &mut w.seen, GID, &dev(&w.a), &blob, now()).unwrap();
+        assert_eq!((o.account.as_str(), o.kind.as_str(), o.data.as_str()), ("alice", "tile", "{\"x\":1}"));
+        assert_eq!(blob.len() % 1, 0);
+        assert!((blob.len() - 21 - 16) % PAD == 0, "padded to {PAD}");
+        // The kind and data are not in the clear.
+        assert!(!blob.windows(4).any(|x| x == b"tile"));
+    }
+
+    #[test]
+    fn the_epoch_must_be_the_current_or_the_one_before() {
+        let mut w = w();
+        let a = dev(&w.a);
+        // the previous epoch's key is still good
+        let old = seal(&[4; 32], GID, 4, &w.a, "k", "x", now()).unwrap();
+        assert!(open(&w.keys, &mut w.seen, GID, &a, &old, now()).is_ok());
+        // two back is not, and nor is one we have not reached (that one is told apart so it can wait)
+        let older = seal(&[3; 32], GID, 3, &w.a, "k", "x", now()).unwrap();
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &a, &older, now()), Err(LiveErr::Epoch));
+        let newer = seal(&[6; 32], GID, 6, &w.a, "k", "x", now()).unwrap();
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &a, &newer, now()), Err(LiveErr::Future));
+        // right epoch number, wrong key (someone not in the group guessing)
+        let wrong_key = seal(&[9; 32], GID, 5, &w.a, "k", "x", now()).unwrap();
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &a, &wrong_key, now()), Err(LiveErr::Auth));
+        // a key that is the current one but claimed for the previous epoch number
+        let mislabelled = seal(&[5; 32], GID, 4, &w.a, "k", "x", now()).unwrap();
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &a, &mislabelled, now()), Err(LiveErr::Auth));
+        // after a jump of more than one epoch there is no "previous"
+        let mut k = w.keys.clone();
+        k.advance(9, [9; 32], k.roster.clone());
+        assert!(k.prev.is_none());
+    }
+
+    #[test]
+    fn an_event_is_bound_to_its_group() {
+        let mut w = w();
+        let blob = seal(&[5; 32], GID, 5, &w.a, "k", "x", now()).unwrap();
+        assert_eq!(open(&w.keys, &mut w.seen, "00112233445566778899aabbccddeeff", &dev(&w.a), &blob, now()), Err(LiveErr::Auth));
+        assert!(open(&w.keys, &mut w.seen, GID, &dev(&w.a), &blob, now()).is_ok());
+    }
+
+    #[test]
+    fn one_member_cannot_speak_as_another() {
+        let mut w = w();
+        // Bob seals honestly but the relay says it came from Alice: the additional data names the wrong device.
+        let blob = seal(&[5; 32], GID, 5, &w.b, "k", "x", now()).unwrap();
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &dev(&w.a), &blob, now()), Err(LiveErr::Auth));
+        // Bob goes further: names Alice's device in the additional data and the signed part, but can only sign with his own key.
+        let a_pub = w.a.verifying_key().to_bytes();
+        let forged = seal_as(&[5; 32], GID, 5, &a_pub, &w.b, "k", "evil", now()).unwrap();
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &dev(&w.a), &forged, now()), Err(LiveErr::Signature));
+        // Honest Bob is heard as Bob.
+        let ok = seal(&[5; 32], GID, 5, &w.b, "k", "x", now()).unwrap();
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &dev(&w.b), &ok, now()).unwrap().account, "bob");
+    }
+
+    #[test]
+    fn re_sealing_somebody_elses_signed_event_under_a_new_nonce_fails() {
+        let mut w = w();
+        let a = dev(&w.a);
+        let blob = seal(&[5; 32], GID, 5, &w.a, "k", "x", now()).unwrap();
+        // A member holds the key, so can open Alice's event and seal the same plaintext again with a fresh nonce.
+        let nonce: [u8; 12] = blob[9..21].try_into().unwrap();
+        let device = w.a.verifying_key().to_bytes();
+        let pt = ChaCha20Poly1305::new((&[5u8; 32]).into()).decrypt(Nonce::from_slice(&nonce), Payload { msg: &blob[21..], aad: &aad(GID, 5, &device) }).unwrap();
+        let n2 = [7u8; 12];
+        let ct = ChaCha20Poly1305::new((&[5u8; 32]).into()).encrypt(Nonce::from_slice(&n2), Payload { msg: &pt, aad: &aad(GID, 5, &device) }).unwrap();
+        let mut again = vec![VER]; again.extend(5u64.to_be_bytes()); again.extend(n2); again.extend(ct);
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &a, &again, now()), Err(LiveErr::Signature), "the nonce is under the signature");
+    }
+
+    #[test]
+    fn a_removed_member_is_not_heard_even_with_a_key() {
+        let mut w = w();
+        let blob = seal(&[5; 32], GID, 5, &w.b, "k", "x", now()).unwrap();
+        // Bob is removed: the next epoch's roster has only Alice. He cannot make the new key, but an event of his from the
+        // previous epoch, whose key we still hold for a moment, must not be accepted either.
+        let mut roster = w.keys.roster.clone();
+        roster.remove(&dev(&w.b));
+        w.keys.advance(6, [6; 32], roster);
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &dev(&w.b), &blob, now()), Err(LiveErr::Roster));
+        let late = seal(&[6; 32], GID, 6, &w.b, "k", "x", now()).unwrap();
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &dev(&w.b), &late, now()), Err(LiveErr::Roster));
+        // Alice still is.
+        let ok = seal(&[5; 32], GID, 5, &w.a, "k", "x", now()).unwrap();
+        assert!(open(&w.keys, &mut w.seen, GID, &dev(&w.a), &ok, now()).is_ok(), "previous epoch, still in the roster");
+    }
+
+    #[test]
+    fn a_replayed_event_is_taken_once() {
+        let mut w = w();
+        let blob = seal(&[5; 32], GID, 5, &w.a, "k", "x", now()).unwrap();
+        assert!(open(&w.keys, &mut w.seen, GID, &dev(&w.a), &blob, now()).is_ok());
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &dev(&w.a), &blob, now()), Err(LiveErr::Replay));
+        assert_eq!(w.seen.len(), 1);
+        // A failed attempt does not burn the nonce of a good event.
+        let blob2 = seal(&[5; 32], GID, 5, &w.a, "k", "y", now()).unwrap();
+        let mut bad = blob2.clone(); let l = bad.len(); bad[l - 1] ^= 1;
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &dev(&w.a), &bad, now()), Err(LiveErr::Auth));
+        assert!(open(&w.keys, &mut w.seen, GID, &dev(&w.a), &blob2, now()).is_ok());
+    }
+
+    #[test]
+    fn any_change_to_a_sealed_event_is_refused() {
+        let mut w = w();
+        let a = dev(&w.a);
+        let blob = seal(&[5; 32], GID, 5, &w.a, "k", "hello", now()).unwrap();
+        for i in 0..blob.len() {
+            let mut t = blob.clone();
+            t[i] ^= 0x40;
+            let r = open(&w.keys, &mut w.seen, GID, &a, &t, now());
+            assert!(r.is_err(), "flipping byte {i} was accepted");
+        }
+        // truncated, extended, empty, wrong version
+        assert!(open(&w.keys, &mut w.seen, GID, &a, &blob[..blob.len() - 1], now()).is_err());
+        let mut longer = blob.clone(); longer.push(0);
+        assert!(open(&w.keys, &mut w.seen, GID, &a, &longer, now()).is_err());
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &a, &[], now()), Err(LiveErr::Malformed));
+        let mut v = blob.clone(); v[0] = 2;
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &a, &v, now()), Err(LiveErr::Malformed));
+        // a sender id that is not a device id at all
+        assert!(open(&w.keys, &mut w.seen, GID, "nonsense", &blob, now()).is_err());
+        assert!(open(&w.keys, &mut w.seen, GID, &a, &blob, now()).is_ok(), "the original is still fine");
+    }
+
+    #[test]
+    fn size_kind_and_time_limits_hold() {
+        let mut w = w();
+        let a = dev(&w.a);
+        assert_eq!(seal(&[5; 32], GID, 5, &w.a, "k", &"x".repeat(MAX_LIVE + 1), now()), Err(LiveErr::Oversized));
+        assert_eq!(seal(&[5; 32], GID, 5, &w.a, "Bad Kind", "x", now()), Err(LiveErr::Oversized));
+        let max = seal(&[5; 32], GID, 5, &w.a, "k", &"x".repeat(MAX_LIVE), now()).unwrap();
+        assert!(max.len() <= commons_proto::LIVE_MAX_BLOB, "the biggest event ({}) fits what the relay takes", max.len());
+        assert!(open(&w.keys, &mut w.seen, GID, &a, &max, now()).is_ok());
+        // a blob bigger than anything we send
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &a, &vec![1; commons_proto::LIVE_MAX_BLOB + 1], now()), Err(LiveErr::Malformed));
+        // old and far-future events (by the signed time)
+        let old = seal(&[5; 32], GID, 5, &w.a, "k", "x", now() - 3600).unwrap();
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &a, &old, now()), Err(LiveErr::Stale));
+        let ahead = seal(&[5; 32], GID, 5, &w.a, "k", "x", now() + 3600).unwrap();
+        assert_eq!(open(&w.keys, &mut w.seen, GID, &a, &ahead, now()), Err(LiveErr::Stale));
+    }
+
+    #[test]
+    fn sealing_twice_never_repeats_a_nonce_and_looks_different() {
+        let w = w();
+        let a = seal(&[5; 32], GID, 5, &w.a, "k", "same", 100).unwrap();
+        let b = seal(&[5; 32], GID, 5, &w.a, "k", "same", 100).unwrap();
+        assert_ne!(a[9..21], b[9..21]);
+        assert_ne!(a[21..], b[21..]);
     }
 }

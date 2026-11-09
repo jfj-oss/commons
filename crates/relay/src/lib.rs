@@ -615,7 +615,7 @@ async fn handle(State(st): State<Arc<RelayState>>, req: Request<Body>) -> Resp {
         return sync(st, &parts.headers, &path, &body).await;
     }
     // The live channel's long-poll must not hold the database lock while it waits either.
-    if m == Method::POST && path == "/v1/live/poll" {
+    if m == Method::POST && path == "/v1/live/poll" && st.limits.live.enabled {
         return live_poll(st, &parts.headers, &path, &body).await;
     }
     // Asking the media server must not hold the database (it may take a moment), so this runs on the async side.
@@ -981,7 +981,7 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
         // ---- calls: a short-lived LiveKit join token for a current member. The media server is untrusted and never sees
         // the group id (the room name is a one-way hash of it); the media key comes from MLS, not from here.
         // ---- the live channel: sealed events for the people in the room right now, held in memory and never stored ----
-        (Method::POST, ["v1", "groups", gid, "live"]) => {
+        (Method::POST, ["v1", "groups", gid, "live"]) if lim.live.enabled => {
             let a = authenticate(&db, headers, ms, path, body, true)?.1.unwrap();
             if !valid_gid(gid) { return Err(status(StatusCode::BAD_REQUEST, "bad group")); }
             let r: LivePostReq = parse(body)?;

@@ -22,10 +22,12 @@ pub struct LiveLimits {
     /// Most events and bytes one poll answer carries per room.
     pub answer_events: usize,
     pub answer_bytes: usize,
+    /// Off makes the relay answer 404 to the live paths, like one from before the channel (for tests and for an operator who wants it off).
+    pub enabled: bool,
 }
 impl Default for LiveLimits {
     fn default() -> Self {
-        LiveLimits { ttl_ms: 30_000, group_events: 1500, group_bytes: 3 << 20, sender_events: 450, sender_bytes: 1 << 20, per_sec: 30, total_bytes: 64 << 20, answer_events: 200, answer_bytes: 512 << 10 }
+        LiveLimits { ttl_ms: 30_000, group_events: 1500, group_bytes: 3 << 20, sender_events: 450, sender_bytes: 1 << 20, per_sec: 30, total_bytes: 64 << 20, answer_events: 200, answer_bytes: 512 << 10, enabled: true }
     }
 }
 
