@@ -725,6 +725,7 @@
       <p class="mtag" id="mp-warn" role="status"></p><div class="mp-end"><button class="mchip" id="mp-reset" type="button">reset</button></div></div>`;
     document.body.append(e); PT.open = true;
     let w = 0, hsv = [0, 0, 0], target = start, timer = 0, ltimer = 0, tt = 0;
+    const quietHold = new Map();
     const looksBox = $('#mp-looks', e), idOf = t => (t.kind === 'community' ? t.cid : t.gid);
     const sv = $('#mp-sv', e), hue = $('#mp-hue', e), hx = $('#mp-hex', e);
     const cur = () => (SHOWN.get(target.id) || themeOf(target)).slice();
@@ -742,11 +743,11 @@
       if (!canPaint(target)) { looksBox.innerHTML = ''; return; }
       const lk = lookOf(target.cid, idOf(target)), text = target.kind === 'text', t = cur();
       const tiles = (k, sel) => ['', ...FX.map((_, i) => i)].map(n => `<button type="button" class="mp-t" data-k="${k}" data-n="${n}" aria-pressed="${n === '' ? patOf(sel) == null : n === patOf(sel)}" aria-label="${n === '' ? 'automatic' : FXNAMES[n]}" style="background-image:${fxThumb(n === '' ? target.fxAuto : n, t[0], t[1])}"><i>${n === '' ? 'auto' : FXNAMES[n]}</i></button>`).join('');
-      const d = dimOf(lk);
+      const d = dimOf(lk), qh = quietHold.get(idOf(target)), quiet = qh && qh.until > Date.now() ? qh.on : !!(lookStored(target.cid, idOf(target)) || {}).oracle_quiet;
       looksBox.innerHTML = `<p class="mp-lab" id="mp-l1">card animation</p><div class="mp-fx" role="group" aria-labelledby="mp-l1">${tiles('card', lk.card)}</div>`
         + (text ? `<p class="mp-lab" id="mp-l2">chat animation</p><div class="mp-fx" role="group" aria-labelledby="mp-l2">${tiles('chat', lk.chat)}</div>
           <label class="mp-dim"><span class="mp-lab">backdrop</span><input id="mp-dim" type="range" min="0" max="${DIM_MAX}" step="5" value="${d}" aria-label="Backdrop strength behind the chat"><output id="mp-dimv" for="mp-dim">${d === 0 ? 'off' : d + '%'}</output></label>
-          <button type="button" id="mp-oracle" class="mp-oracle" aria-pressed="${lk.oracle_quiet ? 'true' : 'false'}">${lk.oracle_quiet ? 'oracle stays quiet here' : 'oracle can join in here'}</button>` : '');
+          <button type="button" id="mp-oracle" class="mp-oracle" aria-pressed="${quiet ? 'true' : 'false'}">${quiet ? 'oracle stays quiet here' : 'oracle can join in here'}</button>` : '');
     };
     const tint = () => { clearTimeout(tt); tt = setTimeout(() => { const t = cur(); $$('.mp-t', e).forEach(b => { b.style.backgroundImage = fxThumb(b.dataset.n === '' ? target.fxAuto : +b.dataset.n, t[0], t[1]); }); }, 120); };
     // a look is changed here at once, and sent only when committed (the same one-request-at-a-time queue as the colours)
@@ -778,8 +779,9 @@
     looksBox.addEventListener('click', async ev => {
       const b = ev.target.closest && ev.target.closest('#mp-oracle'); if (!b || b.disabled || target.kind !== 'text') return;
       const on = b.getAttribute('aria-pressed') !== 'true', t = target; b.disabled = true;
+      quietHold.set(t.gid, { on, until: Date.now() + 15000 });
       try { await rpc('set_oracle_quiet', { cid: t.cid, room: t.gid, on }); b.setAttribute('aria-pressed', on ? 'true' : 'false'); b.textContent = on ? 'oracle stays quiet here' : 'oracle can join in here'; }
-      catch (er) { toast('Could not change that: ' + er.message); }
+      catch (er) { quietHold.delete(t.gid); toast('Could not change that: ' + er.message); }
       b.disabled = false;
     });
     looksBox.addEventListener('input', ev => { if (ev.target.id !== 'mp-dim') return; const v = +ev.target.value; $('#mp-dimv', e).textContent = v === 0 ? 'off' : v + '%'; editLook({ dim: v }, false); });

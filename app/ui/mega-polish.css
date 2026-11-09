@@ -326,3 +326,11 @@ html.mega :focus-visible { outline: 2px solid var(--m-paper); outline-offset: 2p
   html.mega .head-actions .btn.ghost .lbl, html.mega #btn-invite span { display: initial; }
 }
 html.fx-lite.mega .modal, html.fx-lite.mega .boot-card { box-shadow: none; }
+/* a phone cannot fit every header button: they stay in one line that scrolls sideways inside the header, never widening the page */
+@media (max-width: 760px) {
+  html.mega #head { overflow: hidden; }
+  html.mega #head .head-actions { flex: 0 1 auto; min-width: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  html.mega #head .head-actions::-webkit-scrollbar { display: none; }
+  html.mega #head .head-actions > * { flex: none; }
+}
+
