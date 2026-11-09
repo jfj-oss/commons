@@ -2,10 +2,10 @@
 // (a TLS terminator on one port, which is all Funnel does here). Ports stay below the kernel's ephemeral range.
 import fs from 'node:fs'; import path from 'node:path'; import tls from 'node:tls'; import net from 'node:net';
 import { execFileSync } from 'node:child_process';
-import { root } from './env.mjs';
+import { root, port } from './env.mjs';
 
 export async function startHost(out) {
-  const BASE = 26600, FRONT = BASE + 5, PUB = 26443, NAME = 'commons-test.localhost', PASS = 'correct horse battery';
+  const BASE = port(26600), FRONT = BASE + 5, PUB = port(26443), NAME = 'commons-test.localhost', PASS = 'correct horse battery';
   const env = { ...process.env, COMMONS_HOST_DIR: path.join(out, 'host'), COMMONS_HOST_BASE: String(BASE) };
   const script = (s, ...a) => execFileSync(path.join(root, 'deploy', s), a, { env, encoding: 'utf8', timeout: 60000 });
   execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', path.join(out, 'k.pem'), '-out', path.join(out, 'c.pem'), '-days', '2', '-subj', '/CN=' + NAME], { stdio: 'ignore' });

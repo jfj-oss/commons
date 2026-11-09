@@ -21,9 +21,12 @@ for (const s of ['SIGINT', 'SIGTERM']) process.on(s, () => { stopAll(); process.
 
 // Chrome for Testing from Playwright's cache: the distro's Chromium 151 gathered no ICE candidates in headless mode here
 // (WebRTC could not connect at all), while Chrome for Testing 151 does. Override with COMMONS_TEST_CHROME.
+// Every fixed test port moves by this much, so a run can sit beside another one on the same machine. 0 (the default) leaves them all as written.
+export const PORT_OFFSET = Number(process.env.COMMONS_TEST_PORT_OFFSET || 0);
+export const port = n => n + PORT_OFFSET;
 export const CHROME = process.env.COMMONS_TEST_CHROME || (process.env.HOME + '/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome');
-export const LK_PORT = 27880, LK_KEY = 'commonstest', LK_SECRET = 'commons-local-test-secret-0123456789abcdef';
-export const RELAY_PORT = 28787;
+export const LK_PORT = port(27880), LK_KEY = 'commonstest', LK_SECRET = 'commons-local-test-secret-0123456789abcdef';
+export const RELAY_PORT = port(28787);
 
 const b64u = b => Buffer.from(b).toString('base64url');
 export function jwt(claims, secret = LK_SECRET) {
@@ -72,11 +75,21 @@ export const FAKE_DISPLAY = `(() => {
   };
 })()`;
 
+// scripts/livekit-local.yaml as it stands, or a copy with its ports moved when an offset is set.
+export function livekitConfig(out, transform = x => x) {
+  const src = path.join(root, 'scripts/livekit-local.yaml');
+  const text = fs.readFileSync(src, 'utf8');
+  const moved = PORT_OFFSET ? text.replace(/^(\s*(?:port|tcp_port|udp_port):\s*)(\d+)/gm, (m, k, n) => k + port(Number(n))) : text;
+  const final = transform(moved);
+  if (final === text) return src;
+  const dst = path.join(out, 'livekit-local.yaml'); fs.writeFileSync(dst, final); return dst;
+}
+
 export async function startServers(out, { relayTtl = 900, livekit = true } = {}) {
   fs.mkdirSync(out, { recursive: true });
   const secretFile = path.join(out, 'lk-secret'); fs.writeFileSync(secretFile, LK_SECRET);
   const ctl = {};
-  ctl.startLivekit = () => { ctl.lk = run(path.join(root, 'tools/bin/livekit-server'), ['--config', path.join(root, 'scripts/livekit-local.yaml')], {}, path.join(out, 'livekit.log')); return ctl.lk; };
+  ctl.startLivekit = () => { ctl.lk = run(path.join(root, 'tools/bin/livekit-server'), ['--config', livekitConfig(out)], {}, path.join(out, 'livekit.log')); return ctl.lk; };
   ctl.stopLivekit = async () => { ctl.lk.kill('SIGKILL'); await sleep(500); };
   if (livekit) ctl.startLivekit();
   const relayArgs = ['--bind', `127.0.0.1:${RELAY_PORT}`, '--data', path.join(out, 'data/relay')];

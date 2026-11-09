@@ -8,7 +8,7 @@
 //   cargo build -j2 -p commons-relay && cargo build -j2 -p commons-core --features devbridge --bin dev_bridge
 //   node tools/compat-e2e.mjs $OLD <outdir>
 import fs from 'node:fs'; import path from 'node:path';
-import { root, run, sleep, stopAll } from './lib/env.mjs';
+import { root, run, sleep, stopAll, port as P } from './lib/env.mjs';
 
 const OLD = path.resolve(process.argv[2] || ''), out = path.resolve(process.argv[3] || '');
 const oldBin = n => path.join(OLD, 'target/debug', n), newBin = n => path.join(root, 'target/debug', n);
@@ -21,7 +21,7 @@ async function rpc(port, method, args = {}) {
   const j = await r.json(); if (j.err !== undefined) throw new Error(`${method}: ${j.err}`); return j.ok;
 }
 
-let port = 27600;
+let port = P(27600);
 async function relay(bin, name) {
   const p = port++; run(bin, ['--bind', `127.0.0.1:${p}`, '--data', path.join(out, name), '--site', path.join(out, name + '-site')], {}, path.join(out, name + '.log'));
   fs.mkdirSync(path.join(out, name + '-site'), { recursive: true });
