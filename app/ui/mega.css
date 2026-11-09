@@ -258,6 +258,10 @@ html.mega .msg.mland { animation: mland .62s var(--m-spring); }
 
 /* typing: the mascot peeks over the composer. #typing keeps its words (for the eye and for screen readers), without the dots. */
 html.mega .slip { position: relative; isolation: isolate; }
+/* The composer is a solid dark slip in a room, not frosted glass. Measured with real screenshot pixels in headless Chromium on the GPU (ANGLE/Vulkan): with
+   backdrop-filter on, the slip's box painted but its content (placeholder, buttons) stayed blank until something restyled it, for seconds; with it off, it
+   paints at once. The blur over a dark animated canvas was also the most expensive layer on the page. */
+html.mega.mg-room .slip { -webkit-backdrop-filter: none; backdrop-filter: none; background: rgb(16 14 22 / .93); }
 html.mega #typing .dots { display: none; }
 /* sits just above the box, so the box (which clips its own contents) covers the mascot's feet */
 #composer > #mega-typing { position: relative; height: 0; padding: 0; pointer-events: none; }

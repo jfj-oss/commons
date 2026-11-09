@@ -1118,7 +1118,7 @@
     toChatOpen(c.id);
   };
   M.eachRect = eachRect; M.relook = () => dirty(false);
-  window.__megaTheme = { colours(gid) { const c = comm(M.cid), x = c && roomItems(c).find(i => i.gid === gid && i.kind === 'text'); return x ? [lift(fieldOf(x), 3.6), lift(hiOf(x), 4.8)] : null; } };
+  window.__megaTheme = { colours(gid) { const c = comm(M.cid), x = c && roomItems(c).find(i => i.gid === gid && i.kind === 'text'); return x ? [lift(fieldOf(x), 5), lift(hiOf(x), 6)] : null; } };
   M.prev = PREV; M.shown = SHOWN; M.canPaint = canPaint; window.__mega = M;
   if (S.snap && !$('#app').hidden) render();   // the first snapshot may have arrived while this file was still loading
 })();

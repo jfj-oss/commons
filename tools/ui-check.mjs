@@ -379,6 +379,14 @@ try {
   };
   const lvl = P => P.ev(`__mega.level`);
   const need = (cond, why) => { if (!cond) throw new Error('mega: ' + why); };
+  // the composer's box in a real screenshot: how many bright pixels (placeholder, buttons, border) it holds. Computed styles can say "painted" while the pixels are blank.
+  const composerInk = async P => {
+    await P.send('Page.bringToFront'); await sleep(250);
+    const r = await P.ev(`(() => { const e = document.querySelector('#composer .slip') || document.querySelector('#composer'), b = e.getBoundingClientRect(), cs = x => { const o = document.querySelector(x); if (!o) return null; const c = getComputedStyle(o), r = o.getBoundingClientRect(); return [c.opacity, c.visibility, c.display, c.color, c.backgroundColor, Math.round(r.width) + 'x' + Math.round(r.height), c.animationName, c.filter, c.backdropFilter]; }; return { x: b.left, y: b.top, w: b.width, h: b.height, st: { composer: cs('#composer'), slip: cs('#composer .slip'), input: cs('#input'), send: cs('#send'), row: cs('#composer .slip .row') }, hiddenAttr: document.querySelector('#composer').hidden }; })()`);
+    const shot = await P.send('Page.captureScreenshot', { format: 'png', clip: { x: r.x, y: r.y, width: r.w, height: r.h, scale: 1 } });
+    const bright = await P.ev(`(async () => { const b = await createImageBitmap(new Blob([Uint8Array.from(atob('${shot.result.data}'), c => c.charCodeAt(0))], { type: 'image/png' })), c = new OffscreenCanvas(b.width, b.height), g = c.getContext('2d'); g.drawImage(b, 0, 0); const d = g.getImageData(0, 0, b.width, b.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 330) n++; return n; })()`);
+    return { bright, ...r };
+  };
   // entering a room shows the dots and the existing stream
   need(await lvl(A) === 'chat', 'a chat should be open, level is ' + await lvl(A));
   const chat = await A.ev(`(() => { const r = document.querySelector('#mega-rail'), s = document.querySelector('#stream').getBoundingClientRect(), d = [...document.querySelectorAll('#mega-rail .mitem')];
@@ -465,6 +473,7 @@ try {
     need(await bdLive() > 50, 'the backdrop canvas did not draw');
     need(await A.ev(`getComputedStyle(document.querySelector('#main')).backgroundColor === 'rgb(5, 4, 7)' || getComputedStyle(document.querySelector('#main')).backgroundImage.includes('radial-gradient')`), 'the room does not sit on the mega room background');
     await A.shot('mega2-1-room');
+    { const ink = await composerInk(A); need(ink.bright > 100, 'the composer has not painted after entering a room (bright pixels ' + ink.bright + ')'); }
     await key(A, 'Escape'); await sleep(900);
     need(await lvl(A) === 'server' && await A.ev(`!document.querySelector('#mega-bd') && !document.documentElement.classList.contains('mg-room')`), 'the backdrop must stop completely on the card levels');
     await key(A, 'Enter'); await sleep(1500);
@@ -642,6 +651,9 @@ try {
     await wf(A, `__megaWall.state().marks === ${(await ws(B)).marks}`, 20000).catch(() => { throw new Error('mega: wall: his stroke did not reach her'); });
     need(await cells(A) === await cells(B), 'wall: the walls differ after both drew');
     await A.shot('mega4-1-wall-drawing'); await B.shot('mega4-2-wall-bob');
+    // a real paint check of the composer: bright pixels in a screenshot of its box (computed styles said "painted" while the screenshots showed it blank)
+    const ink = await composerInk(A);
+    need(ink.bright > 100, 'the composer is blank in a real screenshot (bright pixels ' + ink.bright + '): ' + JSON.stringify(ink.st));
     // the toolbar and Esc: Esc closes the pen first, then steps back as before
     await B.ev(`document.querySelector('#mw-done').click()`); await sleep(300);
     need(await B.ev(`!document.querySelector('#mega-wallbar') && !document.querySelector('#mega-wallhit')`), 'wall: done did not close the pen');
