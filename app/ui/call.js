@@ -210,13 +210,25 @@
       this.phase = 'connected'; this.log('connected, epoch ' + st.epoch);
       if (this.deafened) this._announceDeafened();
       this._announceSpeaking(true);
+      this._subscribeAll(room);
       // microphone: join muted when push-to-talk is on
       this.muted = p.ptt ? true : this.muted;
       this.gate.manual = this.muted; this.gate.game = this.gameMuted;
       try { await this.gate.open(); }
       catch (e) { this.log('microphone unavailable: ' + (e.message || e)); const ce = this._explain(e); this.muted = true; this.gate.manual = true; this.fail(ce.kind === 'other' ? 'mic' : ce.kind, ce.message + ' You are in the call muted and can still listen.'); }
-      room.remoteParticipants.forEach(rp => this._reviewParticipant(rp));
+      this._subscribeAll(room);
       this.changed();
+    }
+
+    // Hearing the others must not wait for our own microphone to be set up: the people already talking are approved and subscribed first
+    // and the mic is published after that. Tracks the SDK attached before the room counted as connected (its event for those is
+    // dropped) are picked up here too.
+    _subscribeAll(room) {
+      const LK = this.LK;
+      room.remoteParticipants.forEach(rp => {
+        this._reviewParticipant(rp);
+        rp.trackPublications.forEach(pub => { if (pub.track && pub.isSubscribed && !this.tracks.has(rp.identity + '/' + pub.trackSid)) room.emit(LK.RoomEvent.TrackSubscribed, pub.track, pub, rp); });
+      });
     }
 
     async _publishMic(on) {
@@ -332,6 +344,7 @@
 
     _wire(room) {
       const E = this.LK.RoomEvent, LK = this.LK;
+      if (E.SignalConnected) room.on(E.SignalConnected, () => this._subscribeAll(room));   // the roster has arrived: approve and ask for tracks at once
       room.on(E.ParticipantConnected, rp => { this._rekey(rp.identity); this._reviewParticipant(rp); this.changed(); });
       room.on(E.ParticipantDisconnected, rp => { this.speaking.delete(rp.identity); for (const k of [...this.tracks.keys()]) if (k.startsWith(rp.identity + '/')) this.tracks.delete(k); this._dropAudio(rp.identity); this.changed(); });
       room.on(E.TrackPublished, (pub, rp) => this._reviewPub(rp, pub));
