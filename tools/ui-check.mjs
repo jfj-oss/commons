@@ -135,6 +135,9 @@ try {
   await click(A, '#btn-invite');
   await A.waitFor(`document.querySelector('#mi-pw') && document.querySelector('#mi-pw').value.split('-').length === 4`);   // a suggestion is already there
   const pwd = await A.ev(`document.querySelector('#mi-pw').value`); await A.shot('03-invite-form');
+  await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(500);
+  if (!await A.ev(`document.documentElement.scrollWidth <= innerWidth + 1 && document.querySelector('.mi-modal').getBoundingClientRect().right <= innerWidth + 1`)) throw new Error('invite: the invite screen is wider than a phone');
+  await A.shot('03-invite-form-390'); await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(400);
   // a weak password is refused on the spot, with a plain warning, and Create cannot be pressed
   await type(A, '#mi-pw', 'hunter2'); await A.waitFor(`document.querySelector('#mi-hint').classList.contains('bad') && document.querySelector('.modal .acts button:last-child').disabled`);
   await A.shot('03-invite-weak');
@@ -678,6 +681,10 @@ try {
     await C.waitFor(`!!document.querySelector('#ipw')`);
     const cpw = await A.ev(`rpc('create_invite', { cid: ${JSON.stringify(cid)}, uses: 1, password: 'maple-otter-kayak-31' }).then(r => r.password && 'maple-otter-kayak-31')`);
     need(cpw === 'maple-otter-kayak-31', 'invite: the core did not make a password invite');
+    await C.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(500);
+    need(await C.ev(`document.documentElement.scrollWidth <= innerWidth + 1`), 'invite: the first screen is wider than a phone');
+    await C.shot('mega-invite-first-390');
+    await C.send('Emulation.clearDeviceMetricsOverride'); await sleep(400);
     await type(C, '#ipw', 'Maple Otter  kayak 31'); await type(C, '#nm', 'Carol'); await type(C, '#pp', 'correct horse battery'); await C.shot('mega-invite-first');
     await click(C, '#go');
     await C.waitFor(`!document.querySelector('#app').hidden`, 30000);

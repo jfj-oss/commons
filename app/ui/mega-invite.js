@@ -14,7 +14,7 @@
   function first(ctx) {
     const el = ctx.el, adv = !ctx.relay;
     el.innerHTML = `<div class="boot-card mi-first">${ctx.BRAND}<h1>mega</h1><div class="tag">Got an invite password? Type it, pick a name, and you are in.</div>
-      <label for="ipw">Invite password</label><input type="text" id="ipw" autocomplete="off" autocapitalize="none" spellcheck="false" autofocus placeholder="the words your friend told you">
+      <label for="ipw">Invite password</label><input type="text" id="ipw" autocomplete="off" autocapitalize="none" spellcheck="false" autofocus placeholder="the password you were told">
       <label for="nm">Your name</label><input type="text" id="nm" autocomplete="off">
       <label for="pp">A password for this device</label><div class="mi-pw"><input type="password" id="pp" autocomplete="new-password" aria-describedby="pph"><button type="button" class="mi-eye" id="mi-eye" aria-pressed="false">show</button></div>
       <div class="muted small" id="pph" aria-live="polite">It locks mega on this computer. Nobody can reset it, so make it one you will remember.</div>
@@ -52,7 +52,7 @@
   // ---------------------------------------------------------------- joining another community
   function join(byLink) {
     const p = modal('Join a community', `<p class="muted small">Type the invite password you were given. An admin has to be online (now or later) to let you in.</p>
-      <input type="text" id="mi-jpw" autocomplete="off" autocapitalize="none" spellcheck="false" aria-label="Invite password" placeholder="the words your friend told you"><button type="button" class="linkish mi-alt" id="mi-link">I have an invite link instead</button>`,
+      <input type="text" id="mi-jpw" autocomplete="off" autocapitalize="none" spellcheck="false" aria-label="Invite password" placeholder="the password you were told"><button type="button" class="linkish mi-alt" id="mi-link">I have an invite link instead</button>`,
       [{ label: 'Cancel', primary: false }, { label: 'Join', run: async w => {
         const v = $('#mi-jpw', w).value.trim();
         if (!v) throw new Error('Type the invite password you were given.');
