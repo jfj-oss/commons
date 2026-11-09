@@ -45,17 +45,59 @@
     (x, y, t, a) => { const dx = x - a.cols / 2, dy = (y - a.rows / 2) * 1.9; return .5 + .5 * Math.sin(Math.atan2(dy, dx) * 5 + Math.log(1 + Math.hypot(dx, dy)) * 4 - t * 1.4); },
     (x, y, t) => .5 + .5 * Math.sin((x + y * 1.9) * .18 + t) * Math.sin((x - y * 1.9) * .14 - t * .7),
     (x, y, t) => .34 * (.5 + .5 * Math.sin(x * .07 + y * .19 + t * .3)) + .1,
+    // ---- appended patterns (never reorder: a number in an owner's look and the automatic choice of every card point into this list).
+    // Each is per cell per frame: arithmetic only, no allocation. They return 0..1, and at a still frame (reduced motion) they are a picture.
+    // 7 aurora: tall curtains that sway slowly
+    (x, y, t) => { const c = .5 + .5 * Math.sin(x * .13 + Math.sin(t * .4 + x * .045) * 2.5 + t * .3); return c * c * (.55 + .45 * Math.sin(y * .08 - t * .5 + x * .02)); },
+    // 8 tide: broad horizontal bands rolling up and down
+    (x, y, t) => .5 + .5 * Math.sin(y * .5 - t * 1.2 + Math.sin(x * .05 + t * .5) * 1.4),
+    // 9 tunnel: rectangles moving inward
+    (x, y, t, a) => { const dx = Math.abs(x - a.cols / 2) / (a.cols / 2), dy = Math.abs(y - a.rows / 2) / (a.rows / 2), d = dx > dy ? dx : dy; return .5 + .5 * Math.sin(d * 15 + t * 2); },
+    // 10 orbit: soft blobs circling and merging
+    (x, y, t, a) => {
+      let s = 0;
+      for (let i = 0; i < 3; i++) { const dx = x - a.cols * (.5 + .27 * Math.cos(t * .5 + i * 2.1)), dy = (y - a.rows * (.5 + .3 * Math.sin(t * .7 + i * 2.1))) * 1.9; s += 70 / (dx * dx + dy * dy + 1); }
+      const v = (s - .3) * 1.3; return v < 0 ? 0 : v > 1 ? 1 : v;
+    },
+    // 11 snow: sparse dots drifting down, wandering sideways
+    (x, y, t, a) => { const c = a.col[x % a.col.length], xx = x + Math.round(Math.sin(t * .5 + y * .3 + c.o) * 1.5), n = nh(xx * 1.7, Math.floor(y - t * (1.2 + c.v)) + c.o); return n > .93 ? .55 + (n - .93) * 6 : 0; },
+    // 12 embers: noise rising from the bottom, fading toward the top
+    (x, y, t, a) => { const f = y / a.rows, v = (vn(x * .11, y * .27 - t * 1.3) * 1.25 - .22) * f * f * 1.7; return v < 0 ? 0 : v > 1 ? 1 : v; },
+    // 13 radar: a rotating sweep with a fading trail
+    (x, y, t, a) => { const d = ((t * 1.1 - Math.atan2((y - a.rows / 2) * 1.9, x - a.cols / 2)) % 6.2832 + 6.2832) % 6.2832; return d < 3 ? (1 - d / 3) * (1 - d / 3) : 0; },
+    // 14 weave: two crossing diagonal lattices sliding past each other
+    (x, y, t) => { const p = .5 + .5 * Math.sin((x + y * 1.9) * .35 + t * .6), q = .5 + .5 * Math.sin((x - y * 1.9) * .35 - t * .5), v = (p > .8 ? p : 0) + (q > .8 ? q : 0); return v > 1 ? 1 : v; },
+    // 15 comets: fast diagonal streaks with tails
+    (x, y, t) => {
+      const w = x + y * 1.9, lane = Math.floor(w / 5), h = nh(lane, 3.7);
+      if (h < .35 || w - lane * 5 > 2.2) return 0;
+      const l = x * 1.9 - y, d = (((t * (10 + h * 14) + h * 120 - l) % 130) + 130) % 130; return d < 24 ? (1 - d / 24) * (1 - d / 24) : 0;
+    },
+    // 16 dunes: slow ridged noise
+    (x, y, t) => { const r = 1 - Math.abs(vn(x * .045 + t * .03, y * .16) * 2 - 1), v = (r * r * r - .3) / .7; return v < 0 ? 0 : v > 1 ? 1 : v; },
   ];
+  // the names shown in the chooser (same order as FX)
+  const FXNAMES = ['waves', 'ripples', 'rain', 'clouds', 'spiral', 'lattice', 'haze', 'aurora', 'tide', 'tunnel', 'orbit', 'snow', 'embers', 'radar', 'weave', 'comets', 'dunes'];
   const colFor = (n, seed) => Array.from({ length: Math.max(1, n) }, (_, i) => ({ v: .6 + nh(i, seed) * 1.5, o: nh(seed, i) * 60, l: 16 + nh(i + 9, seed) * 30 }));
   const MONO = '"IBM Plex Mono", ui-monospace, monospace';
   let fontKey = 0;
   const SNAP = new Map();
   function snapOf(x) {
-    const f = fieldOf(x), hi = hiOf(x), key = x.id + f + hi + fontKey; if (SNAP.has(key)) return SNAP.get(key);
+    const f = fieldOf(x), hi = hiOf(x), key = x.id + f + hi + fontKey + ':' + x.fx; if (SNAP.has(key)) return SNAP.get(key);
     const c = document.createElement('canvas'); c.width = 240; c.height = 96; const g = c.getContext('2d'); g.font = '500 11px ' + MONO; g.textAlign = 'center'; g.textBaseline = 'middle';
     const a = { cols: 34, rows: 8, col: colFor(34, H(x.id)) };
     for (let y = 0; y < 8; y++) for (let k = 0; k < 34; k++) { if (y > 3 && k < 27) continue; const v = FX[x.fx](k, y, 7.3 + H(x.id) % 40, a); if (v < .2) continue; g.fillStyle = mix(f, hi, v < .64 ? .3 : v < .85 ? .6 : 1); g.fillText(RAMP[Math.min(9, v * 10 | 0)], k * 7 + 3.5, y * 12 + 6); }
     const u = `url(${c.toDataURL('image/png')}) center/cover, ${f}`; SNAP.set(key, u); return u;
+  }
+  const THUMB = new Map();
+  function fxThumb(n, f, hi) {
+    const key = n + f + hi + fontKey; if (THUMB.has(key)) return THUMB.get(key);
+    if (THUMB.size > 160) THUMB.clear();
+    const c = document.createElement('canvas'); c.width = 176; c.height = 88; const g = c.getContext('2d');
+    g.fillStyle = f; g.fillRect(0, 0, 176, 88); g.font = '500 10px ' + MONO; g.textAlign = 'center'; g.textBaseline = 'middle';
+    const cols = 22, rows = 8, a = { cols, rows, col: colFor(cols, 5) };
+    for (let y = 0; y < rows; y++) for (let k = 0; k < cols; k++) { const v = FX[n](k, y, 7.3, a); if (v < .2) continue; g.fillStyle = mix(f, hi, v < .64 ? .45 : v < .85 ? .75 : 1); g.fillText(RAMP[Math.min(9, v * 10 | 0)], k * 8 + 4, y * 11 + 6); }
+    const u = `url(${c.toDataURL('image/png')})`; THUMB.set(key, u); return u;
   }
   const ATLAS = new Map();
   function atlasOf(f, hi, sw, sh, fs) {
@@ -66,6 +108,7 @@
     [.3, .6, 1].forEach((t, row) => { g.fillStyle = mix(f, hi, t); [...RAMP].forEach((ch, i) => g.fillText(ch, i * sw + sw / 2, row * sh + sh / 2)); });
     ATLAS.set(key, c); return c;
   }
+  const fade = c => { if (calm() || root.classList.contains('fx-lite')) return; c.classList.remove('mfade'); void c.offsetWidth; c.classList.add('mfade'); };
   const ACTIVE = new Set(); let clock = 0, energy = 0, lastT = 0, tickN = 0;
   function asciiOn(sq, x) {
     if (!sq.offsetWidth) return null;
@@ -74,9 +117,9 @@
     const cols = Math.ceil(sq.offsetWidth / cw), rows = Math.ceil(sq.offsetHeight / ch); c.width = cols * sw; c.height = rows * sh; c.style.width = cols * cw + 'px'; c.style.height = rows * ch + 'px';
     const live = x.kind === 'voice' && x.people.length, frozen = x.locked || (x.kind === 'voice' && !x.people.length);
     const a = { c, ctx: c.getContext('2d'), sq, x, cols, rows, cw, ch, sw, sh, fs, mask: new Uint8Array(cols * rows), field: FX[x.fx], hiT: frozen ? 2 : live ? .76 : .9 - .22 * Math.min(1, (x.act || 0) / 12), frozen, col: colFor(cols, H(x.id)), focus: false, mx: -999, my: -999, bloom: 0 };
-    a.at = atlasOf(fieldOf(x), hiOf(x), sw, sh, fs); ACTIVE.add(a); remask(a); asciiDraw(a, clock); return a;
+    a.at = atlasOf(fieldOf(x), hiOf(x), sw, sh, fs); ACTIVE.add(a); if (window.__megaWall) __megaWall.cardOn(a); remask(a); asciiDraw(a, clock); return a;
   }
-  function asciiOff(a) { if (!a) return; ACTIVE.delete(a); a.c.remove(); }
+  function asciiOff(a) { if (!a) return; ACTIVE.delete(a); if (window.__megaWall) __megaWall.cardOff(a); a.c.remove(); }
   // the ascii flows around the words: every text box on the card is cut out of the pattern
   function remask(a) {
     const sr = a.sq.getBoundingClientRect(); if (!sr.width) return;
@@ -85,6 +128,7 @@
     const rg = document.createRange();
     $$('.mtop>span:not(.mat),.mti,.mnu' + (settled ? ',.mpreview' : ''), a.sq).forEach(e => { rg.selectNodeContents(e); [...rg.getClientRects()].forEach(hit); });
     $$('.mat' + (settled ? ',.mwho>span,.mvact button,.mfaces-row' : ''), a.sq).forEach(e => hit(e.getBoundingClientRect()));
+    if (window.__megaWall) __megaWall.cardMask(a);   // the words are cut out; now the drawing on the card is an obstacle too
   }
   const remaskAll = () => ACTIVE.forEach(remask);
   function asciiDraw(a, t) {
@@ -142,13 +186,22 @@
   // the colours the owner set for this community card (gid null) or room, or the defaults derived from the id
   const targetOf = (cid, gid) => { const c = comm(cid), st = c && c.style, d = st && (gid ? st.rooms && st.rooms[gid] : st.community); return d && isHex(d.main) && isHex(d.hi) ? [d.main.toLowerCase(), d.hi.toLowerCase()] : DEF[H(gid || cid) % DEF.length]; };
   const themeOf = o => SHOWN.get(o.id) || (o.kind === 'options' ? DEF[H(o.id) % DEF.length] : targetOf(o.cid || o.id, o.kind === 'community' ? null : o.gid));
+  // The owner's look (card pattern, chat pattern, backdrop strength), from the same signed document. A pattern number this version does not know
+  // means automatic, so patterns can be added later. LHOLD keeps what the owner is editing right now on this screen until the snapshot catches up.
+  const DIM_MAX = 160;
+  const LHOLD = new Map(), DIMS = new Map(), LSEEN = new Map();
+  const lookStored = (cid, id) => { const c = comm(cid), st = c && c.style; return (st && st.looks && st.looks[id]) || null; };
+  const lookOf = (cid, id) => { const h = LHOLD.get(id); if (h && h.until > Date.now()) return h.look; return lookStored(cid, id) || {}; };
+  const patOf = n => (Number.isInteger(n) && n >= 0 && n < FX.length ? n : null);
+  const dimOf = lk => (Number.isFinite(lk.dim) ? Math.max(0, Math.min(DIM_MAX, Math.round(lk.dim))) : 100);
   const mk = (o, sigParts) => { o.theme = o.theme || themeOf(o); o.sig = JSON.stringify([sigParts, o.theme]); return o; };
 
   function commItem(c) {
     const un = unreadIn(c), at = mentionsIn(c), voice = S.cid === c.id ? c.channels.filter(x => x.kind === 'voice' && (callPeople(x.gid) || []).length) : [];
     const first = voice[0], people = first ? callPeople(first.gid) : [];
     const names = c.channels.filter(x => x.kind !== 'voice').map(x => x.name);
-    return mk({ key: 'c:' + c.id, id: c.id, cid: c.id, kind: 'community', name: c.name, unread: un, at, act: un, fx: [4, 3, 0, 5, 2][H(c.name) % 5], rooms: c.channels.length, names, voiceName: first && first.name, people: people.map(p => p.name) },
+    const auto = [4, 3, 0, 5, 2][H(c.name) % 5], lk = lookOf(c.id, c.id);
+    return mk({ key: 'c:' + c.id, id: c.id, cid: c.id, kind: 'community', name: c.name, unread: un, at, act: un, fxAuto: auto, fx: patOf(lk.card) ?? auto, rooms: c.channels.length, names, voiceName: first && first.name, people: people.map(p => p.name) },
       [c.name, un, at, c.channels.length, names.slice(0, 4), first && first.name, people.map(p => p.name)]);
   }
   const youItem = () => mk({ key: 'you', id: 'you', kind: 'you', name: 'you', unread: 0, at: 0, act: 0, fx: 4, theme: ['#d9dce4', '#2b3bff'] }, ['you']);
@@ -156,7 +209,8 @@
     const off = H(c.id), out = [];
     const room = ch => {
       const voice = ch.kind === 'voice', i = c.channels.indexOf(ch), people = voice ? (callPeople(ch.gid) || []) : [], pv = PREV.get(ch.gid) || {};
-      const it = { key: ch.gid, id: ch.gid, gid: ch.gid, cid: c.id, kind: voice ? 'voice' : 'text', name: ch.name, unread: ch.unread || 0, at: S.mention.get(ch.gid) || 0, locked: !ch.joined, status: ch.joined && ch.status && ch.status !== 'ok' ? ch.status : '', people, here: voice && inCallHere(ch.gid), fx: voice ? 1 : [0, 3, 4, 5, 2][(off + i) % 5], pv };
+      const auto = voice ? 1 : [0, 3, 4, 5, 2][(off + i) % 5], lk = lookOf(c.id, ch.gid);
+      const it = { key: ch.gid, id: ch.gid, gid: ch.gid, cid: c.id, kind: voice ? 'voice' : 'text', name: ch.name, unread: ch.unread || 0, at: S.mention.get(ch.gid) || 0, locked: !ch.joined, status: ch.joined && ch.status && ch.status !== 'ok' ? ch.status : '', people, here: voice && inCallHere(ch.gid), fxAuto: auto, fx: patOf(lk.card) ?? auto, chatFx: patOf(lk.chat) ?? auto, dim: DIMS.has(ch.gid) ? DIMS.get(ch.gid) : dimOf(lk), pv };
       it.act = it.unread;
       return mk(it, [it.name, it.unread, it.at, it.locked, it.status, people.map(p => [p.name, !!p.speaking, !!p.muted, !!p.deafened, !!p.me]), it.here, pv.who, pv.text]);
     };
@@ -245,7 +299,7 @@
       if (settled === cur) return;
       if (settled >= 0) slots[settled]?.classList.remove('settled');
       settled = cur; settledTop = el.scrollTop; slots[cur].classList.add('settled'); remaskAll(); setTimeout(remaskAll, 850);
-      if (opts.onSettle) opts.onSettle(items[cur]);
+      if (opts.onSettle) opts.onSettle(items[cur], $('.msq', slots[cur]));
     };
     el.addEventListener('scroll', () => {
       if (!raf) raf = requestAnimationFrame(frame);
@@ -253,7 +307,7 @@
       if (settled >= 0 && Math.abs(el.scrollTop - settledTop) > 3) { slots[settled]?.classList.remove('settled'); settled = -1; remaskAll(); }
       clearTimeout(t); t = setTimeout(settle, 150);
     }, { passive: true });
-    const go = (i, now) => { i = Math.max(0, Math.min(items.length - 1, i)); el.scrollTo({ top: tops[i] - (el.clientHeight - sh) / 2, behavior: now || calm() ? 'auto' : 'smooth' }); };
+    const go = (i, now) => { if (!now && root.classList.contains('mg-drawing-card')) return; i = Math.max(0, Math.min(items.length - 1, i)); el.scrollTo({ top: tops[i] - (el.clientHeight - sh) / 2, behavior: now || calm() ? 'auto' : 'smooth' }); };
     el.addEventListener('click', e => {
       const s = e.target.closest('.mslot'); if (!s) return;
       const i = +s.dataset.i;
@@ -286,10 +340,15 @@
       repaint(next) {
         if (next.length !== items.length) return;
         next.forEach((x, i) => { if (x.key !== items[i].key) return; items[i] = x; $('.msq', slots[i]).style.cssText = cardVars(x); sc.children[i].style.setProperty('--c', dotOf(x)); });
-        live.forEach((a, i) => { a.x = items[i]; a.at = atlasOf(fieldOf(a.x), hiOf(a.x), a.sw, a.sh, a.fs); asciiDraw(a, clock); });
+        live.forEach((a, i) => {
+          a.x = items[i]; a.at = atlasOf(fieldOf(a.x), hiOf(a.x), a.sw, a.sh, a.fs);
+          if (a.field !== FX[a.x.fx]) { a.field = FX[a.x.fx]; fade(a.c); }   // a new pattern fades in over the old picture
+          asciiDraw(a, clock);
+        });
       },
       visible() { return slots.map((s, i) => ({ x: items[i], i, a: Math.abs(i - cur) })).filter(o => o.a <= 1).map(o => ({ ...o, r: $('.msq', slots[o.i]).getBoundingClientRect() })); },
       rectOf(i) { return $('.msq', slots[i]).getBoundingClientRect(); },
+      sq() { return $('.msq', slots[cur]); },
       destroy() { ro.disconnect(); clearTimeout(t); clearTimeout(rz); dropAscii(); el.remove(); sc.remove(); },
     };
   }
@@ -298,7 +357,7 @@
   const guard = fn => async (...a) => { if (M.busy) return; M.busy = true; try { await fn(...a); } finally { M.busy = false; if (M.dirty) { M.dirty = false; render(); } } };
   const sq = () => getComputedStyle(root).getPropertyValue('--m-sq');
   function fly(r, m) { const f = document.createElement('div'); f.className = 'mfly'; f.style.cssText = `left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;--m-mesh:${m}`; fxl.append(f); return f; }
-  function killList() { if (M.list) { M.list.destroy(); M.list = null; } mega.innerHTML = ''; hideTip(); closeRail(); }
+  function killList() { if (window.__megaWall) __megaWall.leave(); if (M.list) { M.list.destroy(); M.list = null; } mega.innerHTML = ''; hideTip(); closeRail(); }
   function applyLevel() {
     const chat = M.level === 'chat';
     mega.hidden = chat; rail.hidden = !chat;
@@ -333,15 +392,15 @@
     const dot = $('#activity-dot') && !$('#activity-dot').hidden ? '<span class="mdot" title="new in the activity log"></span>' : '';
     const more = `<button class="mchip" data-m="more" type="button" aria-haspopup="menu">more${dot}</button>`;
     const jump = `<button class="mchip" data-m="jump" type="button">jump<span class="mhide-s">&nbsp;to</span> <span class="mtag mhide-s">ctrl k</span></button>`;
-    if (!c) return `<div class="mbar"><span class="mmark">mega</span><span class="mtag" id="m-sync" hidden></span><span class="mgrow"></span><button class="mchip" data-m="paint" type="button" hidden>colours</button><button class="mchip" data-m="new" type="button">new</button><button class="mchip" data-m="join" type="button">join</button>${more}${jump}</div>`;
+    if (!c) return `<div class="mbar"><span class="mmark">mega</span><span class="mtag" id="m-sync" hidden></span><span class="mgrow"></span><button class="mchip" data-m="paint" type="button" hidden>colours</button><button class="mchip" data-m="draw" type="button" aria-pressed="false" hidden>draw</button><button class="mchip" data-m="new" type="button">new</button><button class="mchip" data-m="join" type="button">join</button>${more}${jump}</div>`;
     const admin = c.role === 'admin' || c.role === 'owner', names = S.membersFor === c.id ? S.members.map(m => m.name) : [];
-    return `<div class="mbar">${cs.length > 1 ? '<button class="mchip" data-m="back" type="button" aria-label="Back to all communities"><span aria-hidden="true">&larr;</span><span class="mhide-s"> back</span></button>' : ''}<span class="mmark">${esc(c.name)}</span><span class="mtag" id="m-sync" hidden></span><span class="mgrow"></span><button class="mchip" data-m="paint" type="button" hidden>colours</button>${admin ? '<button class="mchip mhide-s" data-m="invite" type="button">invite</button><button class="mchip mhide-s" data-m="room" type="button">new room</button>' : ''}<button class="mchip" data-m="people" type="button" aria-label="People">${names.length ? mfaces(names.slice(0, 3)) : ''}<span class="mhide-s">people</span></button>${more}${jump}</div>`;
+    return `<div class="mbar">${cs.length > 1 ? '<button class="mchip" data-m="back" type="button" aria-label="Back to all communities"><span aria-hidden="true">&larr;</span><span class="mhide-s"> back</span></button>' : ''}<span class="mmark">${esc(c.name)}</span><span class="mtag" id="m-sync" hidden></span><span class="mgrow"></span><button class="mchip" data-m="paint" type="button" hidden>colours</button><button class="mchip" data-m="draw" type="button" aria-pressed="false" hidden>draw</button>${admin ? '<button class="mchip mhide-s" data-m="invite" type="button">invite</button><button class="mchip mhide-s" data-m="room" type="button">new room</button>' : ''}<button class="mchip" data-m="people" type="button" aria-label="People">${names.length ? mfaces(names.slice(0, 3)) : ''}<span class="mhide-s">people</span></button>${more}${jump}</div>`;
   }
   function drawBar() {
     const html = barHTML(); let bar = $('.mbar', mega);
     if (bar && html !== M.barSig) { bar.outerHTML = html; }
     else if (!bar) mega.insertAdjacentHTML('afterbegin', html);
-    M.barSig = html; syncText(); if (M.list) paintFollow(M.list.item);
+    M.barSig = html; syncText(); if (M.list) paintFollow(M.list.item, M.list.sq());
   }
   function notesHTML() {
     const sn = S.snap; if (!sn) return '';
@@ -547,10 +606,36 @@
     };
     setTimeout(step, 0); return true;
   }
+  // A look changed by somebody else: the pattern fades over the old one, the backdrop strength eases to its new value.
+  const DTW = new Map();
+  function tweenDim(id, to) {
+    const from = DIMS.has(id) ? DIMS.get(id) : 100, tok = {}; DTW.set(id, tok);
+    if (calmNow() || from === to) { DIMS.set(id, to); repaintColours(); return; }
+    const t0 = performance.now();
+    const step = () => {
+      if (DTW.get(id) !== tok) return;
+      const k = Math.min(1, (performance.now() - t0) / 650), e = k * k * (3 - 2 * k);
+      DIMS.set(id, k >= 1 ? to : Math.round(from + (to - from) * e)); repaintColours();
+      if (k < 1) setTimeout(step, 33); else DTW.delete(id);
+    };
+    setTimeout(step, 0);
+  }
+  function syncLooks(c) {
+    const now = Date.now(), names = [];
+    for (const [id, name] of [[c.id, c.name], ...c.channels.map(ch => [ch.gid, ch.name])]) {
+      const st = lookStored(c.id, id), s = JSON.stringify(st || null), was = LSEEN.get(id);
+      LSEEN.set(id, s);
+      if (was === undefined) { DIMS.set(id, dimOf(st || {})); continue; }
+      if (was === s) continue;
+      const h = LHOLD.get(id); if (h && h.until > now) continue;   // the owner is editing this one right now
+      LHOLD.delete(id); names.push(name); tweenDim(id, dimOf(st || {})); repaintColours();
+    }
+    return names;
+  }
   function syncColours() {
     const now = Date.now();
     for (const c of comms()) {
-      const changed = [];
+      const changed = [], lnames = syncLooks(c);
       for (const [id, gid, name] of [[c.id, null, c.name], ...c.channels.map(ch => [ch.gid, ch.gid, ch.name])]) {
         const to = targetOf(c.id, gid), goal = GOAL.get(id);
         if (!goal) { SHOWN.set(id, to); GOAL.set(id, to); continue; }
@@ -560,9 +645,9 @@
       }
       const ver = c.style ? c.style.ver : 0, was = SEEN.get(c.id);
       SEEN.set(c.id, ver);
-      if (was !== undefined && ver > was && c.role !== 'owner' && changed.length) {
-        const who = c.style && c.style.by ? c.style.by : 'the owner';
-        toast(`${who} changed the colours of ${changed.length > 2 ? changed.length + ' rooms' : changed.join(' and ')}`);
+      if (was !== undefined && ver > was && c.role !== 'owner' && (changed.length || lnames.length)) {
+        const who = c.style && c.style.by ? c.style.by : 'the owner', list = a => (a.length > 2 ? a.length + ' rooms' : a.join(' and '));
+        toast(`${who} changed the ${[changed.length ? 'colours of ' + list(changed) : '', lnames.length ? 'look of ' + list(lnames) : ''].filter(Boolean).join(' and the ')}`);
       }
     }
   }
@@ -580,7 +665,7 @@
         const it = items.find(x => x.gid === S.gid && x.kind === 'text');
         if (it && BD && BD.gid === it.gid && mainEl) {
           const hi = lift(hiOf(it), 4.8); root.style.setProperty('--mg-c', dotOf(it)); root.style.setProperty('--mg-hi', hi); root.style.setProperty('--mg-hi-ink', bestInk(hi));
-          BD.f = fieldOf(it); BD.h = hiOf(it); bdColours(BD); dirty(); if (window.__megaWall) __megaWall.recolour();
+          BD.f = fieldOf(it); BD.h = hiOf(it); bdLook(it); bdColours(BD); dirty(); if (window.__megaWall) __megaWall.recolour();
         }
       }
     }, 16);
@@ -592,8 +677,17 @@
   const PT = { open: false, set() { } };
   const toHsv = h => { const [r, g, b] = rgb(h).map(v => v / 255), Mx = Math.max(r, g, b), d = Mx - Math.min(r, g, b); let hh = 0; if (d) hh = Mx === r ? ((g - b) / d + 6) % 6 : Mx === g ? (b - r) / d + 2 : (r - g) / d + 4; return [hh * 60, Mx ? d / Mx : 0, Mx]; };
   const fromHsv = (h, s, v) => { const f = n => { const k = (n + h / 60) % 6; return (v - v * s * Math.max(0, Math.min(k, 4 - k, 1))) * 255; }; return hex([f(5), f(3), f(1)]); };
-  function paintFollow(x) {
-    const b = $('[data-m="paint"]', mega); if (b) b.hidden = !(canPaint(x) && (M.level === 'home' || M.level === 'server'));
+  const cardLevel = () => M.level === 'home' || M.level === 'server';
+  // The focused card is the only one whose wall is polled; the draw chip is there when this person may draw on it.
+  function drawChip() {
+    const b = $('[data-m="draw"]', mega); if (!b) return;
+    const x = M.list && M.list.item, ok = !!(x && cardLevel() && window.__megaWall && __megaWall.drawable(x)), on = ok && __megaWall.isOn();
+    b.hidden = !ok; b.setAttribute('aria-pressed', String(on)); b.textContent = on ? 'drawing' : 'draw';
+  }
+  function paintFollow(x, sq) {
+    const b = $('[data-m="paint"]', mega); if (b) b.hidden = !(canPaint(x) && cardLevel());
+    if (window.__megaWall) { if (x && cardLevel()) __megaWall.focus(x, sq || (M.list && M.list.sq())); else __megaWall.leave(); }
+    drawChip();
     if (PT.open) { if (!x || (!canPaint(x) && x.kind !== 'options')) closePaint(); else PT.set(x); }
   }
   function closePaint() { const e = document.getElementById('mega-paint'); if (e) e.remove(); PT.open = false; PT.set = () => { }; }
@@ -604,11 +698,15 @@
     try {
       while (SAVE.size) {
         const [id, o] = SAVE.entries().next().value; SAVE.delete(id);
-        try { await rpc('set_style', { cid: o.cid, room: o.gid || '', main: o.main, hi: o.hi }); } catch (er) { toast(er.message); }
-        HOLD.set(id, Date.now() + 2500);
+        try {
+          if (o.look) await rpc('set_look', { cid: o.cid, room: o.gid || '', ...o.look });
+          else await rpc('set_style', { cid: o.cid, room: o.gid || '', main: o.main, hi: o.hi });
+        } catch (er) { toast(er.message); }
+        if (o.look) { const h = LHOLD.get(o.hid); if (h) h.until = Math.max(h.until, Date.now() + 4000); } else HOLD.set(id, Date.now() + 2500);
       }
     } finally { saving = false; }
   }
+  const queueLook = (x, look) => { SAVE.set('L' + x.id, { cid: x.cid || x.id, gid: x.kind === 'community' ? '' : x.gid, look, hid: x.id }); flushSaves(); };
   const queueSave = (x, d) => { HOLD.set(x.id, Date.now() + 6000); SAVE.set(x.id, { cid: x.cid || x.id, gid: x.kind === 'community' ? '' : x.gid, main: d ? d[0] : '', hi: d ? d[1] : '' }); flushSaves(); };
   function paint(start) {
     if (PT.open) { closePaint(); return; }
@@ -620,9 +718,11 @@
       <input id="mp-hue" type="range" min="0" max="359" step="1" aria-label="Hue">
       <label class="mp-hex">hex <input id="mp-hex" maxlength="7" spellcheck="false" autocomplete="off" aria-label="Hex colour"></label>
       <div class="mp-presets">${PRESETS.map((p, i) => `<button type="button" data-p="${i}" aria-label="Preset ${i + 1}" style="background:linear-gradient(135deg,${p[0]} 50%,${p[1]} 50%)"></button>`).join('')}</div>
+      <div id="mp-looks"></div>
       <p class="mtag" id="mp-warn" role="status"></p><div class="mp-end"><button class="mchip" id="mp-reset" type="button">reset</button></div></div>`;
     document.body.append(e); PT.open = true;
-    let w = 0, hsv = [0, 0, 0], target = start, timer = 0;
+    let w = 0, hsv = [0, 0, 0], target = start, timer = 0, ltimer = 0, tt = 0;
+    const looksBox = $('#mp-looks', e), idOf = t => (t.kind === 'community' ? t.cid : t.gid);
     const sv = $('#mp-sv', e), hue = $('#mp-hue', e), hx = $('#mp-hex', e);
     const cur = () => (SHOWN.get(target.id) || themeOf(target)).slice();
     const show = () => {
@@ -634,7 +734,26 @@
       $('#mp-warn', e).textContent = contrast(t[0], t[1]) < 1.6 ? 'These two are too close, so the highlight will barely show.' : '';
     };
     // live on this screen at once; sent to everyone only when the person lets go
-    const apply = d => { setShown(target.id, d, false); HOLD.set(target.id, Date.now() + 6000); repaintColours(); show(); };
+    // the choosers: card animation for any card, chat animation and backdrop strength for text rooms
+    const fillLooks = () => {
+      if (!canPaint(target)) { looksBox.innerHTML = ''; return; }
+      const lk = lookOf(target.cid, idOf(target)), text = target.kind === 'text', t = cur();
+      const tiles = (k, sel) => ['', ...FX.map((_, i) => i)].map(n => `<button type="button" class="mp-t" data-k="${k}" data-n="${n}" aria-pressed="${n === '' ? patOf(sel) == null : n === patOf(sel)}" aria-label="${n === '' ? 'automatic' : FXNAMES[n]}" style="background-image:${fxThumb(n === '' ? target.fxAuto : n, t[0], t[1])}"><i>${n === '' ? 'auto' : FXNAMES[n]}</i></button>`).join('');
+      const d = dimOf(lk);
+      looksBox.innerHTML = `<p class="mp-lab" id="mp-l1">card animation</p><div class="mp-fx" role="group" aria-labelledby="mp-l1">${tiles('card', lk.card)}</div>`
+        + (text ? `<p class="mp-lab" id="mp-l2">chat animation</p><div class="mp-fx" role="group" aria-labelledby="mp-l2">${tiles('chat', lk.chat)}</div>
+          <label class="mp-dim"><span class="mp-lab">backdrop</span><input id="mp-dim" type="range" min="0" max="${DIM_MAX}" step="5" value="${d}" aria-label="Backdrop strength behind the chat"><output id="mp-dimv" for="mp-dim">${d === 0 ? 'off' : d + '%'}</output></label>` : '');
+    };
+    const tint = () => { clearTimeout(tt); tt = setTimeout(() => { const t = cur(); $$('.mp-t', e).forEach(b => { b.style.backgroundImage = fxThumb(b.dataset.n === '' ? target.fxAuto : +b.dataset.n, t[0], t[1]); }); }, 120); };
+    // a look is changed here at once, and sent only when committed (the same one-request-at-a-time queue as the colours)
+    const editLook = (patch, commit) => {
+      if (!canPaint(target)) return;
+      const id = idOf(target), nl = { ...lookOf(target.cid, id), ...patch }, clean = {};
+      for (const k of ['card', 'chat', 'dim']) if (Number.isFinite(nl[k])) clean[k] = nl[k];
+      LHOLD.set(id, { look: clean, until: Date.now() + 6000 }); DIMS.set(id, dimOf(clean));
+      repaintColours(); if (commit) queueLook(target, clean);
+    };
+    const apply = d => { setShown(target.id, d, false); HOLD.set(target.id, Date.now() + 6000); repaintColours(); show(); tint(); };
     const commit = () => { clearTimeout(timer); queueSave(target, cur()); };
     const later = () => { clearTimeout(timer); timer = setTimeout(commit, 450); };
     PT.set = x => {
@@ -642,6 +761,7 @@
       $('#mp-name').textContent = x.kind === 'options' ? 'options' : x.name;
       $('#mp-note').textContent = x.kind === 'options' ? 'The options room is private to each person, so it stays grey.' : 'Everyone in the community sees these colours. Only you, the owner, can change them.';
       if (ok) { hsv = toHsv(cur()[w]); show(); }
+      fillLooks();
     };
     const edit = (i, v) => { const t = cur(); t[i] = v; apply(t); };
     const pick = ev => { const r = sv.getBoundingClientRect(); hsv[1] = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)); hsv[2] = 1 - Math.max(0, Math.min(1, (ev.clientY - r.top) / r.height)); edit(w, fromHsv(...hsv)); };
@@ -651,10 +771,13 @@
     hue.oninput = () => { hsv[0] = +hue.value; edit(w, fromHsv(...hsv)); }; hue.onchange = commit;
     hx.oninput = () => { let v = hx.value.trim(); if (v && v[0] !== '#') v = '#' + v; if (isHex(v)) { v = v.toLowerCase(); hsv = toHsv(v); edit(w, v); later(); } };
     hx.onblur = show;
+    looksBox.addEventListener('input', ev => { if (ev.target.id !== 'mp-dim') return; const v = +ev.target.value; $('#mp-dimv', e).textContent = v === 0 ? 'off' : v + '%'; editLook({ dim: v }, false); });
+    looksBox.addEventListener('change', ev => { if (ev.target.id !== 'mp-dim') return; const v = +ev.target.value; clearTimeout(ltimer); ltimer = setTimeout(() => editLook({ dim: v }, true), 350); });
     e.onclick = ev => {
+      const tl = ev.target.closest('.mp-t'); if (tl) { editLook({ [tl.dataset.k]: tl.dataset.n === '' ? null : +tl.dataset.n }, true); $$('.mp-t[data-k="' + tl.dataset.k + '"]', e).forEach(b => b.setAttribute('aria-pressed', String(b === tl))); return; }
       const b = ev.target.closest('.mp-well'); if (b) { w = +b.dataset.w; hsv = toHsv(cur()[w]); show(); return; }
       const p = ev.target.closest('[data-p]'); if (p) { const d = PRESETS[+p.dataset.p].slice(); hsv = toHsv(d[w]); apply(d); commit(); return; }
-      if (ev.target.id === 'mp-reset') { const d = DEF[H(target.gid || target.cid || target.id) % DEF.length].slice(); hsv = toHsv(d[w]); apply(d); clearTimeout(timer); queueSave(target, null); return; }
+      if (ev.target.id === 'mp-reset') { const d = DEF[H(target.gid || target.cid || target.id) % DEF.length].slice(); hsv = toHsv(d[w]); apply(d); clearTimeout(timer); queueSave(target, null); { const id = idOf(target); LHOLD.set(id, { look: {}, until: Date.now() + 6000 }); DIMS.set(id, 100); repaintColours(); queueLook(target, {}); fillLooks(); } return; }
       if (ev.target.id === 'mp-done') closePaint();
     };
     PT.set(start);
@@ -686,6 +809,7 @@
     else if (a === 'invite') $('#btn-invite').click(); else if (a === 'room') $('#add-room').click();
     else if (a === 'people') $('#btn-people').click();
     else if (a === 'paint') { if (M.list && canPaint(M.list.item)) paint(M.list.item); }
+    else if (a === 'draw') { const x = M.list && M.list.item; if (x && window.__megaWall && __megaWall.drawable(x)) { closePaint(); __megaWall.focus(x, M.list.sq()); __megaWall.drawCard(); drawChip(); } }
   });
 
   // a community made from here becomes the one the person is looking at: show its rooms once the core lists it
@@ -763,6 +887,7 @@
       const i = M.opts ? -1 : t.findIndex(x => x.gid === S.gid), n = t[(i + (e.key === 'ArrowDown' ? 1 : -1) + t.length) % t.length];
       switchChat(n); return;
     }
+    if (root.classList.contains('mg-drawing-card')) return;   // the pen has the card: no keyboard scrolling
     if (typing || !M.list || M.closers.length || M.busy) return;
     if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); M.list.move(1); }
     else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); M.list.move(-1); }
@@ -782,7 +907,7 @@
   // the backdrop is a canvas behind it, sizes/focus are styles on the message rows, arrivals and reactions are detected by
   // comparing what renderStream painted this time with what it painted last time. Message text is untrusted: it only ever
   // reaches the page through textContent here.
-  const ST = { decodes: 0, ripples: 0, throws: 0, lands: 0, flights: 0 };
+  const ST = { decodes: 0, ripples: 0, throws: 0, lands: 0, flights: 0, bdDraws: 0 };
   M.stats = ST;
   const still = () => calm() || root.classList.contains('fx-lite');
   const roomOn = () => root.classList.contains('mg-room');
@@ -797,9 +922,20 @@
   // ---- the backdrop: the room's two colours as ascii, flowing around everything on the page
   const HEAT = new Map();   // gid -> heat, so a room you come back to is as lively as you left it
   let BD = null, mainEl = null;
+  // The owner's backdrop strength scales how bright the glyphs are (100 is today's look exactly), how dense they get above that, and how much
+  // a ripple or a busy room stirs it. At 0 nothing is drawn at all.
+  const lvOf = a => (a.dim == null ? 100 : a.dim) / 100;
   function bdColours(a) {
-    const v = '#050407', b = a.f, h = a.h;
-    a.at = atlasOf(mix(v, b, .2), mix(v, h, .3), a.sw, a.sh, a.fs); a.atB = atlasOf(mix(v, b, .5), lift(h, 3.4), a.sw, a.sh, a.fs);
+    const v = '#050407', b = a.f, h = a.h, lv = lvOf(a);
+    a.at = atlasOf(mix(v, b, Math.min(1, .2 * lv)), mix(v, h, Math.min(1, .3 * lv)), a.sw, a.sh, a.fs); a.atB = atlasOf(mix(v, b, Math.min(1, .5 * lv)), mix(v, lift(h, 3.4), Math.min(1, lv)), a.sw, a.sh, a.fs);
+  }
+  /** Take the owner's chat pattern and strength for this room (live: a change from the owner fades in). */
+  function bdLook(it) {
+    const a = BD; if (!a || !it || a.gid !== it.gid) return;
+    const fxn = it.chatFx ?? it.fx, d = it.dim ?? 100;
+    a.fxAuto = it.fxAuto;
+    if (a.fx !== fxn) { a.fx = fxn; fade(a.c); }
+    if (a.dim !== d) { a.dim = d; if (d === 0) a.g.clearRect(0, 0, a.c.width, a.c.height); bdColours(a); a.last = 0; }
   }
   function bdSize() {
     const a = BD; if (!a) return; const box = a.c.parentElement, w0 = box.clientWidth, h0 = box.clientHeight; if (!w0 || !h0) return;
@@ -836,7 +972,9 @@
   function bdDraw() {
     const a = BD; if (!a || !a.mask || !a.at) return;
     const { g, cols, rows, mask, sw, sh } = a; g.clearRect(0, 0, a.c.width, a.c.height);
-    const gate = .5 - .26 * a.heat, field = FX[a.fx], rips = a.rip, nr = rips.length;
+    if (a.dim === 0) return;
+    ST.bdDraws++;
+    const gate = (.5 - .26 * a.heat) / Math.max(1, lvOf(a)), field = FX[a.fx], rips = a.rip, nr = rips.length;
     for (let y = 0, i = 0; y < rows; y++) for (let x = 0; x < cols; x++, i++) {
       if (mask[i]) continue;
       let v = field(x, y, a.t, a), lit = 0;
@@ -847,7 +985,7 @@
   }
   function bdLoop(now) {
     const a = BD; if (!a) return; a.raf = requestAnimationFrame(bdLoop);
-    if (document.hidden || still() || !a.mask) return;
+    if (document.hidden || still() || !a.mask || a.dim === 0) return;
     if (now - a.last < (a.rip.length ? 40 : a.heat < .05 ? 300 : 100)) return;   // 25 fps while a ripple runs, 10 idle, nearly still when the room is quiet
     const dt = Math.min(.25, (now - a.last) / 1000); a.last = now;
     a.heat *= Math.pow(.5, dt / 18); a.t += dt * (.1 + a.heat * 1.5);
@@ -857,7 +995,7 @@
   function bdStart(item) {
     bdStop();
     const c = document.createElement('canvas'); c.id = 'mega-bd'; c.setAttribute('aria-hidden', 'true'); mainEl.prepend(c);
-    const a = BD = { c, g: c.getContext('2d'), gid: item.gid, fx: item.fx, f: fieldOf(item), h: hiOf(item), heat: HEAT.get(item.gid) ?? .12, t: H(item.gid) % 90, rip: [], last: performance.now(), raf: 0 };
+    const a = BD = { c, g: c.getContext('2d'), gid: item.gid, fx: item.chatFx ?? item.fx, fxAuto: item.fxAuto, dim: item.dim ?? 100, f: fieldOf(item), h: hiOf(item), heat: HEAT.get(item.gid) ?? .12, t: H(item.gid) % 90, rip: [], last: performance.now(), raf: 0 };
     a.ro = new ResizeObserver(() => { clearTimeout(a.rz); a.rz = setTimeout(() => { if (BD === a) { bdSize(); focusFrame(); } }, 120); }); a.ro.observe(mainEl);
     bdSize(); if (!still()) a.raf = requestAnimationFrame(bdLoop);
   }
@@ -865,11 +1003,11 @@
     const a = BD; if (!a) return; BD = null; HEAT.set(a.gid, a.heat);
     cancelAnimationFrame(a.raf); clearTimeout(a.rz); a.ro.disconnect(); a.c.remove();
   }
-  const bdHeat = n => { if (BD) BD.heat = Math.min(1, BD.heat + n); };
+  const bdHeat = n => { if (BD) BD.heat = Math.min(1, BD.heat + n * lvOf(BD)); };
   function ripple(cx, cy, s, ring) {
-    const a = BD; if (!a || !a.mask || still()) return; const b = a.c.getBoundingClientRect(); if (!b.width) return;
+    const a = BD; if (!a || !a.mask || still() || a.dim === 0) return; const b = a.c.getBoundingClientRect(); if (!b.width) return;
     if (a.rip.length > 6) a.rip.shift();
-    a.rip.push({ x: (cx - b.left) / (b.width / a.cols), y: (cy - b.top) / (b.height / a.rows), r: 0, s, v: ring ? 20 : 44, band: ring ? 7 : 4, fade: ring ? .3 : .12 });
+    a.rip.push({ x: (cx - b.left) / (b.width / a.cols), y: (cy - b.top) / (b.height / a.rows), r: 0, s: s * lvOf(a), v: ring ? 20 : 44, band: ring ? 7 : 4, fade: ring ? .3 : .12 });
     ST.ripples++; a.last = 0;
   }
 
@@ -914,7 +1052,7 @@
   }
   let flushRaf = 0, flushT = 0;
   function dirty(trail) {
-    if (!flushRaf) flushRaf = requestAnimationFrame(() => { flushRaf = 0; if (!roomOn()) return; focusFrame(); if (BD) { bdMask(); if (still() || document.hidden) bdDraw(); } });
+    if (!flushRaf) flushRaf = requestAnimationFrame(() => { flushRaf = 0; if (!roomOn()) return; focusFrame(); if (BD) { if (BD.dim === 0) { if (window.__megaWall) __megaWall.remask(); } else { bdMask(); if (still() || document.hidden) bdDraw(); } } });
     if (trail !== false) { clearTimeout(flushT); flushT = setTimeout(() => dirty(false), 300); }   // the rows ease into their new size, so look again once they have
   }
   document.addEventListener('selectionchange', () => { if (roomOn() && !atEnd($('#stream'))) dirty(false); });
@@ -1119,6 +1257,16 @@
     toChatOpen(c.id);
   };
   M.eachRect = eachRect; M.relook = () => dirty(false);
+  // what the wall module needs from the cards: ink for the marks, a repaint of the cards that show a given wall, the draw chip
+  M.wallInk = x => { const f = fieldOf(x), hi = hiOf(x), ink = bestInk(f), alt = ink === '#0c0d12' ? '#ffffff' : '#0c0d12'; return [ink, contrast(hi, f) >= 2.4 ? hi : alt]; };
+  const rwKeys = new Set(); let rwRaf = 0;
+  M.rewall = key => {
+    rwKeys.add(key); if (rwRaf) return;
+    rwRaf = requestAnimationFrame(() => { rwRaf = 0; const ks = new Set(rwKeys); rwKeys.clear(); ACTIVE.forEach(a => { if (window.__megaWall && ks.has(__megaWall.keyOf(a.x))) { remask(a); asciiDraw(a, clock); } }); });
+  };
+  M.attachWalls = () => ACTIVE.forEach(a => { __megaWall.cardOn(a); remask(a); asciiDraw(a, clock); });
+  M.drawChip = drawChip; M.fx = FX; M.fxNames = FXNAMES;
+  M.bdInfo = () => (BD ? { gid: BD.gid, fx: BD.fx, fxAuto: BD.fxAuto, dim: BD.dim, at: H(BD.at.toDataURL()), draws: ST.bdDraws } : null);
   window.__megaTheme = { colours(gid) { const c = comm(M.cid), x = c && roomItems(c).find(i => i.gid === gid && i.kind === 'text'); return x ? [lift(fieldOf(x), 5), lift(hiOf(x), 6)] : null; } };
   M.prev = PREV; M.shown = SHOWN; M.canPaint = canPaint; window.__mega = M;
   if (S.snap && !$('#app').hidden) render();   // the first snapshot may have arrived while this file was still loading

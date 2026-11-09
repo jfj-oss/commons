@@ -374,7 +374,8 @@ html.mega #call-dock { --rail-ink: var(--m-paper); --rail-mute: rgba(255, 255, 2
 /* ---- the shared wall (phase 4) ---- */
 #main > #mega-wall { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
 #main > #mega-wallhit { position: absolute; inset: 0; z-index: 9; cursor: crosshair; touch-action: none; user-select: none; -webkit-user-select: none; }
-#main > #mega-wallbar { position: absolute; z-index: 12; left: 50%; top: 58px; transform: translateX(-50%); display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px; max-width: calc(100% - 20px); padding: 8px 12px; border-radius: 26px; background: #17151e; border: 1px solid rgb(255 255 255 / .14); color: var(--m-paper, #f2f0f6); box-shadow: 0 16px 40px rgb(0 0 0 / .6); font: 600 12px/1 var(--m-ui); letter-spacing: var(--m-small); }
+#main > #mega-wallbar, #mega > #mega-wallbar { position: absolute; z-index: 12; left: 50%; top: 58px; transform: translateX(-50%); display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px; max-width: calc(100% - 20px); padding: 8px 12px; border-radius: 26px; background: #17151e; border: 1px solid rgb(255 255 255 / .14); color: var(--m-paper, #f2f0f6); box-shadow: 0 16px 40px rgb(0 0 0 / .6); font: 600 12px/1 var(--m-ui); letter-spacing: var(--m-small); }
+#mega > #mega-wallbar { top: auto; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); z-index: 12; }
 #mega-wallbar .mwb-tag { opacity: .6; font-weight: 500; padding: 0 4px; }
 #mega-wallbar .mwb-g, #mega-wallbar .mwb-c { display: flex; flex-wrap: wrap; justify-content: center; gap: 2px; padding: 3px; border-radius: 20px; background: rgb(255 255 255 / .07); }
 #mega-wallbar button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; min-width: 30px; height: 30px; padding: 0 10px; border-radius: 999px; font-family: var(--m-mono, ui-monospace, monospace); font-weight: 700; font-size: 14px; }
@@ -389,3 +390,26 @@ html.mg-drawing #stream { user-select: none; -webkit-user-select: none; }
 @media (max-width: 760px) { #main > #mega-wallbar { top: 52px; width: calc(100% - 20px); border-radius: 22px; } #mega-wallbar .mwb-g { width: 100%; } #mega-wallbar button { min-width: 34px; } }
 /* people's names: Raster Grotesk Rounded, on its 12 px grid */
 html.mega .who .name, html.mega .mwho > span, html.mega #typing, html.mega .person .nm > b:not(.mono) { font-family: var(--m-name); font-size: 12px; font-weight: 400; font-style: normal; line-height: 1.3; letter-spacing: 0; }
+
+/* owner looks (card and chat patterns, backdrop strength) in the colours panel */
+.mp-lab { margin: 0; color: var(--m-mute); font-size: 12px; letter-spacing: var(--m-small); }
+#mp-looks { display: grid; gap: 8px; }
+#mp-looks:empty { display: none; }
+#mega-paint.off #mp-looks { display: none; }
+.mp-fx { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.mp-t { position: relative; aspect-ratio: 2 / 1; border-radius: 12px; background-color: #0c0b10; background-size: cover; background-position: center; box-shadow: inset 0 0 0 1px rgb(255 255 255 / .2); color: #fff; cursor: pointer; }
+.mp-t[aria-pressed="true"] { outline: 2px solid var(--m-paper); outline-offset: 2px; }
+.mp-t i { position: absolute; left: 4px; bottom: 4px; padding: 2px 6px; border-radius: 999px; background: rgb(8 8 12 / .82); font: 600 11px/1.2 var(--m-ui); font-style: normal; }
+.mp-dim { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; }
+.mp-dim input { width: 100%; accent-color: var(--m-paper); }
+.mp-dim output { min-width: 3.2em; text-align: right; font-variant-numeric: tabular-nums; }
+.mfade { animation: mfade .6s ease both; }
+@keyframes mfade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .mfade { animation: none; } }
+html.fx-lite .mfade { animation: none; }
+
+/* drawing on a card: the card's own canvas, the pen layer floating over it, and a list that holds still */
+.msq > .mwallc { position: absolute; left: 0; top: 0; z-index: 0; pointer-events: none; }
+html.mg-drawing-card .mlist { overflow: hidden; scroll-snap-type: none; }
+html.mg-drawing-card .mscrub { pointer-events: none; }
+#mega > #mega-wallhit-card { position: fixed; z-index: 11; cursor: crosshair; touch-action: none; user-select: none; -webkit-user-select: none; box-shadow: 0 0 0 2px rgb(255 255 255 / .5); }

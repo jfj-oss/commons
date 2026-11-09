@@ -716,6 +716,216 @@ try {
     need(await lvl(A) === 'chat', 'wall: could not get back to the chat');
   }
 
+  // ---- mega phase 5: owner look settings (card and chat animation, backdrop strength) and drawing on channel and community cards ----
+  {
+    const cid = await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`);
+    const g = JSON.stringify(textGid), cidj = JSON.stringify(cid);
+    const wf = async (P, expr, ms) => { await P.send('Page.bringToFront'); await sleep(250); return P.waitFor(expr, ms); };
+    const looks = P => P.ev(`JSON.stringify((S.snap.communities.find(c => c.id === ${cidj}).style || {}).looks || {})`).then(JSON.parse);
+    const styleVer = P => P.ev(`(S.snap.communities.find(c => c.id === ${cidj}).style || {}).ver || 0`);
+    const bd = P => P.ev(`(() => { const a = __mega.bdInfo(); const c = document.querySelector('#mega-bd'); let ink = -1; if (c) { const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; ink = 0; for (let i = 3; i < d.length; i += 4 * 7) if (d[i]) ink++; } return a && { ...a, ink }; })()`);
+    const settledOn = (P, keyExpr) => wf(P, `__mega.list && __mega.list.settled && __mega.list.item.key === ${keyExpr}`, 20000);
+    const focusCard = async (P, keyExpr) => { await P.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.key === ${keyExpr}), true)`); await settledOn(P, keyExpr); };
+    const toServer = async P => {
+      await P.send('Page.bringToFront');
+      for (let i = 0; i < 4 && await lvl(P) !== 'server'; i++) {
+        await P.ev(`document.activeElement && document.activeElement.blur && document.activeElement.blur()`);
+        if (await lvl(P) === 'home') { await P.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.name === 'Book club'), true)`); await sleep(1200); await key(P, 'Enter'); await sleep(1400); }
+        else { await key(P, 'Escape'); await sleep(1000); }
+      }
+      need(await lvl(P) === 'server', 'looks: could not reach the rooms level: ' + await P.ev(`JSON.stringify({ lvl: __mega.level, active: document.activeElement.tagName + '#' + document.activeElement.id, busy: __mega.busy, closers: __mega.closers.length, pal: !!__mega.pal, draw: document.documentElement.className, item: __mega.list && __mega.list.item.key })`));
+    };
+    const toHome = async P => { await P.send('Page.bringToFront'); for (let i = 0; i < 4 && await lvl(P) !== 'home'; i++) { await key(P, 'Escape'); await sleep(1000); } need(await lvl(P) === 'home', 'cards: could not reach home: ' + ' ' + await P.ev(`JSON.stringify({ lvl: __mega.level, active: document.activeElement.tagName + '#' + document.activeElement.id, busy: __mega.busy, closers: __mega.closers.length, pal: !!__mega.pal, cls: document.documentElement.className, people: !!S.people, modal: !!document.querySelector('#modal-root > .scrim'), pen: __megaWall.isOn(), n: S.snap.communities.length })`)); };
+    const enterFocused = async P => { await P.send('Page.bringToFront'); await P.ev(`document.activeElement && document.activeElement.blur && document.activeElement.blur()`); await key(P, 'Enter'); await wf(P, `__mega.level === 'chat'`, 15000); await sleep(1200); };
+
+    // ---- 1. look settings
+    await toServer(A); await toServer(B);
+    await focusCard(A, g); await focusCard(B, g);
+    await B.ev(`openRoom(${g})`);   // bob's page knows the room (the draw tests below rely on a message from him)
+    await enterFocused(B);
+    const base = await bd(B);
+    need(base && base.dim === 100 && base.fx === base.fxAuto, 'looks: a room without a look is not on automatic and 100%: ' + JSON.stringify(base));
+    const autoFx = base.fxAuto, cardN = (autoFx + 2) % 7, chatN = (autoFx + 4) % 7;
+    need((await looks(A))[textGid] === undefined, 'looks: the room already has a look');
+    // a member has no controls, and the core refuses his change
+    await toServer(B); await focusCard(B, g);
+    need(await B.ev(`!__mega.canPaint(__mega.list.item) && !document.querySelector('#mega-paint') && !document.querySelector('#mp-looks') && document.querySelector('#mega [data-m="paint"]').hidden`), 'looks: a non-owner has controls');
+    const refusedLook = await B.ev(`rpc('set_look', { cid: ${cidj}, room: ${g}, card: 2 }).then(() => 'accepted', e => 'refused: ' + e.message)`);
+    need(/^refused/.test(refusedLook), 'looks: the core took a look from a member: ' + refusedLook);
+    await enterFocused(B);
+    // the owner's panel: both choosers, the strength slider, "automatic" selected, the strength at 100
+    await A.ev(`document.querySelector('#mega [data-m="paint"]').click()`); await sleep(500);
+    const panel = await A.ev(`(() => { const p = document.querySelector('#mega-paint'); return { groups: p.querySelectorAll('.mp-fx').length, tiles: p.querySelectorAll('.mp-fx')[0].querySelectorAll('.mp-t').length, autoOn: [...p.querySelectorAll('.mp-t[data-n=""]')].map(b => b.getAttribute('aria-pressed')), dim: p.querySelector('#mp-dim').value, out: p.querySelector('#mp-dimv').textContent, r: p.getBoundingClientRect().toJSON(), h: innerHeight }; })()`);
+    need(panel.groups === 2 && panel.tiles === 18 && panel.autoOn.join() === 'true,true' && panel.dim === '100' && panel.out === '100%', 'looks: the panel is wrong: ' + JSON.stringify(panel));
+    await A.shot('mega5-1-panel');
+    const v0 = await styleVer(A);
+    await A.ev(`document.querySelector('#mp-looks .mp-t[data-k="card"][data-n="${cardN}"]').click()`);
+    await wf(A, `__mega.list.item.fx === ${cardN}`, 5000).catch(() => { throw new Error('mega: looks: the card did not take the new pattern at once'); });
+    await A.ev(`document.querySelector('#mp-looks .mp-t[data-k="chat"][data-n="${chatN}"]').click()`);
+    // the slider: many input events while dragging, one change on release: one commit
+    await A.ev(`(() => { const s = document.querySelector('#mp-dim'); for (let v = 100; v >= 40; v -= 3) { s.value = v; s.dispatchEvent(new Event('input', { bubbles: true })); } s.value = 40; s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    await wf(A, `document.querySelector('#mp-dimv').textContent === '40%' && __mega.list.item.chatFx === ${chatN} && __mega.list.item.dim === 40`, 3000).catch(async () => { throw new Error('mega: looks: the owner does not see the new look at once: ' + await A.ev(`JSON.stringify([document.querySelector('#mp-dimv').textContent, __mega.list.item.chatFx, __mega.list.item.dim, ${chatN}])`)); });
+    await wf(B, `(() => { const l = (S.snap.communities.find(c => c.id === ${cidj}).style || {}).looks || {}; const r = l[${g}]; return !!r && r.card === ${cardN} && r.chat === ${chatN} && r.dim === 40; })()`, 60000)
+      .catch(async () => { throw new Error('mega: looks: the other client did not get the look: ' + JSON.stringify(await looks(B)) + ' / ' + JSON.stringify(await looks(A))); });
+    const v1 = await styleVer(A);
+    need(v1 - v0 === 3, 'looks: card, chat and a whole slider drag should be exactly 3 commits, got ' + (v1 - v0));
+    // bob is in the room: his backdrop follows live
+    await wf(B, `__mega.bdInfo().fx === ${chatN} && __mega.bdInfo().dim === 40`, 8000).catch(async () => { throw new Error('mega: looks: bob\'s open room did not follow: ' + JSON.stringify(await bd(B))); });
+    need(await B.ev(`/changed the look of/.test(document.querySelector('#toast').textContent) && document.querySelector('#toast').textContent.includes(S.snap.communities.find(c => c.id === ${cidj}).style.by)`), 'looks: no note naming who changed it: ' + await B.ev(`document.querySelector('#toast').textContent`));
+    const dim40 = await bd(B);
+    need(dim40.at !== base.at, 'looks: the backdrop did not change brightness at 40%');
+    // the card on his side
+    await toServer(B); await focusCard(B, g);
+    need(await B.ev(`__mega.list.item.fx === ${cardN}`), 'looks: bob\'s card does not use the owner\'s pattern');
+    await B.shot('mega5-2-card-look-bob');
+    await enterFocused(B);
+    // strength 0: nothing is drawn, nothing is worked out
+    await A.ev(`(() => { const s = document.querySelector('#mp-dim'); s.value = 0; s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    await wf(B, `__mega.bdInfo().dim === 0`, 60000).catch(() => { throw new Error('mega: looks: strength 0 did not reach bob'); });
+    await sleep(600);
+    const z0 = await bd(B); await sleep(2000); const z1 = await bd(B);
+    need(z1.draws === z0.draws && z1.ink === 0, 'looks: at 0 the backdrop still works or draws: ' + JSON.stringify([z0, z1]));
+    await B.shot('mega5-3-strength-0');
+    // the top of the range: readable text, a lively backdrop
+    const topDim = await A.ev(`+document.querySelector('#mp-dim').max`);
+    await A.ev(`(() => { const s = document.querySelector('#mp-dim'); s.value = s.max; s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    await wf(B, `__mega.bdInfo().dim === ${topDim}`, 60000);
+    await B.ev(`rpc('send_text', { gid: ${g}, text: 'Is this still easy to read at the top of the range?' }).then(() => 1)`); await sleep(2500);
+    const t0 = await bd(B); await sleep(1500); const t1 = await bd(B);
+    need(t1.draws > t0.draws && t1.ink > 0, 'looks: nothing is drawn at the top of the range');
+    await B.shot('mega5-4-strength-top');
+    // reset: back to automatic and 100% for everyone, the very same atlas as before
+    await A.ev(`document.querySelector('#mp-reset').click()`);
+    await wf(B, `__mega.bdInfo().dim === 100 && __mega.bdInfo().fx === __mega.bdInfo().fxAuto`, 60000).catch(async () => { throw new Error('mega: looks: reset did not reach bob: ' + JSON.stringify(await bd(B)) + JSON.stringify(await looks(B))); });
+    need((await looks(B))[textGid] === undefined, 'looks: reset left an entry');
+    const back = await bd(B);
+    need(back.at === base.at && back.fx === base.fx, 'looks: automatic does not look the same as before: ' + JSON.stringify([base, back]));
+    // every pattern draws something, stays inside 0..1, and has a name; numbers no version knows (and so 0.3.0, which knows none of these looks) fall back to automatic
+    const pats = await A.ev(`(() => { const a = { cols: 60, rows: 20, col: Array.from({ length: 60 }, (_, i) => ({ v: .6 + (i % 7) * .2, o: (i * 13) % 60, l: 16 + i % 30 })) }, r = []; for (let n = 0; n < __mega.fx.length; n++) { let lit = 0, bad = 0; for (const t of [0, 3.3, 7.3, 11.7]) for (let y = 0; y < 20; y++) for (let x = 0; x < 60; x++) { const v = __mega.fx[n](x, y, t, a); if (!(v >= 0 && v <= 1)) bad++; if (v >= .2) lit++; } r.push([n, lit, bad]); } return { r, names: __mega.fxNames.length, n: __mega.fx.length }; })()`);
+    need(pats.n === 17 && pats.names === 17 && pats.r.every(x => x[1] > 60 && x[2] === 0), 'looks: a pattern draws nothing, leaves 0..1 or has no name: ' + JSON.stringify(pats));
+    await A.ev(`rpc('set_look', { cid: ${cidj}, room: ${g}, card: 31, chat: 30 }).then(() => 1)`);
+    await wf(B, `(((S.snap.communities.find(c => c.id === ${cidj}).style || {}).looks || {})[${g}] || {}).card === 31`, 60000);
+    await wf(B, `__mega.bdInfo().fx === __mega.bdInfo().fxAuto`, 8000).catch(() => { throw new Error('mega: looks: an unknown chat pattern number did not fall back to automatic'); });
+    await A.ev(`rpc('set_look', { cid: ${cidj}, room: ${g} }).then(() => 1)`);
+    await wf(B, `(((S.snap.communities.find(c => c.id === ${cidj}).style || {}).looks || {})[${g}]) === undefined`, 60000);
+    // the community card has a card animation only
+    await A.ev(`document.querySelector('#mega-paint #mp-done').click()`); await sleep(300);
+    await toHome(A); await focusCard(A, `'c:${cid}'`);
+    await A.ev(`document.querySelector('#mega [data-m="paint"]').click()`); await sleep(500);
+    need(await A.ev(`document.querySelectorAll('#mp-looks .mp-fx').length === 1 && !document.querySelector('#mp-dim')`), 'looks: the community card should have a card animation only');
+    await A.ev(`document.querySelector('#mp-looks .mp-t[data-k="card"][data-n="1"]').click()`);
+    await wf(A, `__mega.list.item.fx === 1`, 5000);
+    await wf(B, `(((S.snap.communities.find(c => c.id === ${cidj}).style || {}).looks || {})[${cidj}] || {}).card === 1`, 60000).catch(() => { throw new Error('mega: looks: the community card pattern did not reach bob'); });
+    await A.shot('mega5-5-community-card-look');
+    await A.ev(`document.querySelector('#mp-reset').click()`);
+    await wf(B, `(((S.snap.communities.find(c => c.id === ${cidj}).style || {}).looks || {})[${cidj}]) === undefined`, 60000);
+    await A.ev(`document.querySelector('#mega-paint #mp-done').click()`); await sleep(300);
+
+    // ---- 2. drawing on a channel card
+    const hitDraw = (P, sel, cx, cy, r, ms) => P.ev(`(async () => {
+      const hit = document.querySelector(${JSON.stringify(sel)}), G = __megaWall.state().geo, px = (x, y) => ({ clientX: G.b.left + (G.ox + (x + .5) * G.cw) / G.u, clientY: G.b.top + (G.oy + (y + .5) * G.ch) / G.u, pointerId: 9, bubbles: true, button: 0 });
+      document.querySelector('#mw-glyphs [data-g="2"]').click();
+      const n = 80, pt = i => px(${cx} + Math.round(${r} * Math.cos(i / n * 6.2832)), ${cy} + Math.round(${r} * .5 * Math.sin(i / n * 6.2832)));
+      hit.dispatchEvent(new PointerEvent('pointerdown', pt(0)));
+      for (let i = 1; i <= n; i++) { hit.dispatchEvent(new PointerEvent('pointermove', pt(i))); await new Promise(r => setTimeout(r, ${ms} / n)); }
+      hit.dispatchEvent(new PointerEvent('pointerup', pt(n))); return true; })()`);
+    const stat = P => P.ev(`JSON.stringify(__megaLive.stats)`).then(JSON.parse);
+    const wst = P => P.ev(`__megaWall.state()`);
+    const roomCells = (P, gid) => P.ev(`rpc('wall_get', { gid: ${JSON.stringify(gid)} }).then(r => r.cells.length)`);
+    const chip = P => P.ev(`(() => { const b = document.querySelector('#mega [data-m="draw"]'); return !!b && !b.hidden; })()`);
+    await toServer(A); await toServer(B);
+    await focusCard(A, g); await focusCard(B, g);
+    await B.ev(`rpc('send_text', { gid: ${g}, text: 'drawing time' }).then(() => 1)`); await sleep(1500);
+    // resting on and scrolling past cards sends nothing
+    const q0 = await stat(A);
+    for (const i of [0, 1, 2, 0]) { await A.ev(`__mega.list.go(${i}, false)`); await sleep(1100); }
+    await focusCard(A, g); await sleep(1500);
+    need((await stat(A)).sent === q0.sent, 'cards: resting on or scrolling past a card sent something');
+    need((await wst(A)).cards.length <= 3, 'cards: more than three cards hold a wall canvas: ' + JSON.stringify((await wst(A)).cards));
+    need(await chip(A) && await chip(B), 'cards: the draw chip is missing on a room card');
+    // the draw chip: the pen opens on the focused card, the list holds still
+    const sc0 = await A.ev(`__mega.list.el.scrollTop`), snap0 = await A.ev(`getComputedStyle(__mega.list.el).scrollSnapType`);
+    await A.ev(`document.querySelector('#mega [data-m="draw"]').click()`); await sleep(500);
+    need(await A.ev(`!!document.querySelector('#mega-wallhit-card') && !!document.querySelector('#mega #mega-wallbar') && document.documentElement.classList.contains('mg-drawing-card')`), 'cards: the pen did not open on the card');
+    need(await A.ev(`getComputedStyle(__mega.list.el).scrollSnapType === 'none' && getComputedStyle(__mega.list.el).overflowY === 'hidden'`), 'cards: the list still snaps or scrolls while drawing');
+    await A.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 640, y: 400, deltaX: 0, deltaY: 600 }); await key(A, 'j'); await key(A, 'ArrowDown'); await sleep(700);
+    need(await A.ev(`__mega.list.el.scrollTop`) === sc0 && await A.ev(`__mega.list.item.key === ${g}`), 'cards: the list moved while drawing');
+    await A.shot('mega5-6-card-pen');
+    const w0 = await stat(A);
+    await hitDraw(A, '#mega-wallhit-card', 60, 27, 22, 4000);
+    await sleep(1500);
+    const w1 = await stat(A), sent5 = (w1.kinds['wall.d'] || 0) - (w0.kinds['wall.d'] || 0);
+    need(sent5 >= 1 && sent5 <= 10, 'cards: a 4 second scribble on a card produced ' + sent5 + ' wall.d events (budget 10)');
+    need((w1.sent - w0.sent) <= 12, 'cards: a card scribble sent too many live events in all: ' + (w1.sent - w0.sent));
+    const nCard = (await wst(A)).marks;
+    need(nCard > 30, 'cards: the scribble left only ' + nCard + ' marks');
+    await wf(B, `__megaWall.state().cards.some(c => c.key === ${g} && c.marks === ${nCard})`, 30000).catch(async () => { throw new Error('mega: cards: the stroke did not appear on bob\'s card: ' + JSON.stringify([nCard, await wst(B)])); });
+    need(JSON.stringify(await A.ev(`__megaWall.cellsOf(${g}).sort((a, b) => a[0] - b[0])`)) === JSON.stringify(await B.ev(`__megaWall.cellsOf(${g}).sort((a, b) => a[0] - b[0])`)), 'cards: the two cards show different drawings');
+    // a real pixel check: the card's drawing canvas holds marks, and the card's own ascii leaves them alone
+    const ink = P => P.ev(`(() => { const c = document.querySelector('.msq canvas.mwallc'); if (!c) return -1; const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 3; i < d.length; i += 4 * 5) if (d[i] > 40) n++; return n; })()`);
+    need(await ink(A) > 100 && await ink(B) > 100, 'cards: no drawing pixels on the card: ' + await ink(A) + ' / ' + await ink(B));
+    await A.shot('mega5-7-card-drawn-alice'); await B.shot('mega5-8-card-drawn-bob');
+    // Esc leaves the pen and the list is as it was
+    await key(A, 'Escape'); await sleep(500);
+    need(await A.ev(`!document.querySelector('#mega-wallhit-card') && !document.querySelector('#mega-wallbar') && !document.documentElement.classList.contains('mg-drawing-card')`) && await A.ev(`getComputedStyle(__mega.list.el).scrollSnapType`) === snap0 && await A.ev(`__mega.list.el.scrollTop`) === sc0 && await lvl(A) === 'server', 'cards: Esc did not leave the pen cleanly');
+    // the same drawing is the room's wall
+    await enterFocused(B); await wf(B, `__megaWall.state().marks === ${nCard}`, 20000).catch(async () => { throw new Error('mega: cards: the room does not show the card drawing: ' + JSON.stringify(await wst(B))); });
+    await B.shot('mega5-9-room-wall-from-card');
+    await toServer(B); await focusCard(B, g);
+    // lock: the chip goes for a member, stays for the owner
+    await A.ev(`document.querySelector('#mega [data-m="draw"]').click()`); await sleep(400);
+    await A.ev(`document.querySelector('#mw-lock').click()`);
+    await wf(B, `!document.querySelector('#mega [data-m="draw"]') || document.querySelector('#mega [data-m="draw"]').hidden`, 60000).catch(() => { throw new Error('mega: cards: the lock did not hide the chip for bob'); });
+    need(await chip(A) === true, 'cards: the owner lost the chip when she locked the wall');
+    await A.ev(`document.querySelector('#mw-lock').click()`);
+    await wf(B, `!document.querySelector('#mega [data-m="draw"]').hidden`, 60000).catch(() => { throw new Error('mega: cards: unlock did not bring the chip back'); });
+    await A.ev(`document.querySelector('#mw-done').click()`); await sleep(400);
+    need(await A.ev(`!document.querySelector('#mega-wallhit-card') && !document.documentElement.classList.contains('mg-drawing-card')`), 'cards: done did not leave the pen');
+
+    // ---- 3. the community card has a wall of its own, carried in a room and never drawn in any room
+    const roomBefore = await roomCells(A, textGid);
+    // bob has only this community, so he has no home level yet: he starts a second one (a member of a second community is the usual case)
+    if (await B.ev(`S.snap.communities.length`) < 2) { await B.ev(`rpc('create_community', { name: 'Bob side' }).then(() => 1)`); await wf(B, `S.snap.communities.length >= 2`, 30000); }
+    await toHome(A); await toHome(B);
+    await focusCard(A, `'c:${cid}'`); await focusCard(B, `'c:${cid}'`);
+    need(await chip(A) && await chip(B), 'cards: no draw chip on the community card');
+    await A.ev(`document.querySelector('#mega [data-m="draw"]').click()`); await sleep(500);
+    need(await A.ev(`!!document.querySelector('#mega-wallhit-card') && __megaWall.state().gid === ${JSON.stringify('cw:' + cid)}`), 'cards: the pen did not open on the community card');
+    // starting to draw asks once whether anyone is around; bob's focused community card answers, and only then do strokes go out
+    await wf(A, `__megaWall.state().present`, 20000).catch(async () => { throw new Error('mega: cards: nobody answered the community wall request: ' + JSON.stringify([await wst(A), await wst(B), await stat(A)])); });
+    const c0 = await stat(A);
+    await hitDraw(A, '#mega-wallhit-card', 60, 27, 24, 4000);
+    await sleep(1800);
+    const c1 = await stat(A), sentC = (c1.kinds['cwall.d'] || 0) - (c0.kinds['cwall.d'] || 0);
+    need(sentC >= 1 && sentC <= 10, 'cards: a community scribble produced ' + sentC + ' cwall.d events (budget 10)');
+    need((c1.kinds['wall.d'] || 0) === (c0.kinds['wall.d'] || 0), 'cards: a community stroke was sent as a room stroke (wall.d)');
+    const nComm = (await wst(A)).marks;
+    need(nComm > 30, 'cards: the community scribble left only ' + nComm + ' marks');
+    await wf(B, `__megaWall.state().cards.some(c => c.key === ${JSON.stringify('cw:' + cid)} && c.marks === ${nComm})`, 30000).catch(async () => { throw new Error('mega: cards: the community stroke did not reach bob: ' + JSON.stringify([nComm, await wst(B), await stat(A)])); });
+    need(await A.ev(`__megaWall.state().carrier`) !== null, 'cards: no carrier room for the community wall');
+    await A.shot('mega5-10-community-drawn-alice'); await B.shot('mega5-11-community-drawn-bob');
+    for (const P of [A, B]) need(await roomCells(P, textGid) === roomBefore, 'cards: the community drawing reached a room wall');
+    const otherRooms = await A.ev(`Promise.all(S.snap.communities.find(c => c.id === ${cidj}).channels.map(x => rpc('wall_get', { gid: x.gid }).then(r => r.cells.length)))`);
+    need(otherRooms.reduce((a, b) => a + b, 0) === roomBefore, 'cards: a room other than the drawn one holds marks: ' + JSON.stringify(otherRooms));
+    // lock and clear of the community wall are the owner's
+    await A.ev(`document.querySelector('#mw-lock').click()`);
+    await wf(B, `document.querySelector('#mega [data-m="draw"]').hidden`, 60000).catch(() => { throw new Error('mega: cards: the community lock did not hide the chip for bob'); });
+    const refusedC = await B.ev(`rpc('wall_draw', { gid: ${JSON.stringify('cw:' + cid)}, cells: [[3, 3, 1, 0]] }).then(() => 'accepted', e => 'refused: ' + e.message)`);
+    need(/^refused/.test(refusedC), 'cards: the core took a stroke from a member on a locked community wall: ' + refusedC);
+    await A.ev(`document.querySelector('#mw-lock').click()`); await sleep(1500);
+    await A.ev(`document.querySelector('#mw-clear').click()`); await A.ev(`document.querySelector('#mw-clear').click()`);
+    await wf(B, `__megaWall.state().cards.some(c => c.key === ${JSON.stringify('cw:' + cid)} && c.marks === 0)`, 60000).catch(() => { throw new Error('mega: cards: the community clear did not reach bob'); });
+    need((await wst(A)).marks === 0, 'cards: the owner\'s community wall did not clear');
+    await A.ev(`document.querySelector('#mw-done').click()`); await sleep(400);
+    need(await roomCells(A, textGid) === roomBefore, 'cards: clearing the community wall touched a room wall');
+    need((await A.ev(`rpc('messages', { gid: ${g}, limit: 300 }).then(m => m.messages.filter(x => x.kind === 'text').map(x => x.text).join('|'))`)).indexOf('cwall') < 0, 'cards: wall data appeared in the history');
+    await toServer(A); await toServer(B);
+    // back to the chat for what follows
+    await focusCard(A, g); await enterFocused(A);
+    need(await lvl(A) === 'chat', 'cards: could not get back to the chat');
+  }
+  if (process.env.COMMONS_UI_STOP_AFTER === 'mega5') { console.log('UI check stopped after mega phase 5 (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
+
   // ---- large files ----
   // Over the 24 MB line the same paperclip takes the chunked path: the page reads 8 MB slices of the picked file,
   // the core encrypts and sends one at a time. Nothing large is ever downloaded unless Download is pressed.
@@ -870,7 +1080,10 @@ try {
   await P.ev(`document.querySelector('#mega [data-m="paint"]').click()`); await sleep(600);
   const pp = await P.ev(`(() => { const r = document.querySelector('#mega-paint').getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom, w: innerWidth, h: innerHeight }; })()`);
   need(pp.l >= 0 && pp.r <= pp.w + 1 && pp.t >= 0 && pp.b <= pp.h + 1, 'colours: the picker does not fit a phone screen: ' + JSON.stringify(pp));
+  need(await P.ev(`(() => { const p = document.querySelector('#mega-paint'), r = p.getBoundingClientRect(); return p.scrollHeight > p.clientHeight && p.scrollWidth <= p.clientWidth + 1 && p.querySelectorAll('.mp-t').length % 18 === 0 && p.querySelectorAll('.mp-t').length >= 18 && [...p.querySelectorAll('.mp-t')].every(b => b.getBoundingClientRect().right <= r.right + 1) && document.documentElement.scrollWidth <= innerWidth + 1; })()`), 'looks: the look choosers do not fit a phone (they should scroll inside the panel)');
   await P.shot('mega3-4-phone-picker');
+  await P.ev(`document.querySelector('#mega-paint').scrollTop = 99999`); await sleep(300);
+  await P.shot('mega5-12-phone-looks');
   await P.ev(`document.querySelector('#mp-done').click()`); await sleep(300);
   await P.ev(`__mega.list.go(0, true)`); await sleep(1200);
   await P.ev(`document.querySelectorAll('.room')[0].click()`); await sleep(900);
