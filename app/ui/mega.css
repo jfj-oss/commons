@@ -1,20 +1,21 @@
 /* mega: the navigation. One black room of gradient squircles (home, a community's rooms), then dots beside the chat.
    Everything here is prefixed m- or lives under #mega*, so the old chat styles are untouched.
-   The four FK Raster trial faces are excluded from git on purpose; without them the fallbacks below carry the look. */
+   FK Raster Roman Compact: the foundry allows these trial files in builds until the full licensed fonts replace them. */
 
 @font-face { font-family: "FK Raster Roman Sharp"; src: url(fonts/FKRasterRomanCompactTrial-Sharp.otf) format("opentype"); font-display: swap; }
 @font-face { font-family: "FK Raster Roman Blended"; src: url(fonts/FKRasterRomanCompactTrial-Blended.otf) format("opentype"); font-display: swap; }
+@font-face { font-family: "FK Raster Roman Rounded"; src: url(fonts/FKRasterRomanCompactTrial-Rounded.otf) format("opentype"); font-display: swap; }
 
 html.mega {
   --m-void: #050407; --m-paper: #efedf2; --m-mute: #a39fae; --m-line: rgb(255 255 255 / .12); --m-glass: rgb(26 24 32 / .86);
   --m-speak: #4df0c0; --m-danger: #ff6b62;
   --m-dsnap: 12px; --m-lsnap: 1px; --m-track: -.024em; --m-small: -.018em; --m-dz: 1.25;
   --m-railw: 56px; --m-sq: 46px;
-  /* titles and numerals: Sharp, Blended while a card moves; messages and previews: Blended, then the reading font */
+  /* titles and numerals: Sharp, Blended while a card moves; messages and previews: Rounded, then the reading font */
   --m-sharp: "FK Raster Roman Sharp", var(--display);
   --m-blend: "FK Raster Roman Blended", var(--display);
   --m-readfb: var(--serif);
-  --m-msg: "FK Raster Roman Blended", var(--m-readfb);
+  --m-msg: "FK Raster Roman Rounded", var(--m-readfb);
   --m-ui: var(--sans);
   --m-spring: cubic-bezier(.2, 1.2, .3, 1);
 }
