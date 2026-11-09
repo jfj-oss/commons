@@ -143,7 +143,7 @@
   --ink: #eee8d5; --ink-2: #b4c0bc; --ink-3: #93a5a6;
   --line: #134552; --line-2: #25596a; --hover: rgba(238, 232, 213, .06);
   --rail: #052f39; --rail-2: #0a3a46; --rail-3: #00252e; --rail-ink: #eee8d5; --rail-mute: #93a5a6; --rail-line: rgba(238, 232, 213, .12);
-  --glass: rgba(0, 37, 46, .72); --glass-line: rgba(238, 232, 213, .14); --glass-ink: #eee8d5; --glass-solid: #042a33;
+  --glass: rgba(5, 47, 57, .72); --glass-line: rgba(238, 232, 213, .14); --glass-ink: #eee8d5; --glass-solid: #052f39;
   --glass-hi: rgba(238, 232, 213, .2); --glass-lo: rgba(0, 0, 0, .29);
   --act: #e8863f; --act-ink: #062a33; --act-soft: #4a3a28; --act-line: #d9793a;
   --id: #3fb8ad; --id-ink: #00252e; --id-soft: #0e4a50;
