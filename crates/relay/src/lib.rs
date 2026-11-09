@@ -1296,7 +1296,9 @@ async fn live_poll(st: Arc<RelayState>, headers: &HeaderMap, path: &str, body: &
                     continue;
                 }
                 let (evs, next) = hub.since(gid, *after, &a.device, now);
-                any |= !evs.is_empty();
+                // A room the caller has no position in yet (u64::MAX) is answered at once with where it stands: waiting would
+                // only delay the caller's real polls.
+                any |= !evs.is_empty() || *after == u64::MAX;
                 out.groups.insert(gid.clone(), LiveGroupResp { next, events: evs.into_iter().map(|(seq, from, data)| LiveItem { seq, from, data: b64(&data) }).collect() });
             }
         }

@@ -189,6 +189,22 @@ fn only_current_members_can_post_or_poll_and_the_relay_stores_nothing() {
     assert_eq!(again.groups[&gen].events[0].from, a.c.my_device());
     let own = api_a.live_poll(&ka, &LivePollReq { boot: first.boot.clone(), cursors: [(gen.clone(), 0)].into(), ..Default::default() }).unwrap();
     assert!(own.groups[&gen].events.is_empty(), "no echo of the caller's own device");
+    // A room the caller has no position in (u64::MAX) is answered at once, even when the caller is willing to wait.
+    let t = std::time::Instant::now();
+    let fresh = api_b.live_poll(&kb, &LivePollReq { boot: first.boot.clone(), cursors: [(gen.clone(), u64::MAX)].into(), wait_ms: 5000 }).unwrap();
+    assert!(t.elapsed().as_millis() < 1500 && fresh.groups[&gen].events.is_empty() && fresh.groups[&gen].next >= 3, "{:?} {:?}", t.elapsed(), fresh.groups);
+    // A poll with nothing new waits for its time and then answers empty; a post wakes it at once.
+    let t = std::time::Instant::now();
+    let nothing = api_b.live_poll(&kb, &LivePollReq { boot: first.boot.clone(), cursors: [(gen.clone(), fresh.groups[&gen].next)].into(), wait_ms: 700 }).unwrap();
+    assert!(t.elapsed().as_millis() >= 600 && nothing.groups[&gen].events.is_empty());
+    let (ka2, api_a2) = (ka.clone(), api_a.clone());
+    let g2 = gen.clone();
+    let poster = std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_millis(300)); api_a2.live_post(&ka2, &g2, &[vec![5u8; 120]]).unwrap(); });
+    let t = std::time::Instant::now();
+    let woke = api_b.live_poll(&kb, &LivePollReq { boot: first.boot.clone(), cursors: [(gen.clone(), nothing.groups[&gen].next)].into(), wait_ms: 5000 }).unwrap();
+    poster.join().unwrap();
+    assert!(t.elapsed().as_millis() < 2000 && woke.groups[&gen].events.len() == 1, "a long-poll is woken by a post ({:?})", t.elapsed());
+    std::thread::sleep(std::time::Duration::from_millis(1100)); // a fresh second for the rate limit below
     // Limits: too big, too many per second, and a bad group id.
     let e = api_a.live_post(&ka, &gen, &[vec![1u8; LIVE_MAX_BLOB + 1]]).unwrap_err();
     assert_eq!(commons_core::transport::relay_status(&e), Some(413));

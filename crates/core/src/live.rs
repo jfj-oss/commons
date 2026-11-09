@@ -346,7 +346,7 @@ impl Client {
     /// The poll to make now: none if the relay is known not to carry the channel and it is not yet time to ask again.
     pub fn live_poll_req(&self) -> Option<LivePollReq> {
         if let Support::No(until) = self.live.support { if now_secs() < until { return None; } }
-        // Only rooms we can read. A room we have not polled before starts at "now" (u64::MAX), not at what is buffered.
+        // Only rooms we can read. A room we have not polled before starts at "now" (u64::MAX: the relay answers at once with where the room stands), not at what is buffered.
         let cursors: BTreeMap<String, u64> = self.st.groups.values()
             .filter(|g| g.kind == Kind::Channel && !g.removed && !g.broken)
             .map(|g| (g.gid.clone(), self.live.cursors.get(&g.gid).copied().unwrap_or(u64::MAX))).collect();

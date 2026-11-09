@@ -50,6 +50,10 @@ pub const CALL_QUIET: Duration = Duration::from_secs(20);
 /// when it changes, plus a renewal every `LISTENING_REFRESH_SECS` while it keeps playing.
 const RUNE_POLL_SECS: u64 = 15;
 
+/// How long the live poller lets the relay hold a poll for news. A room joined meanwhile is not in the poll in flight, so this
+/// is also the longest a new room waits to be heard.
+const LIVE_POLL_WAIT_MS: u64 = 3000;
+
 fn s(v: &Value, k: &str) -> String { v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string() }
 type R = Result<Value, String>;
 fn e<T: std::fmt::Display>(x: T) -> String { format!("{x}") }
@@ -178,7 +182,7 @@ impl App {
             let plan = { let mut g = app.lock(); g.as_mut().and_then(|c| { c.set_live_background(true); c.live_plan_with(false, true) }) };
             match plan {
                 Some(p) => {
-                    let d = p.run(10_000);
+                    let d = p.run(LIVE_POLL_WAIT_MS);
                     let failed = d.failed();
                     if let Some(c) = app.lock().as_mut() { c.live_finish(d); }
                     if failed { std::thread::sleep(Duration::from_millis(1500)); }
