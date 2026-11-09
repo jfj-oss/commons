@@ -201,6 +201,9 @@ pub struct LiveChan {
     held: Vec<Held>,
     /// Set when the app runs its own sender and poller threads: the ordinary round then only sends.
     pub background: bool,
+    /// The rooms the last poll asked about, and when that list last changed.
+    polled_rooms: Vec<String>,
+    rooms_changed: u64,
     /// Test builds only: behave like a version from before the channel (send through the log, never poll).
     pub legacy: bool,
     /// What the channel did, for tests and the debug view.
@@ -226,6 +229,7 @@ pub struct LivePlan {
     key: SigningKey,
     sends: Vec<(String, Vec<Vec<u8>>)>,
     poll: Option<LivePollReq>,
+    quick: bool,
 }
 #[derive(Default)]
 pub struct LiveDone {
@@ -240,6 +244,8 @@ fn is_gone(e: &anyhow::Error) -> bool { relay_status(e) == Some(404) }
 
 impl LivePlan {
     pub fn wants_poll(&self) -> bool { self.poll.is_some() }
+    /// The set of rooms changed lately: a poll already in flight would not cover a new room, so keep polls short for a while.
+    pub fn quick(&self) -> bool { self.quick }
     /// The network part. `wait_ms` is how long the relay may hold the poll for news.
     pub fn run(self, wait_ms: u64) -> LiveDone {
         let mut d = LiveDone::default();
@@ -354,7 +360,13 @@ impl Client {
         let poll = poll.then(|| self.live_poll_req()).flatten();
         if sends.is_empty() && poll.is_none() { return None; }
         let key = self.dev_key().ok()?;
-        Some(LivePlan { api: self.api.clone(), key, sends: sends.into_iter().collect(), poll })
+        let mut quick = false;
+        if let Some(r) = &poll {
+            let rooms: Vec<String> = r.cursors.keys().cloned().collect();
+            if rooms != self.live.polled_rooms { self.live.polled_rooms = rooms; self.live.rooms_changed = now_secs(); }
+            quick = now_secs() < self.live.rooms_changed + 10;
+        }
+        Some(LivePlan { api: self.api.clone(), key, sends: sends.into_iter().collect(), poll, quick })
     }
 
     /// The poll to make now: none if the relay is known not to carry the channel and it is not yet time to ask again.

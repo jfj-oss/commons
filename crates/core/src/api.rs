@@ -182,7 +182,8 @@ impl App {
             let plan = { let mut g = app.lock(); g.as_mut().and_then(|c| { c.set_live_background(true); c.live_plan_with(false, true) }) };
             match plan {
                 Some(p) => {
-                    let d = p.run(LIVE_POLL_WAIT_MS);
+                    let wait = if p.quick() { 400 } else { LIVE_POLL_WAIT_MS };
+                    let d = p.run(wait);
                     let failed = d.failed();
                     if let Some(c) = app.lock().as_mut() { c.live_finish(d); }
                     if failed { std::thread::sleep(Duration::from_millis(1500)); }
