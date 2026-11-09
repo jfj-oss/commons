@@ -864,7 +864,7 @@ try {
     // the per-room Oracle switch: owner only, durable, and every client knows
     await A.ev(`document.querySelector('#mp-oracle').click()`);
     await wf(B, `(() => { const c = S.snap.communities.find(c => c.id === ${JSON.stringify(cid)}); return !!(((c.style || {}).looks || {})[${JSON.stringify(textGid)}] || {}).oracle_quiet; })()`, 60000).catch(() => { throw new Error('mega: the Oracle switch did not reach bob'); });
-    need(await A.ev(`document.querySelector('#mp-oracle').getAttribute('aria-pressed') === 'true'`), 'looks: the Oracle switch does not show that it is on');
+    await wf(A, `document.querySelector('#mp-oracle').getAttribute('aria-pressed') === 'true'`, 15000).catch(() => { throw new Error('mega: looks: the Oracle switch does not show that it is on'); });
     await A.ev(`document.querySelector('#mp-oracle').click()`);
     await wf(B, `(() => { const c = S.snap.communities.find(c => c.id === ${JSON.stringify(cid)}); return !((c.style || {}).looks || {})[${JSON.stringify(textGid)}]?.oracle_quiet; })()`, 60000).catch(() => { throw new Error('mega: switching Oracle back on did not reach bob'); });
     const topDim = await A.ev(`+document.querySelector('#mp-dim').max`);

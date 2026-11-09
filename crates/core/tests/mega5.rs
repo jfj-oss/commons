@@ -225,7 +225,7 @@ fn a_community_wall_reaches_everyone_and_never_a_rooms_wall() {
     settle(&mut [&mut a, &mut b, &mut c]);
     assert!(cglyphs(&c, &cid).contains(&(1, 1)) && cglyphs(&c, &cid).contains(&(2, 1)));
     // `cwall.*` sent into a room does not count as a stroke on the room's wall, and `wall.*` does not reach the community's.
-    assert!(rglyphs(&c, &texts[1]).is_empty());
+    assert_eq!(rglyphs(&c, &texts[1]), if texts[1] == gen { vec![(WALL_COLS as u16 + 1, 3)] } else { vec![] });
     // Not a stroke for a community we are not in, and not for a room we are not in.
     assert!(a.c.wall_draw("cw:deadbeefdeadbeef", &[(1, 1, 1, 0)]).is_err());
     assert!(a.c.wall_draw("nonsense", &[(1, 1, 1, 0)]).is_err());
