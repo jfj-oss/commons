@@ -4,6 +4,7 @@
 
 @font-face { font-family: "FK Raster Roman Sharp"; src: url(fonts/FKRasterRomanCompactTrial-Sharp.otf) format("opentype"); font-display: swap; }
 @font-face { font-family: "FK Raster Roman Blended"; src: url(fonts/FKRasterRomanCompactTrial-Blended.otf) format("opentype"); font-display: swap; }
+@font-face { font-family: "FK Raster Grotesk Rounded"; src: url(fonts/FKRasterGroteskTrial-Rounded.otf) format("opentype"); font-display: swap; }
 @font-face { font-family: "FK Raster Roman Rounded"; src: url(fonts/FKRasterRomanCompactTrial-Rounded.otf) format("opentype"); font-display: swap; }
 
 html.mega {
@@ -16,6 +17,7 @@ html.mega {
   --m-blend: "FK Raster Roman Blended", var(--display);
   --m-readfb: var(--serif);
   --m-msg: "FK Raster Roman Rounded", var(--m-readfb);
+  --m-name: "FK Raster Grotesk Rounded", var(--sans);
   --m-ui: var(--sans);
   --m-spring: cubic-bezier(.2, 1.2, .3, 1);
 }
@@ -385,3 +387,5 @@ html.mega #call-dock { --rail-ink: var(--m-paper); --rail-mute: rgba(255, 255, 2
 #mega-wallbar :focus-visible { outline: 2px solid var(--m-paper, #fff); outline-offset: 2px; }
 html.mg-drawing #stream { user-select: none; -webkit-user-select: none; }
 @media (max-width: 760px) { #main > #mega-wallbar { top: 52px; width: calc(100% - 20px); border-radius: 22px; } #mega-wallbar .mwb-g { width: 100%; } #mega-wallbar button { min-width: 34px; } }
+/* people's names: Raster Grotesk Rounded, on its 12 px grid */
+html.mega .who .name, html.mega .mwho > span, html.mega #typing, html.mega .person .nm > b:not(.mono) { font-family: var(--m-name); font-size: 12px; font-weight: 400; font-style: normal; line-height: 1.3; letter-spacing: 0; }
