@@ -883,7 +883,7 @@ try {
     need(await A.ev(`!document.querySelector('#mega-wallhit-card') && !document.documentElement.classList.contains('mg-drawing-card')`), 'cards: done did not leave the pen');
 
     // ---- 3. the community card has a wall of its own, carried in a room and never drawn in any room
-    const roomBefore = await roomCells(A, textGid);
+    const roomBefore = await roomCells(A, textGid), roomBeforeB = await roomCells(B, textGid);
     // bob has only this community, so he has no home level yet: he starts a second one (a member of a second community is the usual case)
     if (await B.ev(`S.snap.communities.length`) < 2) { await B.ev(`rpc('create_community', { name: 'Bob side' }).then(() => 1)`); await wf(B, `S.snap.communities.length >= 2`, 30000); }
     await toHome(A); await toHome(B);
@@ -892,6 +892,8 @@ try {
     await A.ev(`document.querySelector('#mega [data-m="draw"]').click()`); await sleep(500);
     need(await A.ev(`!!document.querySelector('#mega-wallhit-card') && __megaWall.state().gid === ${JSON.stringify('cw:' + cid)}`), 'cards: the pen did not open on the community card');
     // starting to draw asks once whether anyone is around; bob's focused community card answers, and only then do strokes go out
+    // (a page in the background does not poll, as in the real app, so bob's page comes to the front for a moment to hear the request and answer it)
+    for (let i = 0; i < 4 && !(await wst(A)).present; i++) { await B.send('Page.bringToFront'); await sleep(3500); await A.send('Page.bringToFront'); await sleep(1500); }
     await wf(A, `__megaWall.state().present`, 20000).catch(async () => { throw new Error('mega: cards: nobody answered the community wall request: ' + JSON.stringify([await wst(A), await wst(B), await stat(A)])); });
     const c0 = await stat(A);
     await hitDraw(A, '#mega-wallhit-card', 60, 27, 24, 4000);
@@ -904,7 +906,7 @@ try {
     await wf(B, `__megaWall.state().cards.some(c => c.key === ${JSON.stringify('cw:' + cid)} && c.marks === ${nComm})`, 30000).catch(async () => { throw new Error('mega: cards: the community stroke did not reach bob: ' + JSON.stringify([nComm, await wst(B), await stat(A)])); });
     need(await A.ev(`__megaWall.state().carrier`) !== null, 'cards: no carrier room for the community wall');
     await A.shot('mega5-10-community-drawn-alice'); await B.shot('mega5-11-community-drawn-bob');
-    for (const P of [A, B]) need(await roomCells(P, textGid) === roomBefore, 'cards: the community drawing reached a room wall');
+    need(await roomCells(A, textGid) === roomBefore && await roomCells(B, textGid) === roomBeforeB, 'cards: the community drawing reached a room wall: ' + JSON.stringify([roomBefore, roomBeforeB, await roomCells(A, textGid), await roomCells(B, textGid)]));
     const otherRooms = await A.ev(`Promise.all(S.snap.communities.find(c => c.id === ${cidj}).channels.map(x => rpc('wall_get', { gid: x.gid }).then(r => r.cells.length)))`);
     need(otherRooms.reduce((a, b) => a + b, 0) === roomBefore, 'cards: a room other than the drawn one holds marks: ' + JSON.stringify(otherRooms));
     // lock and clear of the community wall are the owner's
@@ -1080,11 +1082,22 @@ try {
   await P.ev(`document.querySelector('#mega [data-m="paint"]').click()`); await sleep(600);
   const pp = await P.ev(`(() => { const r = document.querySelector('#mega-paint').getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom, w: innerWidth, h: innerHeight }; })()`);
   need(pp.l >= 0 && pp.r <= pp.w + 1 && pp.t >= 0 && pp.b <= pp.h + 1, 'colours: the picker does not fit a phone screen: ' + JSON.stringify(pp));
-  need(await P.ev(`(() => { const p = document.querySelector('#mega-paint'), r = p.getBoundingClientRect(); return p.scrollHeight > p.clientHeight && p.scrollWidth <= p.clientWidth + 1 && p.querySelectorAll('.mp-t').length % 18 === 0 && p.querySelectorAll('.mp-t').length >= 18 && [...p.querySelectorAll('.mp-t')].every(b => b.getBoundingClientRect().right <= r.right + 1) && document.documentElement.scrollWidth <= innerWidth + 1; })()`), 'looks: the look choosers do not fit a phone (they should scroll inside the panel)');
+  { const f = await P.ev(`(() => { const p = document.querySelector('#mega-paint'), r = p.getBoundingClientRect(), ts = [...p.querySelectorAll('.mp-t')]; return { scrolls: p.scrollHeight > p.clientHeight, sh: p.scrollHeight, ch: p.clientHeight, sw: p.scrollWidth, cw: p.clientWidth, tiles: ts.length, out: ts.filter(b => b.getBoundingClientRect().right > r.right + 1).length, doc: document.documentElement.scrollWidth, iw: innerWidth, target: document.querySelector('#mp-name').textContent }; })()`);
+    need(f.scrolls && f.sw <= f.cw + 1 && f.tiles % 18 === 0 && f.tiles >= 18 && f.out === 0 && f.doc <= f.iw + 1, 'looks: the look choosers do not fit a phone (they should scroll inside the panel): ' + JSON.stringify(f)); }
   await P.shot('mega3-4-phone-picker');
   await P.ev(`document.querySelector('#mega-paint').scrollTop = 99999`); await sleep(300);
   await P.shot('mega5-12-phone-looks');
   await P.ev(`document.querySelector('#mp-done').click()`); await sleep(300);
+  // drawing on a card on a phone: the chip, the toolbar inside the screen, the drawing readable
+  if (await P.ev(`(() => { const b = document.querySelector('#mega [data-m="draw"]'); return !!b && !b.hidden; })()`)) {
+    await P.ev(`document.querySelector('#mega [data-m="draw"]').click()`); await sleep(600);
+    await P.ev(`(async () => { const hit = document.querySelector('#mega-wallhit-card'), G = __megaWall.state().geo, px = (x, y) => ({ clientX: G.b.left + (G.ox + (x + .5) * G.cw) / G.u, clientY: G.b.top + (G.oy + (y + .5) * G.ch) / G.u, pointerId: 9, bubbles: true, button: 0 }); document.querySelector('#mw-glyphs [data-g="2"]').click(); const n = 60, pt = i => px(60 + Math.round(24 * Math.cos(i / n * 6.2832)), 27 + Math.round(12 * Math.sin(i / n * 6.2832))); hit.dispatchEvent(new PointerEvent('pointerdown', pt(0))); for (let i = 1; i <= n; i++) hit.dispatchEvent(new PointerEvent('pointermove', pt(i))); hit.dispatchEvent(new PointerEvent('pointerup', pt(n))); })()`);
+    await sleep(500);
+    const tb = await P.ev(`(() => { const r = document.querySelector('#mega-wallbar').getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom, w: innerWidth, h: innerHeight, hscroll: document.documentElement.scrollWidth > innerWidth + 1, marks: __megaWall.state().marks }; })()`);
+    need(tb.l >= 0 && tb.r <= tb.w + 1 && tb.t >= 0 && tb.b <= tb.h && !tb.hscroll && tb.marks > 20, 'cards: the pen toolbar does not fit a phone, or nothing was drawn: ' + JSON.stringify(tb));
+    await P.shot('mega5-13-phone-card-drawn');
+    await P.ev(`document.querySelector('#mw-done').click()`); await sleep(300);
+  }
   await P.ev(`__mega.list.go(0, true)`); await sleep(1200);
   await P.ev(`document.querySelectorAll('.room')[0].click()`); await sleep(900);
   // In a call on a phone the dock is a slim bar at the bottom of the chat, not in the (closed) drawer.
