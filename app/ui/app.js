@@ -841,7 +841,7 @@ $('#stream').addEventListener('click', async e => {
     else if (a === 'del') { try { await rpc(m && m.file && m.file.large ? 'file_delete' : 'delete', { gid: S.gid, id }); tick(); soon(); } catch (er) { toast(er.message); } }
     else if (a === 'get') downloadLarge(m);
     else if (a === 'show') showDownload(m);
-    else if (a === 'cancel-get') { const x = XFER.get('d:' + id); if (x) { x.cancelled = true; xferRender(); } }
+    else if (a === 'cancel-get') xferCancel('d:' + id);
     else if (a === 'react') emojiPop(b, m);
     return;
   }
@@ -881,96 +881,231 @@ const b64u = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s +
 // The core keeps only a chunk; this page does too. Nothing here downloads a large file unless the person pressed
 // Download, and every transfer can be cancelled without leaving a half file in the Downloads folder.
 const XFER = new Map();
+const wait = ms => new Promise(r => setTimeout(r, ms));
+// Anything the core marked "[retry]", and any failure to reach the core itself (it is restarting), is waited out.
+const isRetry = er => /^\[retry\]|Failed to fetch|NetworkError|Load failed|^locked$|network/i.test(String(er && er.message));
+const cleanErr = er => String(er.message).replace(/^\[retry\] /, '');
+const fmtDur = s => s < 60 ? `${Math.ceil(s)}s` : s < 3600 ? `${Math.ceil(s / 60)} min` : s < 86400 ? `${(s / 3600).toFixed(1)} h` : `${(s / 86400).toFixed(1)} days`;
+// Speed over the last ~20 s of actual transfer, so a pause or an outage does not skew it.
+function xferMark(x) {
+  const now = performance.now(); x.samples = x.samples || [];
+  x.samples.push([now, x.bytes]);
+  while (x.samples.length > 2 && now - x.samples[0][0] > 20000) x.samples.shift();
+}
 const xferRate = x => {
-  const secs = (performance.now() - x.started) / 1000;
-  if (secs < 0.7 || x.bytes <= 0) return { speed: 0, left: '' };
-  const speed = x.bytes / secs, rest = Math.max(0, x.total - x.bytes) / speed;
-  return { speed, left: rest < 60 ? `${Math.ceil(rest)}s left` : rest < 3600 ? `${Math.ceil(rest / 60)} min left` : `${(rest / 3600).toFixed(1)} h left` };
+  const s = x.samples || [];
+  if (x.state || x.paused || s.length < 2) return { speed: 0, left: '' };
+  const [t0, b0] = s[0], [t1, b1] = s[s.length - 1];
+  if (t1 - t0 < 700 || b1 <= b0) return { speed: 0, left: '' };
+  const speed = (b1 - b0) / ((t1 - t0) / 1000), rest = Math.max(0, x.total - x.bytes) / speed;
+  return { speed, left: `about ${fmtDur(rest)} left`, rest };
 };
 function xferBody(x) {
-  const pct = x.total ? Math.min(100, Math.round(x.bytes / x.total * 100)) : 0;
+  const pct = x.total ? Math.min(100, Math.floor(x.bytes / x.total * 100)) : 0;
   const { speed, left } = xferRate(x);
-  return `<div class="xfer-bar"><i style="width:${pct}%"></i></div><div class="small xfer-note">${pct}% · ${fmtSize(Math.min(x.bytes, x.total))} of ${fmtSize(x.total)}${speed ? ` · ${fmtSize(speed)}/s` : ''}${left ? ` · ${esc(left)}` : ''}</div>`;
+  const exp = x.expires ? ` · ${fmtLeft(x.expires)} on the relay` : '';
+  return `<div class="xfer-bar"><i style="width:${pct}%"></i></div><div class="small xfer-note">${pct}% · ${fmtSize(Math.min(x.bytes, x.total))} of ${fmtSize(x.total)}${speed ? ` · ${fmtSize(speed)}/s` : ''}${left ? ` · ${esc(left)}` : ''}${exp}</div>`;
+}
+const xferStateText = x => x.cancelled ? 'Cancelling…'
+  : x.paused ? (x.idle ? 'Paused. Nothing more is sent or fetched.' : 'Pausing after this part…')
+  : x.state === 'waiting' ? `Waiting for connection (${x.err}). Trying again in ${Math.max(1, Math.ceil((x.retryAt - Date.now()) / 1000))}s, no need to do anything.`
+  : x.state === 'checking' ? (x.kind === 'up' ? 'Checking the file against what was already sent…' : 'Checking the saved part…')
+  : x.kind === 'up' ? 'Sending to the relay' : 'Saving to your Downloads folder';
+function xferOf(key) { return XFER.get(key); }
+async function xferCancel(key) {
+  const x = XFER.get(key);
+  if (!x) return;
+  if (x.bytes > 0 || x.safe > 0) {
+    const r = await modal(x.kind === 'up' ? 'Cancel this upload?' : 'Cancel this download?',
+      `<p>${x.kind === 'up' ? `${esc(fmtSize(Math.max(x.bytes, x.safe || 0)))} of ${esc(x.name)} is already on the relay. Cancelling removes it, and you would have to start from the beginning.` : `${esc(fmtSize(x.bytes))} of ${esc(x.name)} is already saved. Cancelling deletes that part file.`}</p><p class="muted small">To stop for now and carry on later, use Pause instead.</p>`,
+      [{ label: 'Keep it', primary: false }, { label: 'Cancel and delete', run: () => 'yes' }]);
+    if (r !== 'yes') return;
+  }
+  x.cancelled = true; x.paused = false; xferRender();
+}
+// Pause/resume while the page holds the transfer; the core remembers it for after a reload.
+async function xferPause(key) {
+  const x = XFER.get(key); if (!x || x.cancelled) return;
+  x.paused = !x.paused; x.idle = false; xferRender();
+  const id = x.kind === 'up' ? x.id : x.id;
+  if (x.id) rpc(x.kind === 'up' ? 'file_upload_pause' : 'file_download_pause', { id, paused: x.paused }).catch(() => { });
+}
+// Every network step goes through here: wait while paused, retry transient failures with backoff (1 s up to 30 s,
+// without end, so a relay that is down for an hour or a laptop that slept just carries on), stop on a real refusal.
+async function xferStep(x, fn) {
+  let delay = 1000;
+  for (;;) {
+    while (x.paused && !x.cancelled) { x.idle = true; xferRender(); await wait(250); }
+    x.idle = false;
+    if (x.cancelled) throw new Error('cancelled');
+    try { const r = await fn(); if (x.state) { x.state = ''; xferRender(); } return r; }
+    catch (er) {
+      if (x.cancelled) throw er;
+      if (!isRetry(er)) throw er;
+      x.state = 'waiting'; x.err = cleanErr(er).slice(0, 90);
+      for (let left = delay; left > 0 && !x.cancelled; left -= 500) { x.retryAt = Date.now() + left; xferRender(); await wait(500); if (x.paused) break; }
+      delay = Math.min(delay * 2, 30000);
+    }
+  }
 }
 function xferPanel() {
   let el = $('#transfers');
   if (!el) {
     el = document.createElement('section'); el.id = 'transfers'; el.setAttribute('aria-live', 'polite');
-    el.onclick = e => { const b = e.target.closest('[data-xcancel]'); if (b) { const x = XFER.get(b.dataset.xcancel); if (x) { x.cancelled = true; xferRender(); } } };
+    el.onclick = e => {
+      const c = e.target.closest('[data-xcancel]'); if (c) return void xferCancel(c.dataset.xcancel);
+      const p = e.target.closest('[data-xpause]'); if (p) return void xferPause(p.dataset.xpause);
+      const r = e.target.closest('[data-xresume]'); if (r) return void xferResume(r.dataset.xresume);
+      const d = e.target.closest('[data-xdrop]'); if (d) return void xferDrop(d.dataset.xdrop);
+    };
     document.body.appendChild(el);
   }
   return el;
 }
+let XLIST = { uploads: [], downloads: [] };
 function xferRender() {
   const el = xferPanel(), rows = [...XFER.values()];
-  el.hidden = !rows.length;
+  const live = new Set(rows.map(x => x.id));
+  const parked = [...XLIST.uploads.map(u => ({ ...u, kind: 'up' })), ...XLIST.downloads.map(u => ({ ...u, kind: 'down' }))].filter(u => !live.has(u.id));
+  el.hidden = !rows.length && !parked.length;
+  const btn = (a, k, ic, t) => `<button type="button" class="mini" data-${a}="${esc(k)}" title="${t}" aria-label="${t}">${icon(ic)}</button>`;
   el.innerHTML = `<div class="xfer-title">Transfers</div>` + rows.map(x => `<div class="xfer">
-    <div class="xfer-head"><span class="xfer-name" title="${esc(x.name)}">${esc(x.name)}</span><button type="button" class="mini" data-xcancel="${esc(x.key)}" title="Cancel" aria-label="Cancel ${esc(x.kind === 'up' ? 'upload' : 'download')}">${icon('x')}</button></div>
-    ${xferBody(x)}<div class="small xfer-state">${x.cancelled ? 'Cancelling…' : x.kind === 'up' ? 'Sending to the relay' : 'Saving to your Downloads folder'}</div></div>`).join('');
-  // The same live numbers appear next to the message being downloaded.
+    <div class="xfer-head"><span class="xfer-name" title="${esc(x.name)}">${esc(x.name)}</span>${btn('xpause', x.key, x.paused ? 'play' : 'clock', x.paused ? 'Resume' : 'Pause')}${btn('xcancel', x.key, 'x', 'Cancel')}</div>
+    ${xferBody(x)}<div class="small xfer-state">${esc(xferStateText(x))}</div></div>`).join('')
+    + parked.map(u => {
+      const done = u.kind === 'up' ? Math.min(u.size, u.uploaded * u.chunk_size) : Math.min(u.size, u.done * u.chunk_size);
+      const left = fmtLeft(u.expires);
+      return `<div class="xfer"><div class="xfer-head"><span class="xfer-name" title="${esc(u.name)}">${esc(u.name)}</span>${btn('xresume', u.kind + ':' + u.id, 'play', u.kind === 'up' ? 'Choose the file to continue' : 'Continue')}${btn('xdrop', u.kind + ':' + u.id, 'x', 'Cancel')}</div>
+      <div class="xfer-bar"><i style="width:${Math.floor(done / u.size * 100)}%"></i></div>
+      <div class="small xfer-note">${u.paused ? 'Paused' : 'Stopped'} · ${fmtSize(done)} of ${fmtSize(u.size)} ${u.kind === 'up' ? 'safe on the relay' : 'saved'} · ${esc(left)} on the relay</div>
+      <div class="small xfer-state">${u.kind === 'up' ? `Press continue, then choose the same file again: ${esc(u.name)}, ${fmtSize(u.size)}. Only the unsent parts go.` : 'Press continue to carry on from the last saved part.'}</div></div>`;
+    }).join('');
   for (const x of rows) if (x.kind === 'down') { const slot = document.getElementById('xdl-' + x.id); if (slot) slot.innerHTML = xferBody(x); }
 }
-async function uploadLarge(f, name) {
-  const key = 'upload'; let info;
+async function xferRefresh() {
   try {
-    info = await rpc('file_upload_begin', { gid: S.gid, name, mime: f.type || 'application/octet-stream', size: f.size, last_modified: Math.floor((f.lastModified || 0) / 1000), caption: '' });
-    const x = { key: info.id, kind: 'up', name, started: performance.now(), bytes: 0, total: f.size, done: 0, chunks: info.chunks, cancelled: false };
-    XFER.set(x.key, x); xferRender();
-    for (let i = 0; i < info.chunks; i++) {
+    const r = await rpc('file_transfers');
+    const j = JSON.stringify(r.uploads) + JSON.stringify(r.downloads);
+    if (j !== xferRefresh.last) { xferRefresh.last = j; XLIST = r; xferRender(); }
+    // A finished-on-the-relay upload needs only its saved hashes: send its message without asking for the file.
+    for (const u of r.uploads) {
+      if (u.ready && !XFER.has('u:' + u.id) && !xferRefresh.tried.has(u.id) && u.uploaded === u.chunks) {
+        xferRefresh.tried.add(u.id);
+        try { await rpc('file_upload_finish', { id: u.id }); toast(`${u.name} sent.`); S.lastMsgs = ''; tick(); soon(); xferRefresh.last = ''; } catch { }
+      }
+    }
+  } catch { }
+}
+xferRefresh.tried = new Set();
+setTimeout(xferRefresh, 2500); setInterval(xferRefresh, 20000);
+window.addEventListener('beforeunload', e => { if ([...XFER.values()].some(x => !x.paused)) { e.preventDefault(); e.returnValue = ''; } });
+async function xferDrop(k) {
+  const [kind, id] = [k.slice(0, k.indexOf(':')), k.slice(k.indexOf(':') + 1)];
+  const u = (kind === 'up' ? XLIST.uploads : XLIST.downloads).find(v => v.id === id); if (!u) return;
+  const r = await modal('Cancel this ' + (kind === 'up' ? 'upload' : 'download') + '?', `<p>${esc(u.name)}: what is already ${kind === 'up' ? 'on the relay' : 'saved'} will be deleted.</p>`,
+    [{ label: 'Keep it', primary: false }, { label: 'Cancel and delete', run: () => 'yes' }]);
+  if (r !== 'yes') return;
+  try { await rpc(kind === 'up' ? 'file_upload_cancel' : 'file_download_cancel', { id }); } catch (er) { toast(er.message); }
+  xferRefresh.last = ''; xferRefresh();
+}
+function xferResume(k) {
+  const kind = k.slice(0, k.indexOf(':')), id = k.slice(k.indexOf(':') + 1);
+  if (kind === 'down') { const u = XLIST.downloads.find(v => v.id === id); if (u) downloadLarge({ gid: u.gid, id: u.id, name: u.name }); return; }
+  const u = XLIST.uploads.find(v => v.id === id); if (!u) return;
+  const inp = document.createElement('input'); inp.type = 'file';
+  inp.onchange = () => {
+    const f = inp.files[0]; if (!f) return;
+    const why = f.name.trim() !== u.name ? `That is ${f.name}, not ${u.name}.`
+      : f.size !== u.size ? `That file is ${fmtSize(f.size)}, but the one being sent was ${fmtSize(u.size)}.`
+      : Math.floor((f.lastModified || 0) / 1000) !== u.last_modified ? 'That file was changed after the upload began, so it is not the same file. Nothing was sent.' : '';
+    if (why) return void toast(why);
+    uploadLarge(f, u.name, u.gid);
+  };
+  inp.click();
+}
+async function uploadLarge(f, name, gid = S.gid) {
+  const lm = Math.floor((f.lastModified || 0) / 1000), tmp = `u?${gid}|${name}|${f.size}|${lm}`;
+  if (XFER.has(tmp) || [...XFER.values()].some(v => v.tmp === tmp)) return;
+  const x = { key: tmp, tmp, kind: 'up', name, bytes: 0, safe: 0, total: f.size, done: 0, chunks: 0, cancelled: false, paused: false, state: 'checking' };
+  XFER.set(x.key, x); xferRender();
+  let info;
+  const begin = async () => {
+    info = await xferStep(x, () => rpc('file_upload_begin', { gid, name, mime: f.type || 'application/octet-stream', size: f.size, last_modified: lm, caption: '' }));
+    if (XFER.get(x.key) === x && x.key !== info.id) { XFER.delete(x.key); x.key = 'u:' + info.id; XFER.set(x.key, x); }
+    x.id = info.id; x.chunks = info.chunks; x.expires = info.expires;
+    x.safe = (info.chunks - info.need_read.length) * info.chunk_size; x.bytes = Math.min(f.size, x.safe); xferMark(x);
+  };
+  const slice = async (i) => { const at = i * info.chunk_size; return new Uint8Array(await f.slice(at, Math.min(at + info.chunk_size, f.size)).arrayBuffer()); };
+  try {
+    await begin();
+    if (info.need_read.length && info.verify.length) {
+      // Honest resume: re-read a sample of what was already sent, and refuse if the file is not the same one.
+      x.state = 'checking'; xferRender();
+      for (const i of info.verify) await xferStep(x, async () => rpc('file_upload_check', { id: info.id, index: i, data: b64u(await slice(i)) }));
+      x.state = ''; xferRender();
+    }
+    let rebegun = false;
+    for (let n = 0; n < info.need_read.length;) {
       if (x.cancelled) break;
-      const at = i * info.chunk_size, end = Math.min(at + info.chunk_size, f.size);
-      // Read only this slice of the File. The core hashes it even when the relay already holds it, so a resumed
-      // upload can still finish with the whole-file check.
-      const buf = new Uint8Array(await f.slice(at, end).arrayBuffer());
-      await rpc('file_upload_chunk', { id: info.id, index: i, data: b64u(buf) });
-      x.done = i + 1; x.bytes = end; xferRender();
+      const i = info.need_read[n], buf = await slice(i);
+      try {
+        await xferStep(x, () => rpc('file_upload_chunk', { id: info.id, index: i, data: b64u(buf) }));
+      } catch (er) {
+        // The relay lost its copy (a restored backup, an expiry): start over from what it says it has.
+        if (!rebegun && /no such file/.test(er.message)) { rebegun = true; await begin(); n = 0; continue; }
+        throw er;
+      }
+      n++; x.done = n; x.bytes = Math.min(f.size, x.safe + n * info.chunk_size); xferMark(x); xferRender();
     }
     if (x.cancelled) {
       await rpc('file_upload_cancel', { id: info.id });
-      XFER.delete(x.key); xferRender(); toast('Upload cancelled.');
-      return;
+      toast('Upload cancelled.');
+    } else {
+      await xferStep(x, () => rpc('file_upload_finish', { id: info.id }));
+      toast(`${name} sent.`); S.lastMsgs = ''; tick(); soon();
     }
-    await rpc('file_upload_finish', { id: info.id });
-    XFER.delete(x.key); xferRender(); toast(`${name} sent.`);
-    S.lastMsgs = ''; tick(); soon();
   } catch (er) {
-    if (info) XFER.delete(info.id);
-    xferRender();
-    // The uploaded parts stay on the relay, so offering the same file again continues where this stopped.
-    toast(`Upload of ${name} stopped: ${er.message}. Drop the same file again to continue.`);
+    if (x.cancelled) { if (info) await rpc('file_upload_cancel', { id: info.id }).catch(() => { }); toast('Upload cancelled.'); }
+    else toast(`Upload of ${name} stopped: ${cleanErr(er)}. It is kept safe; press continue in Transfers to carry on.`);
+  } finally {
+    XFER.delete(x.key); xferRender(); xferRefresh.last = ''; xferRefresh();
   }
 }
 async function downloadLarge(m) {
-  const key = 'd:' + m.id;
+  // m: a message with .file, or {gid, id, name} from the Transfers list
+  const gid = m.gid || S.gid, mid = m.id, name = m.name || m.file.name, key = 'd:' + mid;
   if (XFER.has(key)) return;
-  // A partly saved file carries on where it is; a phone has one place to save.
-  const part = m.file.download && !m.file.download.finished && m.file.download.done > 0;
+  const x = { key, id: mid, kind: 'down', name, bytes: 0, done: 0, chunks: 0, total: 0, cancelled: false, paused: false, state: 'checking', path: '' };
+  XFER.set(key, x); xferRender();
   let folder = '';
-  if (!part && !mobileApp()) {
-    folder = await askSaveFolder(m.file.name);
-    if (folder === null || XFER.has(key)) return;
-    pref.set('dlFolder', folder);
-  }
-  let st;
   try {
-    st = await rpc('file_download_begin', { gid: S.gid, id: m.id, folder });
+    // A partly saved file carries on where it is; a phone has one place to save.
+    const part = ((await rpc('file_transfers')).downloads.find(d => d.id === mid) || {}).done > 0;
+    if (!part && !mobileApp()) {
+      XFER.delete(key); x.state = '';
+      folder = await askSaveFolder(name);
+      if (folder === null || XFER.has(key)) { xferRender(); return; }
+      pref.set('dlFolder', folder); x.state = 'checking'; XFER.set(key, x);
+    }
+    xferRender(); renderStream();
+    const st = await xferStep(x, () => rpc('file_download_begin', { gid, id: mid, folder }));
     if (st.finished) { toast('Already saved to ' + st.path); return; }
-    const x = { key, id: m.id, kind: 'down', name: m.file.name, started: performance.now(), bytes: st.done * st.chunk_size, done: st.done, chunks: st.chunks, total: st.size, cancelled: false, path: '' };
-    XFER.set(key, x); xferRender(); renderStream();
+    x.chunks = st.chunks; x.total = st.size; x.done = st.done; x.expires = st.expires; x.bytes = Math.min(st.done * st.chunk_size, st.size);
+    x.state = ''; xferMark(x); xferRender();
     while (x.done < x.chunks && !x.cancelled) {
-      const r = await rpc('file_download_chunk', { gid: S.gid, id: m.id });
-      x.done = r.done; x.bytes = Math.min(r.done * st.chunk_size, st.size);
+      const r = await xferStep(x, () => rpc('file_download_chunk', { gid, id: mid }));
+      x.done = r.done; x.bytes = Math.min(r.done * st.chunk_size, st.size); xferMark(x);
       if (r.finished) { x.path = r.path; break; }
       xferRender();
     }
-    if (x.cancelled) { await rpc('file_download_cancel', { id: m.id }); toast('Download cancelled.'); }
+    if (x.cancelled) { await rpc('file_download_cancel', { id: mid }); toast('Download cancelled.'); }
     else if (x.path) { toast('Saved to ' + x.path); S.lastMsgs = ''; tick(); }
   } catch (er) {
-    // Keep the partial file: Download on the same message picks it up again, from the last verified chunk.
-    toast(`Download stopped: ${er.message}. Press Download again to continue.`);
+    if (x.cancelled) { await rpc('file_download_cancel', { id: mid }).catch(() => { }); toast('Download cancelled.'); }
+    else toast(`Download stopped: ${cleanErr(er)}. What is saved is kept; press continue in Transfers to carry on.`);
   } finally {
-    XFER.delete(key); xferRender();
-    const ms = S.msgs && S.msgs.messages.find(v => v.id === m.id);
+    XFER.delete(key); xferRender(); xferRefresh.last = ''; xferRefresh();
+    const ms = S.msgs && S.msgs.messages.find(v => v.id === mid);
     if (ms) renderStream();
   }
 }
