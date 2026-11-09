@@ -28,6 +28,7 @@
   const fieldOf = x => x.kind === 'options' ? '#a9adb8' : x.theme[0];
   const hiOf = x => x.kind === 'options' ? '#4a4e5c' : x.theme[1];
   const dotOf = x => { if (x.kind === 'options') return '#b5bac8'; const t = x.theme; return contrast(t[0], '#050407') >= 3.4 ? t[0] : brighten(t[1]); };
+  const markOf = x => (window.__megaNew ? __megaNew.mark(x) : dotOf(x));   // the ring that says unread / mention, in the room's own highlight colour
   const cardVars = (x, snap) => { const f = fieldOf(x), ink = bestInk(f); return `--m-mesh:${snap ? snapOf(x) : f};--m-cink:${ink};--m-solid:${ink};--m-on:${f}`; };
   const faceColor = n => `hsl(${H(n) % 360} 78% 74%)`;
   const mface = (name, cls = '') => `<span class="mface ${cls}" style="--fc:${faceColor(name)}" aria-hidden="true">${esc(([...String(name || '?')][0] || '?').toUpperCase())}</span>`;
@@ -241,6 +242,7 @@
   }
 
   function cardHTML(x) {
+    if (x.kind === 'news') return __megaNew.html(x);   // the "what's new" card (mega-new.js)
     let mid = '', sub = '', num = '';
     if (x.kind === 'community') {
       sub = `${x.rooms} room${x.rooms === 1 ? '' : 's'}`; num = x.unread || '';
@@ -271,8 +273,8 @@
     el.innerHTML = items.map((x, i) => (x.kind === 'voice' && (i === 0 || items[i - 1].kind !== 'voice') ? '<div class="msect" aria-hidden="true">voice</div>' : '') + `<div class="mslot" data-i="${i}" role="listitem"><article class="mcard ${x.locked ? 'locked' : ''}" aria-label="${esc(cardLabel(x))}">${cardHTML(x)}</article></div>`).join('');
     mega.append(el);
     const sc = document.createElement('div'); sc.className = 'mscrub'; sc.setAttribute('aria-hidden', 'true');
-    const scrubCls = x => `${x.unread ? 'un' : ''} ${x.kind === 'voice' ? 'v' : x.kind === 'options' ? 'o' : ''}`;
-    sc.innerHTML = items.map((x, i) => `<button type="button" tabindex="-1" data-i="${i}" class="${scrubCls(x)}" style="--c:${dotOf(x)}"></button>`).join('');
+    const scrubCls = x => `${x.unread ? 'un' : ''} ${x.unread && x.at ? 'at' : ''} ${x.kind === 'voice' ? 'v' : x.kind === 'options' ? 'o' : ''}`;
+    sc.innerHTML = items.map((x, i) => `<button type="button" tabindex="-1" data-i="${i}" class="${scrubCls(x)}" style="--c:${dotOf(x)};--mh:${markOf(x)}"></button>`).join('');
     sc.onclick = e => { const b = e.target.closest('[data-i]'); if (b) go(+b.dataset.i); };
     mega.append(sc);
     const slots = $$('.mslot', el), cards = slots.map(s => $('.mcard', s));
@@ -339,7 +341,7 @@
       // new colours only: same cards, new paint (no content is rebuilt, so the ascii keeps flowing)
       repaint(next) {
         if (next.length !== items.length) return;
-        next.forEach((x, i) => { if (x.key !== items[i].key) return; items[i] = x; $('.msq', slots[i]).style.cssText = cardVars(x); sc.children[i].style.setProperty('--c', dotOf(x)); });
+        next.forEach((x, i) => { if (x.key !== items[i].key) return; items[i] = x; $('.msq', slots[i]).style.cssText = cardVars(x); sc.children[i].style.setProperty('--c', dotOf(x)); sc.children[i].style.setProperty('--mh', markOf(x)); });
         live.forEach((a, i) => {
           a.x = items[i]; a.at = atlasOf(fieldOf(a.x), hiOf(a.x), a.sw, a.sh, a.fs);
           if (a.field !== FX[a.x.fx]) { a.field = FX[a.x.fx]; fade(a.c); }   // a new pattern fades in over the old picture
@@ -416,12 +418,12 @@
     if (html) mega.insertAdjacentHTML('beforeend', html);
   }
 
-  function homeItems() { return [...comms().map(commItem), youItem()]; }
-  function showHome(startCid) {
+  function homeItems() { const nw = window.__megaNew && __megaNew.item(); return [...(nw ? [nw] : []), ...comms().map(commItem), youItem()]; }
+  function showHome(startCid, startKey) {
     killList(); M.level = 'home'; M.opts = false; applyLevel();
     drawBar(); M.sig = '';
     const items = homeItems(), want = startCid || store.get('last', null) || S.cid;
-    const start = Math.max(0, items.findIndex(x => x.cid === want));
+    const ki = startKey ? items.findIndex(x => x.key === startKey) : -1, start = ki >= 0 ? ki : Math.max(0, items.findIndex(x => x.cid === want));
     M.list = List(items, { start, enter: enterCommunity, onSettle: paintFollow });
     drawNotes();
   }
@@ -441,6 +443,7 @@
   // home -> a community: the card opens up to fill the room, then its rooms
   const enterCommunity = guard(async x => {
     if (x.kind === 'you') { $('#btn-settings').click(); return; }
+    if (x.kind === 'news') return;   // its rows are the buttons
     if (calm() || !M.list) { showServer(x.cid); return; }
     const r = M.list.rectOf(M.list.cur), f = fly(r, fieldOf(x)), full = mega.getBoundingClientRect();
     await f.animate([{ left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px', borderRadius: sq() }, { left: full.left + 'px', top: '0px', width: full.width + 'px', height: full.height + 'px', borderRadius: '0px' }], { duration: 320, easing: 'cubic-bezier(.7,0,.2,1)', fill: 'forwards' }).finished;
@@ -499,7 +502,7 @@
     const vo = x.kind === 'voice', active = x.kind === 'options' ? M.opts : (!M.opts && x.gid === S.gid);
     const say = [x.name, vo ? 'voice room' : '', vo && x.people.length ? x.people.length + ' in the call' : '', x.unread && !active ? x.unread + ' unread' : '', x.at ? x.at + ' mentions of you' : '', x.locked ? 'waiting for keys' : ''].filter(Boolean).join(', ');
     const un = x.unread && !active && !vo;
-    return `<button class="mitem ${vo ? 'voice' : ''} ${active ? 'active' : ''} ${un ? 'un' : ''} ${vo && x.people.length ? 'live' : ''} ${vo && x.here ? 'here' : ''} ${x.kind === 'options' ? 'opt' : ''} ${x.locked ? 'pending' : ''}" type="button" data-key="${esc(x.key)}" aria-label="${esc(say)}"${active ? ' aria-current="true"' : ''} style="--c:${dotOf(x)};--m-cink:${bestInk(fieldOf(x))};--n:${i}">${x.at && !active ? `<span class="mbadge">${x.at}</span>` : ''}${vo ? `<span class="mvc">${x.people.length ? esc(x.people.map(p => p.me ? 'you' : p.name).join(', ')) : 'empty'}</span>` : ''}${ti(x.name, 'mlb', 'span')}${(vo ? x.people.length : un ? x.unread : 0) ? `<span class="mct">${vo ? x.people.length : x.unread}</span>` : ''}</button>`;
+    return `<button class="mitem ${vo ? 'voice' : ''} ${active ? 'active' : ''} ${un ? 'un' : ''} ${un && x.at ? 'at' : ''} ${vo && x.people.length ? 'live' : ''} ${vo && x.here ? 'here' : ''} ${x.kind === 'options' ? 'opt' : ''} ${x.locked ? 'pending' : ''}" type="button" data-key="${esc(x.key)}" aria-label="${esc(say)}"${active ? ' aria-current="true"' : ''} style="--c:${dotOf(x)};--mh:${markOf(x)};--m-cink:${bestInk(fieldOf(x))};--n:${i}">${x.at && !active ? `<span class="mbadge">${x.at}</span>` : ''}${vo ? `<span class="mvc">${x.people.length ? esc(x.people.map(p => p.me ? 'you' : p.name).join(', ')) : 'empty'}</span>` : ''}${ti(x.name, 'mlb', 'span')}${(vo ? x.people.length : un ? x.unread : 0) ? `<span class="mct">${vo ? x.people.length : x.unread}</span>` : ''}</button>`;
   }
   const railSig = c => JSON.stringify([c.id, S.gid, M.opts, roomItems(c).map(x => x.sig), comms().map(o => o.id !== c.id && unreadIn(o) > 0)]);
   function drawRail(arriving) {
@@ -511,7 +514,7 @@
     rail.innerHTML = `<button class="mhomedot ${others ? 'un' : ''}" id="m-home" type="button" aria-label="${many ? 'All communities' : 'All rooms'}${others ? ', unread messages elsewhere' : ''}" data-name="${many ? 'all communities' : 'all rooms'}"><span class="mhl">${many ? 'all communities' : 'all rooms'}</span></button><div class="mitems" id="m-items">${items.map(dotHTML).join('')}</div>`;
   }
   function openRail() {
-    if (M.rail || M.level !== 'chat') return; M.rail = true; hideTip();
+    if (M.rail || M.level !== 'chat') return; M.rail = true; hideTip(); if (window.__megaNew) __megaNew.railUsed();
     $$('.mitem', rail).forEach((b, i) => { const x = M.railItems[i]; if (x) b.style.cssText += ';' + cardVars(x, true); });
     rail.classList.add('open'); const a = $('.mitem.active', rail); if (a) setTimeout(() => a.scrollIntoView({ block: 'center', behavior: calm() ? 'auto' : 'smooth' }), 240);
   }
@@ -661,7 +664,7 @@
       else if (M.level === 'server') { if (c && M.list) M.list.repaint(roomItems(c)); }
       else if (c) {
         const items = roomItems(c); M.railItems = items; M.sig = railSig(c);
-        $$('.mitem', rail).forEach(b => { const x = items.find(k => k.key === b.dataset.key); if (x) { b.style.setProperty('--c', dotOf(x)); if (M.rail) b.style.cssText += ';' + cardVars(x, true); } });
+        $$('.mitem', rail).forEach(b => { const x = items.find(k => k.key === b.dataset.key); if (x) { b.style.setProperty('--c', dotOf(x)); b.style.setProperty('--mh', markOf(x)); if (M.rail) b.style.cssText += ';' + cardVars(x, true); } });
         const it = items.find(x => x.gid === S.gid && x.kind === 'text');
         if (it && BD && BD.gid === it.gid && mainEl) {
           const hi = lift(hiOf(it), 4.8); root.style.setProperty('--mg-c', dotOf(it)); root.style.setProperty('--mg-hi', hi); root.style.setProperty('--mg-hi-ink', bestInk(hi));
@@ -896,7 +899,7 @@
       if (x.kind === 'voice') { if (!x.locked && !x.here) joinVoice(x, 'join'); } else enterCurrent();   // Enter on a voice card is an explicit join
     }
   }, true);
-  function enterCurrent() { const x = M.list.item; if (!x) return; if (M.level === 'home') enterCommunity(x); else enterRoom(x); }
+  function enterCurrent() { const x = M.list.item; if (!x) return; if (x.kind === 'news') { __megaNew.openFirst(x); return; } if (M.level === 'home') enterCommunity(x); else enterRoom(x); }
   // phones: swipe in from the left edge to pop the dots out
   let tx = null;
   addEventListener('touchstart', e => { tx = M.level === 'chat' && e.touches[0].clientX < 30 ? e.touches[0].clientX : null; if (M.rail && !e.target.closest('#mega-rail')) closeRail(); }, { passive: true });
@@ -1018,6 +1021,7 @@
     let item = null;
     if (M.started && M.level === 'chat' && !M.opts && S.gid) { const c = comm(M.cid); item = c && roomItems(c).find(x => x.gid === S.gid && x.kind === 'text'); }
     root.classList.toggle('mg-room', !!item);
+    if (window.__megaNew) __megaNew.room(item ? item.gid : null);   // density for this room, and its header button
     if (!item) { bdStop(); if (window.__megaWall) __megaWall.close(); typingDraw([]); focusFrame(); return; }
     if (BD && BD.gid === item.gid) return;
     const hi = lift(hiOf(item), 4.8);
@@ -1225,7 +1229,11 @@
     if (M.level === 'home') {
       if (cs.length === 1) { showServer(cs[0].id, S.gid); return; }
       const next = homeItems();
-      if (M.list && !M.list.refresh(next)) showHome(M.list.item && M.list.item.cid);
+      if (M.list && !M.list.refresh(next)) {
+        // a card appeared or went (the "what's new" card): never while a finger or wheel is on the list; the focused card stays where it is
+        if (window.__megaNew && __megaNew.hold()) { setTimeout(render, 450); return; }
+        showHome(M.list.item && M.list.item.cid, M.list.item && M.list.item.key); if (window.__megaNew) __megaNew.still();
+      }
       drawBar(); drawNotes(); return;
     }
     const c = comm(M.cid);
@@ -1242,7 +1250,7 @@
   function start() {
     M.started = true;
     const cs = comms();
-    if (cs.length === 1) showServer(cs[0].id); else showHome(store.get('last', null));
+    if (cs.length === 1) showServer(cs[0].id); else showHome(store.get('last', null), 'news');
     document.fonts.load('500 14px "IBM Plex Mono"').catch(() => { }).then(() => { fontKey = 1; ACTIVE.forEach(a => { a.at = atlasOf(fieldOf(a.x), hiOf(a.x), a.sw, a.sh, a.fs); asciiDraw(a, clock); }); });
     document.fonts.ready.then(remaskAll);
     requestAnimationFrame(asciiTick);
@@ -1268,6 +1276,7 @@
   M.drawChip = drawChip; M.fx = FX; M.fxNames = FXNAMES;
   M.bdInfo = () => (BD ? { gid: BD.gid, fx: BD.fx, fxAuto: BD.fxAuto, dim: BD.dim, at: H(BD.at.toDataURL()), draws: ST.bdDraws } : null);
   window.__megaTheme = { colours(gid) { const c = comm(M.cid), x = c && roomItems(c).find(i => i.gid === gid && i.kind === 'text'); return x ? [lift(fieldOf(x), 5), lift(hiOf(x), 6)] : null; } };
+  M.api = { comms, comm, roomItems, dotOf, hiOf, fieldOf, lift, mix, contrast, bestInk, cardVars, ti, letters, toChat, openRail, themeOf, dirty, DEF };
   M.prev = PREV; M.shown = SHOWN; M.canPaint = canPaint; window.__mega = M;
   if (S.snap && !$('#app').hidden) render();   // the first snapshot may have arrived while this file was still loading
 })();
