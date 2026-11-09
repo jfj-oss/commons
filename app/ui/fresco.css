@@ -22,6 +22,7 @@
 
 /* Solarized is the owner's exact teal: nothing tints the wall behind the chat. */
 :root[data-theme="solar"] #main { background: var(--wall); }
+:root[data-theme="solar"] #rail { border-right: var(--hair) solid var(--glass-line); }
 :root[data-theme="solar"] #main::before, :root[data-theme="solar"] #main::after { content: none; }
 :root[data-theme="solar"] #main > canvas.wall-dither { display: none; }
 
