@@ -120,6 +120,17 @@ pub fn cmdline_is_ours(args: &[String]) -> bool {
     args.windows(2).any(|w| (w[0] == "-n" || w[0] == "--name") && ours(&w[1])) || args.iter().any(|a| a.strip_prefix("--name=").is_some_and(ours))
 }
 
+/// The parent pid in the text of /proc/<pid>/stat (the name in parentheses may contain spaces and parentheses, so count from the last one).
+pub fn parent_pid(stat: &str) -> Option<u32> {
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(1)?.parse().ok()
+}
+/// A loopback is left behind (and ours to end) only when its parent is gone: init, or the session manager that adopts orphans. One whose
+/// parent is another running program belongs to that program, for instance a second mega on the same computer.
+pub fn is_orphan(parent: u32, parent_comm: Option<&str>) -> bool {
+    parent <= 1 || parent_comm.is_none() || matches!(parent_comm.map(str::trim), Some("systemd") | Some("init") | Some("launchd"))
+}
+
 // ------------------------------------------------------------------ running the tools
 fn run_capture(prog: &str, args: &[String]) -> Result<String, String> {
     let mut c = Command::new(prog).args(args).env("LC_ALL", "C").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
@@ -235,7 +246,13 @@ fn cleanup_stale_except(mine: &[u32]) -> usize {
             if std::fs::metadata(e.path()).map(|m| m.uid()) .ok() != Some(me) { continue; }
             let Ok(raw) = std::fs::read(e.path().join("cmdline")) else { continue };
             let args: Vec<String> = raw.split(|b| *b == 0).filter(|s| !s.is_empty()).map(|s| String::from_utf8_lossy(s).into_owned()).collect();
-            if cmdline_is_ours(&args) { unsafe { libc::kill(pid as i32, libc::SIGTERM); } n += 1; }
+            if !cmdline_is_ours(&args) { continue; }
+            // A loopback that another running mega started is that one's; only orphans of a bridge that died are cleaned up.
+            let Some(parent) = std::fs::read_to_string(e.path().join("stat")).ok().and_then(|t| parent_pid(&t)) else { continue };
+            let comm = std::fs::read_to_string(format!("/proc/{parent}/comm")).ok();
+            if !is_orphan(parent, comm.as_deref()) { continue; }
+            unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+            n += 1;
         }
         n
     }
@@ -436,5 +453,14 @@ mod tests {
         assert!(!cmdline_is_ours(&a(&["pw-loopback", "-i", "node.name=megatron_pcaudio_sink"])), "only -n counts");
         assert!(!cmdline_is_ours(&a(&["vim", "-n", LOOP_NAME])));
         assert!(!cmdline_is_ours(&a(&[])));
+    }
+    #[test]
+    fn only_orphaned_loopbacks_are_cleaned_up() {
+        assert_eq!(parent_pid("1234 (pw-loopback) S 4321 1234 1234 0 -1 4194560"), Some(4321));
+        assert_eq!(parent_pid("1234 (a b) c) S 77 1 1"), Some(77), "a name with parentheses and spaces");
+        assert_eq!(parent_pid("garbage"), None);
+        assert!(is_orphan(1, Some("systemd")) && is_orphan(0, None) && is_orphan(2000, Some("systemd\n")) && is_orphan(2000, None));
+        assert!(!is_orphan(2000, Some("bridge\n")), "another mega's loopback is left alone");
+        assert!(!is_orphan(2000, Some("commons-app")));
     }
 }

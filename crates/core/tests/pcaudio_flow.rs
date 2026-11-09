@@ -76,17 +76,22 @@ fn app_sound_route_with_fake_tools() {
     pc::rpc("pcaudio_stop", &json!({})).unwrap();   // twice is fine
     assert_eq!(lines(&st.join("moves.log")).len(), 2);
 
-    // a loopback of ours left by a crashed bridge is ended by the next start; somebody else's is not
+    // a loopback of ours left by a crashed bridge (its parent is gone) is ended by the next start; one that another running mega owns,
+    // or one with another name, is not
     fs::remove_file(st.join("sink_of_52")).ok();
     let mut reap = Reap(vec![]);
-    reap.0.push(std::process::Command::new("pw-loopback").args(["-n", "megatron_pcaudio_loop"]).spawn().unwrap());
+    let orphan = std::process::Command::new("sh").args(["-c", "pw-loopback -n megatron_pcaudio_loop >/dev/null 2>&1 & echo $!"]).output().unwrap();
+    let orphan = String::from_utf8_lossy(&orphan.stdout).trim().to_string();
     reap.0.push(std::process::Command::new("pw-loopback").args(["-n", "megatron_pcaudio_loop_not_ours"]).spawn().unwrap());
-    until("fakes started", || lines(&st.join("loopbacks.log")).len() >= 4);
+    reap.0.push(std::process::Command::new("pw-loopback").args(["-n", "megatron_pcaudio_loop"]).spawn().unwrap());   // a live parent: this test
+    until("fakes started", || lines(&st.join("loopbacks.log")).len() >= 5);
+    assert!(alive(&orphan));
     fs::remove_file(st.join("loop.pid")).ok();
     let before = lines(&st.join("moves.log")).len();
     pc::rpc("pcaudio_start", &json!({"id": 52})).unwrap();
-    until("stale loopback ended", || reap.0[0].try_wait().unwrap().is_some());
-    assert!(reap.0[1].try_wait().unwrap().is_none(), "a pw-loopback with another name is left alone");
+    until("stale loopback ended", || !alive(&orphan));
+    assert!(reap.0[0].try_wait().unwrap().is_none(), "a pw-loopback with another name is left alone");
+    assert!(reap.0[1].try_wait().unwrap().is_none(), "a loopback whose parent is still running is left alone");
     assert_eq!(lines(&st.join("moves.log")).len(), before + 1);
 
     // a loopback dying under us (the sound server went away): the watchdog moves the stream back and reports why
