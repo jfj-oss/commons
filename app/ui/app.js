@@ -1327,7 +1327,8 @@ $('#btn-settings').onclick = () => {
   <label>Profile picture</label><div class="av-set"><span class="av-prev" id="av-prev">${seal(S.snap.me.account, S.snap.me.name, 'big')}</span><span class="av-btns"><button type="button" class="btn ghost slim" id="av-pick">Choose a picture…</button><button type="button" class="btn ghost slim" id="av-none" ${AVS.got.has(S.snap.me.account) ? '' : 'hidden'}>Remove</button></span></div><input type="file" id="av-file" accept="image/*" hidden>
   <p class="muted small">Shown instead of your seal. Shrunk on this device and sent encrypted; older versions keep your seal.</p>
   <h3 class="set-h">Appearance</h3>
-  <label>Theme</label>${seg('th', [['', 'Match system'], ['light', 'Daylight'], ['solar', 'Solarized'], ['dark', 'After hours']], pref.get('theme') || '')}
+  <label>Theme</label>${seg('th', [['', 'Match system'], ['light', 'Daylight'], ['solar', 'Solarized'], ['dark', 'After hours'], ['wave', 'Wave']], pref.get('theme') || '')}
+  <div id="wave-row" ${pref.get('theme') === 'wave' ? '' : 'hidden'}><label for="wave-pal">Wave colours</label><select id="wave-pal">${(window.__waveDither ? window.__waveDither.palettes : []).map(([k, l]) => `<option value="${k}"${(pref.get('wavePalette') || 'blue') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
   <label>Message font</label>${seg('rd', [['', 'Book'], ['plain', 'Plain']], pref.get('read') || '')}
   <h3 class="set-h">Sound</h3>
   <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when Megatron is in the background or the message is in another room.</p>
@@ -1345,7 +1346,7 @@ $('#btn-settings').onclick = () => {
     const secret = val(w, 'rs').trim();
     if (secret) await rpc('set_relay_invite', { secret });
     if (!mobileApp() && val(w, 'dl-dir').trim() !== (S.snap.download_dir || '')) await rpc('set_download_dir', { dir: val(w, 'dl-dir') });
-    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('theme', val(w, 'th')); pref.set('read', val(w, 'rd')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs();
+    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('wavePalette', val(w, 'wave-pal')); pref.set('theme', val(w, 'th')); pref.set('read', val(w, 'rd')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs();
   } }]);
   fillAvatars();
   p.then(tick);
@@ -1356,6 +1357,7 @@ $('#modal-root').addEventListener('click', e => {
   if (e.target.closest('#av-pick')) { const f = $('#av-file'); if (f) f.click(); return; }
   if (e.target.closest('#av-none')) { removeOwnAvatar(); return; }
   if (e.target.closest('#set-gamekeys')) gameKeys();
+  if (e.target.closest('[data-for=th]')) setTimeout(() => { const r = $('#wave-row'), t = $('#th'); if (r && t) r.hidden = t.value !== 'wave'; }, 0);
   if (e.target.closest('#dl-browse')) browseSaveFolder(e.target.closest('.modal'));
 });
 const keyName = c => !c ? 'Press to set' : c.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Mouse(\d)/, 'Mouse button $1').replace(/(Left|Right)$/, ' $1');

@@ -353,7 +353,7 @@ try {
   // Themed screenshots: Daylight and After Hours, so the wall, dither and glass can be checked in both themes.
   // The voice-room row was selected a moment ago; force each theme and re-shoot the same three states.
   const textGid = gid;
-  for (const [theme, tag] of [['light', 'daylight'], ['solar', 'solarized'], ['dark', 'afterhours']]) {
+  for (const [theme, tag] of [['light', 'daylight'], ['solar', 'solarized'], ['wave', 'wave'], ['dark', 'afterhours']]) {
     await A.ev(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}`);
     await sleep(400);
     await A.ev(`[...document.querySelectorAll('#rooms .room')].find(r => r.dataset.g === ${JSON.stringify(textGid)}).click()`);

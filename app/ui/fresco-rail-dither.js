@@ -77,6 +77,7 @@
   }
   let stop = null;
   function start() {
+    if (root.dataset.theme === 'wave') return;   // wave-dither.js draws this theme
     const rail = document.getElementById('rail'), main = document.getElementById('main'); if (!rail || !main) return;
     const mk = (cls, parent) => { const c = document.createElement('canvas'); c.className = cls; c.setAttribute('aria-hidden', 'true'); parent.prepend(c); return c; };
     const rc = mk('rail-dither', rail), wc = mk('wall-dither', main);
