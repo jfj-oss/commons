@@ -10,7 +10,8 @@
    the chips still scroll sideways inside the header when they do not fit. */
 @media (max-width: 760px) {
   html.mega #head .head-title { flex: 1 1 auto; min-width: 36%; }
-  html.mega #head #btn-invite span, html.mega #head #btn-people .lbl { display: none; }
+  /* the words stay in the page for the accessible name; only the pixels go */
+  html.mega #head #btn-invite span, html.mega #head #btn-people .lbl { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   html.mega #head #btn-invite, html.mega #head #btn-people { padding: 0 10px; gap: 0; }
   html.mega #head #btn-people:has(.stack:not(:empty)) { padding-left: 12px; }
   html.mega #head #btn-density { padding: 0 9px; }
