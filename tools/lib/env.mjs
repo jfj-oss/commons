@@ -99,8 +99,8 @@ export async function startServers(out, { relayTtl = 900, livekit = true } = {})
   return ctl;
 }
 
-export function startBridge(out, name, port) {
-  return run(path.join(root, 'target/debug/dev_bridge'), [String(port), path.join(root, 'app/ui')], { COMMONS_DATA: path.join(out, 'data', name), COMMONS_RELAY: `http://127.0.0.1:${RELAY_PORT}`, COMMONS_FAST_KDF: '1' }, path.join(out, name + '.log'));
+export function startBridge(out, name, port, ui = path.join(root, 'app/ui')) {
+  return run(path.join(root, 'target/debug/dev_bridge'), [String(port), ui], { COMMONS_DATA: path.join(out, 'data', name), COMMONS_RELAY: `http://127.0.0.1:${RELAY_PORT}`, COMMONS_FAST_KDF: '1' }, path.join(out, name + '.log'));
 }
 
 export async function startChrome(out, name, dbgPort, toneHz, extra = []) {
