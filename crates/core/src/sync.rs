@@ -797,6 +797,11 @@ pub(crate) fn join_signature_ok(inv: &InviteMeta, community: &str, jr: &JoinRequ
     })().unwrap_or(false)
 }
 
+/// Off while versions before this rule are in use: they accept what this would refuse, so a hostile commit could split a
+/// community between old and new apps, which is far worse than a stale colour. Until then the owner's device repairs a
+/// rolled-back document within seconds (ops.rs). Turn on once older versions are gone.
+const ENFORCE_STYLE_FORWARD: bool = false;
+
 /// Rules for editing a group's authenticated table (shared by receivers and tests).
 /// A step in the chain of owners speaks for itself: it is signed by the owner before, so the new owner may install it
 /// in a group whose table has not caught up. Nothing else about a table can be changed that way.
@@ -815,7 +820,7 @@ pub fn ext_change_allowed(gid: &str, old: &GroupExt, new: &GroupExt, sender: Rol
             // owner signed, newer than the one in the table. Putting an older one back would hand it to every device that reads the
             // table afresh (a new member, a re-added device). Leaving the field out is still allowed, because an older app that does
             // not know it rewrites the table without it; the owner's device puts it back (ops.rs) and members keep the one they hold.
-            if st1 != st2 && !owner {
+            if ENFORCE_STYLE_FORWARD && st1 != st2 && !owner {
                 if let Some(n) = st2 {
                     let nd = verify_style(&new_owner, gid, n).map_err(|_| "only the owner can change the colours".to_string())?;
                     if let Some(od) = st1.as_ref().and_then(|o| verify_style(&new_owner, gid, o).ok()) {

@@ -30,6 +30,7 @@ fn world() -> (Net, Peer, Peer, Peer, String, String, commons_core::envelope::St
 }
 
 #[test]
+#[ignore = "needs ENFORCE_STYLE_FORWARD, off until versions before the rule are gone"]
 fn a_plain_member_cannot_roll_the_signed_style_back_for_newcomers() {
     let (net, mut a, mut b, mut c, cid, gen, old) = world();
     // The owner goes offline. Bob, a plain member, commits the table with the OLD owner-signed document put back.
@@ -94,6 +95,7 @@ fn a_member_may_still_carry_a_newer_owner_document_into_a_stale_room() {
 }
 
 #[test]
+#[ignore = "needs ENFORCE_STYLE_FORWARD, off until versions before the rule are gone"]
 fn a_forged_document_in_the_table_is_refused() {
     let (_net, mut a, mut b, mut c, cid, gen, _old) = world();
     let cur = a.c.st.communities[&cid].style.clone().unwrap();
