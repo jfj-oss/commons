@@ -73,3 +73,10 @@ html.mega .modal h2, html.mega .modal-out h2 { font-size: 36px; }
 
 /* ---- a placeholder that does not fit ends in an ellipsis instead of mid-word ---- */
 html.mega input::placeholder, html.mega textarea::placeholder { text-overflow: ellipsis; }
+
+/* ---- small consistency: the offline line warns in the warning colour, not the room's highlight; the people sheet fills a
+   phone's width instead of leaving a sliver of the bar behind it; segmented controls are lowercase like every other button ---- */
+html.mega .sync.bad { color: var(--warn); }
+html.mega .sync.bad::before { background: var(--warn); }
+@media (max-width: 760px) { html.mega #people { width: 100vw; } }
+html.mega .seg button { text-transform: lowercase; }
