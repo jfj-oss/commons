@@ -1135,7 +1135,7 @@ impl Bot {
                         if reply.content.trim().is_empty() {
                             return Err(AskError::Failed("the model returned an empty answer".into()));
                         }
-                        return Ok((reply.content, sources));
+                        return Ok((strip_model_junk(&reply.content), sources));
                     }
                     last_text = reply.content.clone();
                     let calls = reply.tool_calls.clone();
@@ -1163,7 +1163,7 @@ impl Bot {
                         if reply.content.trim().is_empty() {
                             return Err(AskError::Failed("the model returned an empty answer".into()));
                         }
-                        return Ok((reply.content, sources));
+                        return Ok((strip_model_junk(&reply.content), sources));
                     }
                 },
             }
@@ -1524,13 +1524,51 @@ fn parse_search_request(text: &str) -> Option<String> {
 }
 
 fn strip_search_lines(text: &str) -> String {
-    text.lines().filter(|l| !l.trim().get(..7).is_some_and(|h| h.eq_ignore_ascii_case("SEARCH:")))
+    let lines = strip_model_junk(text);
+    lines.lines().filter(|l| !l.trim().get(..7).is_some_and(|h| h.eq_ignore_ascii_case("SEARCH:")))
         .collect::<Vec<_>>().join("\n").trim().to_string()
+}
+
+/// Small local models sometimes write their tool calls, tool results or template tags into the answer as plain text.
+/// None of that is meant for the room. JSON the model was asked to show, inside a ``` block, is left alone.
+pub fn strip_model_junk(text: &str) -> String {
+    const TAGS: [&str; 8] = ["<tool_call>", "</tool_call>", "<tool_response>", "</tool_response>", "<article>", "</article>", "[TOOL_CALLS]", "[/TOOL_CALLS]"];
+    let mut body = text.to_string();
+    while let (Some(a), Some(b)) = (body.find("<think>"), body.find("</think>")) {
+        if b < a { break; }
+        body.replace_range(a..b + "</think>".len(), "");
+    }
+    while let Some(a) = body.find("<|") {
+        let Some(n) = body[a..].find("|>") else { break };
+        body.replace_range(a..a + n + 2, "");
+    }
+    for tag in TAGS { body = body.replace(tag, ""); }
+    let mut fenced = false;
+    let mut kept: Vec<&str> = vec![];
+    for line in body.lines() {
+        let t = line.trim();
+        if t.starts_with("```") { fenced = !fenced; kept.push(line); continue; }
+        let tool_json = t.starts_with('{') && ["\"name\"", "\"arguments\"", "\"function\"", "\"content_type\""].iter().any(|k| t.contains(k));
+        let stray = matches!(t, "'" | "\"" | "}" | "}}" | "}}}" | "]");
+        if fenced || !(tool_json || stray) { kept.push(line); }
+    }
+    kept.join("\n").trim().to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_text_never_reaches_the_room() {
+        let raw = "{\"name\":\"car_info\",\"description\":\"x\",\"content\":{\"year\":1974}}}\n{\"name\":\"none\":\"\",\"content_type\":\"text\"}'\nYah mi deh yah.\n</article>\n</tool_call>";
+        assert_eq!(strip_model_junk(raw), "Yah mi deh yah.");
+        assert_eq!(strip_model_junk("<think>hmm</think>Hello<|im_end|>"), "Hello");
+        let asked = "Here:\n```\n{\"name\": \"kept\"}\n```";
+        assert_eq!(strip_model_junk(asked), asked);
+        assert_eq!(strip_model_junk("A set {1, 2} is fine."), "A set {1, 2} is fine.");
+        assert_eq!(strip_model_junk("{\"name\":\"only junk\"}"), "");
+    }
 
     #[test]
     fn reset_is_exact() {
