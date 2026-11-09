@@ -1450,6 +1450,13 @@ try {
     const val = (m, n) => m.result.metrics.find(x => x.name === n).value;
     const idle = { fps: +((d1 - d0) / dt).toFixed(2), taskMsPerSec: +((val(m1, 'TaskDuration') - val(m0, 'TaskDuration')) * 1000 / dt).toFixed(1), scriptMsPerSec: +((val(m1, 'ScriptDuration') - val(m0, 'ScriptDuration')) * 1000 / dt).toFixed(1), heat: await A.ev(`+__mega.bdInfo().heat.toFixed(3)`) };
     console.log('parity idle room', JSON.stringify(idle)); fs.writeFileSync(path.join(pdir, 'idle.json'), JSON.stringify(idle));
+    // and a room that has been quiet for a long while (heat at its lowest the version allows)
+    await A.ev(`__mega.bdApi.bd().heat = 0`); await sleep(1500);
+    const q0 = await A.send('Performance.getMetrics'), e0 = await A.ev(`__mega.bdInfo().draws`), u0 = Date.now();
+    await sleep(8000);
+    const q1 = await A.send('Performance.getMetrics'), e1 = await A.ev(`__mega.bdInfo().draws`), du = (Date.now() - u0) / 1000;
+    const quiet = { fps: +((e1 - e0) / du).toFixed(2), taskMsPerSec: +((val(q1, 'TaskDuration') - val(q0, 'TaskDuration')) * 1000 / du).toFixed(1), scriptMsPerSec: +((val(q1, 'ScriptDuration') - val(q0, 'ScriptDuration')) * 1000 / du).toFixed(1), heat: await A.ev(`+__mega.bdInfo().heat.toFixed(3)`) };
+    console.log('parity quiet room', JSON.stringify(quiet)); fs.writeFileSync(path.join(pdir, 'quiet.json'), JSON.stringify(quiet));
     await shotP(A, 'chat-later');
     await A.ev(`__mega.api.openRail()`); await sleep(900); await shotP(A, 'dots-open'); await A.ev(`document.querySelector('#mega-rail').dispatchEvent(new MouseEvent('mouseleave'))`); await sleep(900);
     await A.ev(`(() => { const a = __mega.bdApi.bd(); })()`);
