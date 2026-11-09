@@ -495,9 +495,10 @@ impl Client {
         if kind == Kind::Control {
             if let Some(ext) = mls::group_ext(group.extensions()) {
                 if let Ok((owner, admins)) = ext.verify_control(gid) {
-                    if let GroupExt::Control { name, nonce, channels, invites, banned, transfers, consents, .. } = ext {
+                    if let GroupExt::Control { name, nonce, channels, invites, banned, transfers, consents, style, .. } = ext {
                         let c = self.st.communities.entry(gid.to_string()).or_insert_with(|| Community { id: gid.into(), ..Default::default() });
                         c.name = name; c.owner = owner; c.admins = admins; c.nonce = nonce; c.channels = channels; c.invites = invites; c.banned = banned; c.transfers = transfers;
+                        if let Some(doc) = style.as_ref().and_then(|ss| verify_style(&c.owner, gid, ss).ok().map(|d| (d, ss.sig.clone()))) { c.adopt_style(doc.0, &doc.1); }
                         // The removal itself may take our entry out of the table: what we knew before it is what gets withdrawn.
                         if let Some(mine) = consents.iter().find(|x| x.account == me && verify_consent(gid, x).is_ok()) { c.my_consent = Some(mine.clone()); }
                         else if active { c.my_consent = None; }
@@ -638,6 +639,7 @@ impl Client {
                     if let Some(c) = self.st.communities.get_mut(&comm) { c.consent_queue.insert(acct, con); }
                 }
             }
+            (Kind::Channel, Envelope::Live { kind, data, ts }) => self.take_live(gid, &acct, kind, data, ts),
             (Kind::Channel, Envelope::Typing) => { self.typing.insert(format!("{gid}|{acct}"), now_secs()); }
             (Kind::Channel, env @ (Envelope::Text { .. } | Envelope::File { .. } | Envelope::Edit { .. } | Envelope::Delete { .. } | Envelope::React { .. })) => {
                 self.apply_chat(gid, seq, cert, env, false);
@@ -645,6 +647,22 @@ impl Client {
             (_, Envelope::Unknown) => self.notice("newer", "skipped a message of a kind this version of Megatron does not know: someone has a newer version. Update Megatron to see messages like it"),
             (k, e) => self.notice("reject", format!("ignored a {:?} message of the wrong kind for a {:?} group", std::mem::discriminant(&e), k)),
         }
+    }
+
+    /// Nothing in a live event is trusted: the kind and size were checked when it was parsed, the time is the sender's claim,
+    /// and one sender cannot fill the buffer. It is kept for the UI to read once and never touches the history.
+    fn take_live(&mut self, gid: &str, acct: &str, kind: String, data: String, ts: u64) {
+        let now = now_secs();
+        if ts + LIVE_MAX_AGE < now || ts > now + LIVE_MAX_AHEAD { return; }
+        if !self.st.groups.get(gid).is_some_and(|g| !g.removed && g.accounts.contains(acct)) { return; }
+        let slot = self.live_rate.entry((gid.to_string(), acct.to_string())).or_insert((now, 0));
+        if slot.0 != now { *slot = (now, 0); }
+        if slot.1 >= LIVE_TAKE_PER_SEC { return; }
+        slot.1 += 1;
+        if self.live_rate.len() > 512 { self.live_rate.retain(|_, v| v.0 + 5 >= now); }
+        self.live_next += 1;
+        self.live_in.push_back(LiveEvent { id: self.live_next, gid: gid.to_string(), account: acct.to_string(), kind, data, ts });
+        while self.live_in.len() > LIVE_BUFFER { self.live_in.pop_front(); }
     }
 
     pub(crate) fn apply_chat(&mut self, gid: &str, seq: u64, cert: &DeviceCert, env: Envelope, local: bool) {
@@ -742,7 +760,7 @@ pub(crate) fn join_signature_ok(inv: &InviteMeta, community: &str, jr: &JoinRequ
 /// in a group whose table has not caught up. Nothing else about a table can be changed that way.
 pub fn ext_change_allowed(gid: &str, old: &GroupExt, new: &GroupExt, sender: Role, sender_account: &str) -> std::result::Result<(), String> {
     match (old, new) {
-        (GroupExt::Control { owner: o1, nonce: n1, admins: a1, name: nm1, channels: c1, invites: i1, banned: b1, transfers: t1, consents: s1 }, GroupExt::Control { owner: o2, nonce: n2, admins: a2, name: nm2, channels: c2, invites: i2, banned: b2, transfers: t2, consents: s2 }) => {
+        (GroupExt::Control { owner: o1, nonce: n1, admins: a1, name: nm1, channels: c1, invites: i1, banned: b1, transfers: t1, consents: s1, .. }, GroupExt::Control { owner: o2, nonce: n2, admins: a2, name: nm2, channels: c2, invites: i2, banned: b2, transfers: t2, consents: s2, .. }) => {
             if o1 != o2 || n1 != n2 { return Err("the founder cannot change".into()); }
             let (new_owner, _) = new.verify_control(gid).map_err(|e| e.to_string())?;
             if !t2.starts_with(t1) { return Err("the chain of owners cannot be rewritten".into()); }

@@ -20,6 +20,18 @@ const PAIR_WITHDRAWN: usize = 40;
 pub fn rand_hex(n: usize) -> String { let mut b = vec![0u8; n]; rand::rngs::OsRng.fill_bytes(&mut b); hex::encode(b) }
 pub(crate) fn hex32(s: &str) -> Result<[u8; 32]> { Ok(unhex32(s)?) }
 
+/// One live event as the UI sees it. `id` only ever rises on this device; `account` is who sent it, as vouched for by the group.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveEvent { pub id: u64, pub gid: String, pub account: String, pub kind: String, pub data: String, pub ts: u64 }
+
+/// Most live events held for the UI; the oldest go first.
+pub const LIVE_BUFFER: usize = 256;
+/// Most live events sent per room per second, and the most a receiver takes from one sender in a room per second.
+pub const LIVE_SEND_PER_SEC: usize = 4;
+pub const LIVE_TAKE_PER_SEC: u32 = 8;
+/// Most kinds waiting to be sent in one room.
+pub const LIVE_KINDS: usize = 8;
+
 pub struct Client {
     pub dir: PathBuf,
     pub(crate) vault: Vault,
@@ -29,6 +41,14 @@ pub struct Client {
     /// ids of groups we have fully caught up on since this process started (safe to encrypt)
     pub(crate) synced: BTreeSet<String>,
     pub typing: BTreeMap<String, u64>,
+    /// Live events received and not yet read by the UI, newest last. Never saved, and capped.
+    pub(crate) live_in: std::collections::VecDeque<LiveEvent>,
+    pub(crate) live_next: u64,
+    /// Newest not-yet-sent data per room and kind, and the times (ms) of what each room sent in the last second.
+    pub(crate) live_out: BTreeMap<String, BTreeMap<String, String>>,
+    pub(crate) live_sent: BTreeMap<String, std::collections::VecDeque<u128>>,
+    /// Per room and sender: the second we are counting in, and how many we took in it.
+    pub(crate) live_rate: BTreeMap<(String, String), (u64, u32)>,
     pub(crate) applied: BTreeSet<String>,
     /// How long a removed member keeps relay read access so that it can still fetch (and understand) its own removal.
     pub acl_delay_secs: u64,
@@ -127,13 +147,15 @@ impl Client {
         }
     }
     fn assemble(dir: &Path, vault: Vault, st: State, prov: Prov, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
-        Client { dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new(),
+        Client { dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), live_in: Default::default(), live_next: 0, live_out: BTreeMap::new(), live_sent: BTreeMap::new(), live_rate: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new(),
             lock: Some(lock), dir_ttl_secs: 30, acl_check_secs: 60, dir_cache: HashMap::new(), dir_wanted: BTreeSet::new(), kp_cache: HashMap::new(), kp_wanted: BTreeMap::new(), kp_refill: false, seen_welcomes: HashSet::new(), last_parked_try: 0,
             more: false, sync_cap: SYNC_MAX_BYTES, pair_ack: None, net: NetStatus::default(), consent_offered: HashMap::new(), large_hashes: HashMap::new() }
     }
     fn blank(dir: &Path, vault: Vault, relay: &str, name: &str, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
         let mut st = State::default();
         st.v = 1; st.relay = relay.into(); st.name = name.into();
+        // Typing hints are on for a new account (an existing one keeps what it chose); the person can turn them off in the options room.
+        st.typing_enabled = true;
         Self::assemble(dir, vault, st, Prov::default(), t, lock)
     }
 

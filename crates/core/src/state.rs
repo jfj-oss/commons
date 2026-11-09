@@ -194,8 +194,27 @@ pub struct Community {
     /// Consents waiting for an admin (us, if we are one) to put them in the table.
     #[serde(default)]
     pub consent_queue: BTreeMap<String, Consent>,
+    /// The owner's colours in force, from the newest document whose signature was the owner's. Kept even when a table
+    /// comes through without it (an older app rewrote the table), so the room does not flicker back to defaults.
+    #[serde(default)]
+    pub style: Option<StyleDoc>,
+    #[serde(default)]
+    pub style_sig: String,
+    /// When this device (as owner) last put the colours back into the table on its own.
+    #[serde(default)]
+    pub style_repub: u64,
 }
 impl Community {
+    /// Take a verified document if it is newer than the one in force: higher version, then later time, then the
+    /// signature as the final tie-break, so every device settles on the same one whatever order it saw them in.
+    pub fn adopt_style(&mut self, doc: StyleDoc, sig: &str) -> bool {
+        let newer = match &self.style {
+            None => true,
+            Some(cur) => (doc.ver, doc.ts, sig) > (cur.ver, cur.ts, self.style_sig.as_str()),
+        };
+        if newer { self.style = Some(doc); self.style_sig = sig.to_string(); }
+        newer
+    }
     pub fn role_of(&self, acct: &str) -> Option<Role> {
         if acct == self.owner { Some(Role::Owner) } else if self.admins.iter().any(|a| a == acct) { Some(Role::Admin) } else { Some(Role::Member) }
     }

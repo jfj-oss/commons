@@ -35,7 +35,7 @@ The relay is treated as hostile. This is everything it stores or observes. Verif
 
 **Observed, not stored:** IP addresses and timing of every request (inherent to any server; use a VPN/Tor if that matters), and **which device posted each entry** because requests are signed by the device key. Message *timing and size* is visible; who is talking to whom inside a group is *not* visible beyond "this device posted this entry" (MLS hides the sender inside the ciphertext, but the HTTP request does not).
 
-**Not visible to it:** message text; attachment contents, names, types; community, channel and display names; invite limits; who reacted or edited; which entries are replies; typing indicators (when enabled they are ordinary padded messages); read state (there are no read receipts); search queries (local).
+**Not visible to it:** message text; attachment contents, names, types; community, channel and display names; invite limits; who reacted or edited; which entries are replies; typing indicators (on by default for new accounts, off for an account that turned them off; they are ordinary padded messages); room and community colours (carried inside the encrypted community table, signed by the owner); live events (ordinary padded messages, see below); read state (there are no read receipts); search queries (local).
 
 **What a hostile relay can do (and what we do about it):**
 
@@ -123,7 +123,9 @@ Settings live in the encrypted state of one device; which games you play never r
 * The device key is used both to sign MLS messages and to authenticate to the relay (different, domain-separated message formats).
 * Group and channel membership is a single MLS group per channel: the relay sees the same account set for each channel of a community.
 * Timing and size side channels exist (padding is coarse, 256 bytes; attachment sizes are exact).
-* Typing indicators are off by default; when on, they tell the relay "a packet was sent now".
+* Typing indicators are on by default for new accounts (an existing account keeps its choice; the options room turns them off); when on, they tell the relay "a packet was sent now".
+* **Owner colours** reveal nothing new to the relay: they travel in the community's encrypted table (the group-context extension) like the community name, as an owner-signed document. The relay sees the same thing it sees for any table change: a commit was posted, its size, and when. Members can read the colours; only the owner's signature makes them count, so an admin or member cannot change them (they can only drop them, which the owner's device puts back). A member on an older version ignores the field.
+* **Live events** (a best-effort channel for small short-lived data, currently only a test hook) are ordinary padded MLS application messages: the relay sees a packet of that size was posted at that time, by that device, exactly as for a message or a typing hint, and nothing about the kind or content. Receivers drop them if older than 30 seconds, limit what they take per sender, never store them in history, and the sender never retries them. A member on an older version notes "newer version" once and otherwise ignores them.
 * No sealed-sender style anonymity; no protection of IP addresses.
 * The dev bridge (`dev_bridge`) exposes the same RPC over loopback HTTP **without authentication** for tests and screenshots; it checks Host and Origin, so a web page cannot reach it, but any local process can. It is a separate, feature-gated binary and must never be exposed.
 * The Tauri page keeps `withGlobalTauri` on: turning it off would change nothing, because `window.__TAURI_INTERNALS__` is there either way. The defence against script in the page is that page input is validated and escaped, and the CSP.

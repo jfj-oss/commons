@@ -232,6 +232,7 @@ impl Client {
             let ctls: Vec<String> = self.st.groups.values().filter(|g| g.kind == Kind::Control && !g.removed && !g.broken).map(|g| g.gid.clone()).collect();
             for g in ctls { self.queue_env(&g, Envelope::Profile { name: name.clone(), ts, listen: listen.clone(), avatar: avatar.clone(), avatar_cleared }); }
         }
+        self.flush_live();
         self.reconcile();
         self.plan_relay_secret();
         // nothing goes out unless the state behind it is on disk
@@ -419,6 +420,7 @@ impl Client {
                 }
                 self.st.outbox.iter().any(|i| i.cipher.is_some())
             }
+            Err(_) if matches!(self.st.outbox[pos].env, Envelope::Live { .. }) => { self.st.outbox.remove(pos); false } // live data is never retried
             Err(e) => {
                 match relay_status(&e) {
                     Some(400) | Some(413) => { self.st.outbox.remove(pos); self.notice("outbox", format!("the relay refused an unsent message, so it was dropped: {e}")); }

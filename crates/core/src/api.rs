@@ -343,6 +343,18 @@ impl App {
             "delete" => self.with(|c| c.delete_message(&s(&a, "gid"), &s(&a, "id")).map(|_| json!({})).map_err(e)),
             "react" => self.with(|c| c.react(&s(&a, "gid"), &s(&a, "id"), &s(&a, "emoji"), a["on"].as_bool().unwrap_or(true)).map(|_| json!({})).map_err(e)),
             "typing" => self.with(|c| { c.send_typing(&s(&a, "gid")); Ok(json!({})) }),
+            "live_send" => self.with(|c| c.live_send(&s(&a, "gid"), &s(&a, "kind"), &s(&a, "data")).map(|sent| json!({"sent": sent})).map_err(e)),
+            "live_poll" => self.with(|c| {
+                let gid = s(&a, "gid");
+                let evs = c.live_poll(a["since"].as_u64().unwrap_or(0), (!gid.is_empty()).then_some(gid.as_str()));
+                Ok(json!({"events": evs.into_iter().map(|v| json!({"id": v.id, "gid": v.gid, "account": v.account, "kind": v.kind, "data": v.data, "ts": v.ts})).collect::<Vec<_>>(), "head": c.live_next}))
+            }),
+            // Owner only. `room` empty = the community's own card; `main` empty = back to the default colours.
+            "set_style" => self.with(|c| {
+                let (room, main, hi) = (s(&a, "room"), s(&a, "main"), s(&a, "hi"));
+                let duo = if main.is_empty() && hi.is_empty() { None } else { Some(crate::envelope::Duo { main, hi }) };
+                c.set_style(&s(&a, "cid"), (!room.is_empty()).then_some(room.as_str()), duo).map(|_| json!({})).map_err(e)
+            }),
             "set_listening_sharing" => self.with(|c| c.set_listening_sharing(a["on"].as_bool().unwrap_or(false), &s(&a, "rune")).map(|_| json!({})).map_err(e)),
             "send_file" => {
                 let data = unb64(&s(&a, "data")).map_err(e)?;
@@ -615,7 +627,9 @@ fn snapshot(c: &Client) -> Value {
         let list = c.channels_of(&co.id);
         let unread: usize = list.iter().map(|x| x.unread).sum();
         let chans: Vec<Value> = list.into_iter().map(|ch| json!({"gid": ch.gid, "name": ch.name, "kind": ch.kind, "joined": ch.joined, "unread": ch.unread, "status": c.group_status(&ch.gid)})).collect();
-        json!({"id": co.id, "name": if co.name.is_empty() { "…".to_string() } else { co.name.clone() }, "role": role.name(), "removed": co.removed, "removed_reason": co.removed_reason, "channels": chans, "unread": unread,
+        let style = co.style.as_ref().map(|d| json!({"ver": d.ver, "ts": d.ts, "by": c.display_name(&co.owner), "community": d.community.as_ref().map(|x| x.lower()).map(|x| json!({"main": x.main, "hi": x.hi})),
+            "rooms": d.rooms.iter().filter(|(g, _)| co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, x)| { let x = x.lower(); (g.clone(), json!({"main": x.main, "hi": x.hi})) }).collect::<serde_json::Map<String, Value>>()}));
+        json!({"id": co.id, "style": style, "name": if co.name.is_empty() { "…".to_string() } else { co.name.clone() }, "role": role.name(), "removed": co.removed, "removed_reason": co.removed_reason, "channels": chans, "unread": unread,
                "invites": co.invites.iter().map(|i| json!({"id": i.id, "expires": i.expires, "uses_left": i.uses_left, "mine": co.invite_sks.contains_key(&i.id)})).collect::<Vec<_>>(),
                "status": c.group_status(&co.id)})
     }).collect();

@@ -9,6 +9,13 @@ pub const MAX_TEXT: usize = 16 * 1024;
 /// what this version will accept from a newer one, so a bad or careless sender cannot grow everybody's state.
 pub const MAX_AVATAR: u64 = 256 * 1024;
 pub const EXT_COMMONS: u16 = 0xF0C1;
+/// Most bytes of `data` in one live event.
+pub const MAX_LIVE: usize = 4096;
+/// A live event older than this (by its sender's clock) is dropped on arrival: it is a replay, not live.
+pub const LIVE_MAX_AGE: u64 = 30;
+/// How far ahead of our own clock a live event may claim to be.
+pub const LIVE_MAX_AHEAD: u64 = 60;
+pub fn valid_live_kind(k: &str) -> bool { !k.is_empty() && k.len() <= 32 && k.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')) }
 
 pub fn is_id(s: &str) -> bool { s.len() == 32 && s.bytes().all(|c| c.is_ascii_hexdigit()) }
 fn is_gid(s: &str) -> bool { s.len() >= 8 && s.len() <= 128 && s.bytes().all(|c| c.is_ascii_hexdigit()) }
@@ -129,6 +136,11 @@ pub enum Envelope {
         large: Option<LargeFile>,
     },
     Typing,
+    /// Best-effort live data for a room (cursors, pointers, anything small and short-lived). Never history: not stored,
+    /// not shown, not counted, not retried. `kind` is a short lowercase token, `data` is up to `MAX_LIVE` bytes of text the
+    /// sender chose (nothing here is trusted), and `ts` lets a receiver drop what arrives long after it was meant.
+    /// An older app has no such kind, parses it as `Unknown` and notes "newer version" once; nothing else happens.
+    Live { kind: String, data: String, ts: u64 },
     /// A person's profile refresh. Extra fields ride on it rather than new kinds: an older Megatron parses this as the
     /// `Profile` it already knows and serde ignores the rest, so nothing new ever reaches an old app's `Unknown` notice.
     /// `listen` is the shared "listening to" status (`None` = nothing to share); `avatar`/`avatar_cleared` the picture.
@@ -226,6 +238,7 @@ impl Envelope {
                 if let Some(l) = large { l.validate(*size)?; }
             }
             Typing | Leave | Unknown => {}
+            Live { kind, data, .. } => if !valid_live_kind(kind) || data.len() > MAX_LIVE { return bad("bad live event"); },
             Profile { name, listen, avatar, avatar_cleared, .. } => {
                 if name.is_empty() || !short(name, 64) { return bad("bad profile"); }
                 if let Some(l) = listen { if l.title.is_empty() || !one_line(&l.title, MAX_LISTEN_LINE) || !one_line(&l.artist, MAX_LISTEN_LINE) { return bad("bad listening status"); } }
@@ -365,7 +378,10 @@ impl ChanMeta {
 pub enum GroupExt {
     /// The community control group: roster = its members; this is the roles/channels/invites table.
     /// `owner` is the founder, pinned in the community id. `transfers` is the signed chain from there to today's owner.
-    Control { name: String, owner: String, nonce: String, admins: Vec<AdminGrant>, channels: Vec<ChanMeta>, invites: Vec<InviteMeta>, #[serde(default)] banned: Vec<String>, #[serde(default, skip_serializing_if = "Vec::is_empty")] transfers: Vec<OwnerStep>, #[serde(default, skip_serializing_if = "Vec::is_empty")] consents: Vec<Consent> },
+    Control { name: String, owner: String, nonce: String, admins: Vec<AdminGrant>, channels: Vec<ChanMeta>, invites: Vec<InviteMeta>, #[serde(default)] banned: Vec<String>, #[serde(default, skip_serializing_if = "Vec::is_empty")] transfers: Vec<OwnerStep>, #[serde(default, skip_serializing_if = "Vec::is_empty")] consents: Vec<Consent>,
+        /// The owner-signed room colours. Additive: an older app ignores the field (and drops it if it rewrites the table, which
+        /// the owner's device then puts back). It is only ever believed when the signature is the current owner's.
+        #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_style")] style: Option<SignedStyle> },
     /// A channel group. `community` is the control group id; `name` is only a hint, the control table is authoritative.
     Channel { community: String, name: String, owner: String, nonce: String, admins: Vec<AdminGrant>, #[serde(default, skip_serializing_if = "Vec::is_empty")] transfers: Vec<OwnerStep> },
 }
@@ -376,7 +392,8 @@ impl GroupExt {
         if b.len() > 128 * 1024 { return bad("group ext too large"); }
         let g: GroupExt = serde_json::from_slice(b).map_err(|e| ParseError(format!("bad group ext: {e}")))?;
         match &g {
-            GroupExt::Control { name, owner, nonce, admins, channels, invites, banned, transfers, consents } => {
+            GroupExt::Control { name, owner, nonce, admins, channels, invites, banned, transfers, consents, style } => {
+                if style.as_ref().is_some_and(|s| s.doc.len() > MAX_STYLE_DOC || s.sig.len() > 200) { return bad("oversized style"); }
                 if banned.len() > 2000 || transfers.len() > 200 { return bad("too many bans or transfers"); }
                 if consents.len() > MAX_CONSENTS || consents.iter().any(|c| !is_key(&c.account) || c.sig.len() != 128) { return bad("bad consents"); }
                 if name.is_empty() || !short(name, 64) || !is_key(owner) || nonce.len() != 32 || admins.len() > 512 || channels.len() > 500 || invites.len() > 200 { return bad("bad control ext"); }
@@ -614,7 +631,7 @@ mod compat_tests {
                 ChanMeta { id: general.clone(), name: "general".into(), kind: String::new() },
                 ChanMeta { id: lobby.clone(), name: "lobby".into(), kind: ROOM_VOICE.into() },
             ],
-            invites: vec![], banned: vec![], transfers: vec![], consents: vec![],
+            invites: vec![], banned: vec![], transfers: vec![], consents: vec![], style: None,
         };
         let bytes = ext.to_bytes();
         // This version reads the kind back.
@@ -708,4 +725,75 @@ mod compat_tests {
         assert!(Envelope::parse(&env(good.clone(), true)).is_err());
         assert!(Envelope::parse(&env(good, false)).is_ok());
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------- colours
+/// Biggest style document an owner may publish (about 500 rooms at two colours each, with room to spare).
+pub const MAX_STYLE_DOC: usize = 64 * 1024;
+pub const MAX_STYLE_ROOMS: usize = 500;
+
+/// `#rrggbb` and nothing else: the value ends up in CSS custom properties, so it must not be able to carry anything more.
+pub fn valid_color(c: &str) -> bool { c.len() == 7 && c.starts_with('#') && c.bytes().skip(1).all(|b| b.is_ascii_hexdigit()) }
+
+/// A room's (or the community card's) two colours: the main one and its highlight.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct Duo { pub main: String, pub hi: String }
+impl Duo {
+    pub fn valid(&self) -> bool { valid_color(&self.main) && valid_color(&self.hi) }
+    pub fn lower(&self) -> Duo { Duo { main: self.main.to_ascii_lowercase(), hi: self.hi.to_ascii_lowercase() } }
+}
+
+/// Everything the owner has chosen. A room with no entry uses the app's own default colours.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct StyleDoc {
+    /// Rises with every change the owner makes. A document with a lower number than the one already in force never wins,
+    /// whoever carries it, so replaying an old table cannot undo a newer choice.
+    pub ver: u64,
+    pub ts: u64,
+    #[serde(default)]
+    pub community: Option<Duo>,
+    #[serde(default)]
+    pub rooms: std::collections::BTreeMap<String, Duo>,
+}
+impl StyleDoc {
+    pub fn validate(&self) -> Result<(), ParseError> {
+        if self.ver == 0 || self.ver > (1 << 53) { return bad("bad style version"); }
+        if self.community.as_ref().is_some_and(|d| !d.valid()) { return bad("bad community colours"); }
+        if self.rooms.len() > MAX_STYLE_ROOMS || self.rooms.iter().any(|(g, d)| !is_gid(g) || !d.valid()) { return bad("bad room colours"); }
+        Ok(())
+    }
+}
+
+/// The document as the exact JSON text that was signed, plus the owner's signature over it. Keeping the signed text
+/// verbatim means no one has to agree on how to print JSON.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct SignedStyle { pub doc: String, pub sig: String }
+fn lenient_style<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<SignedStyle>, D::Error> {
+    // A malformed field is simply "no colours": the table around it stays readable, as it does for an app that has never heard of the field.
+    let v = <Option<serde_json::Value> as Deserialize>::deserialize(d)?;
+    Ok(v.and_then(|v| serde_json::from_value(v).ok()))
+}
+pub fn style_msg(community: &str, doc: &str) -> Vec<u8> {
+    let mut m = b"commons/style/v1".to_vec();
+    m.extend_from_slice(&commons_proto::sha256(&[community.as_bytes(), doc.as_bytes()]));
+    m
+}
+pub fn sign_style(owner_key: &ed25519_dalek::SigningKey, community: &str, doc: &StyleDoc) -> Result<SignedStyle, ParseError> {
+    use ed25519_dalek::Signer;
+    doc.validate()?;
+    let text = serde_json::to_string(doc).map_err(|e| ParseError(e.to_string()))?;
+    if text.len() > MAX_STYLE_DOC { return bad("style too large"); }
+    let sig = hex::encode(owner_key.sign(&style_msg(community, &text)).to_bytes());
+    Ok(SignedStyle { doc: text, sig })
+}
+/// The document, if `owner` (hex account key) signed it for this community and every field is well-formed.
+pub fn verify_style(owner: &str, community: &str, s: &SignedStyle) -> Result<StyleDoc, ParseError> {
+    use ed25519_dalek::Verifier;
+    if s.doc.len() > MAX_STYLE_DOC { return bad("style too large"); }
+    let vk = commons_proto::unhex32(owner).ok().and_then(|a| ed25519_dalek::VerifyingKey::from_bytes(&a).ok()).ok_or(ParseError("bad owner key".into()))?;
+    let sig = hex::decode(&s.sig).ok().and_then(|x| ed25519_dalek::Signature::from_slice(&x).ok()).ok_or(ParseError("bad signature".into()))?;
+    vk.verify(&style_msg(community, &s.doc), &sig).map_err(|_| ParseError("colours not signed by the owner".into()))?;
+    let doc: StyleDoc = serde_json::from_str(&s.doc).map_err(|e| ParseError(format!("bad style document: {e}")))?;
+    doc.validate()?;
+    Ok(doc)
 }

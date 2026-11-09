@@ -158,7 +158,7 @@ fn browser_bridge_is_one_room_one_secret_loopback_only() {
     // the page itself is served, without the secret in any request line
     let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     s.write_all(format!("GET /callpage.html HTTP/1.1\r\nHost: {h}\r\n\r\n").as_bytes()).unwrap(); let mut out = String::new(); let _ = s.read_to_string(&mut out);
-    assert!(out.contains("200 OK") && out.contains("Megatron call"));
+    assert!(out.contains("200 OK") && out.contains("mega call"));
 }
 
 #[test]
