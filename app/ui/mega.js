@@ -809,7 +809,7 @@
   function menu(items, x, y) { const p = popAt(`<div class="mmenu" role="menu">${items.map((m, i) => `<button role="menuitem" type="button" data-m="${i}">${esc(m[0])}</button>`).join('')}</div>`, x, y); p.onclick = e => { const b = e.target.closest('[data-m]'); if (b) { closePops(); items[+b.dataset.m][1](); } }; }
   function moreMenu(btn) {
     const r = btn.getBoundingClientRect();
-    menu([['settings', () => $('#btn-settings').click()], ['devices and recovery', () => $('#btn-devices').click()], ['activity log', () => $('#btn-activity').click()], ...(M.level === 'server' ? [['new community', () => newCommunityHere()], ['join with an invite link', () => joinCommunity()]] : [])], Math.min(r.left, innerWidth - 220), r.bottom + 6);
+    menu([['settings', () => $('#btn-settings').click()], ['devices and recovery', () => $('#btn-devices').click()], ['activity log', () => $('#btn-activity').click()], ...(M.level === 'server' ? [['new community', () => newCommunityHere()], ['join with an invite password', () => joinCommunity()]] : [])], Math.min(r.left, innerWidth - 220), r.bottom + 6);
   }
   mega.addEventListener('click', e => {
     const j = e.target.closest('[data-join]');
@@ -853,7 +853,7 @@
         else all.push({ x: it, label: it.name, sub: it.locked ? sub + ', waiting for keys' : sub, run: () => { if (it.locked) { showServer(c.id, it.key); toast('This room is still waiting for keys.'); } else toChat(c.id, it.gid); } });
       }
     }
-    for (const [label, run] of [['settings', () => $('#btn-settings').click()], ['devices and recovery', () => $('#btn-devices').click()], ['activity log', () => $('#btn-activity').click()], ['new community', () => newCommunityHere()], ['join with an invite link', () => joinCommunity()]]) all.push({ x: { kind: 'action', id: 'a:' + label, theme: ['#efedf2', '#efedf2'] }, label, sub: 'action', run });
+    for (const [label, run] of [['settings', () => $('#btn-settings').click()], ['devices and recovery', () => $('#btn-devices').click()], ['activity log', () => $('#btn-activity').click()], ['new community', () => newCommunityHere()], ['join with an invite password', () => joinCommunity()]]) all.push({ x: { kind: 'action', id: 'a:' + label, theme: ['#efedf2', '#efedf2'] }, label, sub: 'action', run });
     const e = document.createElement('div'); e.id = 'mega-pal'; e.setAttribute('role', 'dialog'); e.setAttribute('aria-label', 'Jump to');
     e.innerHTML = '<input id="m-pq" placeholder="jump to" autocomplete="off" aria-label="Jump to a room"><ul id="m-pl"></ul>'; document.body.append(e); M.pal = e;
     const close = () => { e.remove(); M.pal = null; M.closers = M.closers.filter(f => f !== close); document.removeEventListener('pointerdown', out); };

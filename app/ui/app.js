@@ -286,8 +286,9 @@ async function boot() {
     $('#go').onclick = async () => { $('#go').disabled = true; $('#e').textContent = ''; try { await readLink(); if ($('#pp2') && $('#pp').value !== $('#pp2').value) throw new Error('The two passphrases are different.'); await run(); } catch (e) { $('#e').textContent = e.message; $('#go').disabled = false; if (/relay/i.test(e.message)) $('.relay-box').open = true; } };
     $$('input', el).forEach(i => i.onkeydown = e => { if (e.key === 'Enter') $('#go').click(); });
   };
-  const links = which => [['new', 'Create an account'], ['pair', 'This is a new device for my account'], ['rec', 'I only have a recovery key']].filter(([k]) => k !== which).map(([k, l]) => `<button type="button" class="linkish" id="l-${k}">${l}</button>`).join('');
-  const wire = () => { for (const [k, f] of [['new', showNew], ['pair', showPair], ['rec', showRec]]) { const b = $('#l-' + k); if (b) b.onclick = f; } };
+  const mi = window.megaInvite;   // mega-invite.js: the first screen that takes an invite password
+  const links = which => [...(mi ? [['pw', 'I have an invite password']] : []), ['new', mi ? 'I have an invite link, or I am starting a new community' : 'Create an account'], ['pair', 'This is a new device for my account'], ['rec', 'I only have a recovery key']].filter(([k]) => k !== which).map(([k, l]) => `<button type="button" class="linkish" id="l-${k}">${l}</button>`).join('');
+  const wire = () => { for (const [k, f] of [['pw', () => mi.first(bootCtx)], ['new', showNew], ['pair', showPair], ['rec', showRec]]) { const b = $('#l-' + k); if (b) b.onclick = f; } };
   const showNew = () => { form('Create your account on this device. Your keys are made here and never leave it.',
     `${invBox}<label for="nm">Display name</label><input type="text" id="nm" autocomplete="off"><label for="pp">Passphrase (protects the keys on this device)</label><input type="password" id="pp">${PP2}`, 'Create account',
     async () => { const pass = $('#pp').value; await rpc('create_account', { name: $('#nm').value, passphrase: pass, relay: $('#relay').value, invite: $('#inv').value }); if (invited && invited.kind === 'community') await rpc('join', { link: invited.link }).catch(e => toast(e.message)); await showRecoveryOnce(pass); el.hidden = true; startApp(); }, links('new')); wire(); };
@@ -299,7 +300,8 @@ async function boot() {
   const showRec = () => { form('Recover your account on this device with your recovery key. Old messages are not recoverable (they only live on devices).',
     `${invBoxOld}<label for="nm">Display name</label><input type="text" id="nm" autocomplete="off"><label for="rk">Recovery key</label><input type="text" id="rk" class="mono" autocomplete="off" spellcheck="false"><label for="pp">New passphrase for this device</label><input type="password" id="pp">${PP2}`, 'Recover',
     async () => { await rpc('recover_account', { name: $('#nm').value, recovery_key: $('#rk').value, passphrase: $('#pp').value, relay: $('#relay').value }); el.hidden = true; startApp(); }, links('rec')); wire(); };
-  showNew();
+  const bootCtx = { el, links, wire, BRAND, relay: st.default_relay || '', old: showNew, start: () => { el.hidden = true; startApp(); } };
+  if (mi) mi.first(bootCtx); else showNew();
 }
 // Waiting for a device you already use to approve this one. Also where a pairing resumes after a restart, and the way out of one that went nowhere.
 function pairScreen(r) {
@@ -1339,7 +1341,8 @@ $('#rail-scrim').onclick = () => railOpen(false);
 
 // ---- community switcher, create, join, invite ----
 const newCommunity = () => modal('New community', `<p class="muted small">A private place with its own rooms. You will be its owner, and only people you invite can read it.</p><label for="n">Name</label><input type="text" id="n" placeholder="e.g. Book club">`, [{ label: 'Cancel', primary: false }, { label: 'Create', run: async w => { const r = await rpc('create_community', { name: val(w, 'n') }); S.cid = r.id; S.gid = null; resetRoom(); } }]).then(() => tick());
-const joinCommunity = () => modal('Join with an invite link', `<p class="muted small">Paste the link you were sent. An admin has to be online (now or later) to let you in.</p><input type="text" id="l" placeholder="commons://join/…" aria-label="Invite link" spellcheck="false">`, [{ label: 'Cancel', primary: false }, { label: 'Join', run: async w => { await rpc('join', { link: val(w, 'l') }); toast('Request sent'); } }]).then(() => tick());
+const joinCommunity = () => window.megaInvite ? window.megaInvite.join(joinByLink) : joinByLink();
+const joinByLink = () => modal('Join with an invite link', `<p class="muted small">Paste the link you were sent. An admin has to be online (now or later) to let you in.</p><input type="text" id="l" placeholder="commons://join/…" aria-label="Invite link" spellcheck="false">`, [{ label: 'Cancel', primary: false }, { label: 'Join', run: async w => { await rpc('join', { link: val(w, 'l') }); toast('Request sent'); } }]).then(() => tick());
 $('#switcher').onclick = e => {
   e.stopPropagation(); const m = $('#sw-menu'); if (!m.hidden) { m.hidden = true; return; }
   m.innerHTML = S.snap.communities.map(c => `<button data-c="${esc(c.id)}" role="menuitem" class="${c.id === S.cid ? 'on' : ''}">${crest(c.id, c.name, 'small')}<span class="c-nm">${esc(c.name)}<span class="small">${c.removed ? 'you left' : `${c.channels.length} room${c.channels.length === 1 ? '' : 's'}`}</span></span>${c.unread ? `<span class="pill">${c.unread}</span>` : ''}</button>`).join('') + `${S.snap.communities.length ? '<hr>' : ''}<button id="mk-new" role="menuitem">${icon('plus')}<span>New community…</span></button><button id="mk-join" role="menuitem">${icon('key')}<span>Join with an invite link…</span></button>`;
@@ -1351,7 +1354,8 @@ $('#switcher').onclick = e => {
 document.addEventListener('click', e => { $('#sw-menu').hidden = true; closePop(); if (!e.target.closest('.search-wrap, #btn-search')) closeSearch(); });
 document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; closePop(); closeSearch(); $('#sw-menu').hidden = true; railOpen(false); });
 $('#add-room').onclick = () => modal('New room', `<label for="n">Name</label><input type="text" id="n" placeholder="e.g. music"><label>Kind</label>${seg('kind', [['text', 'Text'], ['voice', 'Voice']], 'text')}<p class="muted small">A voice room opens its call when you click it. Its people are always shown under it in the rail.</p>`, [{ label: 'Cancel', primary: false }, { label: 'Create', run: async w => { const kind = val(w, 'kind'); const r = await rpc('create_channel', { cid: S.cid, name: val(w, 'n'), kind }); if (kind === 'voice') railOpen(false); else { S.gid = r.id; resetRoom(); } } }]).then(() => tick());
-$('#btn-invite').onclick = () => {
+$('#btn-invite').onclick = () => window.megaInvite ? window.megaInvite.invite(inviteByLink) : inviteByLink();
+const inviteByLink = () => {
   const c = currentCommunity(); let link = null;
   const open = (c.invites || []).filter(i => i.mine && i.expires > Date.now() / 1000);
   const openList = open.length ? `<details class="open-invites"><summary>Open invites <span class="count">${open.length}</span></summary>${open.map(i => `<div class="inv-row"><span>${i.uses_left == null ? 'Unlimited' : `${i.uses_left} use${i.uses_left === 1 ? '' : 's'} left`} · ${esc(fmtLeft(i.expires))}</span><button type="button" class="linkish" data-rev="${esc(i.id)}">Revoke</button></div>`).join('')}</details>` : '';

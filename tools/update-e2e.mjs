@@ -97,6 +97,7 @@ try {
   check('U1 the installed app is version N', st0.current === N, J(st0));
   // account, a community (so there is a room to "call" in)
   await a.ev(`const set = (s, v) => { const e = document.querySelector(s); e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); };
+    document.querySelector('#l-new') && document.querySelector('#l-new').click(); await new Promise(r => setTimeout(r, 400));
     set('#lnk', ${J(link)}); await new Promise(r => setTimeout(r, 400)); set('#nm', 'Alice'); set('#pp', ${J(PASS)}); set('#pp2', ${J(PASS)}); document.querySelector('#go').click();`);
   await until(() => a.ev(`const m = [...document.querySelectorAll('.modal .acts button')].pop(); if (document.querySelector('.key-code') && m) m.click(); return !document.querySelector('#app').hidden && !document.querySelector('.key-code');`), 60000, 'account made');
   const cid = (await a.rpc('create_community', { name: 'Friends' })).id;

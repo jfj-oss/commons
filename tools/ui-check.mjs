@@ -114,23 +114,42 @@ let A, B;
 try {
   A = await open(`http://127.0.0.1:${A_PORT}/`); B = await open(`http://127.0.0.1:${B_PORT}/`);
   await sleep(800);
+  // The first screen asks for an invite password, a name and one device password. Starting a community of your own, or using an old link, is one tap away.
+  await A.waitFor(`!!document.querySelector('#ipw') && !!document.querySelector('#mi-eye') && !document.querySelector('#pp2')`);
   await A.shot('01-onboarding');
+  if (await A.ev(`document.querySelector('#pp').type`) !== 'password') throw new Error('first screen: the device password is not hidden');
+  await click(A, '#mi-eye'); if (await A.ev(`document.querySelector('#pp').type`) !== 'text') throw new Error('first screen: show does not show'); await click(A, '#mi-eye');
+  await A.ev(`(() => { document.querySelector('#go').click(); })()`); await A.waitFor(`document.querySelector('#e').textContent.length > 0`);   // nothing typed: it says what is missing
   for (const [P, name] of [[A, 'Alice'], [B, 'Bob']]) {
-    await P.waitFor(`!!document.querySelector('#nm')`);
+    await P.waitFor(`!!document.querySelector('#l-new')`); await click(P, '#l-new');
+    await P.waitFor(`!!document.querySelector('#nm') && !!document.querySelector('#pp2')`);
     await type(P, '#nm', name); await type(P, '#pp', 'correct horse battery'); await type(P, '#pp2', 'correct horse battery'); await click(P, '#go');
     await P.waitFor(`document.querySelector('.modal')`); await sleep(300);
-    if (name === 'Alice') await A.shot('02-recovery-key');
+    if (name === 'Alice') await A.shot('02-recovery-key');   // the old way still shows the key before going on
     await click(P, '.modal .acts button');
     await P.waitFor(`!document.querySelector('#app').hidden`);
   }
   // Alice makes a community and an invite
   await click(A, '#switcher'); await click(A, '#mk-new'); await type(A, '#n', 'Book club'); await click(A, '.modal .acts button:last-child');
   await A.waitFor(`document.querySelector('.room')`);
-  await click(A, '#btn-invite'); await click(A, '.modal .acts button:last-child');
-  await A.waitFor(`document.querySelector('.modal .code')`);
-  const link = await textOf(A, '.modal .code'); await A.shot('03-invite'); await click(A, '.modal .acts button');
-  // Bob joins with it
-  await click(B, '#switcher'); await click(B, '#mk-join'); await type(B, '#l', link.trim()); await click(B, '.modal .acts button:last-child');
+  await click(A, '#btn-invite');
+  await A.waitFor(`document.querySelector('#mi-pw') && document.querySelector('#mi-pw').value.split('-').length === 4`);   // a suggestion is already there
+  const pwd = await A.ev(`document.querySelector('#mi-pw').value`); await A.shot('03-invite-form');
+  await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(500);
+  if (!await A.ev(`document.documentElement.scrollWidth <= innerWidth + 1 && document.querySelector('.mi-modal').getBoundingClientRect().right <= innerWidth + 1`)) throw new Error('invite: the invite screen is wider than a phone');
+  await A.shot('03-invite-form-390'); await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(400);
+  // a weak password is refused on the spot, with a plain warning, and Create cannot be pressed
+  await type(A, '#mi-pw', 'hunter2'); await A.waitFor(`document.querySelector('#mi-hint').classList.contains('bad') && document.querySelector('.modal .acts button:last-child').disabled`);
+  await A.shot('03-invite-weak');
+  await click(A, '#mi-new'); await A.waitFor(`document.querySelector('#mi-hint').classList.contains('warn') && !document.querySelector('.modal .acts button:last-child').disabled`);
+  await type(A, '#mi-pw', pwd); await A.waitFor(`!document.querySelector('.modal .acts button:last-child').disabled`);
+  await click(A, '.modal .acts button:last-child');
+  await A.waitFor(`document.querySelector('.mi-code')`);
+  if ((await textOf(A, '.mi-code')).trim() !== pwd) throw new Error('invite: the screen does not show the password it made');
+  if (!/\/join$/.test(await textOf(A, '.mi-dl'))) throw new Error('invite: no download address on the screen');
+  await A.shot('03-invite'); await click(A, '.modal .acts button');
+  // Bob joins with the password
+  await click(B, '#switcher'); await click(B, '#mk-join'); await type(B, '#mi-jpw', pwd); await click(B, '.modal .acts button:last-child');
   await B.waitFor(`document.querySelector('.room:not(.pending)')`, 30000);
   await A.waitFor(`document.querySelectorAll('.room').length>=1`);
   // conversation
@@ -746,12 +765,28 @@ try {
     run(bin('dev_bridge'), [String(C_PORT), path.join(root, 'app/ui')], { COMMONS_DATA: path.join(out, 'data', 'carol'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1' });
     await sleep(1500);
     const C = await open(`http://127.0.0.1:${C_PORT}/`);
-    await C.waitFor(`!!document.querySelector('#nm')`);
-    await type(C, '#nm', 'Carol'); await type(C, '#pp', 'correct horse battery'); await type(C, '#pp2', 'correct horse battery'); await click(C, '#go');
-    await C.waitFor(`document.querySelector('.modal')`); await sleep(300); await click(C, '.modal .acts button');
-    await C.waitFor(`!document.querySelector('#app').hidden`);
-    const inv = await A.ev(`rpc('create_invite', { cid: ${JSON.stringify(cid)}, uses: 1 }).then(r => r.link)`);
-    await C.ev(`rpc('join', { link: ${JSON.stringify(inv)} }).then(() => 1)`);
+    // Carol is new: the invite password, her name and one password for her device are all she types.
+    await C.waitFor(`!!document.querySelector('#ipw')`);
+    const cpw = await A.ev(`rpc('create_invite', { cid: ${JSON.stringify(cid)}, uses: 1, password: 'maple-otter-kayak-31' }).then(r => r.password && 'maple-otter-kayak-31')`);
+    need(cpw === 'maple-otter-kayak-31', 'invite: the core did not make a password invite');
+    await C.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(500);
+    need(await C.ev(`document.documentElement.scrollWidth <= innerWidth + 1`), 'invite: the first screen is wider than a phone');
+    await C.shot('mega-invite-first-390');
+    await C.send('Emulation.clearDeviceMetricsOverride'); await sleep(400);
+    await type(C, '#ipw', 'Maple Otter  kayak 31'); await type(C, '#nm', 'Carol'); await type(C, '#pp', 'correct horse battery'); await C.shot('mega-invite-first');
+    await click(C, '#go');
+    await C.waitFor(`!document.querySelector('#app').hidden`, 30000);
+    need(!(await C.ev(`!!document.querySelector('.modal')`)), 'invite: the recovery key blocked joining');
+    await C.waitFor(`!document.querySelector('#mi-rec').hidden`, 8000).catch(() => { throw new Error('invite: no recovery-key reminder after joining'); });
+    need(await C.ev(`getComputedStyle(document.querySelector('#mi-rec')).display !== 'none' && !document.querySelector('#mi-rec button[aria-label=close]')`), 'invite: the reminder is missing or closable');
+    await C.shot('mega-invite-reminder');
+    // the key only appears behind "show", and the reminder stays until "I saved it"
+    await click(C, '#mi-rec-go'); await C.waitFor(`document.querySelector('.key-code')`, 8000);
+    await C.shot('mega-invite-key');
+    await click(C, '.modal .acts button:first-child'); await sleep(400);   // Later
+    need(await C.ev(`!document.querySelector('#mi-rec').hidden`), 'invite: the reminder went away without the key being saved');
+    await click(C, '#mi-rec-go'); await C.waitFor(`document.querySelector('.key-code')`, 8000); await click(C, '.modal .acts button:last-child');
+    await C.waitFor(`document.querySelector('#mi-rec').hidden`, 8000).catch(() => { throw new Error('invite: the reminder stayed after I saved it'); });
     await C.waitFor(`(() => { const c = S.snap.communities.find(c => c.name === 'Book club'); return c && c.style && c.style.rooms && Object.values(c.style.rooms).some(r => r.main === '#12ab34'); })()`, 60000).catch(() => { throw new Error('mega: a late joiner did not get the colours'); });
     await C.waitFor(`!!__mega.shown && [...__mega.shown.values()].some(v => v[0] === '#12ab34')`, 8000);
     await C.shot('mega3-3-late-joiner');

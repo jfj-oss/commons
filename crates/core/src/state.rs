@@ -11,6 +11,9 @@ impl Role { pub fn name(&self) -> &'static str { match self { Role::Member => "m
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Kind { Control, Channel }
 
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+pub struct PwInviteRec { pub lid: String, pub expires: u64 }
+
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct State {
@@ -65,6 +68,12 @@ pub struct State {
     /// The shared walls (drawings on rooms' backdrops), as last saved. Changes reach this copy on a slow debounce; see `Client::flush_walls`.
     #[serde(default)]
     pub walls: BTreeMap<String, crate::wall::Wall>,
+    /// A new account whose recovery key has not been saved yet: the app keeps asking until the person says they did.
+    #[serde(default)]
+    pub recovery_unsaved: bool,
+    /// Password invites this device filed on the relay, by invite id: so that revoking one can take its sealed copy away.
+    #[serde(default)]
+    pub pw_invites: BTreeMap<String, PwInviteRec>,
     /// The relay's invite secret, kept so that we can register again if the relay ever forgets this device.
     pub relay_invite: String,
     /// When this device last passed the relay's sign-up secret on, per community's control group.

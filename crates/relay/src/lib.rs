@@ -72,6 +72,18 @@ pub struct Limits {
     pub large_file_max_bytes: u64,
     /// Begins (fresh or resumed) one device may ask for per window.
     pub large_begins_per_window: u32,
+    /// Password invites: sealed copies one account may have waiting, and the whole relay may hold.
+    pub max_pwinvites_per_account: u64,
+    pub max_pwinvites_total: u64,
+    /// New sealed copies one account may store per window.
+    pub pwinvite_puts_per_window: u32,
+    /// Lookups per window for any one lookup id, and for the whole relay. Behind a tunnel the relay cannot tell callers
+    /// apart, so the whole-relay budget is what stops password guessing. It counts misses only; when it runs out every
+    /// lookup is refused, hits included, or a guesser could just keep going.
+    pub pwinvite_lookups_per_id_per_window: u32,
+    pub pwinvite_misses_per_window: u32,
+    /// Longest a sealed copy may stay, whatever its owner asks.
+    pub pwinvite_max_ttl_secs: u64,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -107,6 +119,12 @@ impl Default for Limits {
             large_file_expire_secs: 7 * 86400,
             large_file_max_bytes: 1 << 40,
             large_begins_per_window: 600,
+            max_pwinvites_per_account: 20,
+            max_pwinvites_total: 2000,
+            pwinvite_puts_per_window: 20,
+            pwinvite_lookups_per_id_per_window: 8,
+            pwinvite_misses_per_window: 40,
+            pwinvite_max_ttl_secs: 30 * 86400,
         }
     }
 }
@@ -260,6 +278,7 @@ fn json<T: serde::Serialize>(v: &T) -> Resp {
 }
 // Lower-case only: one key has exactly one spelling, so ids cannot be aliased by changing case.
 fn is_hex_byte(c: u8) -> bool { c.is_ascii_digit() || (b'a'..=b'f').contains(&c) }
+const MAX_PWINVITE_BYTES: usize = 8192;
 fn is_hex(s: &str, n: usize) -> bool { s.len() == n && s.bytes().all(is_hex_byte) }
 fn valid_gid(s: &str) -> bool { s.len() >= 8 && s.len() <= 128 && s.bytes().all(is_hex_byte) }
 
@@ -285,6 +304,8 @@ pub fn open_db(path: &str) -> rusqlite::Result<Connection> {
              created INTEGER NOT NULL, sha256 TEXT);
          CREATE INDEX IF NOT EXISTS large_acc ON large_files(account);
          CREATE INDEX IF NOT EXISTS large_exp ON large_files(expires);
+         CREATE TABLE IF NOT EXISTS pwinvites(lid TEXT PRIMARY KEY, blob BLOB NOT NULL, owner TEXT NOT NULL, expires INTEGER NOT NULL, fetches_left INTEGER NOT NULL);
+         CREATE INDEX IF NOT EXISTS pwinv_owner ON pwinvites(owner);
          CREATE TABLE IF NOT EXISTS usage(account TEXT PRIMARY KEY, entry_bytes INTEGER NOT NULL DEFAULT 0);",
     )?;
     Ok(c)
@@ -397,6 +418,11 @@ impl RelayState {
         if e.1 >= limit { return false; }
         e.1 += 1;
         true
+    }
+    /// Has `key` used up `limit` in this window? Counts nothing.
+    fn spent(&self, key: &str, limit: u32) -> bool {
+        let w = now_secs() / self.limits.window_secs.max(1);
+        self.rates.lock().unwrap().get(key).is_some_and(|e| e.0 == w && e.1 >= limit)
     }
     fn limited(&self, key: String, limit: u32, what: &str) -> Result<(), Resp> {
         if self.allow(key, limit) { Ok(()) } else { Err(status(StatusCode::TOO_MANY_REQUESTS, what)) }
@@ -833,13 +859,13 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
     if *m == Method::GET && seg == ["health"] { return Ok(status(StatusCode::OK, "ok")); }
     let db = st.db.lock().unwrap();
     match (m.clone(), seg) {
-        (Method::GET, ["v1", "info"]) => Ok(json(&InfoResp { gated: lim.invite_secret.is_some(), ok: false })),
+        (Method::GET, ["v1", "info"]) => Ok(json(&InfoResp { gated: lim.invite_secret.is_some(), ok: false, pwinvite: true })),
         // Lets an app check a secret before it creates anything on disk. Counts against guessing.
         (Method::POST, ["v1", "info"]) => {
             let r: InfoReq = parse(body)?;
-            let Some(secret) = &lim.invite_secret else { return Ok(json(&InfoResp { gated: false, ok: true })) };
+            let Some(secret) = &lim.invite_secret else { return Ok(json(&InfoResp { gated: false, ok: true, pwinvite: true })) };
             st.limited("info".into(), lim.info_checks_per_window, "too many attempts, try again later")?;
-            Ok(json(&InfoResp { gated: true, ok: same_secret(secret, &r.invite) }))
+            Ok(json(&InfoResp { gated: true, ok: same_secret(secret, &r.invite), pwinvite: true }))
         }
         // ---- device registry ----
         (Method::POST, ["v1", "devices"]) => {
@@ -1038,6 +1064,53 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
                 Some(b) => Ok(Response::builder().status(200).body(Body::from(b)).unwrap()),
                 None => Err(status(StatusCode::NOT_FOUND, "none")),
             }
+        }
+        // ---- password invites: a sealed copy of an invite link, found by an id the password derives. The relay never
+        // sees the password or the link, only the id and ciphertext. Putting one needs an account; looking one up does
+        // not (the friend has none yet), so lookups are rationed hard. A miss, an expired copy and a revoked one look alike.
+        (Method::PUT, ["v1", "pwinvite", lid]) => {
+            let a = authenticate(&db, headers, ms, path, body, true)?.1.unwrap();
+            if !is_hex(lid, 64) { return Err(status(StatusCode::BAD_REQUEST, "bad")); }
+            let r: PwPutReq = parse(body)?;
+            let blob = dec(&r.blob, MAX_PWINVITE_BYTES)?;
+            if blob.len() < 64 { return Err(status(StatusCode::BAD_REQUEST, "bad")); }
+            st.limited(format!("pwput/{}", a.account), lim.pwinvite_puts_per_window, "too many password invites, try again later")?;
+            let now = now_secs() as i64;
+            db.execute("DELETE FROM pwinvites WHERE expires < ?1", [now]).map_err(dberr)?;
+            let total: u64 = db.query_row("SELECT COUNT(*) FROM pwinvites", [], |r| r.get(0)).map_err(dberr)?;
+            if total >= lim.max_pwinvites_total { return Err(status(StatusCode::TOO_MANY_REQUESTS, "busy")); }
+            let mine: u64 = db.query_row("SELECT COUNT(*) FROM pwinvites WHERE owner=?1", [&a.account], |r| r.get(0)).map_err(dberr)?;
+            if mine >= lim.max_pwinvites_per_account { return Err(status(StatusCode::TOO_MANY_REQUESTS, "too many password invites waiting")); }
+            let ttl = r.ttl.clamp(60, lim.pwinvite_max_ttl_secs) as i64;
+            let fetches = r.fetches.clamp(1, 200) as i64;
+            let n = db.execute("INSERT OR IGNORE INTO pwinvites(lid,blob,owner,expires,fetches_left) VALUES(?1,?2,?3,?4,?5)", params![lid, blob, a.account, now + ttl, fetches]).map_err(dberr)?;
+            if n == 0 { return Err(status(StatusCode::CONFLICT, "taken")); }
+            Ok(status(StatusCode::OK, "ok"))
+        }
+        (Method::DELETE, ["v1", "pwinvite", lid]) => {
+            let a = authenticate(&db, headers, ms, path, body, true)?.1.unwrap();
+            if !is_hex(lid, 64) { return Err(status(StatusCode::BAD_REQUEST, "bad")); }
+            db.execute("DELETE FROM pwinvites WHERE lid=?1 AND owner=?2", params![lid, a.account]).map_err(dberr)?;
+            Ok(status(StatusCode::OK, "ok"))
+        }
+        (Method::POST, ["v1", "pwinvite", "lookup"]) => {
+            let r: PwLookupReq = parse(body)?;
+            let gone = || status(StatusCode::NOT_FOUND, "none");
+            if !is_hex(&r.lid, 64) { return Err(gone()); }
+            // Whole-relay budgets: misses are the guessing, so once they are spent nothing is answered, hits included.
+            if st.spent("pwmiss", lim.pwinvite_misses_per_window) { return Err(status(StatusCode::TOO_MANY_REQUESTS, "too many attempts, try again in a few minutes")); }
+            st.limited("pwlook/all".into(), lim.pwinvite_misses_per_window.saturating_mul(3), "too many attempts, try again in a few minutes")?;
+            st.limited(format!("pwlook/{}", r.lid), lim.pwinvite_lookups_per_id_per_window, "too many attempts, try again in a few minutes")?;
+            let now = now_secs() as i64;
+            let row: Option<(Vec<u8>, i64)> = db.query_row("SELECT blob, fetches_left FROM pwinvites WHERE lid=?1 AND expires>=?2", params![r.lid, now], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(dberr)?;
+            let Some((blob, left)) = row else {
+                // Only misses spend the guessing budget; a miss past it is refused like every other lookup now is.
+                st.limited("pwmiss".into(), lim.pwinvite_misses_per_window, "too many attempts, try again in a few minutes")?;
+                return Err(gone());
+            };
+            if left <= 1 { db.execute("DELETE FROM pwinvites WHERE lid=?1", [&r.lid]).map_err(dberr)?; }
+            else { db.execute("UPDATE pwinvites SET fetches_left=fetches_left-1 WHERE lid=?1", [&r.lid]).map_err(dberr)?; }
+            Ok(json(&PwLookupResp { blob: b64(&blob) }))
         }
         // ---- large files: own quota, own expiry, chunks on disk ----
         (Method::POST, ["v1", "large-files", id, "begin"]) => {

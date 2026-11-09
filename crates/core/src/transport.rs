@@ -181,6 +181,13 @@ impl Api {
     pub fn rv_put(&self, k: &SigningKey, rid: &str, slot: &str, data: &[u8]) -> Result<()> {
         ok(self.t.request(Some(k), "PUT", &format!("/v1/rendezvous/{rid}/{slot}"), data, T)?, "rv put").map(|_| ())
     }
+    /// File a sealed password invite under its lookup id. A 409 means the id is taken: that password is in use.
+    pub fn pw_put(&self, k: &SigningKey, lid: &str, body: &[u8]) -> Result<()> {
+        ok(self.t.request(Some(k), "PUT", &format!("/v1/pwinvite/{lid}"), body, T)?, "password invite put").map(|_| ())
+    }
+    pub fn pw_delete(&self, k: &SigningKey, lid: &str) -> Result<()> {
+        ok(self.t.request(Some(k), "DELETE", &format!("/v1/pwinvite/{lid}"), &[], T)?, "password invite delete").map(|_| ())
+    }
     pub fn rv_get(&self, rid: &str, slot: &str) -> Result<Option<Vec<u8>>> {
         let r = self.t.request(None, "GET", &format!("/v1/rendezvous/{rid}/{slot}"), &[], T)?;
         if r.status == 404 { return Ok(None); }
