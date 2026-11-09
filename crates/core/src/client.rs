@@ -85,9 +85,6 @@ pub struct Client {
     pub net: NetStatus,
     /// When we last offered our consent to a community whose table has none from us.
     pub(crate) consent_offered: HashMap<String, u64>,
-    /// Plaintext chunk hashes of uploads in progress, by upload id. Kept here rather than in the saved state: the
-    /// UI re-reads every chunk anyway (the relay says which it already has), so only a restart's cost is repeated.
-    pub(crate) large_hashes: HashMap<String, BTreeMap<u64, [u8; 32]>>,
 }
 
 /// How the connection to the relay looks from here, for the UI.
@@ -159,7 +156,7 @@ impl Client {
         let walls = st.walls.clone();
         Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), wall_peer_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), live_in: Default::default(), live_next: 0, live_out: BTreeMap::new(), live_sent: BTreeMap::new(), live_rate: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new(),
             lock: Some(lock), dir_ttl_secs: 30, acl_check_secs: 60, dir_cache: HashMap::new(), dir_wanted: BTreeSet::new(), kp_cache: HashMap::new(), kp_wanted: BTreeMap::new(), kp_refill: false, seen_welcomes: HashSet::new(), last_parked_try: 0,
-            more: false, sync_cap: SYNC_MAX_BYTES, pair_ack: None, net: NetStatus::default(), consent_offered: HashMap::new(), large_hashes: HashMap::new() }
+            more: false, sync_cap: SYNC_MAX_BYTES, pair_ack: None, net: NetStatus::default(), consent_offered: HashMap::new() }
     }
     fn blank(dir: &Path, vault: Vault, relay: &str, name: &str, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
         let mut st = State::default();
