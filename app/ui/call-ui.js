@@ -264,14 +264,15 @@
   }
   function playBar(p) {
     const dur = Math.max(1, Math.round(p.duration || 0));
-    const music = p.kind === 'rune';
-    const skip = music ? `<button class="btn ghost" id="c-prev" title="Previous track" ${p.hasPrev || p.position > 3 ? '' : 'disabled'}>${ic('ci-prev')}</button>` : '';
-    const next = music ? `<button class="btn ghost" id="c-next" title="Next track" ${p.hasNext ? '' : 'disabled'}>${ic('ci-next')}</button>` : '';
-    const queue = music && p.queueLength > 1 ? `<span class="small muted" title="${esc(p.queueName)}">${p.queueIndex + 1} / ${p.queueLength}</span>` : '';
+    const pc = p.kind === 'pcaudio';   // sound from this computer: nothing to pause, skip or seek
+    const music = p.kind === 'rune' || pc;
+    const skip = music && !pc ? `<button class="btn ghost" id="c-prev" title="Previous track" ${p.hasPrev || p.position > 3 ? '' : 'disabled'}>${ic('ci-prev')}</button>` : '';
+    const next = music && !pc ? `<button class="btn ghost" id="c-next" title="Next track" ${p.hasNext ? '' : 'disabled'}>${ic('ci-next')}</button>` : '';
+    const queue = music && !pc && p.queueLength > 1 ? `<span class="small muted" title="${esc(p.queueName)}">${p.queueIndex + 1} / ${p.queueLength}</span>` : '';
     return `<div class="cplay"><div class="row"><span class="ttl">${ic(music ? 'ci-note' : 'ci-film')}<b>${esc(p.title)}</b>${p.artist ? `<span class="muted small">· ${esc(p.artist)}</span>` : ''}</span><span class="muted small">${esc(p.profile)}${p.paused ? ' · paused' : ''}</span></div>
-      <div class="row">${skip}<button class="btn ghost" id="c-playtoggle" title="${p.paused ? 'Play' : 'Pause'}">${ic(p.paused ? 'ci-play' : 'ci-pause')}</button>${next}
+      ${pc ? (p.note ? `<div class="row"><span class="small" style="color:var(--warn,#c8a96b)" id="c-pcnote">${esc(p.note)}</span></div>` : '') : `<div class="row">${skip}<button class="btn ghost" id="c-playtoggle" title="${p.paused ? 'Play' : 'Pause'}">${ic(p.paused ? 'ci-play' : 'ci-pause')}</button>${next}
       <input type="range" id="c-seek" min="0" max="${dur}" step="1" value="${Math.min(dur, Math.round(p.position || 0))}" aria-label="Seek">
-      <span class="time small muted">${fmtTime(p.position)} / ${fmtTime(p.duration)}</span></div>
+      <span class="time small muted">${fmtTime(p.position)} / ${fmtTime(p.duration)}</span></div>`}
       <div class="row"><span class="small muted">Volume</span><input type="range" id="c-pvol" min="0" max="1" step="0.05" value="${p.volume}" aria-label="${music ? 'Music' : 'Movie'} volume">${queue}<span class="grow" style="flex:1"></span><button class="btn danger" id="c-playstop">${ic('ci-stop')}Stop</button></div></div>`;
   }
   function syncTiles(shares) {
@@ -460,6 +461,7 @@
           <select id="pd-profile" aria-label="Quality">${Object.entries(call.playbackProfiles()).map(([k, v]) => `<option value="${k}" ${call.prefs.playProfile === k ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select>
           <span id="pd-status" class="muted small"></span></div>
         <p class="muted small">The video is streamed from your device straight into the call, encrypted like everything else. Everyone sees and hears it, and you control it.</p>
+        <div class="pd-pc" id="pd-pc" hidden></div>
         <div class="pd-rune">
           <div class="pd-row"><b>Music from rune</b> <span class="muted small">your own local library, played as a queue</span></div>
           <div class="pd-row"><input type="search" id="pd-rq" placeholder="Search your local music in rune" autocomplete="off"><button class="btn" id="pd-rgo">Search</button></div>
@@ -497,6 +499,7 @@
     const jf = call.jellyfinConfig(), note = playDlg.querySelector('#pd-jfnote');
     if (!jf.url || !call.jellyfinCredential()) { note.innerHTML = 'Jellyfin is not set up on this device. Add its address and sign in under <b>Settings</b> in the call\'s settings.'; playDlg.querySelector('#pd-results').innerHTML = ''; }
     else if (!playItems) searchJellyfin();
+    if (window.CommonsPcAudioUI) window.CommonsPcAudioUI.mount(playDlg.querySelector('#pd-pc'), call, { toast, close: closePlayDialog });
     const rnote = playDlg.querySelector('#pd-rnote');
     if (rnote && !rnote.textContent) rnote.textContent = 'rune at ' + call.runeConfig().url + ' — search tracks, albums and playlists from your own library.';
   }

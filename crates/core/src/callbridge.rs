@@ -1,6 +1,6 @@
 //! "Open this call in my browser": for desktops whose web view cannot do calls (WebKitGTK builds without WebRTC).
 //! A tiny loopback-only HTTP server serves the stand-alone call page and answers exactly four rpc methods, `call_state`,
-//! `call_token`, and for game keys `game_mute_wait` and `game_mute_clear`, for ONE room, to whoever presents the one-time secret that is only in the opened tab's URL fragment.
+//! `call_token`, and for game keys `game_mute_wait` and `game_mute_clear`, for ONE room (plus the five `pcaudio_*` sound-route methods), to whoever presents the one-time secret that is only in the opened tab's URL fragment.
 //! Host header must be `127.0.0.1:<port>` (DNS-rebinding defence); no CORS headers are sent; the secret is checked in constant
 //! time; every opening creates a new secret and revokes the old one. The media keys then live in that browser tab (see THREAT-MODEL.md).
 use crate::api::App;
@@ -16,6 +16,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("/mic-gate.js", "text/javascript", include_bytes!("../../../app/ui/mic-gate.js")),
     ("/call.js", "text/javascript", include_bytes!("../../../app/ui/call.js")),
     ("/call-ui.js", "text/javascript", include_bytes!("../../../app/ui/call-ui.js")),
+    ("/call-pcaudio.js", "text/javascript", include_bytes!("../../../app/ui/call-pcaudio.js")),
     ("/call.css", "text/css", include_bytes!("../../../app/ui/call.css")),
     ("/vendor/livekit-client.umd.js", "text/javascript", include_bytes!("../../../app/ui/vendor/livekit-client.umd.js")),
     ("/vendor/livekit-client.e2ee.worker.js", "text/javascript", include_bytes!("../../../app/ui/vendor/livekit-client.e2ee.worker.js")),
@@ -107,7 +108,11 @@ fn handle(mut s: TcpStream, app: Arc<App>, grant: Arc<Mutex<Grant>>, port: u16) 
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
         let m = v["method"].as_str().unwrap_or("");
         let gid = v["args"]["gid"].as_str().unwrap_or("");
-        if !matches!(m, "call_state" | "call_token" | "game_mute_wait" | "game_mute_clear") || gid != want.1 { return reply(&mut s, 403, "text/plain", b"method or room not allowed"); }
+        // The room's own methods must name this room. The sound-route methods (pcaudio_*, Linux only) have no room: they act on
+        // this computer's sound, and are guarded by the same one-time secret as everything else here.
+        let room_ok = matches!(m, "call_state" | "call_token" | "game_mute_wait" | "game_mute_clear") && gid == want.1;
+        let pc_ok = matches!(m, "pcaudio_caps" | "pcaudio_streams" | "pcaudio_start" | "pcaudio_status" | "pcaudio_stop");
+        if !room_ok && !pc_ok { return reply(&mut s, 403, "text/plain", b"method or room not allowed"); }
         let out = match app.call(m, v["args"].clone()) { Ok(x) => serde_json::json!({"ok": x}), Err(e) => serde_json::json!({"err": e}) };
         return reply(&mut s, 200, "application/json", out.to_string().as_bytes());
     }
