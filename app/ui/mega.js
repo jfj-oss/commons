@@ -315,10 +315,10 @@
     const cs = comms(), c = M.level === 'server' ? comm(M.cid) : null;
     const dot = $('#activity-dot') && !$('#activity-dot').hidden ? '<span class="mdot" title="new in the activity log"></span>' : '';
     const more = `<button class="mchip" data-m="more" type="button" aria-haspopup="menu">more${dot}</button>`;
-    const jump = `<button class="mchip" data-m="jump" type="button">jump to <span class="mtag mhide-s">ctrl k</span></button>`;
+    const jump = `<button class="mchip" data-m="jump" type="button">jump<span class="mhide-s">&nbsp;to</span> <span class="mtag mhide-s">ctrl k</span></button>`;
     if (!c) return `<div class="mbar"><span class="mmark">mega</span><span class="mtag" id="m-sync" hidden></span><span class="mgrow"></span><button class="mchip" data-m="new" type="button">new</button><button class="mchip" data-m="join" type="button">join</button>${more}${jump}</div>`;
     const admin = c.role === 'admin' || c.role === 'owner', names = S.membersFor === c.id ? S.members.map(m => m.name) : [];
-    return `<div class="mbar">${cs.length > 1 ? '<button class="mchip" data-m="back" type="button" aria-label="Back to all communities">back</button>' : ''}<span class="mmark">${esc(c.name)}</span><span class="mtag" id="m-sync" hidden></span><span class="mgrow"></span>${admin ? '<button class="mchip mhide-s" data-m="invite" type="button">invite</button><button class="mchip mhide-s" data-m="room" type="button">new room</button>' : ''}<button class="mchip" data-m="people" type="button" aria-label="People">${names.length ? mfaces(names.slice(0, 3)) : ''}people</button>${more}${jump}</div>`;
+    return `<div class="mbar">${cs.length > 1 ? '<button class="mchip" data-m="back" type="button" aria-label="Back to all communities"><span aria-hidden="true">&larr;</span><span class="mhide-s"> back</span></button>' : ''}<span class="mmark">${esc(c.name)}</span><span class="mtag" id="m-sync" hidden></span><span class="mgrow"></span>${admin ? '<button class="mchip mhide-s" data-m="invite" type="button">invite</button><button class="mchip mhide-s" data-m="room" type="button">new room</button>' : ''}<button class="mchip" data-m="people" type="button" aria-label="People">${names.length ? mfaces(names.slice(0, 3)) : ''}<span class="mhide-s">people</span></button>${more}${jump}</div>`;
   }
   function drawBar() {
     const html = barHTML(); let bar = $('.mbar', mega);

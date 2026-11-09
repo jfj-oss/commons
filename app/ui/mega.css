@@ -20,12 +20,7 @@ html.mega {
 }
 html.mega[data-read="plain"] { --m-readfb: var(--sans); }
 @supports (corner-shape: squircle) { html.mega { --m-sq: 76px; } .msq, .mfly { corner-shape: squircle; } }
-@media (max-width: 760px) {
-  html.mega { --m-railw: 40px; --m-sq: 36px; }
-  .mhide-s { display: none !important; }
-  .mbar { gap: 6px; }
-  .mchip { min-height: 36px; padding: 0 11px; gap: 5px; }
-  .mmark { font-size: round(down, 30px, var(--m-dsnap)); max-width: 40vw; }
+@media (max-width: 760px) { html.mega { --m-railw: 40px; --m-sq: 36px; } }
 }
 @media (max-width: 760px) { @supports (corner-shape: squircle) { html.mega { --m-sq: 58px; } } }
 
@@ -195,3 +190,14 @@ html.mega #people { position: fixed; right: 0; top: 0; bottom: 0; z-index: 30; w
 .mmenu button:hover, .mmenu button:focus-visible { background: rgb(255 255 255 / .09); }
 
 @media (prefers-reduced-motion: reduce) { #mega *, #mega-rail, #mega-rail *, #mega-pal * { transition-duration: .01ms !important; animation-duration: .01ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important; } }
+
+/* phones: a tighter bar and slightly shorter cards, so a two-row bar never covers the card */
+@media (max-width: 760px) {
+  .mhide-s { display: none !important; }
+  .mbar { gap: 6px; }
+  .mchip { min-height: 36px; padding: 0 11px; gap: 5px; }
+  .mmark { font-size: round(down, 24px, var(--m-dsnap)); max-width: 38vw; }
+  .mcard { height: 76cqh; margin-top: -38cqh; }
+  .mslot { height: 66cqh; }
+  .mlist { padding-block: 17cqh; }
+}
