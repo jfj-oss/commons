@@ -49,7 +49,7 @@ cat > "$A/Contents/Info.plist" <<P
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleName</key><string>Megatron</string><key>CFBundleDisplayName</key><string>Megatron</string>
+<key>CFBundleName</key><string>mega</string><key>CFBundleDisplayName</key><string>mega</string>
 <key>CFBundleExecutable</key><string>launcher</string><key>CFBundleIdentifier</key><string>$ID</string>
 <key>CFBundleVersion</key><string>$VER</string><key>CFBundleShortVersionString</key><string>$VER</string>
 <key>CFBundlePackageType</key><string>APPL</string><key>CFBundleIconFile</key><string>icon</string>

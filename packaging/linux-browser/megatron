@@ -10,7 +10,7 @@ PORT="${MEGATRON_PORT:-7420}"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/app.commons.chat"
 RELAY="$(tr -d '\n' < "$D/relay.txt")"
 URL="http://127.0.0.1:$PORT/"
-say() { command -v notify-send >/dev/null && notify-send "Megatron" "$1"; echo "$1" >&2; }
+say() { command -v notify-send >/dev/null && notify-send "mega" "$1"; echo "$1" >&2; }
 up() { (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; }
 start_bridge() {
   mkdir -p "$DATA"
@@ -29,7 +29,7 @@ restore_previous() {
   return 0
 }
 if [ "${1:-}" = "--stop" ]; then [ -f "$D/.pid" ] && kill "$(cat "$D/.pid")" 2>/dev/null; rm -f "$D/.pid"; exit 0; fi
-if pgrep -x commons-app >/dev/null; then say "Close the Megatron desktop app first: an account can be open in only one place."; exit 1; fi
+if pgrep -x commons-app >/dev/null; then say "Close the mega desktop app first: an account can be open in only one place."; exit 1; fi
 if ! up; then
   # Signed update before the window opens (docs/UPDATES.md). At most about five seconds: offline, or a server that does
   # not answer, only delays the window a moment. The page shows what happened on this start.
@@ -47,7 +47,7 @@ if ! up; then
     say "The new version did not start; going back to the one before."
     start_bridge
   fi
-  up || { say "Megatron could not start (see $D/bridge.log)."; exit 1; }
+  up || { say "mega could not start (see $D/bridge.log)."; exit 1; }
 fi
 for b in brave brave-browser google-chrome google-chrome-stable chromium chromium-browser microsoft-edge microsoft-edge-stable vivaldi; do
   command -v "$b" >/dev/null && exec "$b" --app="$URL" >/dev/null 2>&1

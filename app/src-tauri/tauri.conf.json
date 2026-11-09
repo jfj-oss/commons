@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Megatron",
+        "title": "mega",
         "width": 1100,
         "height": 760,
         "minWidth": 720,

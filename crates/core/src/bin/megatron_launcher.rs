@@ -299,7 +299,7 @@ fn stop(install: &Path) {
 fn alert(msg: &str) {
     use std::os::windows::ffi::OsStrExt;
     let wide: Vec<u16> = std::ffi::OsStr::new(msg).encode_wide().chain(std::iter::once(0)).collect();
-    let cap: Vec<u16> = "Megatron".encode_utf16().chain(std::iter::once(0)).collect();
+    let cap: Vec<u16> = "mega".encode_utf16().chain(std::iter::once(0)).collect();
     #[link(name = "user32")]
     extern "system" {
         fn MessageBoxW(hwnd: *mut core::ffi::c_void, text: *const u16, caption: *const u16, utype: u32) -> i32;
@@ -313,14 +313,14 @@ fn alert(msg: &str) {
 fn alert(msg: &str) {
     let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!(
-        "display dialog \"{escaped}\" buttons {{\"OK\"}} default button \"OK\" with title \"Megatron\" with icon caution"
+        "display dialog \"{escaped}\" buttons {{\"OK\"}} default button \"OK\" with title \"mega\" with icon caution"
     );
     let _ = Command::new("osascript").arg("-e").arg(script).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn alert(msg: &str) {
-    let _ = Command::new("notify-send").args(["Megatron", msg]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let _ = Command::new("notify-send").args(["mega", msg]).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
 #[cfg(windows)]
@@ -444,7 +444,7 @@ fn main() {
     }
     let data = data_dir(&install);
     if let Err(e) = std::fs::create_dir_all(&data) {
-        alert(&format!("Megatron could not make its data folder ({}): {e}", data.display()));
+        alert(&format!("mega could not make its data folder ({}): {e}", data.display()));
         return;
     }
     let relay = relay(&install);
@@ -494,7 +494,7 @@ fn main() {
         if !up(port) {
             log(&install, "the bridge did not answer");
             let log_path = state_dir(&install).join("bridge.log");
-            alert(&format!("Megatron could not start. See {} for details.", log_path.display()));
+            alert(&format!("mega could not start. See {} for details.", log_path.display()));
             return;
         }
     }
