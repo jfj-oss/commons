@@ -158,11 +158,12 @@
     const surface = vts[0] && vts[0].getSettings ? vts[0].getSettings().displaySurface : '';
     if (surface && surface !== 'browser') { stopAll(); throw new CallError('pcaudio', 'That was a window or a screen, not a browser tab. Pick a tab, or the call itself would be sent back into the call.'); }
     if (!ats.length) { stopAll(); throw new CallError('pcaudio', 'No sound was shared. Pick the tab again and tick "Share tab audio" in the window that asks.'); }
-    // The picture is not used: the call shows its own cover-style picture, like all music. Drop the tab's video.
-    for (const v of vts) { try { v.stop(); } catch { } try { ms.removeTrack(v); } catch { } }
+    // The picture is not used: the call shows its own cover-style picture, like all music. The tab's video is only
+    // switched off, not stopped, so that ending it cannot take the tab's audio with it; it is stopped with the rest.
+    for (const v of vts) v.enabled = false;
     const at = ats[0];
     try { await at.applyConstraints({ ...OFF }); } catch { }
-    const st = await this._pcPublish(at, { title: 'Audio from a browser tab', artist: '', sourceLabel: 'Browser tab', sources: [at], warnSilence: true });
+    const st = await this._pcPublish(at, { title: 'Audio from a browser tab', artist: '', sourceLabel: 'Browser tab', sources: [at, ...vts], warnSilence: true });
     // The person ends the share with the browser's own "Stop sharing" bar: end ours too.
     const mine = this.play;
     at.addEventListener('ended', () => { if (this.play === mine && !mine.dead) { this.fail('pcaudio', 'The tab stopped being shared, so the sound was stopped.'); this.stopPlayback(); } });
