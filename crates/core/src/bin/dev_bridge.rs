@@ -25,11 +25,15 @@ static LAUNCHER_REFRESHED: AtomicBool = AtomicBool::new(false);
 // three destinations. Scripts, workers and styles stay 'self'.
 const CSP: &str = "default-src 'self'; img-src 'self' data: blob: http: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws: wss: http: https:; worker-src 'self' blob:; media-src 'self' blob: mediastream: http: https:; base-uri 'none'; form-action 'none'; object-src 'none'";
 
-fn reply(s: &mut TcpStream, code: u16, ct: &str, body: &[u8]) {
+/// How long an idle keep-alive connection is held before it is closed (its thread with it).
+const KEEP_ALIVE_SECS: u64 = 60;
+
+fn reply(s: &mut TcpStream, code: u16, ct: &str, body: &[u8], keep: bool) -> bool {
     let reason = match code { 200 => "OK", 403 => "Forbidden", 400 => "Bad Request", 404 => "Not Found", _ => "Error" };
-    let head = format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Security-Policy: {CSP}\r\n\r\n", body.len());
-    let _ = s.write_all(head.as_bytes()).and_then(|_| s.write_all(body));
-    let _ = s.flush();
+    let conn = if keep { format!("keep-alive\r\nKeep-Alive: timeout={KEEP_ALIVE_SECS}") } else { "close".to_string() };
+    let head = format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: {conn}\r\nCache-Control: no-store\r\nContent-Security-Policy: {CSP}\r\n\r\n", body.len());
+    let ok = s.write_all(head.as_bytes()).and_then(|_| s.write_all(body)).and_then(|_| s.flush()).is_ok();
+    ok && keep
 }
 
 /// The install folder and the update key, when this is an installed browser version. A bridge run from a source tree
@@ -91,48 +95,65 @@ fn restart(install: &std::path::Path, ui: &std::path::Path, port: u16) -> ! {
     std::process::exit(if child.is_ok() { 0 } else { 1 })
 }
 
+/// One connection. The page's calls (several a second) arrive on a few connections the browser keeps open, so each
+/// request no longer costs a TCP handshake, a thread and a walk through /proc/net/tcp; the owner check happens once per
+/// connection, which is all it needs (a socket never changes hands). An idle connection is closed after KEEP_ALIVE_SECS.
 fn handle(mut s: TcpStream, app: Arc<App>, ui: Arc<PathBuf>, port: u16, auth: Auth) {
-    let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(30)));
+    let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(KEEP_ALIVE_SECS)));
     let mut r = BufReader::new(s.try_clone().expect("clone"));
+    let mut checked = false;
+    while request(&mut s, &mut r, &app, &ui, port, &auth, &mut checked) {}
+}
+
+/// Reads and answers one request. Returns true when the connection may carry another.
+fn request(s: &mut TcpStream, r: &mut BufReader<TcpStream>, app: &App, ui: &std::path::Path, port: u16, auth: &Auth, checked: &mut bool) -> bool {
     let mut line = String::new();
-    if r.read_line(&mut line).unwrap_or(0) == 0 { return; }
+    if r.read_line(&mut line).unwrap_or(0) == 0 { return false; }   // closed, or idle past the timeout
     let mut parts = line.split_whitespace();
-    let (method, url) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
-    let (mut len, mut host, mut origin, mut presented) = (0usize, None::<String>, None::<String>, None::<String>);
+    let (method, url, version) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
+    let (mut len, mut host, mut origin, mut presented, mut close) = (0usize, None::<String>, None::<String>, None::<String>, version != "HTTP/1.1");
     loop {
         let mut h = String::new();
-        if r.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" || h == "\n" { break; }
+        if r.read_line(&mut h).unwrap_or(0) == 0 { return false; }
+        if h == "\r\n" || h == "\n" { break; }
         let low = h.to_ascii_lowercase();
         if let Some(v) = low.strip_prefix("content-length:") { len = v.trim().parse().unwrap_or(0); }
         if let Some(v) = low.strip_prefix("host:") { host = Some(v.trim().to_string()); }
         if let Some(v) = low.strip_prefix("origin:") { origin = Some(v.trim().to_string()); }
+        if let Some(v) = low.strip_prefix("connection:") { close = v.contains("close"); }
         if low.starts_with(bridge_auth::HEADER) && low[bridge_auth::HEADER.len()..].starts_with(':') { presented = Some(h[bridge_auth::HEADER.len() + 1..].trim().to_string()); }
     }
-    if !bridge_request_ok(host.as_deref(), origin.as_deref(), port) { return reply(&mut s, 403, "text/plain", b"forbidden"); }
+    let keep = !close;
+    if !bridge_request_ok(host.as_deref(), origin.as_deref(), port) { return reply(s, 403, "text/plain", b"forbidden", false); }
     // Another user's program on this computer can reach the port too. Linux can tell whose socket is on the other end.
-    if let (Ok(peer), Ok(local)) = (s.peer_addr(), s.local_addr()) {
-        if !bridge_auth::peer_is_same_user(peer, local) { return reply(&mut s, 403, "text/plain", b"forbidden"); }
+    if !*checked {
+        if let (Ok(peer), Ok(local)) = (s.peer_addr(), s.local_addr()) {
+            if !bridge_auth::peer_is_same_user(peer, local) { return reply(s, 403, "text/plain", b"forbidden", false); }
+        }
+        *checked = true;
     }
+    // Only /rpc carries a body. Anything else with one is answered and the connection closed, so a body is never read as the next request.
+    let keep = keep && (len == 0 || (method == "POST" && url == "/rpc"));
     let (route, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
     if method == "GET" && route == "/hello" {
         // The launcher's challenge: only a bridge that knows the secret can answer with the right proof.
         let nonce = query.split('&').find_map(|kv| kv.strip_prefix("c=")).unwrap_or("");
-        return reply(&mut s, 200, "application/json", auth.hello(nonce).to_string().as_bytes());
+        return reply(s, 200, "application/json", auth.hello(nonce).to_string().as_bytes(), keep);
     }
     if method == "GET" && route == "/mode" {
-        let body = serde_json::json!({"secret": !auth.is_open(), "packaged": updatable(&ui).is_some(), "launcher_updated": LAUNCHER_REFRESHED.load(Ordering::SeqCst)});
-        return reply(&mut s, 200, "application/json", body.to_string().as_bytes());
+        let body = serde_json::json!({"secret": !auth.is_open(), "packaged": updatable(ui).is_some(), "launcher_updated": LAUNCHER_REFRESHED.load(Ordering::SeqCst)});
+        return reply(s, 200, "application/json", body.to_string().as_bytes(), keep);
     }
     let protected = route == "/rpc" || route == "/update-note" || route == "/update-check" || route == "/update-install";
-    if protected && !auth.allows(presented.as_deref()) { return reply(&mut s, 403, "text/plain", b"bad secret"); }
+    if protected && !auth.allows(presented.as_deref()) { return reply(s, 403, "text/plain", b"bad secret", false); }
     if method == "GET" && url == "/update-note" {
         // What the launcher's update check left for the page (packaging/linux-browser/megatron). Read once, then gone.
         let note = ui.parent().and_then(commons_core::browser_update::take_note);
         let body = note.map(|n| n.to_string()).unwrap_or_else(|| "{}".into());
-        return reply(&mut s, 200, "application/json", body.as_bytes());
+        return reply(s, 200, "application/json", body.as_bytes(), keep);
     }
     if method == "GET" && url == "/update-check" {
-        let body = match updatable(&ui) {
+        let body = match updatable(ui) {
             None => serde_json::json!({"packaged": false}),
             Some(_) => {
                 let relay = std::env::var("COMMONS_RELAY").unwrap_or_default();
@@ -142,36 +163,37 @@ fn handle(mut s: TcpStream, app: Arc<App>, ui: Arc<PathBuf>, port: u16, auth: Au
                 }
             }
         };
-        return reply(&mut s, 200, "application/json", body.to_string().as_bytes());
+        return reply(s, 200, "application/json", body.to_string().as_bytes(), keep);
     }
     if method == "POST" && url == "/update-install" {
-        let Some((install, key)) = updatable(&ui) else {
-            return reply(&mut s, 200, "application/json", br#"{"packaged":false}"#);
+        let Some((install, key)) = updatable(ui) else {
+            return reply(s, 200, "application/json", br#"{"packaged":false}"#, keep);
         };
-        let out = update_install(&app, &install, key);
-        reply(&mut s, 200, "application/json", out.to_string().as_bytes());
+        let out = update_install(app, &install, key);
+        let more = reply(s, 200, "application/json", out.to_string().as_bytes(), keep);
         if out["restarting"] == true {
             let _ = s.shutdown(std::net::Shutdown::Both);
-            restart(&install, &ui, port);
+            restart(&install, ui, port);
         }
-        return;
+        return more;
     }
     if method == "POST" && url == "/rpc" {
-        let mut body = vec![0u8; len.min(40 << 20)];
-        if r.read_exact(&mut body).is_err() { return reply(&mut s, 400, "text/plain", b"bad body"); }
+        if len > 40 << 20 { return reply(s, 400, "text/plain", b"too large", false); }
+        let mut body = vec![0u8; len];
+        if r.read_exact(&mut body).is_err() { return reply(s, 400, "text/plain", b"bad body", false); }
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
         let m = v["method"].as_str().unwrap_or("").to_string();
         let out = match app.call(&m, v["args"].clone()) { Ok(x) => serde_json::json!({"ok": x}), Err(e) => serde_json::json!({"err": e}) };
-        return reply(&mut s, 200, "application/json", out.to_string().as_bytes());
+        return reply(s, 200, "application/json", out.to_string().as_bytes(), keep);
     }
-    let Some(file) = bridge_auth::ui_file(&ui, &url) else { return reply(&mut s, 400, "text/plain", b"bad path") };
+    let Some(file) = bridge_auth::ui_file(ui, &url) else { return reply(s, 400, "text/plain", b"bad path", keep) };
     let path = file.to_string_lossy().to_string();
     match std::fs::read(&file) {
         Ok(b) => {
             let ct = if path.ends_with(".css") { "text/css" } else if path.ends_with(".js") { "text/javascript" } else if path.ends_with(".svg") { "image/svg+xml" } else { "text/html; charset=utf-8" };
-            reply(&mut s, 200, ct, &b)
+            reply(s, 200, ct, &b, keep)
         }
-        Err(_) => reply(&mut s, 404, "text/plain", b"not found"),
+        Err(_) => reply(s, 404, "text/plain", b"not found", keep),
     }
 }
 

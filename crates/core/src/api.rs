@@ -410,11 +410,11 @@ impl App {
                 self.files.lock().unwrap().clear();
                 Ok(json!({"ok": true}))
             }
-            "snapshot" => self.read("snapshot".into(), snapshot),
+            "snapshot" => same_or(self.read("snapshot".into(), snapshot), &a),
             "messages" => {
                 let (gid, around) = (s(&a, "gid"), s(&a, "around"));
                 let limit = a.get("limit").and_then(|x| x.as_u64()).unwrap_or(200).clamp(1, 5000) as usize;
-                self.read(format!("messages/{gid}/{limit}/{around}"), |c| messages(c, &gid, limit, &around))
+                same_or(self.read(format!("messages/{gid}/{limit}/{around}"), |c| messages(c, &gid, limit, &around)), &a)
             }
             "mark_read" => self.with(|c| { c.mark_read(&s(&a, "gid")); c.save().map_err(e)?; Ok(json!({})) }),
             "send_text" => self.with(|c| { let r = a.get("reply").and_then(|x| x.as_str()).map(|x| x.to_string()); c.send_text(&s(&a, "gid"), &s(&a, "text"), r).map(|id| json!({"id": id})).map_err(e) }),
@@ -859,6 +859,20 @@ impl App {
 
 #[doc(hidden)]
 pub fn debug_snapshot(c: &Client) -> Value { snapshot(c) }
+
+/// The page polls `snapshot` and `messages` twice a second, and almost always nothing has changed. Every answer carries a
+/// `hash` of itself; a caller that sends the hash it holds as `if` gets `{"same": true}` back when the answer would be the
+/// same, instead of the whole thing again. A caller that sends nothing gets the full answer, as before.
+fn same_or(r: R, a: &Value) -> R {
+    use std::hash::{Hash, Hasher};
+    let mut v = r?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    v.to_string().hash(&mut h);
+    let hash = format!("{:016x}", h.finish());
+    if a["if"].as_str() == Some(hash.as_str()) { return Ok(json!({"same": true, "hash": hash})); }
+    if let Value::Object(m) = &mut v { m.insert("hash".into(), Value::String(hash)); }
+    Ok(v)
+}
 
 fn snapshot(c: &Client) -> Value {
     let me = c.my_account();

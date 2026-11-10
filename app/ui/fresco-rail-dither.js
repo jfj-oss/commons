@@ -82,6 +82,12 @@
     const mk = (cls, parent) => { const c = document.createElement('canvas'); c.className = cls; c.setAttribute('aria-hidden', 'true'); parent.prepend(c); return c; };
     const rc = mk('rail-dither', rail), wc = mk('wall-dither', main);
     const rx = rc.getContext('2d'), wx = wc.getContext('2d');
+    // Only a canvas that is on screen is drawn: mega hides the rail's and, in a room, the wall's (display: none), and its
+    // card layer (#mega) covers the whole wall when it is up. Each is a quarter of a million dots a frame for nobody.
+    const seen = new Map(), mega = document.getElementById('mega');
+    const io = new IntersectionObserver(es => { for (const e of es) seen.set(e.target, e.isIntersecting); }, { threshold: 0 });
+    io.observe(rc); io.observe(wc); if (mega) io.observe(mega);
+    const railOn = () => seen.get(rc) !== false, wallOn = () => seen.get(wc) !== false && !(mega && seen.get(mega));
     const P = root.dataset.theme === 'solar' ? SOLAR_PAL : isDark() ? DARK_PAL : LIGHT_PAL;
     const PX_MID = pack(P.mid), PX_LIGHT = pack(P.light), PX_GLOW = pack(P.glow), PX_AMBER = pack(P.amber);
     let alive = true, noise = null;
@@ -125,6 +131,7 @@
     function frame(ms) {
       if (!noise || !R.img || !M.img) return;
       const t = ms / 1000;
+      if (!railOn()) { if (wallOn()) wall(t); return; }
       // the rail
       terms(R.x0, R.y0, R.W, R.H, U, t, R.C1, R.C2, R.R1, R.R2);
       const rp = R.px;
@@ -145,6 +152,9 @@
         }
       }
       rx.putImageData(R.img, 0, 0);
+      if (wallOn()) wall(t);
+    }
+    function wall(t) {
       if (LITE && wallDone) return;
       wallDone = true;
       // the wall: only crests, only outside the column and below the header; most dots are skipped early
@@ -167,12 +177,12 @@
     const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
     let wallDone = false;           // LITE: the wall is drawn once until the next resize
     let last = 0, raf = 0;
-    function loop() { if (!alive) return; raf = requestAnimationFrame(ms => { if (ms - last >= 1000 / FPS) { last = ms; frame(ms); } loop(); }); }
+    function loop() { if (!alive) return; raf = requestAnimationFrame(ms => { if (ms - last >= 1000 / FPS && (railOn() || wallOn())) { last = ms; frame(ms); } loop(); }); }
     // paused while the window is hidden or another app has focus: nobody is watching it then
     const onVis = () => { cancelAnimationFrame(raf); if (!document.hidden && document.hasFocus() && !still && noise) loop(); };
     document.addEventListener('visibilitychange', onVis); window.addEventListener('focus', onVis); window.addEventListener('blur', onVis);
     const ro = new ResizeObserver(() => { size(); wallDone = false; frame(performance.now()); }); ro.observe(rail); ro.observe(main);
-    stop = () => { alive = false; cancelAnimationFrame(raf); document.removeEventListener('visibilitychange', onVis); window.removeEventListener('focus', onVis); window.removeEventListener('blur', onVis); ro.disconnect(); rc.remove(); wc.remove(); stop = null; };
+    stop = () => { alive = false; cancelAnimationFrame(raf); document.removeEventListener('visibilitychange', onVis); window.removeEventListener('focus', onVis); window.removeEventListener('blur', onVis); ro.disconnect(); io.disconnect(); rc.remove(); wc.remove(); stop = null; };
   }
   function sync() { if (stop) stop(); start(); }
   function init() {
