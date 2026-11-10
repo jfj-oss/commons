@@ -109,7 +109,8 @@ without locking anyone out. What each gets:
 | Install | After the update | Protection |
 | --- | --- | --- |
 | Linux, standard launcher script in the install folder | The new bridge replaces an older `megatron` script (kept as `megatron.old`); the next start with it asks for a key, uses a browser profile of its own, and replaces the open-mode bridge | Full, from the second start after the update. The first start after the update still runs the old launcher: open mode, with a plain notice in the page |
-| Windows, macOS | The update swaps the launcher program in the same transaction as the bridge; the next start restarts an open-mode bridge with a key | Full, from the next start. The window of the start that installed the update is open mode, with the notice |
+| Windows | The update swaps `launcher.exe` in the same transaction as the bridge; the next start restarts an open-mode bridge with a key | Full, from the next start. The window of the start that installed the update is open mode, with the notice |
+| macOS | The update tarball carries the new launcher inside `ui/` as `.launcher-macos` (an older bridge, which installs the update, has no place for a top-level `launcher` in `Contents/Resources` and would refuse the update). The new bridge, at its next start and before it binds the port, writes it next to `Contents/MacOS/launcher`, renames it over (the old one is kept as `launcher.previous` in the data folder), moves the carrier out of the sealed `Resources`, signs the app again ad hoc and checks it with `codesign --verify`. If signing fails the old launcher and carrier are put back and that launcher is not tried again. Everything is logged in the data folder's `launcher.log`. The next start restarts an open-mode bridge with a key | Full, from the next start. The start that installed the update is open mode, with the notice "close mega and open it again" |
 | A launcher the update cannot replace (your own script, a systemd unit that starts `bridge 7420 ui`) | Keeps working unchanged: a bridge started without `MEGATRON_SECRET` is open to Host/Origin checks (and, on Linux, the same-user check) only. The page shows a notice. To get the full protection, start the bridge with `MEGATRON_SECRET` set to a random 32+ character string and open the window at `/#s=<that string>` | Host/Origin plus same-user on Linux; nothing against another program of the same user |
 | A new launcher with a bridge that ignores the key (the previous bridge restored after a failed update) | Opens at the plain address, warns once | As the line above |
 
@@ -118,6 +119,22 @@ own bridge). The browser profile of the new launcher is separate from the everyd
 lives in the data folder), but the window's own preferences (theme, call device choices, Jellyfin address) start fresh once and the
 microphone permission is asked again. The old profile is left untouched. `tools/browser-update-test.sh` and `tools/launcher-test.sh`
 cover these cases.
+
+## Window or tab
+
+By default the browser versions open mega as an app window with a browser profile of its own. In Settings (browser versions only,
+installed copies) **Open mega as** can be changed to **A tab in my browser** for this device. The choice is the file `open-as`
+(`tab` or `window`) in the data folder, written by the bridge (`POST /open-as?v=tab`, protected by the secret like `/rpc`); the
+environment variable `MEGATRON_OPEN=tab|window` overrides it, and all three launchers read it. It applies the next time mega is opened
+from its icon. A tab starts the browser with only the address (no `--app`, no profile folder), so it lands in the everyday profile: on
+macOS `open -a "Brave Browser"` when Brave is installed, else the default browser; on Windows and Linux the first of Brave, Chrome,
+Chromium, Edge found (an already-running browser opens a new tab), else the system's default handler.
+
+A tab's address is not the same as a window's. A normal browser keeps every address it visits, so the launcher does not put the secret
+in it: it writes a one-time ticket file (`.open-ticket-<port>`, mode 600, next to the secret file) and opens `/#t=<ticket>`. The page
+removes the ticket from the address bar at once and posts it to `/session`; the bridge checks it, deletes the file (so it works once,
+and for two minutes at most) and answers with the secret, which the page keeps in `sessionStorage` for that tab. Whatever the history
+keeps is a spent ticket. A tab you close needs mega to be opened from its icon again.
 
 ## The signing key
 

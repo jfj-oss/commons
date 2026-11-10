@@ -92,6 +92,51 @@ pub fn read_secret_file(path: &Path) -> Option<String> {
     valid_secret(&s).then_some(s)
 }
 
+/// How the browser version's launcher shows the page: in a window of its own (a Chromium `--app` window with a profile of its
+/// own, the default) or as a tab in the person's everyday browser.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum OpenAs { Window, Tab }
+
+impl OpenAs {
+    pub fn parse(s: &str) -> Option<OpenAs> {
+        match s.trim().to_ascii_lowercase().as_str() { "tab" => Some(OpenAs::Tab), "window" => Some(OpenAs::Window), _ => None }
+    }
+    pub fn word(self) -> &'static str { match self { OpenAs::Window => "window", OpenAs::Tab => "tab" } }
+}
+
+/// The per-device choice: `MEGATRON_OPEN` (tab|window) wins, then the `open-as` file in the data folder, then a window.
+pub fn open_as(data: &Path, env: Option<&str>) -> OpenAs {
+    env.and_then(OpenAs::parse)
+        .or_else(|| std::fs::read_to_string(data.join("open-as")).ok().and_then(|t| OpenAs::parse(&t)))
+        .unwrap_or(OpenAs::Window)
+}
+
+pub fn write_open_as(data: &Path, v: OpenAs) -> std::io::Result<()> {
+    std::fs::create_dir_all(data)?;
+    let tmp = data.join(".open-as.tmp");
+    std::fs::write(&tmp, v.word())?;
+    std::fs::rename(&tmp, data.join("open-as"))
+}
+
+/// A one-time ticket lets a tab in the everyday browser get the secret without the secret ever being in the address (which that
+/// browser would keep in its history). The launcher writes a ticket file (like the secret file) and opens `/#t=<ticket>`; the page
+/// posts the ticket to `/session` once and gets the secret back in the answer.
+pub const TICKET_LIFE_SECS: u64 = 120;
+
+pub fn ticket_path(dir: &Path, port: u16) -> std::path::PathBuf { dir.join(format!(".open-ticket-{port}")) }
+
+/// Checks `presented` against the ticket file and spends it: a right ticket is removed whatever follows; a wrong guess leaves it.
+/// An old ticket (a launcher that never got to open its tab) is removed and refused.
+pub fn take_ticket(dir: &Path, port: u16, presented: &str) -> bool {
+    let path = ticket_path(dir, port);
+    let Some(t) = read_secret_file(&path) else { return false };
+    let fresh = std::fs::metadata(&path).and_then(|m| m.modified()).ok()
+        .and_then(|m| m.elapsed().ok()).is_some_and(|d| d.as_secs() <= TICKET_LIFE_SECS);
+    if !fresh { let _ = std::fs::remove_file(&path); return false; }
+    if !ct_eq(presented.trim(), &t) { return false; }
+    std::fs::remove_file(&path).is_ok()
+}
+
 /// On Linux, the user that owns the other end of a loopback connection, from /proc/net/tcp. `None` when it cannot be told
 /// (other systems, no procfs, entry gone), which callers treat as allowed: this is a second layer, not the only one.
 #[cfg(target_os = "linux")]
@@ -123,7 +168,7 @@ pub fn ui_file(ui: &Path, url_path: &str) -> Option<std::path::PathBuf> {
     let p = if p.is_empty() { "index.html" } else { p };
     let mut out = ui.to_path_buf();
     for seg in p.split('/') {
-        if seg.is_empty() || seg == "." || seg == ".." || seg.contains(['\\', ':', '\0']) || seg.ends_with(' ') || seg.ends_with('.') { return None; }
+        if seg.is_empty() || seg == "." || seg == ".." || seg.starts_with('.') || seg.contains(['\\', ':', '\0']) || seg.ends_with(' ') || seg.ends_with('.') { return None; }
         out.push(seg);
     }
     // Symbolic links inside ui/ must not lead out of it either.
@@ -136,7 +181,7 @@ pub fn ui_file(ui: &Path, url_path: &str) -> Option<std::path::PathBuf> {
 /// The text of the Linux launcher this build ships, so a new bridge can replace an older launcher script in its own install.
 pub const LINUX_LAUNCHER: &str = include_str!("../../../packaging/linux-browser/megatron");
 /// A launcher that contains this line speaks the secret protocol; an older one does not.
-pub const LAUNCHER_MARK: &str = "# megatron-launcher-protocol: 2";
+pub const LAUNCHER_MARK: &str = "# megatron-launcher-protocol: 3";
 
 /// Replaces `<install>/megatron` with the launcher this build ships when the one there is an older copy of ours
 /// (looks like our script, lacks the protocol mark). The old file is kept as `megatron.old`. Returns true when replaced.
@@ -189,7 +234,7 @@ mod tests {
         std::fs::write(d.path().join("secret.txt"), "s").unwrap();
         assert_eq!(ui_file(&ui, "/").unwrap(), ui.join("index.html"));
         assert_eq!(ui_file(&ui, "/vendor/a.js?v=2").unwrap(), ui.join("vendor/a.js"));
-        for bad in ["/../secret.txt", "/vendor/../../secret.txt", "//etc/passwd", "/C:/Users/x/file", "/c:\\windows\\win.ini", "/..\\secret.txt", "/vendor//a.js", "/a.js:stream", "/index.html.", "/x\0y", "/./index.html"] {
+        for bad in ["/../secret.txt", "/vendor/../../secret.txt", "//etc/passwd", "/C:/Users/x/file", "/c:\\windows\\win.ini", "/..\\secret.txt", "/vendor//a.js", "/a.js:stream", "/index.html.", "/x\0y", "/./index.html", "/.launcher-macos", "/vendor/.x"] {
             assert!(ui_file(&ui, bad).is_none(), "{bad}");
         }
         #[cfg(unix)]
@@ -242,6 +287,38 @@ mod tests {
         assert_eq!(read_secret_file(&p).as_deref(), Some(s.as_str()));
         std::fs::write(&p, "short").unwrap();
         assert!(read_secret_file(&p).is_none());
+    }
+    #[test]
+    fn open_as_parses_and_env_beats_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(open_as(d.path(), None), OpenAs::Window, "window is the default");
+        write_open_as(d.path(), OpenAs::Tab).unwrap();
+        assert_eq!(std::fs::read_to_string(d.path().join("open-as")).unwrap(), "tab");
+        assert_eq!(open_as(d.path(), None), OpenAs::Tab);
+        assert_eq!(open_as(d.path(), Some("window")), OpenAs::Window);
+        assert_eq!(open_as(d.path(), Some(" TAB\n")), OpenAs::Tab);
+        assert_eq!(open_as(d.path(), Some("junk")), OpenAs::Tab, "an unknown value falls through to the file");
+        std::fs::write(d.path().join("open-as"), "nonsense").unwrap();
+        assert_eq!(open_as(d.path(), None), OpenAs::Window);
+        std::fs::write(d.path().join("open-as"), "tab\n").unwrap();
+        assert_eq!(open_as(d.path(), None), OpenAs::Tab);
+    }
+    #[test]
+    fn a_ticket_works_once_and_not_when_wrong_or_old() {
+        let d = tempfile::tempdir().unwrap();
+        let t = new_secret();
+        assert!(!take_ticket(d.path(), 1, &t), "no ticket file");
+        write_secret_file(&ticket_path(d.path(), 1), &t).unwrap();
+        assert!(!take_ticket(d.path(), 1, "x") && !take_ticket(d.path(), 1, ""));
+        assert!(!take_ticket(d.path(), 2, &t), "another port's ticket");
+        assert!(take_ticket(d.path(), 1, &t), "the right ticket");
+        assert!(!take_ticket(d.path(), 1, &t), "spent");
+        // an expired ticket
+        write_secret_file(&ticket_path(d.path(), 1), &t).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(TICKET_LIFE_SECS + 30);
+        std::fs::File::options().write(true).open(ticket_path(d.path(), 1)).unwrap().set_modified(old).unwrap();
+        assert!(!take_ticket(d.path(), 1, &t));
+        assert!(!ticket_path(d.path(), 1).exists(), "an expired ticket is cleared");
     }
     #[cfg(target_os = "linux")]
     #[test]

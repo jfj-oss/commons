@@ -13,6 +13,17 @@ const BRIDGE = (() => {
     try { sessionStorage.setItem('mega.bridge', s); } catch { }
     try { history.replaceState(null, '', location.pathname + location.search); } catch { }
   }
+  // A tab in the person's everyday browser arrives with /#t=<ticket> instead: that browser keeps every address in its history,
+  // so the address holds only a one-time ticket, which the bridge swaps for the secret here (it works once, for two minutes).
+  // Every call waits for that swap.
+  let ready = Promise.resolve();
+  const t = /(?:^#|&)t=([0-9A-Za-z]{32,256})(?:&|$)/.exec(location.hash);
+  if (t) {
+    try { history.replaceState(null, '', location.pathname + location.search); } catch { }
+    ready = fetch('/session', { method: 'POST', body: t[1] }).then(r => r.ok ? r.json() : null).then(j => {
+      if (j && j.secret) { s = j.secret; try { sessionStorage.setItem('mega.bridge', s); } catch { } }
+    }).catch(() => { });
+  }
   const headers = (h = {}) => (s ? { ...h, 'X-Megatron-Secret': s } : h);
   let shown = false;
   const refused = () => {
@@ -23,7 +34,7 @@ const BRIDGE = (() => {
     d.textContent = 'This window is not connected to mega\u2019s background part any more (it was restarted, or this window was opened another way). Close this window and open mega again from your app menu.';
     document.body.appendChild(d);
   };
-  return { headers, refused, fetch: (u, o = {}) => fetch(u, { ...o, headers: headers(o.headers) }).then(r => { if (r.status === 403) refused(); return r; }) };
+  return { headers, refused, fetch: (u, o = {}) => ready.then(() => fetch(u, { ...o, headers: headers(o.headers) })).then(r => { if (r.status === 403) refused(); return r; }) };
 })();
 window.__bridgeFetch = BRIDGE.fetch;
 async function rpc(method, args = {}) {
@@ -1520,11 +1531,14 @@ $('#btn-settings').onclick = () => {
   <label class="check"><input type="checkbox" id="lstr" ${S.snap.share_listening ? 'checked' : ''}><span>Share what I'm listening to</span></label>
   <label for="rune">rune address</label><input type="text" id="rune" value="${esc(S.snap.rune_url)}" spellcheck="false"><p class="muted small">Song title and artist go to your communities, end to end encrypted. Nothing else is read or sent.</p>
   ${mobileApp() ? '' : `<label for="dl-dir">Large-file downloads folder</label><input type="text" id="dl-dir" value="${esc(S.snap.download_dir || '')}" spellcheck="false"><p class="muted small">Written here as they arrive, one verified piece at a time. Leave empty for your usual Downloads folder.</p>`}
+  ${window.__TAURI__ ? '' : '<div id="open-as-row" hidden></div>'}
   ${window.__TAURI__ ? '' : '<label>Updates</label><button type="button" class="btn ghost" id="set-update">Check for updates</button>'}
   ${mobileApp() ? '' : '<label>Calls</label><button type="button" class="btn ghost" id="set-gamekeys">Game keys…</button><p class="muted small">Mute yourself in mega while you talk to your game team.</p>'}
   <label for="rl">Relay address</label><input type="text" id="rl" value="${esc(S.snap.relay)}" spellcheck="false"><p class="muted small">Change this only if your relay moved. A different relay does not have your communities.<br>Your account id: <span class="mono">${esc(S.snap.me.account.slice(0, 16))}…</span></p>
   <label for="rs">This server's sign-up secret</label><input type="password" id="rs" value="" spellcheck="false" autocomplete="off" placeholder="${S.snap.relay_secret ? 'Saved on this device — leave empty to keep it' : 'Not saved on this device — paste it here if you have it'}"><p class="muted small">A device added by pairing may not have it; without it, invite links from this device only work for people who already have an account here. It is checked with the relay and never shown again once saved.</p>`,
   [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => {
+    const oa = $('#oa', w);   // browser version only: how the launcher shows mega next time
+    if (oa && oa.value !== oa.dataset.was) { const r = await BRIDGE.fetch('/open-as?v=' + encodeURIComponent(oa.value), { method: 'POST' }).then(x => x.json()).catch(() => null); if (!r || r.error) toast('Could not save how mega opens.'); }
     if (val(w, 'rl').trim() !== S.snap.relay) await rpc('set_relay', { relay: val(w, 'rl') });
     const secret = val(w, 'rs').trim();
     if (secret) await rpc('set_relay_invite', { secret });
@@ -1532,6 +1546,12 @@ $('#btn-settings').onclick = () => {
     await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('wavePalette', val(w, 'wave-pal')); pref.set('theme', val(w, 'th')); if (document.documentElement.classList.contains('mega')) pref.set('chatFont', val(w, 'cf')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh();
   } }]);
   fillAvatars();
+  if (!window.__TAURI__) BRIDGE.fetch('/open-as').then(r => r.json()).then(j => {
+    // Only the installed browser version has a launcher that can honour this.
+    const row = $('#open-as-row'); if (!row || !j || !j.packaged || !j.open_as) return;
+    row.innerHTML = `<label>Open mega as</label>${seg('oa', [['window', 'Its own window'], ['tab', 'A tab in my browser']], j.open_as)}<p class="muted small">Takes effect the next time you open mega from its icon. A window of its own keeps mega apart from your browser's extensions; a tab uses your everyday browser and profile, where its extensions can see the page.${j.forced ? ' The MEGATRON_OPEN setting of this computer overrides this choice.' : ''}</p>`;
+    $('#oa', row).dataset.was = j.open_as; row.hidden = false;
+  }).catch(() => { });
   p.then(tick);
 };
 

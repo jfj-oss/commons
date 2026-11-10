@@ -272,7 +272,7 @@ CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST --data "$RPC" "http://127.
 [ "$CODE" = 200 ] || fail "the old launcher is locked out of the new bridge (HTTP $CODE)"
 curl -sf "http://127.0.0.1:$PORT/mode" | grep -q '"secret":false' || fail "the bridge claims a secret it was never given"
 sleep 0.5
-grep -q 'megatron-launcher-protocol: 2' "$I/megatron" || fail "the bridge did not refresh the old launcher script"
+grep -q 'megatron-launcher-protocol: 3' "$I/megatron" || fail "the bridge did not refresh the old launcher script"
 [ -f "$I/megatron.old" ] && grep -q 'pgrep' "$I/megatron.old" || fail "the old launcher was not kept as megatron.old"
 curl -sf "http://127.0.0.1:$PORT/mode" | grep -q '"launcher_updated":true' || fail "the page is not told the launcher was refreshed"
 OLDPID=$(cat "$I/.pid")
