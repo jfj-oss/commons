@@ -450,3 +450,22 @@ html.mega .mmascots { gap: 0; }
 html.mega #mega-typing .mtwho { flex: 0 1 auto; min-width: 0; align-self: flex-end; margin: 0 8px 12px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 12px/1.2 var(--m-name); color: var(--m-paper); }
 html.mega #mega-typing .mtwho:empty { display: none; }
 html.mega.mg-room #typing { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* Cards are a tall square, not a band across the window: never wider than about nine tenths of their height. On a phone the window is
+   narrower than that anyway. The card is its own size container, so the name and the count scale with the card, not the window.
+   The space either side on a wide screen is left empty for now. */
+.mcard { max-width: min(1800px, 72cqh); container-type: inline-size; }
+.mti { font-size: round(down, calc(clamp(40px, 17cqw, 138px) * var(--m-dz)), var(--m-dsnap)); }
+.mnu { font-size: round(down, clamp(64px, 25cqw, 210px), var(--m-dsnap)); }
+
+/* who is in the call, under the call dock: one square picture each, the speaker ringed in the room's highlight */
+#call-ppl { position: fixed; z-index: 30; display: flex; flex-direction: column; align-items: center; gap: 8px; overflow-y: auto; scrollbar-width: none; padding: 2px 0; pointer-events: auto; }
+#call-ppl[hidden] { display: none; }
+#call-ppl::-webkit-scrollbar { display: none; }
+#call-ppl .cp { flex: none; width: 48px; height: 48px; border-radius: 14px; overflow: hidden; display: grid; place-items: center; background: #15151b; box-shadow: 0 0 0 2px transparent; transition: box-shadow .15s, opacity .2s, transform .2s var(--m-spring); }
+#call-ppl .cp .seal { width: 100%; height: 100%; border-radius: 0; }
+#call-ppl .cp .seal img, #call-ppl .cp img { width: 100%; height: 100%; object-fit: cover; border-radius: 0; }
+#call-ppl .cp.muted { opacity: .55; }
+#call-ppl .cp.talk { opacity: 1; box-shadow: 0 0 0 2px #050407, 0 0 0 4px var(--dk-hi, var(--m-speak)), 0 0 14px color-mix(in srgb, var(--dk-hi, var(--m-speak)) 55%, transparent); transform: scale(1.06); }
+@supports (corner-shape: squircle) { #call-ppl .cp { border-radius: 22px; corner-shape: squircle; } }
+@media (prefers-reduced-motion: reduce) { #call-ppl .cp { transition: none; } #call-ppl .cp.talk { transform: none; } }

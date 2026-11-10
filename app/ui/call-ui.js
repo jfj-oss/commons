@@ -141,6 +141,33 @@
     if (!inCall) { closePop(); if (showSettings) { showSettings = false; renderSettings(s); } return; }
     const html = dockHtml(s, sup);
     if (dock.__html !== html) { dock.innerHTML = html; dock.__html = html; }
+    renderPeople(s);
+  }
+  // mega on a wide screen: who is in the call, one square picture each, in a column under the call dock; the one talking lights up
+  let ppl = null;
+  function placePeople() {
+    if (!ppl || ppl.hidden) return;
+    const r = dock.getBoundingClientRect(); if (!r.height) return;
+    const top = Math.round(r.bottom + 10);
+    ppl.style.top = top + 'px'; ppl.style.right = Math.round(innerWidth - r.right) + 'px'; ppl.style.width = Math.round(r.width) + 'px';
+    ppl.style.maxHeight = Math.max(0, innerHeight - top - 10) + 'px';
+  }
+  function renderPeople(s) {
+    const want = document.documentElement.classList.contains('mega') && dock.classList.contains('standalone') && !dock.hidden
+      && s.phase !== 'idle' && (s.peers || []).length > 0 && matchMedia('(min-width: 761px)').matches;
+    if (!want) { if (ppl) ppl.hidden = true; return; }
+    if (!ppl) {
+      ppl = document.createElement('div'); ppl.id = 'call-ppl'; ppl.setAttribute('role', 'list'); ppl.setAttribute('aria-label', 'In the call');
+      document.body.append(ppl);
+      new ResizeObserver(placePeople).observe(dock); addEventListener('resize', placePeople);
+    }
+    const html = s.peers.map(p => {
+      const who = p.me ? 'you' : p.name, state = p.speaking ? ', speaking' : p.muted ? ', muted' : '';
+      return `<span class="cp${p.speaking ? ' talk' : ''}${p.muted ? ' muted' : ''}" role="listitem" title="${esc(who + state)}" aria-label="${esc(who + state)}">${seal(p.account || p.identity, p.name)}</span>`;
+    }).join('');
+    if (ppl.__html !== html) { ppl.innerHTML = html; ppl.__html = html; if (typeof fillAvatars === 'function') fillAvatars(ppl); }
+    const hi = dock.style.getPropertyValue('--dk-hi'); if (hi) ppl.style.setProperty('--dk-hi', hi); else ppl.style.removeProperty('--dk-hi');   // the room's highlight, as on the dock
+    ppl.hidden = false; placePeople();
   }
   let dockWired = false, swallowClick = false;
   function wireDock() {
