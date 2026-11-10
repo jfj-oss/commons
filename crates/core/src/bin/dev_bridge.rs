@@ -32,7 +32,11 @@ fn reply(s: &mut TcpStream, code: u16, ct: &str, body: &[u8], keep: bool) -> boo
     let reason = match code { 200 => "OK", 403 => "Forbidden", 400 => "Bad Request", 404 => "Not Found", _ => "Error" };
     let conn = if keep { format!("keep-alive\r\nKeep-Alive: timeout={KEEP_ALIVE_SECS}") } else { "close".to_string() };
     let head = format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: {conn}\r\nCache-Control: no-store\r\nContent-Security-Policy: {CSP}\r\n\r\n", body.len());
-    let ok = s.write_all(head.as_bytes()).and_then(|_| s.write_all(body)).and_then(|_| s.flush()).is_ok();
+    // One write: on a kept-alive connection a header written on its own would sit behind Nagle's algorithm until the
+    // body's ACK came back, which is tens of milliseconds for every answer.
+    let mut msg = Vec::with_capacity(head.len() + body.len());
+    msg.extend_from_slice(head.as_bytes()); msg.extend_from_slice(body);
+    let ok = s.write_all(&msg).and_then(|_| s.flush()).is_ok();
     ok && keep
 }
 
@@ -100,6 +104,7 @@ fn restart(install: &std::path::Path, ui: &std::path::Path, port: u16) -> ! {
 /// connection, which is all it needs (a socket never changes hands). An idle connection is closed after KEEP_ALIVE_SECS.
 fn handle(mut s: TcpStream, app: Arc<App>, ui: Arc<PathBuf>, port: u16, auth: Auth) {
     let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(KEEP_ALIVE_SECS)));
+    let _ = s.set_nodelay(true);
     let mut r = BufReader::new(s.try_clone().expect("clone"));
     let mut checked = false;
     while request(&mut s, &mut r, &app, &ui, port, &auth, &mut checked) {}

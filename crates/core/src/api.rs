@@ -246,7 +246,7 @@ impl App {
         if in_call { self.saw_call(); }
         let r = self.dispatch(method, a);
         if in_call && r.is_ok() { self.saw_call(); }
-        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait" | "call_presence" | "live_poll" | "ring_poll" | "wall_get" | "pcaudio_status" | "pcaudio_caps" | "pcaudio_streams") { self.nudge(); }
+        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "file_transfers" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait" | "call_presence" | "live_poll" | "ring_poll" | "wall_get" | "pcaudio_status" | "pcaudio_caps" | "pcaudio_streams") { self.nudge(); }
         r
     }
 
