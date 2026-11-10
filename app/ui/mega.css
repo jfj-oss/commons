@@ -247,7 +247,7 @@ html.mega.mg-room #chan-title { font-size: round(down, 24px, 12px); }
 html.mega.mg-room #chan-sub { font-size: 12px; }
 html.mega.mg-room #stream { padding-bottom: 42px; overflow-x: hidden; }
 html.mega.mg-room .body .at.self { background: var(--mg-hi); color: var(--mg-hi-ink); padding: 0 .16em; border-radius: 4px; }
-#main > #mega-bd { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+#main > #mega-bd { transition: background-color .6s; position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
 
 /* text sizes by length (text-only messages); all multiples of 12px, line-height stays 1.05 */
 html.mega .msg[data-mz="1"] .body { font-size: 36px; line-height: var(--read-lead); }
@@ -303,6 +303,10 @@ html.mega #typing .dots { display: none; }
 .mp-head #mp-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mp-body { display: grid; gap: 12px; }
 #mega-paint.off .mp-body { display: none; }
+.mp-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 8px; padding: 3px; border-radius: 999px; background: rgb(255 255 255 / .06); }
+.mp-mode[hidden], #mp-same[hidden] { display: none; }
+.mp-m { padding: 7px 10px; border-radius: 999px; color: inherit; font: 12px/1.2 var(--m-ui); background: transparent; }
+.mp-m[aria-pressed="true"] { background: var(--m-paper); color: #050407; }
 .mp-wells { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .mp-well { display: flex; align-items: center; gap: 9px; padding: 7px; border-radius: 16px; background: rgb(255 255 255 / .05); border: 1px solid transparent; font-weight: 500; color: inherit; }
 .mp-well[aria-pressed="true"] { border-color: var(--m-paper); background: rgb(255 255 255 / .1); }

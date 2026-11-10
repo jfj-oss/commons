@@ -816,11 +816,15 @@ pub struct Look {
     /// stored as `true`. A wall the owner locked is still left alone, and so is a room where Oracle stays quiet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oracle_draw: Option<bool>,
+    /// Rooms only. The backdrop's own two colours (wash and ASCII) behind the chat. Unset: the backdrop uses the room's card colours. An app that
+    /// does not know this field ignores it and keeps using the card colours, so the document stays valid and readable for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back: Option<Duo>,
 }
 impl Look {
-    pub fn is_empty(&self) -> bool { self.card.is_none() && self.chat.is_none() && self.dim.is_none() && self.oracle_quiet.is_none() && self.oracle_draw.is_none() }
+    pub fn is_empty(&self) -> bool { self.card.is_none() && self.chat.is_none() && self.dim.is_none() && self.oracle_quiet.is_none() && self.oracle_draw.is_none() && self.back.is_none() }
     pub fn valid(&self) -> bool {
-        !self.is_empty() && self.card.is_none_or(|n| n <= MAX_LOOK_PATTERN) && self.chat.is_none_or(|n| n <= MAX_LOOK_PATTERN) && self.dim.is_none_or(|n| n <= MAX_LOOK_DIM)
+        !self.is_empty() && self.back.as_ref().is_none_or(|d| d.valid()) && self.card.is_none_or(|n| n <= MAX_LOOK_PATTERN) && self.chat.is_none_or(|n| n <= MAX_LOOK_PATTERN) && self.dim.is_none_or(|n| n <= MAX_LOOK_DIM)
     }
 }
 

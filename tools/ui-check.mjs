@@ -1251,6 +1251,72 @@ try {
     await focusCard(A, g); await enterFocused(A);
     need(await lvl(A) === 'chat', 'cards: could not get back to the chat');
   }
+  // ---- mega: the chat backdrop has its own two colours (owner picks, everyone's open chat follows, "same as card" resets, text stays readable) ----
+  {
+    const cid = await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`);
+    const g = JSON.stringify(textGid), cidj = JSON.stringify(cid);
+    const wf = async (P, expr, ms) => { await P.send('Page.bringToFront'); await sleep(250); return P.waitFor(expr, ms); };
+    const look = P => P.ev(`JSON.stringify(((S.snap.communities.find(c => c.id === ${cidj}).style || {}).looks || {})[${g}] || null)`).then(JSON.parse);
+    const rooms = P => P.ev(`JSON.stringify(((S.snap.communities.find(c => c.id === ${cidj}).style || {}).rooms || {})[${g}] || null)`).then(JSON.parse);
+    const rgbOf = s => (String(s).match(/\d+/g) || [0, 0, 0]).slice(0, 3).map(Number);
+    const hexOf = a => '#' + a.map(v => v.toString(16).padStart(2, '0')).join('');
+    const wash = P => P.ev(`getComputedStyle(document.querySelector('#mega-bd')).backgroundColor`).then(rgbOf);
+    const washIs = (P, want) => wf(P, `getComputedStyle(document.querySelector('#mega-bd')).backgroundColor === ${JSON.stringify('rgb(' + want.join(', ') + ')')}`, 20000);
+    const lum = a => { const [r, g2, b] = a.map(v => { v /= 255; return v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }); return .2126 * r + .7152 * g2 + .0722 * b; };
+    const cr = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + .05) / (Math.min(x, y) + .05); };
+    const cidOpen = async P => { await P.send('Page.bringToFront'); await P.ev(`__mega.api.toChat(${cidj}, ${g})`); await wf(P, `__mega.level === 'chat' && !!document.querySelector('#mega-bd') && document.querySelectorAll('#stream .msg').length > 3`, 20000); await sleep(900); };
+    const toCards = async P => {
+      await P.send('Page.bringToFront');
+      for (let i = 0; i < 4 && await lvl(P) !== 'server'; i++) { await P.ev(`document.activeElement && document.activeElement.blur && document.activeElement.blur()`); await key(P, 'Escape'); await sleep(1000); }
+      need(await lvl(P) === 'server', 'backdrop: could not reach the rooms level');
+      await P.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.key === ${g}), true)`); await wf(P, `__mega.list.settled && __mega.list.item.key === ${g}`, 20000);
+    };
+    await cidOpen(B);
+    const card0 = await rooms(A), wash0 = await wash(B);
+    await B.shot('backdrop-1-before');
+    // a member can not set it
+    const refused = await B.ev(`rpc('set_look', { cid: ${cidj}, room: ${g}, back: { main: '#1f6f4a', hi: '#ffd23f' } }).then(() => 'accepted', e => 'refused: ' + e.message)`);
+    need(/^refused/.test(refused), 'backdrop: the core took backdrop colours from a member: ' + refused);
+    // the owner opens the colours panel and switches to the backdrop
+    await toCards(A);
+    await A.ev(`document.querySelector('#mega [data-m="paint"]').click()`); await wf(A, `!!document.querySelector('#mega-paint .mp-m')`, 8000);
+    need(await A.ev(`(() => { const p = document.querySelector('#mega-paint'); return !p.querySelector('#mp-mode').hidden && p.querySelector('.mp-m[data-mode="card"]').getAttribute('aria-pressed') === 'true' && p.querySelector('#mp-same').hidden; })()`), 'backdrop: the panel should start on the card with no "same as card"');
+    await A.ev(`document.querySelector('#mega-paint .mp-m[data-mode="back"]').click()`); await sleep(300);
+    need(await A.ev(`document.querySelector('#mega-paint .mp-m[data-mode="back"]').getAttribute('aria-pressed') === 'true' && document.querySelector('#mp-same').hidden`), 'backdrop: the switch did not move');
+    await A.ev(`(()=>{const e=document.querySelector('#mp-hex');e.value='#1f6f4a';e.dispatchEvent(new Event('input',{bubbles:true}));})()`); await sleep(200);
+    await A.ev(`document.querySelector('.mp-well[data-w="1"]').click()`);
+    await A.ev(`(()=>{const e=document.querySelector('#mp-hex');e.value='#ffd23f';e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+    await wf(B, `getComputedStyle(document.querySelector('#mega-bd')).backgroundColor !== ${JSON.stringify('rgb(' + wash0.join(', ') + ')')}`, 40000).catch(async () => { throw new Error('mega: backdrop: bob\'s open chat did not take the new backdrop colours: ' + JSON.stringify([await look(B), await look(A), await wash(B), wash0, await B.ev(`JSON.stringify({ lvl: __mega.level, bd: __mega.bdInfo(), bg: document.querySelector('#mega-bd') && document.querySelector('#mega-bd').style.backgroundColor })`)])); });
+    await wf(B, `(((S.snap.communities.find(c => c.id === ${cidj}).style || {}).looks || {})[${g}] || {}).back`, 30000);
+    const lb = await look(B);
+    need(lb.back.main === '#1f6f4a' && lb.back.hi === '#ffd23f', 'backdrop: stored colours wrong: ' + JSON.stringify(lb));
+    need(JSON.stringify(await rooms(B)) === JSON.stringify(card0), 'backdrop: the card colours changed too: ' + JSON.stringify([card0, await rooms(B)]));
+    await sleep(900);
+    const w1 = await wash(B);
+    need(w1[1] > w1[0] && w1[1] > w1[2] && Math.max(...w1) >= 28, 'backdrop: the wash is not a visible green: ' + w1);
+    // the message text stays readable over the wash (WCAG contrast)
+    const ink = await B.ev(`JSON.stringify(['#stream .msg .body', '#stream .msg .who .name', '#stream time.when', '#chan-title'].map(s => { const e = document.querySelector(s); return e ? getComputedStyle(e).color : null; }))`).then(JSON.parse);
+    const ratios = ink.map(c => (c ? cr(rgbOf(c), w1) : 99));
+    need(ratios[0] >= 7 && ratios[1] >= 4.5 && ratios[3] >= 7, 'backdrop: text contrast over the wash too low: ' + JSON.stringify([ink, ratios, w1]));
+    need((await B.ev(`__mega.bdInfo().draws`)) > 0, 'backdrop: nothing drawn');
+    await B.shot('backdrop-2-after');
+    // the strength slider: 0 = off (plain dark), and the colours are kept
+    await A.ev(`(()=>{const e=document.querySelector('#mp-dim');e.value='0';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await washIs(B, [5, 4, 7]).catch(() => { throw new Error('mega: backdrop: strength 0 did not switch the wash off for bob'); });
+    need((await look(B)).back && (await look(B)).dim === 0, 'backdrop: strength 0 lost the backdrop colours: ' + JSON.stringify(await look(B)));
+    await A.ev(`(()=>{const e=document.querySelector('#mp-dim');e.value='100';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await washIs(B, w1).catch(() => { throw new Error('mega: backdrop: strength 100 did not bring the wash back'); });
+    // same as card
+    need(await A.ev(`!document.querySelector('#mp-same').hidden`), 'backdrop: no "same as card" while the backdrop has its own colours');
+    await A.ev(`document.querySelector('#mp-same').click()`);
+    await wf(B, `!(((S.snap.communities.find(c => c.id === ${cidj}).style || {}).looks || {})[${g}] || {}).back`, 40000).catch(() => { throw new Error('mega: backdrop: "same as card" did not reach bob'); });
+    await sleep(900);
+    const w2 = await wash(B);
+    need(JSON.stringify(w2) !== JSON.stringify(w1), 'backdrop: the wash did not return to the card colours: ' + JSON.stringify([w1, w2]));
+    need(await A.ev(`document.querySelector('#mp-same').hidden`), 'backdrop: "same as card" stays after use');
+    await A.ev(`document.querySelector('#mp-done').click()`); await sleep(300);
+    await toCards(A); await cidOpen(A);
+  }
   if (process.env.COMMONS_UI_STOP_AFTER === 'mega5') { console.log('UI check stopped after mega phase 5 (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
 
   }
