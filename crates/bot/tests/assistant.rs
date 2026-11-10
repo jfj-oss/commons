@@ -390,7 +390,10 @@ fn anything_else_is_handed_off_with_the_exact_cli_flags() {
         assert!(args.contains(&want.to_string()), "missing {want}: {args:?}");
     }
     for bad in ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "bypassPermissions", "--allowedTools", "--bare"] { assert!(!args.iter().any(|a| a == bad), "{bad}"); }
-    assert_eq!(runs[0]["cwd"].as_str().unwrap(), e.home.to_string_lossy());
+    assert_eq!(runs[0]["cwd"].as_str().unwrap(), e.a.cfg.workspace.to_string_lossy());
+    assert_ne!(runs[0]["cwd"].as_str().unwrap(), e.home.to_string_lossy());
+    let i = args.iter().position(|a| a == "--add-dir").expect("read dir");
+    assert_eq!(args[i + 1], e.home.join("projects").to_string_lossy());
     let env_keys: Vec<String> = runs[0]["env"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
     assert!(!env_keys.iter().any(|k| k.starts_with("MEGATRON_BOT") || k.contains("KEY") || k.contains("TOKEN") || k == "ANTHROPIC_API_KEY"), "{env_keys:?}");
     // the settings file the CLI was pointed at

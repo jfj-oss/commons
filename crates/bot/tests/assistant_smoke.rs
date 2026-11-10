@@ -41,7 +41,8 @@ fn real_claude_read_only_disk_question() {
     a.route(&facts, "Oracle", "aaaaaaaaaaaa", "@Oracle assistant here");
     let chat = Chat0::default();
     let job = Job { gid: "smoke".into(), trigger: "t".into(), from: "aaaaaaaaaaaa".into(), kind: JobKind::Assistant,
-        text: "do: How much free disk space is there on this computer? Run one read-only df command and report the numbers briefly. Change nothing.".into() };
+        text: std::env::var("SMOKE_TASK").unwrap_or_else(|_| "do: How much free disk space is there on this computer? Run one read-only df command and report the numbers briefly. Change nothing.".into()) };
+    let answer_yes = std::env::var("SMOKE_ANSWER").map_or(true, |v| v == "yes");
     let (a2, mut c2) = (a.clone(), chat.clone());
     let worker = std::thread::spawn(move || a2.handle(&mut c2, &job, &NoLlm, &NoSearch, None));
     let mut seen = 0;
@@ -52,7 +53,8 @@ fn real_claude_read_only_disk_question() {
             if let Some(rest) = m.strip_prefix("Approval needed [") {
                 let code = &rest[..4];
                 let cmd = m.split("Command:\n").nth(1).and_then(|c| c.lines().next()).unwrap_or("").to_string();
-                let ok = m.contains("Tool: Bash") && ["df", "free", "lsblk"].iter().any(|p| cmd == *p || cmd.starts_with(&format!("{p} "))) && !cmd.contains([';', '|', '&', '>', '<', '$', '`']);
+                println!("[smoke] request text: {m}");
+                let ok = answer_yes && m.contains("Tool: Bash") && ["df", "free", "lsblk"].iter().any(|p| cmd == *p || cmd.starts_with(&format!("{p} "))) && !cmd.contains([';', '|', '&', '>', '<', '$', '`']);
                 println!("[smoke] request {code}: {cmd:?} -> {}", if ok { "yes" } else { "no" });
                 let r = parse_reply(&format!("{} {code}", if ok { "yes" } else { "no" })).unwrap();
                 assert!(matches!(r, Reply::Yes(_) | Reply::No(_)));

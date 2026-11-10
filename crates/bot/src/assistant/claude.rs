@@ -120,6 +120,9 @@ impl Assistant {
         push("--permission-mode", Some("default"));
         push("--disable-slash-commands", None);
         push("--no-chrome", None);
+        for d in &self.cfg.read_dirs {
+            if d.is_dir() && !self.deny.is_denied(d) { push("--add-dir", Some(&d.to_string_lossy())); }
+        }
         push("--append-system-prompt", Some(SYSTEM_NOTES));
         if let Some(id) = resume { push("--resume", Some(id)); }
         a
@@ -134,7 +137,7 @@ impl Assistant {
             c
         } else { Command::new(&cfg.claude_bin) };
         cmd.args(args);
-        cmd.current_dir(&cfg.home);
+        cmd.current_dir(&cfg.workspace);
         cmd.env_clear();
         cmd.env("HOME", &cfg.home).env("TERM", "dumb");
         for k in ["PATH", "USER", "LOGNAME", "LANG", "SHELL", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
@@ -193,6 +196,14 @@ impl Assistant {
             return;
         }
 
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&self.cfg.workspace);
+            if self.deny.is_denied(&self.cfg.workspace) || !self.cfg.workspace.is_dir() {
+                self.say(c, gid, Some(trigger), "The assistant workspace folder is unusable (missing or inside a protected place).");
+                return;
+            }
+        }
         let (ev_tx, ev_rx) = channel::<Ev>();
         let (req_tx, req_rx) = channel::<ApprovalReq>();
         let socket = match ApprovalSocket::bind(&sock_path, &token, req_tx, self.broker.timeout()) {

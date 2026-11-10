@@ -27,6 +27,10 @@ pub struct AssistConfig {
     pub allowed_domains: Vec<String>,
     /// Claude Code's own config folder, whose settings.json is checked before every task.
     pub claude_config_dir: PathBuf,
+    /// Where Claude Code runs. Not the home folder, so reads and edits elsewhere go through the approver.
+    pub workspace: PathBuf,
+    /// Extra folders Claude may read without asking (the deny list still applies).
+    pub read_dirs: Vec<PathBuf>,
     pub max_read_bytes: usize,
     pub max_list_entries: usize,
     /// One posted message is at most this many characters; longer text goes out as several.
@@ -63,6 +67,8 @@ impl AssistConfig {
             extra_env: vec![],
             allowed_domains: vec![],
             claude_config_dir: std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".claude")),
+            workspace: home.join(".local/share/oracle-workspace"),
+            read_dirs: vec![home.join("projects")],
             max_read_bytes: 24_000,
             max_list_entries: 200,
             chunk_chars: 1800,
@@ -87,6 +93,8 @@ impl AssistConfig {
         let roots = env_string("MEGATRON_BOT_ASSIST_ROOTS").unwrap_or_else(|| "~/projects:~/Documents:~/Downloads".into());
         cfg.roots = roots.split(':').map(str::trim).filter(|s| !s.is_empty()).map(|s| expand_home(s, &home)).collect();
         cfg.units = env_string("MEGATRON_BOT_ASSIST_UNITS").map(|s| s.split([',', ' ', ':']).filter(|u| !u.is_empty()).map(String::from).collect()).unwrap_or_default();
+        if let Some(d) = env_string("MEGATRON_BOT_ASSIST_READ_DIRS") { cfg.read_dirs = d.split(':').map(str::trim).filter(|s| !s.is_empty()).map(|s| expand_home(s, &home)).collect(); }
+        if let Some(w) = env_string("MEGATRON_BOT_ASSIST_WORKSPACE") { cfg.workspace = expand_home(&w, &home); }
         if let Some(b) = env_string("MEGATRON_BOT_ASSIST_CLAUDE") { cfg.claude_bin = expand_home(&b, &home); }
         if let Some(u) = env_string("MEGATRON_BOT_RUNE_URL") { cfg.rune_url = u; }
         if let Some(d) = env_string("MEGATRON_BOT_ASSIST_DOMAINS") { cfg.allowed_domains = d.split([',', ' ']).filter(|x| !x.is_empty()).map(String::from).collect(); }
