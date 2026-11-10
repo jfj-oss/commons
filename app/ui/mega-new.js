@@ -26,6 +26,8 @@
     }
     // mentions first, then the rest, each newest first (the snapshot has no "last activity"; it comes from the line fetched below)
     out.sort((a, b) => (b.at > 0) - (a.at > 0) || b.ts - a.ts);
+    // a room that has been read forgets its line: the next unread message there can have the same counts (1 unread, 0 mentions) as the last one did
+    const live = new Set(out.map(r => r.gid)); for (const g of [...NEWS.keys()]) if (!live.has(g)) NEWS.delete(g);
     return out;
   }
   // the newest line of each unread room, for its row: asked for only when a room's counts changed, one request at a time

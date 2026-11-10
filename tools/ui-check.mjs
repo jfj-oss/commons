@@ -538,6 +538,7 @@ try {
   // ---- the first-run tour: seen on a first visit, stepped through, gone after a reload, back from the options room ----
   {
     const keep = await A.ev(`({ c: __mega.cid, g: S.gid })`);
+    const pres = await A.ev(`JSON.stringify([...S.presence])`);   // the reloads below drop the stubs the earlier checks put in; they are put back at the end
     const reload = async () => { await A.ev(`location.reload(); 1`).catch(() => { }); await sleep(1500); await A.waitFor(`window.__megaTour && document.querySelector('#mega:not([hidden]) .mcard')`, 60000); };
     await A.send('Page.bringToFront'); await A.ev(`sessionStorage.setItem('tourtest', '1'); localStorage.removeItem('commons.tour'); 1`); await reload();
     await A.waitFor(`document.querySelector('#mega-tour.on .mt-t')`, 20000).catch(async () => { throw new Error('mega: tour: it did not appear on a first visit: ' + await A.ev(`JSON.stringify({ st: __megaTour.state(), mega: document.documentElement.classList.contains('mega'), card: !!document.querySelector('#mega:not([hidden]) .mcard'), blockers: [...document.querySelectorAll('#modal-root > .scrim, #mega-pal, .mpop, #mega-hint')].map(e => e.id + '.' + e.className), vis: document.visibilityState, ls: localStorage.getItem('commons.tour'), p: String(pref.get('tour')) })`).catch(e => String(e))); });
@@ -561,6 +562,7 @@ try {
     need(await A.ev(`!!document.querySelector('#mega-tour.on') && document.querySelector('#mega-tour .mt-n').innerText === '1 of 5'`), 'tour: the options button did not reopen it');
     await A.shot('mega-tour-again'); await key(A, 'Escape'); await sleep(500);
     await A.ev(`sessionStorage.removeItem('tourtest'); localStorage.setItem('commons.tour', '1'); 1`); await reload();
+    await A.ev(`(() => { window.__joined = null; window.__callUI.joinRoom = (g, n) => { window.__joined = [g, n]; }; S.presence = new Map(${pres}); S.presenceCid = S.cid; S.presenceSig = 'stub'; renderRail(); return 1; })()`);
     await A.ev(`__mega.api.toChat(${JSON.stringify(keep.c)}, ${JSON.stringify(keep.g)}); 1`); await sleep(800);
   }
   if (process.env.COMMONS_UI_STOP_AFTER === 'tour') { console.log('UI check stopped after the tour (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
@@ -612,7 +614,7 @@ try {
   await A.ev(`document.querySelector('.mslot.settled .mcard').dispatchEvent(new MouseEvent('click', { bubbles: true }))`); await sleep(300);
   need(await A.ev(`window.__joined === null`), 'clicking the body of a voice card joined its call');
   await key(A, 'Enter'); await sleep(300);
-  need(await A.ev(`!!window.__joined && window.__joined[0] === ${JSON.stringify(vgid)}`), 'Enter on a voice card did not join it');
+  need(await A.ev(`!!window.__joined && window.__joined[0] === ${JSON.stringify(vgid)}`), 'Enter on a voice card did not join it: ' + await A.ev(`JSON.stringify({ j: window.__joined, ae: document.activeElement && (document.activeElement.id || document.activeElement.className || document.activeElement.tagName), tour: !!document.querySelector('#mega-tour'), pops: [...document.querySelectorAll('.mpop,#mega-pal,#modal-root > .scrim')].length, item: __mega.list.item.kind, lk: __mega.list.item.locked, here: __mega.list.item.here, cc: window.__commonsCall && [window.__commonsCall.gid, window.__commonsCall.phase], idx: __mega.list.i, closers: __mega.closers.length, busy: __mega.busy, pal: !!__mega.pal, modal: !!document.querySelector('#modal-root > .scrim') })`));
   // jump to: picking a voice room focuses its card but never joins
   await A.ev(`window.__joined = null`);
   await key(A, 'k', 2, 'KeyK'); await sleep(400);
