@@ -36,6 +36,24 @@ PID=$(cat "$W/i/.pid"); launch "$PORT"
 [ "$(cat "$W/i/.pid")" = "$PID" ] && [ "$(cat "$W/data/.bridge-secret-$PORT")" = "$S" ] || fail "second start did not reuse"
 grep -qx -- "--app=http://127.0.0.1:$PORT/#s=$S" "$W/b.log" || fail "second url"
 pass "second start reuses the bridge and its secret"
+
+# "a tab in my browser": only the address goes to the browser (no --app, no profile), and it holds a one-time ticket, not the secret
+MEGATRON_OPEN=tab launch "$PORT"
+[ "$(wc -l < "$W/b.log")" = 1 ] || fail "tab mode passed more than the address: $(cat "$W/b.log")"
+U=$(cat "$W/b.log"); T1=${U##*#t=}
+case "$U" in "http://127.0.0.1:$PORT/#t="*) ;; *) fail "tab url: $U" ;; esac
+case "$U" in *"$S"*) fail "the secret is in the tab address" ;; esac
+[ -f "$W/i/.open-ticket-$PORT" ] || fail "no ticket kept"
+[ "$(stat -c %a "$W/i/.open-ticket-$PORT")" = 600 ] || fail "ticket file mode"
+[ "$(code -X POST --data wrong "http://127.0.0.1:$PORT/session")" = 403 ] || fail "a wrong ticket was accepted"
+GOT=$(curl -s -X POST --data "$T1" "http://127.0.0.1:$PORT/session")
+case "$GOT" in *"\"secret\":\"$S\""*) ;; *) fail "ticket did not give the secret: $GOT" ;; esac
+[ "$(code -X POST --data "$T1" "http://127.0.0.1:$PORT/session")" = 403 ] || fail "ticket worked twice"
+# the file in the data folder works as well as the variable
+echo tab > "$W/data/open-as"; launch "$PORT"; grep -q '#t=' "$W/b.log" && [ "$(wc -l < "$W/b.log")" = 1 ] || fail "open-as file ignored"
+MEGATRON_OPEN=window launch "$PORT"; grep -qx -- "--app=http://127.0.0.1:$PORT/#s=$S" "$W/b.log" || fail "MEGATRON_OPEN=window did not beat the file"
+rm -f "$W/data/open-as"
+pass "tab mode: address only, one-time ticket instead of the secret, file and variable both honoured"
 stop; sleep 0.3
 
 # an open-mode bridge of ours (what the previous launcher started): taken over, not trusted

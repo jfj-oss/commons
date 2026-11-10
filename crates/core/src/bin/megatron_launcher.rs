@@ -24,6 +24,10 @@
 //! secret (`/hello`); a program that cannot is either an older bridge of ours (restarted with a secret) or something else
 //! (refused with a message). The window uses its own profile folder, `browser-profile` in the data folder.
 //!
+//! Window or tab: by default the UI is an app window with its own profile. `open-as` in the data folder (`tab` or `window`, set in
+//! mega's Settings) or MEGATRON_OPEN=tab|window opens it as a tab in the person's own browser instead; the address then holds a
+//! one-time ticket, not the secret, because that browser keeps its history (docs/THREAT-MODEL.md).
+//!
 //! Environment: MEGATRON_PORT (default 7420), MEGATRON_DATA (the account folder), MEGATRON_NO_UPDATE=1 and
 //! MEGATRON_NO_BROWSER=1 (tests and headless use), MEGATRON_BROWSER=<path> (a browser to use instead of finding one).
 //! The launcher sets MEGATRON_NOTE_DIR for the bridge: it is the folder the update note is read from (the data folder
@@ -32,6 +36,7 @@
 use commons_core::browser_update::{bridge_name, restore_previous};
 #[cfg(target_os = "macos")]
 use commons_core::browser_update::resign_bundle;
+use commons_core::bridge_auth::{open_as, OpenAs};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -415,8 +420,91 @@ fn browser_paths() -> Vec<PathBuf> {
     v
 }
 
+/// Opens the UI as a tab in the person's own browser (profile and all), with no window of ours: on macOS `open -a` Brave if it
+/// is installed, otherwise the default browser; on Windows and Linux the system's default browser (whatever the person chose,
+/// Firefox included), and only if that cannot be started the first Chromium-family browser found, handed only the address.
+fn open_tab(install: &Path, url: &str) -> bool {
+    #[cfg(not(target_os = "macos"))]
+    if std::env::var_os("MEGATRON_BROWSER").is_none() && default_browser(install, url, false) {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut apps = vec![PathBuf::from("/Applications")];
+        if let Some(h) = std::env::var_os("HOME") {
+            apps.push(PathBuf::from(h).join("Applications"));
+        }
+        let brave = apps.iter().any(|d| d.join("Brave Browser.app").is_dir());
+        if std::env::var_os("MEGATRON_BROWSER").is_none() {
+            let mut c = Command::new("open");
+            if brave { c.arg("-a").arg("Brave Browser"); }
+            let ok = c.arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+            log(install, &format!("opened a tab in {}", if brave { "Brave" } else { "the default browser" }));
+            return ok;
+        }
+    }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(b) = std::env::var_os("MEGATRON_BROWSER") {
+        candidates.push(PathBuf::from(b));
+    }
+    #[cfg(not(target_os = "macos"))]
+    candidates.extend(browser_paths());
+    for exe in candidates.into_iter().filter(|p| p.is_file()) {
+        let mut cmd = Command::new(&exe);
+        cmd.arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(win::COMMON);
+        }
+        match cmd.spawn() {
+            Ok(child) => {
+                log(install, &format!("opened a tab with {} (pid {})", exe.display(), child.id()));
+                return true;
+            }
+            Err(e) => log(install, &format!("could not open {}: {e}", exe.display())),
+        }
+    }
+    #[cfg(target_os = "macos")]
+    { default_browser(install, url, false) }
+    #[cfg(not(target_os = "macos"))]
+    { false }   // the default browser was tried first and could not be started
+}
+
+/// The system's own handler for an address (Windows, Linux), or Safari when asked (macOS, no Chromium browser found).
+fn default_browser(install: &Path, url: &str, safari: bool) -> bool {
+    #[cfg(target_os = "macos")]
+    let mut fallback = {
+        let mut c = Command::new("open");
+        if safari { c.arg("-a").arg("Safari"); }
+        c.arg(url);
+        c
+    };
+    #[cfg(windows)]
+    let mut fallback = {
+        use std::os::windows::process::CommandExt;
+        let _ = safari;
+        let mut c = Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler").arg(url).creation_flags(win::COMMON);
+        c
+    };
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let mut fallback = {
+        let _ = safari;
+        let mut c = Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+    let ok = fallback.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok();
+    log(install, if ok { "opened the fallback browser" } else { "no browser could be opened" });
+    ok
+}
+
 /// Opens the UI as an app window. Safari (macOS) or the default browser is the last resort, as a normal tab.
-fn open_browser(install: &Path, data: &Path, url: &str) -> bool {
+fn open_browser(install: &Path, data: &Path, url: &str, how: OpenAs) -> bool {
+    if how == OpenAs::Tab {
+        return open_tab(install, url);
+    }
     let profile = data.join("browser-profile");
     let _ = std::fs::create_dir_all(&profile);
     let mut candidates: Vec<PathBuf> = Vec::new();
@@ -447,28 +535,7 @@ fn open_browser(install: &Path, data: &Path, url: &str) -> bool {
         }
     }
     // No Chromium-family browser found: Safari on macOS, otherwise whatever the system uses.
-    #[cfg(target_os = "macos")]
-    let mut fallback = {
-        let mut c = Command::new("open");
-        c.arg("-a").arg("Safari").arg(url);
-        c
-    };
-    #[cfg(windows)]
-    let mut fallback = {
-        use std::os::windows::process::CommandExt;
-        let mut c = Command::new("rundll32");
-        c.arg("url.dll,FileProtocolHandler").arg(url).creation_flags(win::COMMON);
-        c
-    };
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let mut fallback = {
-        let mut c = Command::new("xdg-open");
-        c.arg(url);
-        c
-    };
-    let ok = fallback.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok();
-    log(install, if ok { "opened the fallback browser" } else { "no browser could be opened" });
-    ok
+    default_browser(install, url, true)
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -596,12 +663,28 @@ fn main() {
             alert("This copy of mega's background part is too old to protect the window with a key. It works, but other programs on this computer could reach it. Install the newest mega to fix that.");
         }
     }
+    let mut how = open_as(&data, std::env::var("MEGATRON_OPEN").ok().as_deref());
     let url = match (&secret, legacy) {
+        (Some(sec), false) if how == OpenAs::Tab => {
+            // A tab lands in the everyday browser, which keeps every address it visits. So the address carries a one-time ticket
+            // (spent when the page trades it for the secret, and good for two minutes), never the secret itself.
+            let ticket = commons_core::bridge_auth::new_secret();
+            match commons_core::bridge_auth::write_secret_file(&commons_core::bridge_auth::ticket_path(&state_dir(&install), port), &ticket) {
+                Ok(()) => format!("http://127.0.0.1:{port}/#t={ticket}"),
+                Err(e) => {
+                    log(&install, &format!("could not write the open ticket ({e}); opening a window of its own instead"));
+                    how = OpenAs::Window;
+                    format!("http://127.0.0.1:{port}/#s={sec}")
+                }
+            }
+        }
         (Some(sec), false) => format!("http://127.0.0.1:{port}/#s={sec}"),
         _ => format!("http://127.0.0.1:{port}/"),
     };
     if std::env::var_os("MEGATRON_NO_BROWSER").is_none() {
-        open_browser(&install, &data, &url);
+        open_browser(&install, &data, &url, how);
+    } else if how == OpenAs::Tab {
+        log(&install, &format!("tab mode; address would be {}", url.split('#').next().unwrap_or("")));
     }
     log(&install, "done");
 }

@@ -50,6 +50,7 @@ CLI=$ROOT/tools/node_modules/.bin/tauri
 CONF=app/src-tauri/tauri.conf.json
 MAC=${COMMONS_MAC:-user@100.114.187.94}
 MAC_KEY=${COMMONS_MAC_KEY:-$HOME/.ssh/macbook-air}
+MAC_JOBS=${COMMONS_MAC_JOBS:-}   # e.g. 6: build on the Mac's fast cores (only sensible on power); empty = the light default
 
 # ---- checks first, so nothing is half done when one fails
 [ -s "$KEY" ] || die "no updater key at $KEY. Restore it from your backup (docs/UPDATES.md); a new key would not be accepted by apps already out there."
@@ -136,6 +137,7 @@ if want mac; then
 export PATH=\$HOME/.cargo/bin:\$PATH
 cd ~/commons-build || exit 2
 ${CFG:+export TAURI_CONFIG='$CFG'}
+${MAC_JOBS:+export COMMONS_MAC_JOBS='$MAC_JOBS'}
 export MEGATRON_BROWSER_VERSION='$NEW' MEGATRON_BROWSER_PUBKEY='$TRUSTED'
 # its own process group (so the whole build can be stopped), and the Mac kept awake while it runs
 run_guarded() {
