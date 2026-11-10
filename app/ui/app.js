@@ -50,6 +50,8 @@ function applyPrefs() {
   const r = document.documentElement, t = pref.get('theme'), m = pref.get('read');
   if (t) r.dataset.theme = t; else delete r.dataset.theme;
   if (m) r.dataset.read = m; else delete r.dataset.read;
+  const cf = pref.get('chatFont');   // mega's chat text: Bellefair unless this device chose the Raster face
+  if (cf) r.dataset.mchat = cf; else delete r.dataset.mchat;
 }
 applyPrefs();
 
@@ -1504,6 +1506,8 @@ $('#btn-settings').onclick = () => {
   <div ${document.documentElement.classList.contains('mega') ? 'hidden' : ''}><h3 class="set-h">Appearance</h3>
   <label>Theme</label>${seg('th', [['', 'Match system'], ['light', 'Daylight'], ['solar', 'Solarized'], ['dark', 'After hours'], ['wave', 'Wave']], pref.get('theme') || '')}
   <div id="wave-row" ${pref.get('theme') === 'wave' ? '' : 'hidden'}><label for="wave-pal">Wave colours</label><select id="wave-pal">${(window.__waveDither ? window.__waveDither.palettes : []).map(([k, l]) => `<option value="${k}"${(pref.get('wavePalette') || 'blue') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div></div>
+  ${document.documentElement.classList.contains('mega') ? `<h3 class="set-h">Chat</h3>
+  <label>Chat font</label>${seg('cf', [['', 'Bellefair'], ['raster', 'Raster']], pref.get('chatFont') || '')}<p class="muted small">For messages and the message box on this device. Names and menus keep their font.</p>` : ''}
   <h3 class="set-h">Sound</h3>
   <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when mega is in the background or the message is in another room.</p>
   <h3 class="set-h">Advanced</h3>
@@ -1520,7 +1524,7 @@ $('#btn-settings').onclick = () => {
     const secret = val(w, 'rs').trim();
     if (secret) await rpc('set_relay_invite', { secret });
     if (!mobileApp() && val(w, 'dl-dir').trim() !== (S.snap.download_dir || '')) await rpc('set_download_dir', { dir: val(w, 'dl-dir') });
-    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('wavePalette', val(w, 'wave-pal')); pref.set('theme', val(w, 'th')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh();
+    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('wavePalette', val(w, 'wave-pal')); pref.set('theme', val(w, 'th')); if (document.documentElement.classList.contains('mega')) pref.set('chatFont', val(w, 'cf')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh();
   } }]);
   fillAvatars();
   p.then(tick);

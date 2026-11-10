@@ -5,6 +5,9 @@
 @font-face { font-family: "FK Raster Roman Sharp"; src: url(fonts/FKRasterRomanCompactTrial-Sharp.otf) format("opentype"); font-display: swap; }
 @font-face { font-family: "FK Raster Roman Blended"; src: url(fonts/FKRasterRomanCompactTrial-Blended.otf) format("opentype"); font-display: swap; }
 @font-face { font-family: "FK Raster Grotesk Rounded"; src: url(fonts/FKRasterGroteskTrial-Rounded.otf) format("opentype"); font-display: swap; }
+/* chat text: Bellefair (SIL Open Font License, fonts/LICENSE-Bellefair.txt). Its letters are small for their size, so it is
+   scaled to sit like the Raster face it replaces; one weight only, so bold in a message is drawn by the browser. */
+@font-face { font-family: "Bellefair"; src: url(fonts/bellefair-regular.woff2) format("woff2"); font-weight: 400; font-style: normal; font-display: swap; size-adjust: 130%; }
 @font-face { font-family: "FK Raster Roman Rounded"; src: url(fonts/FKRasterRomanCompactTrial-Rounded.otf) format("opentype"); font-display: swap; }
 
 html.mega {
@@ -17,6 +20,7 @@ html.mega {
   --m-blend: "FK Raster Roman Blended", var(--display);
   --m-readfb: var(--serif);
   --m-msg: "FK Raster Roman Rounded", var(--m-readfb);
+  --m-chat: "Bellefair", var(--m-readfb);   /* what people write: messages, the message box, previews, quotes */
   --m-name: "FK Raster Grotesk Rounded", var(--sans);
   --m-ui: var(--sans);
   --m-spring: cubic-bezier(.2, 1.2, .3, 1);
@@ -31,8 +35,13 @@ html.mega #app { grid-template-columns: minmax(0, 1fr) auto; padding-left: var(-
 html.mega #btn-rooms { display: none !important; }
 /* messages and the composer are set in the raster face at 24px (a multiple of 12), with the reading font behind it for
    the characters the trial face lacks (" @ # % & _ + =) */
-html.mega, html.mega:root[data-read] { --read: var(--m-msg); --read-size: 24px; --read-lead: 1.05; }   /* an old "Plain" choice no longer applies */
-html.mega .body, html.mega #input { letter-spacing: calc(var(--m-small) * .5); }
+html.mega, html.mega:root[data-read] { --read: var(--m-chat); --read-size: 24px; --read-lead: 1.22; }   /* an old "Plain" choice no longer applies */
+html.mega .body, html.mega #input { letter-spacing: 0; }
+/* Settings → Chat font → Raster: the chat text as it was before Bellefair */
+html.mega[data-mchat="raster"] { --m-chat: var(--m-msg); }
+html.mega[data-mchat="raster"], html.mega[data-mchat="raster"]:root[data-read] { --read-lead: 1.05; }
+html.mega[data-mchat="raster"] .body, html.mega[data-mchat="raster"] #input, html.mega[data-mchat="raster"] .mpreview, html.mega[data-mchat="raster"] .mnp,
+html.mega[data-mchat="raster"] .quote span:last-child, html.mega[data-mchat="raster"] .replybar .ex { letter-spacing: calc(var(--m-small) * .5); }
 html.mega #chan-title { font-family: var(--m-sharp); font-weight: 400; font-size: round(down, 36px, 12px); line-height: 1; letter-spacing: var(--m-track); }
 html.mega .body.gone { font-style: normal; }
 @media (max-width: 760px) { html.mega #chan-title { font-size: round(down, 24px, 12px); } }
@@ -74,7 +83,7 @@ html.mega #people { position: fixed; right: 0; top: 0; bottom: 0; z-index: 30; w
 .mat { flex: none; min-width: 44px; height: 44px; padding: 0 10px; display: grid; place-items: center; border-radius: 50%; background: var(--m-solid); color: var(--m-on); font-weight: 600; }
 .mmid { grid-area: mid; display: flex; flex-direction: column; justify-content: center; gap: 12px; opacity: 0; transform: translateY(10px); transition: opacity .35s, transform .55s var(--m-spring); }
 .mslot.settled .mmid { opacity: 1; transform: none; }
-.mpreview { font: clamp(17px, 1.9cqw, 26px)/1.2 var(--m-msg); letter-spacing: calc(var(--m-small) * .5); max-width: 34em; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.mpreview { font: clamp(17px, 1.9cqw, 26px)/1.25 var(--m-chat); letter-spacing: 0; max-width: 34em; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 .mpreview b { font: 600 .82em var(--m-ui); letter-spacing: var(--m-small); }
 .mti { grid-area: ti; margin: 0; align-self: end; font-family: var(--m-blend); font-weight: 400; font-size: round(down, calc(clamp(44px, 10cqw, 138px) * var(--m-dz)), var(--m-dsnap)); line-height: .9; letter-spacing: round(calc(var(--m-track) + .045em), var(--m-lsnap)); text-wrap: balance; transition: letter-spacing .75s var(--m-spring); overflow-wrap: anywhere; }
 .mti i, .mnu i { font-style: inherit; margin-left: round(calc(var(--k, 0) * 1em), var(--m-lsnap)); }
