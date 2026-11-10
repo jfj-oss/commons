@@ -1140,7 +1140,7 @@ try {
     const q0 = await stat(A);
     for (const i of [0, 1, 2, 0]) { await A.ev(`__mega.list.go(${i}, false)`); await sleep(1100); }
     await focusCard(A, g); await sleep(1500);
-    need((await stat(A)).sent === q0.sent, 'cards: resting on or scrolling past a card sent something');
+    { const q1 = await stat(A), noPres = q => q.sent - ((q.kinds || {})['pres.f'] || 0); need(noPres(q1) === noPres(q0), 'cards: resting on or scrolling past a card sent something other than where you are: ' + JSON.stringify([q0, q1])); }
     need((await wst(A)).cards.length <= 3, 'cards: more than three cards hold a wall canvas: ' + JSON.stringify((await wst(A)).cards));
     need(await chip(A) && await chip(B), 'cards: the draw chip is missing on a room card');
     // the draw chip: the pen opens on the focused card, the list holds still

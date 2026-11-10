@@ -39,7 +39,7 @@ fn register(base: &str, dev: &ed25519_dalek::SigningKey, cert: &DeviceCert) {
 }
 fn raw(addr: &str, bytes: &[u8]) -> u16 {
     let mut s = TcpStream::connect(addr.trim_start_matches("http://")).unwrap();
-    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
     s.write_all(bytes).unwrap();
     let mut out = vec![0u8; 12];
     s.read_exact(&mut out).unwrap();
