@@ -1070,6 +1070,8 @@ try {
     await wf(A, `document.querySelector('#mp-dimv').textContent === '40%' && __mega.list.item.chatFx === ${chatN} && __mega.list.item.dim === 40`, 3000).catch(async () => { throw new Error('mega: looks: the owner does not see the new look at once: ' + await A.ev(`JSON.stringify([document.querySelector('#mp-dimv').textContent, __mega.list.item.chatFx, __mega.list.item.dim, ${chatN}])`)); });
     await wf(B, `(() => { const l = (S.snap.communities.find(c => c.id === ${cidj}).style || {}).looks || {}; const r = l[${g}]; return !!r && r.card === ${cardN} && r.chat === ${chatN} && r.dim === 40; })()`, 60000)
       .catch(async () => { throw new Error('mega: looks: the other client did not get the look: ' + JSON.stringify(await looks(B)) + ' / ' + JSON.stringify(await looks(A))); });
+    await wf(A, `((S.snap.communities.find(c => c.id === ${cidj}).style || {}).ver || 0) > ${v0}`, 20000).catch(() => { });   // alice's own snapshot can trail bob's by a refresh
+    await sleep(1500);
     const v1 = await styleVer(A);
     need(v1 - v0 >= 1 && v1 - v0 <= 3, 'looks: card, chat and a whole slider drag should be at most 3 commits (quick changes combine), got ' + (v1 - v0));
     // bob is in the room: his backdrop follows live
@@ -1476,7 +1478,11 @@ try {
     need(await B.ev(`!document.querySelector('#mega-opts .madm [data-a="role"], #mega-opts .madm [data-a="transfer"]')`), 'admin: an admin is offered role changes or a hand-over');
     need(await B.ev(`(async () => { const ms = await rpc('members', { cid: ${cidj} }); return [...document.querySelectorAll('#mega-opts .madm [data-a="ban"]')].every(b => (ms.find(m => m.account === b.dataset.acct) || {}).role === 'member'); })()`), 'admin: an admin is offered removing the owner or another admin');
     await B.shot('admin-4-as-admin');
-    await wf(A, `document.querySelector('#mega-opts .madm [data-a="role"][data-r="member"][data-acct="${bobAcct}"]')`, 20000);
+    await wf(A, `document.querySelector('#mega-opts .madm [data-a="role"][data-r="member"][data-acct="${bobAcct}"]')`, 20000).catch(async () => {
+      // the panel shows the roles as they were when it was drawn: open it again, as a person would
+      await openAdmin(A);
+      await wf(A, `document.querySelector('#mega-opts .madm [data-a="role"][data-r="member"][data-acct="${bobAcct}"]')`, 20000).catch(async () => { throw new Error('admin: no "make member" button for bob after he became admin: ' + await A.ev(`JSON.stringify([...document.querySelectorAll('#mega-opts .madm [data-a="role"]')].map(b => b.dataset.r + ':' + b.dataset.acct.slice(0, 6)))`) + ' bob is ' + await A.ev(`rpc('members', { cid: ${cidj} }).then(m => JSON.stringify(m.map(x => [x.name, x.role])))`)); });
+    });
     await A.ev(`document.querySelector('#mega-opts .madm [data-a="role"][data-r="member"][data-acct="${bobAcct}"]').click()`);
     await wf(B, `S.snap.communities.find(c => c.id === ${cidj}).role === 'member'`, 40000).catch(() => { throw new Error('mega: admin: the demotion never reached the other client'); });
     await wf(B, `!document.querySelector('#mega-opts .madm') && !(__mega.railItems || []).some(x => x.kind === 'admin')`, 15000).catch(() => { throw new Error('mega: admin: a demoted admin kept the panel'); });
