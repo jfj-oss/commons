@@ -222,7 +222,7 @@ pub fn plan_safe(cfg: &AssistConfig, deny: &Deny, name: &str, args: &Value) -> R
             let t = arg_str(args, "target").ok_or("Say what to open.")?;
             let low = t.to_ascii_lowercase();
             if low.starts_with("http://") || low.starts_with("https://") {
-                if t.chars().any(|c| c.is_whitespace() || c.is_control()) { return Err("That is not a plain web address.".into()); }
+                if t.chars().any(|c| c.is_whitespace() || c.is_control()) || super::claude::plain(&t) != t { return Err("That is not a plain web address.".into()); }
                 if deny.mentions_protected(&t).is_some() { return Err("That address mentions a protected place.".into()); }
                 return Ok(Safe::OpenUrl(t));
             }

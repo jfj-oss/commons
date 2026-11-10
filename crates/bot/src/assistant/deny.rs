@@ -17,13 +17,19 @@ const DENY_REL: &[&str] = &[
     ".var/app/org.chromium.Chromium", ".cache/BraveSoftware", ".cache/chromium", ".cache/google-chrome", ".cache/mozilla",
     // Claude's own login and settings
     ".claude/.credentials.json", ".claude.json",
+    // mega's own account folders (desktop app, browser edition and its window profile, the bridge secret in its install folder), config, and other cloud logins
+    ".local/share/app.commons.chat", ".local/share/app.commons.chat.browser-profile", ".config/app.commons.chat", ".config/commons",
+    ".local/share/commons", ".local/share/megatron-browser", ".local/share/megatron", ".cache/app.commons.chat",
+    ".config/gcloud", ".azure", ".config/fish", ".local/share/fish",
+    // shell histories (often hold pasted secrets)
+    ".bash_history", ".zsh_history", ".zhistory", ".sh_history", ".python_history", ".psql_history", ".mysql_history", ".node_repl_history",
 ];
 
 /// Extra words that, appearing anywhere in a command or path text, mark it as touching a protected place. Catches `cd ~ && cat .ssh/id_rsa`.
 const DENY_TOKENS: &[&str] = &[
     ".ssh", ".gnupg", "deepseek-key", "homebase/token", "github-recovery-codes", "share/commons-host", "share/megatron-bot", "share/megatron-brave", "liner.db",
     "keyrings", "kwallet", ".password-store", "Bitwarden", "KeePassXC", "BraveSoftware", ".mozilla", ".librewolf", "google-chrome",
-    "config/chromium", ".netrc", ".git-credentials", ".credentials.json", "/etc/shadow", "/etc/sudoers", "/etc/gshadow",
+    "config/chromium", "app.commons.chat", "share/commons-", "share/megatron-browser", "bridge-secret", "_history", "fish_history", "config/gcloud", ".azure", "config/fish", ".netrc", ".git-credentials", ".credentials.json", "/etc/shadow", "/etc/sudoers", "/etc/gshadow",
 ];
 
 /// Places Claude may read but must not change, because changing them hands it more power than the owner approved
@@ -92,6 +98,10 @@ impl Deny {
             if real != p && !v.contains(&real) { v.push(real); }
         };
         for rel in DENY_REL { add(&mut paths, home.join(rel)); }
+        // every ~/.local/share/commons-* folder (the host, trial copies, whatever else a build leaves there)
+        if let Ok(rd) = std::fs::read_dir(home.join(".local/share")) {
+            for e in rd.flatten() { if e.file_name().to_string_lossy().starts_with("commons-") { add(&mut paths, e.path()); } }
+        }
         for p in extra { add(&mut paths, lexical(p)); }
         add(&mut paths, PathBuf::from("/etc/shadow"));
         add(&mut paths, PathBuf::from("/etc/gshadow"));
@@ -214,11 +224,19 @@ pub fn claude_settings(d: &Deny, allowed_domains: &[String]) -> Value {
 /// Reasons not to start Claude at all: its user settings file would grant permissions or run hooks that the assistant
 /// room's approvals could not see.
 pub fn user_settings_problem(config_dir: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(config_dir.join("settings.json")).ok()?;
-    let v: Value = serde_json::from_str(&text).ok()?;
+    let text = match std::fs::read_to_string(config_dir.join("settings.json")) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(_) => return Some("it cannot be read, so I cannot tell what it allows".into()),
+    };
+    // Claude Code would read a file this program cannot parse in its own, more lenient way, so unreadable means unsafe
+    let Ok(v) = serde_json::from_str::<Value>(&text) else { return Some("it cannot be parsed, so I cannot tell what it allows".into()) };
+    for key in ["apiKeyHelper", "statusLine", "awsAuthRefresh", "awsCredentialExport", "otelHeadersHelper", "enabledPlugins", "extraKnownMarketplaces", "plugins", "pluginConfigs"] {
+        if !v[key].is_null() { return Some(format!("it sets {key}, which can run programs without approval")); }
+    }
     if v["permissions"]["allow"].as_array().is_some_and(|a| !a.is_empty()) { return Some("it has allow rules (permissions.allow), which would skip approvals".into()); }
     if v["permissions"]["defaultMode"].as_str().is_some_and(|m| m != "default") { return Some("its default permission mode is not 'default'".into()); }
-    if v["hooks"].as_object().is_some_and(|h| !h.is_empty()) { return Some("it defines hooks, which would run commands without approval".into()); }
+    if !v["hooks"].is_null() && !v["hooks"].as_object().is_some_and(|h| h.is_empty()) { return Some("it defines hooks, which would run commands without approval".into()); }
     if v["skipDangerousModePermissionPrompt"].as_bool() == Some(true) || v["env"].as_object().is_some_and(|e| !e.is_empty()) { return Some("it sets environment variables or skips permission prompts".into()); }
     None
 }

@@ -127,8 +127,10 @@ impl Broker {
 
 /// The chat message that asks for approval.
 pub fn approval_message(code: &str, what: &str, detail: &str, can_edit: bool, timeout: Duration, note: &str) -> String {
-    let mut s = format!("Approval needed [{code}]\n{what}\n{detail}\n");
-    if !note.is_empty() { s.push_str(note); s.push('\n'); }
+    // nothing in the message may hide itself: no bidi overrides, zero-width or control characters (a command must look like what it is)
+    use super::claude::{plain, plain_lines};
+    let mut s = format!("Approval needed [{code}]\n{}\n{}\n", plain(what), plain_lines(detail));
+    if !note.is_empty() { s.push_str(&plain(note)); s.push('\n'); }
     s.push_str(&format!("Reply: yes {code}  /  no {code}"));
     if can_edit { s.push_str(&format!("  /  edit {code} <new command>")); }
     s.push_str(&format!("\nNo answer in {} minutes counts as no.", (timeout.as_secs() / 60).max(1)));

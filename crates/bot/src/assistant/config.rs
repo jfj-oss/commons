@@ -38,6 +38,9 @@ pub struct AssistConfig {
     /// Progress messages per task (the approvals and the final answer are not counted).
     pub max_progress: usize,
     pub progress_gap: Duration,
+    /// Hand the session bus and display variables (D-Bus, X11, Wayland, XDG_RUNTIME_DIR) to Claude Code. Off: a command run by it could
+    /// start units outside the sandbox or watch and drive the screen.
+    pub desktop_env: bool,
 }
 
 pub fn valid_account(s: &str) -> bool { s.len() >= 6 && s.chars().all(|c| c.is_ascii_hexdigit()) }
@@ -74,6 +77,7 @@ impl AssistConfig {
             chunk_chars: 1800,
             max_progress: 5,
             progress_gap: Duration::from_secs(25),
+            desktop_env: false,
         }
     }
 
@@ -98,6 +102,7 @@ impl AssistConfig {
         if let Some(b) = env_string("MEGATRON_BOT_ASSIST_CLAUDE") { cfg.claude_bin = expand_home(&b, &home); }
         if let Some(u) = env_string("MEGATRON_BOT_RUNE_URL") { cfg.rune_url = u; }
         if let Some(d) = env_string("MEGATRON_BOT_ASSIST_DOMAINS") { cfg.allowed_domains = d.split([',', ' ']).filter(|x| !x.is_empty()).map(String::from).collect(); }
+        if env_string("MEGATRON_BOT_ASSIST_DESKTOP_ENV").is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "on" | "true" | "yes")) { cfg.desktop_env = true; }
         Some(cfg)
     }
 }

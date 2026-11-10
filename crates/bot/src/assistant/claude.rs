@@ -45,15 +45,26 @@ pub fn summarize_tool(name: &str, input: &Value) -> String {
         "Task" | "Agent" => first(s("description")),
         _ => input.to_string(),
     };
-    let body: String = body.chars().filter(|c| !c.is_control()).collect();
+    let body = plain(&body);
     let body = if body.chars().count() > 200 { format!("{}...", body.chars().take(200).collect::<String>()) } else { body };
     format!("{name}: {body}")
 }
 
+/// Text for the owner to read in an approval: no control characters (newlines and tabs become spaces or stay as line breaks where `keep_lines`),
+/// no bidirectional overrides or isolates, no zero-width or invisible characters, which could make a command look like another one.
+pub fn plain(s: &str) -> String { s.chars().filter(|c| !hidden(*c, false)).collect() }
+fn hidden(c: char, keep_lines: bool) -> bool {
+    if keep_lines && (c == '\n' || c == '\t') { return false; }
+    c.is_control() || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}' | '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{FFF9}'..='\u{FFFB}' | '\u{E0000}'..='\u{E007F}')
+}
+/// As `plain`, but line breaks and tabs stay (the multi-line detail of a command or file).
+pub fn plain_lines(s: &str) -> String { s.chars().filter(|c| !hidden(*c, true)).collect() }
+
 fn clip(s: &str, n: usize) -> String { if s.chars().count() > n { format!("{}\n[... {} more characters]", s.chars().take(n).collect::<String>(), s.chars().count() - n) } else { s.to_string() } }
 
 /// What the owner sees: the exact command, path or change.
-pub fn approval_detail(name: &str, input: &Value) -> String {
+pub fn approval_detail(name: &str, input: &Value) -> String { plain_lines(&approval_detail_raw(name, input)) }
+fn approval_detail_raw(name: &str, input: &Value) -> String {
     let s = |k: &str| input[k].as_str().unwrap_or("").to_string();
     match name {
         "Bash" => {
@@ -140,8 +151,10 @@ impl Assistant {
         cmd.current_dir(&cfg.workspace);
         cmd.env_clear();
         cmd.env("HOME", &cfg.home).env("TERM", "dumb");
-        for k in ["PATH", "USER", "LOGNAME", "LANG", "SHELL", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
-                  "CLAUDE_CONFIG_DIR", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"] {
+        // The session bus (it can start units outside the sandbox) and the display (input injection, screen capture) are not handed
+        // over unless the owner turns `desktop_env` on for a setup that needs them.
+        let desktop: &[&str] = if cfg.desktop_env { &["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"] } else { &[] };
+        for k in ["PATH", "USER", "LOGNAME", "LANG", "SHELL", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR"].iter().chain(desktop.iter()) {
             if let Some(v) = std::env::var_os(k) { cmd.env(k, v); }
         }
         for (k, v) in &cfg.extra_env { cmd.env(k, v); }
