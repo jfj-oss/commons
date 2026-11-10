@@ -5,7 +5,7 @@
 //!
 //! Data lives in ~/.local/share/megatron-bot (override: MEGATRON_BOT_DATA). The account's passphrase is generated on
 //! first use and kept in that folder, readable by its owner only, so the unattended service can unlock it.
-use commons_bot::bot::{Bot, Config, Job, JobKind, SharedClient, DEFAULT_NAME};
+use commons_bot::bot::{AvatarOutcome, Bot, Config, Job, JobKind, SharedClient, DEFAULT_NAME};
 use commons_bot::gpu::{GpuGate, Pause};
 use commons_bot::llm::{DeepSeek, Ollama, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DEFAULT_OLLAMA};
 use commons_bot::search::{DuckDuckGo, SearXng, WebSearch, DEFAULT_SEARCH_URL, SEARCH_TIMEOUT};
@@ -58,6 +58,9 @@ fn config() -> Config {
     cfg.art_daily_max = env_usize("MEGATRON_BOT_ART_DAILY", cfg.art_daily_max as usize) as u32;
     cfg.wall_chance_pct = env_usize("MEGATRON_BOT_WALL_PERCENT", 3).min(100);
     cfg.wall_daily_max = env_usize("MEGATRON_BOT_WALL_DAILY", cfg.wall_daily_max as usize) as u32;
+    cfg.avatar_daily = matches!(env_string("MEGATRON_BOT_AVATAR_DAILY").as_deref(), Some("1" | "true" | "yes" | "on"));
+    cfg.avatar_hour = env_usize("MEGATRON_BOT_AVATAR_HOUR", cfg.avatar_hour as usize).min(23) as u32;
+    cfg.avatar_announce = !matches!(env_string("MEGATRON_BOT_AVATAR_ANNOUNCE").as_deref(), Some("0" | "false" | "no" | "off"));
     cfg
 }
 
@@ -109,6 +112,8 @@ fn usage() -> ! {
         \n  MEGATRON_BOT_STUDIO_DAILY_CAP (default: no limit), MEGATRON_BOT_STUDIO_DAILY_VIDEO_CAP (default: no limit),\
         \n  MEGATRON_BOT_STUDIO_QUEUE_MAX (default 3), MEGATRON_BOT_VOICE_SETTINGS,\
         \n  MEGATRON_BOT_WALL_PERCENT (default 3), MEGATRON_BOT_WALL_DAILY (default 2 per room),\
+        \n  MEGATRON_BOT_AVATAR_DAILY (1 = a new self-designed profile picture each day, default off), MEGATRON_BOT_AVATAR_HOUR (default 6),\
+        \n  MEGATRON_BOT_AVATAR_ANNOUNCE (default 1: one line about it in rooms where he may join in),\
         \n  MEGATRON_BOT_MAX_PER_MINUTE, MEGATRON_BOT_MAX_REPLY_CHARS");
     std::process::exit(2)
 }
@@ -247,6 +252,26 @@ fn serve(client: Client, bot: Arc<Bot>) {
                     last = now;
                 }
                 std::thread::sleep(Duration::from_secs(10));
+            }
+        });
+    }
+
+    // The daily profile picture: a minute-by-minute look; does nothing unless MEGATRON_BOT_AVATAR_DAILY=1. It waits for the
+    // GPU to be free and makes the picture on its own thread, so it never holds up an answer.
+    if bot.cfg.avatar_daily {
+        let bot = bot.clone();
+        let shared = shared.clone();
+        std::thread::spawn(move || {
+            let mut last = String::new();
+            loop {
+                let mut chat = SharedClient(&shared);
+                let out = bot.avatar_tick(&mut chat);
+                let text = format!("{out:?}");
+                if text != last && !matches!(out, AvatarOutcome::NotYet | AvatarOutcome::Settled | AvatarOutcome::GaveUp | AvatarOutcome::Disabled) {
+                    eprintln!("[bot] daily profile picture: {text}");
+                }
+                last = text;
+                std::thread::sleep(Duration::from_secs(60));
             }
         });
     }
