@@ -633,10 +633,18 @@
 
   // ---------------------------------------------------------------- the options room (client-only; same controls and ids as Settings)
   function hideOpts() { optsEl.hidden = true; optsEl.innerHTML = ''; }
+  /** The relay's public "/join" page (downloads for every system and how to join), from this device's relay address. Null on a local test relay. */
+  function joinLink() {
+    const r = (S.snap && S.snap.relay || '').trim();
+    if (!/^https:\/\//.test(r)) return null;
+    try { const u = new URL(r); return u.origin + '/join'; } catch { return null; }
+  }
   function optsHTML() {
     const wave = window.__waveDither ? window.__waveDither.palettes : [];
     const th = pref.get('theme') || '';
+    const join = joinLink();
     return `<div class="mopts-in mrise">${ti('options', '', 'h1')}<p>Only on this device. Nobody else can see these.</p>
+      ${join ? `<section><h3>get mega</h3><p>Send this to a friend: it has the downloads for Windows, Mac, Linux and the browser, and how to join. They also need an invite from a room's invite button.</p><div class="mjoin"><code id="m-join">${esc(join)}</code><button type="button" class="mchip" id="m-join-copy">copy link</button><a class="mchip" href="${esc(join)}" target="_blank" rel="noopener">open</a></div></section>` : ''}
       <section><h3>alerts and sound</h3><label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p>Plays when mega is in the background or the message is in another room.</p></section>
       <section><h3>on the cards</h3><label class="check"><input type="checkbox" id="pres" ${window.__megaPres && !__megaPres.on ? '' : 'checked'}><span>Show where I am on the cards — friends who share a community see a small dot in your colour on the card you are looking at; the relay sees only that a small packet was sent</span></label></section>
       <section><h3>typing hints</h3><label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints — the relay can see that a message-sized packet was sent at that moment</span></label></section>
@@ -649,6 +657,7 @@
     optsEl.innerHTML = M.adm && window.__megaAdmin ? __megaAdmin.html(M.cid) : optsHTML(); optsEl.hidden = false; optsEl.scrollTop = 0;
   }
   optsEl.addEventListener('click', e => {
+    if (e.target.closest('#m-join-copy')) { const j = joinLink(); if (j) copy(j, 'Link copied: send it to your friend'); return; }
     const b = e.target.closest('.seg button'); if (!b) return;
     const g = b.parentElement, id = g.dataset.for, v = b.dataset.v;
     $$('button', g).forEach(x => x.setAttribute('aria-checked', x === b));

@@ -492,3 +492,7 @@ html.mega.mg-room #chan-title { font: 400 round(down, 44px, 12px)/1 var(--m-shar
 #mega-rail .mitem > .masc { position: absolute; left: 0; top: 0; z-index: 0; pointer-events: none; }
 #mega-rail .mitem > .mlb, #mega-rail .mitem > .mct, #mega-rail .mitem > .mvc { z-index: 1; }
 #mega-rail.open .mlb { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; font-size: round(down, 26px, var(--m-dsnap)); line-height: .95; }
+
+/* options room: the "get mega" link for friends */
+.mjoin { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.mjoin code { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; padding: 8px 12px; border-radius: 12px; background: rgb(255 255 255 / .06); font: 13px/1.3 var(--mono, ui-monospace, monospace); }
