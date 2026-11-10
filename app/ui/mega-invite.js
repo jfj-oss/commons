@@ -76,7 +76,8 @@
         <div class="small mi-hint" id="mi-hint" aria-live="polite"></div>
         <label>Valid for</label>${seg('mi-ttl', [['86400', '1 day'], ['259200', '3 days'], ['604800', '7 days'], ['2592000', '30 days']], '604800')}
         <label for="mi-uses">How many people can use it</label><input type="number" id="mi-uses" min="1" max="200" value="1" inputmode="numeric">
-        <p class="muted small">Anyone who guesses the password can join, so it expires and has a limit. You can revoke it at any time.</p></div><div id="mi-out"></div>${list}`,
+        <p class="muted small">Anyone who guesses the password can join, so it expires and has a limit. You can revoke it at any time.</p>
+        ${/^https:\/\//.test(S.snap.relay || '') ? `<p class="muted small">Download page for friends: <span class="mi-dl">${esc(new URL(S.snap.relay).origin + '/join')}</span> <button type="button" class="linkish" id="mi-copy-dl">copy</button></p>` : ''}</div><div id="mi-out"></div>${list}`,
       [{ label: 'Close', primary: false }, { label: 'Create invite', run: async w => {
         if (made) { await copy(told, 'Copied'); return false; }
         const pw = $('#mi-pw', w).value.trim(), ttl = +val(w, 'mi-ttl'), uses = Math.max(1, Math.min(200, +$('#mi-uses', w).value || 1));
@@ -96,6 +97,7 @@
         return false;
       } }], { cls: 'mi-modal invite-modal' });
     const w = $('.mi-modal');
+    const dl = $('#mi-copy-dl', w); if (dl) dl.onclick = () => copy(new URL(S.snap.relay).origin + '/join', 'Download link copied');
     const create = $('.acts button:last-child', w), pw = $('#mi-pw', w), hint = $('#mi-hint', w);
     let seq = 0;
     const check = async () => {
