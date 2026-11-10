@@ -1368,6 +1368,14 @@ try {
     await A.send('Page.bringToFront'); await sendB([textGid, 'dens arrive']); await sleep(2500);
     need(await A.ev(`__mega.stats.decodes`) > dec0, 'density: a new message no longer resolves out of glyphs at the largest stop');
     await A.shot('mega6-4-density-largest');
+    // scrolling on the sidebar walks through the text rooms, and the room opens once the scrolling stops
+    const wheelFrom = await A.ev(`S.gid`), wheelOn = d => A.ev(`(document.querySelector('#mega-rail').dispatchEvent(new WheelEvent('wheel', { deltaY: ${d}, bubbles: true, cancelable: true })), 1)`);
+    let wheelDir = 0;
+    for (const d of [150, -150]) { await wheelOn(d); await sleep(1200); if (await A.ev(`S.gid`) !== wheelFrom) { wheelDir = d; break; } }
+    need(wheelDir !== 0, 'sidebar: scrolling on it did not move to another room');
+    await sleep(400); await wheelOn(-wheelDir);
+    await A.waitFor(`S.gid === ${JSON.stringify(wheelFrom)}`, 8000).catch(() => { throw new Error('sidebar: scrolling back did not return to the room'); });
+    await sleep(500);
     // 390 px: the menu fits
     await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(900);
     await A.ev(`document.querySelector('#btn-density').click()`); await sleep(400);

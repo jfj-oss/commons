@@ -556,7 +556,24 @@
   }
   function closeRail() { if (!M.rail) return; M.rail = false; clearTimeout(M.railT); rail.classList.remove('open'); $$('.mitem', rail).forEach(i => i.style.transform = ''); const it = $('#m-items'); if (it) it.scrollTop = 0; }
   let railRaf = 0;
-  rail.addEventListener('wheel', e => { if (!M.rail) { e.preventDefault(); openRail(); } }, { passive: false });
+  // Scrolling on the sidebar opens it and walks through the text rooms. The room only opens once the scrolling stops, so passing over
+  // a room does not mark it read. Past the first or last text room the list itself scrolls, to reach voice rooms and options.
+  let wheelSum = 0, wheelAt = 0, wheelPick = null, wheelT = 0;
+  rail.addEventListener('wheel', e => {
+    if (M.level !== 'chat') return;
+    e.preventDefault(); openRail();
+    wheelSum += e.deltaY;
+    const now = Date.now(); if (Math.abs(wheelSum) < 50 || now - wheelAt < 140) return;
+    const list = textRooms(), step = wheelSum > 0 ? 1 : -1; wheelSum = 0; wheelAt = now;
+    if (!list.length) return;
+    const from = wheelPick ?? Math.max(0, list.findIndex(x => x.gid === S.gid)), next = Math.max(0, Math.min(list.length - 1, from + step));
+    if (next === from && wheelPick !== null || next === from && list[from].gid === S.gid) { const it = $('#m-items'); if (it) it.scrollTop += step * 110; if (wheelPick === null) return; }
+    wheelPick = next;
+    const key = list[next].key;
+    $$('.mitem', rail).forEach(b => { const on = b.dataset.key === key; b.classList.toggle('mwheel', on); if (on) b.scrollIntoView({ block: 'nearest', behavior: calm() ? 'auto' : 'smooth' }); });
+    clearTimeout(wheelT);
+    wheelT = setTimeout(() => { const x = list[wheelPick]; wheelPick = null; $$('.mitem.mwheel', rail).forEach(b => b.classList.remove('mwheel')); if (x && (x.gid !== S.gid || M.opts)) switchChat(x, true); }, 320);
+  }, { passive: false });
   rail.addEventListener('mouseleave', () => { M.railT = setTimeout(closeRail, 380); hideTip(); });
   rail.addEventListener('mouseenter', () => clearTimeout(M.railT));
   rail.addEventListener('scroll', e => {
