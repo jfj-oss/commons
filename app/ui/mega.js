@@ -194,6 +194,8 @@
   const lookStored = (cid, id) => { const c = comm(cid), st = c && c.style; return (st && st.looks && st.looks[id]) || null; };
   const lookOf = (cid, id) => { const h = LHOLD.get(id); if (h && h.until > Date.now()) return h.look; return lookStored(cid, id) || {}; };
   const patOf = n => (Number.isInteger(n) && n >= 0 && n < FX.length ? n : null);
+  // the backdrop's own two colours (owner-chosen, optional): [main, highlight], or null = the backdrop uses the card's colours
+  const backOf = lk => (lk.back && isHex(lk.back.main) && isHex(lk.back.hi) ? [lk.back.main.toLowerCase(), lk.back.hi.toLowerCase()] : null);
   const dimOf = lk => (Number.isFinite(lk.dim) ? Math.max(0, Math.min(DIM_MAX, Math.round(lk.dim))) : 100);
   const mk = (o, sigParts) => { o.theme = o.theme || themeOf(o); o.sig = JSON.stringify([sigParts, o.theme]); return o; };
 
@@ -215,7 +217,7 @@
     const room = ch => {
       const voice = ch.kind === 'voice', i = c.channels.indexOf(ch), people = voice ? peopleIn(ch.gid) : [], pv = PREV.get(ch.gid) || {};
       const auto = voice ? 1 : [0, 3, 4, 5, 2][(off + i) % 5], lk = lookOf(c.id, ch.gid);
-      const it = { key: ch.gid, id: ch.gid, gid: ch.gid, cid: c.id, kind: voice ? 'voice' : 'text', name: ch.name, unread: ch.unread || 0, at: S.mention.get(ch.gid) || 0, locked: !ch.joined, status: ch.joined && ch.status && ch.status !== 'ok' ? ch.status : '', people, here: voice && inCallHere(ch.gid), fxAuto: auto, fx: patOf(lk.card) ?? auto, chatFx: patOf(lk.chat) ?? auto, dim: DIMS.has(ch.gid) ? DIMS.get(ch.gid) : dimOf(lk), pv };
+      const it = { key: ch.gid, id: ch.gid, gid: ch.gid, cid: c.id, kind: voice ? 'voice' : 'text', name: ch.name, unread: ch.unread || 0, at: S.mention.get(ch.gid) || 0, locked: !ch.joined, status: ch.joined && ch.status && ch.status !== 'ok' ? ch.status : '', people, here: voice && inCallHere(ch.gid), fxAuto: auto, fx: patOf(lk.card) ?? auto, chatFx: patOf(lk.chat) ?? auto, dim: DIMS.has(ch.gid) ? DIMS.get(ch.gid) : dimOf(lk), back: backOf(lk), pv };
       it.act = it.unread;
       return mk(it, [it.name, it.unread, it.at, it.locked, it.status, people.map(p => [p.name, !!p.speaking, !!p.muted, !!p.deafened, !!p.me]), it.here, pv.who, pv.text]);
     };
@@ -753,7 +755,7 @@
         const it = items.find(x => x.gid === S.gid && x.kind === 'text');
         if (it && BD && BD.gid === it.gid && mainEl) {
           const hi = lift(hiOf(it), 4.8); root.style.setProperty('--mg-c', dotOf(it)); root.style.setProperty('--mg-hi', hi); root.style.setProperty('--mg-hi-ink', bestInk(hi));
-          BD.f = fieldOf(it); BD.h = hiOf(it); bdLook(it); bdColours(BD); dirty(); if (window.__megaWall) __megaWall.recolour();
+          BD.f = (it.back || it.theme)[0]; BD.h = (it.back || it.theme)[1]; bdLook(it); bdColours(BD); dirty(); if (window.__megaWall) __megaWall.recolour();
         }
       }
     }, 16);
@@ -801,21 +803,27 @@
     closePops();
     const e = document.createElement('div'); e.id = 'mega-paint'; e.setAttribute('role', 'dialog'); e.setAttribute('aria-label', 'Colours');
     e.innerHTML = `<div class="mp-head"><span id="mp-name"></span><button class="mchip" id="mp-done" type="button">done</button></div><p class="mtag" id="mp-note"></p><div class="mp-body">
+      <div class="mp-mode" id="mp-mode" role="group" aria-label="Colours for" hidden><button type="button" class="mp-m" data-mode="card" aria-pressed="true">card</button><button type="button" class="mp-m" data-mode="back" aria-pressed="false">chat backdrop</button></div>
       <div class="mp-wells"><button type="button" class="mp-well" data-w="0"><span></span>colour</button><button type="button" class="mp-well" data-w="1"><span></span>highlight</button></div>
       <div id="mp-sv" tabindex="0" role="slider" aria-label="Saturation and brightness"><span id="mp-svt"></span></div>
       <input id="mp-hue" type="range" min="0" max="359" step="1" aria-label="Hue">
       <label class="mp-hex">hex <input id="mp-hex" maxlength="7" spellcheck="false" autocomplete="off" aria-label="Hex colour"></label>
       <div class="mp-presets">${PRESETS.map((p, i) => `<button type="button" data-p="${i}" aria-label="Preset ${i + 1}" style="background:linear-gradient(135deg,${p[0]} 50%,${p[1]} 50%)"></button>`).join('')}</div>
       <div id="mp-looks"></div>
-      <p class="mtag" id="mp-warn" role="status"></p><div class="mp-end"><button class="mchip" id="mp-reset" type="button">reset</button></div></div>`;
+      <p class="mtag" id="mp-warn" role="status"></p><div class="mp-end"><button class="mchip" id="mp-same" type="button" hidden>same as card</button><button class="mchip" id="mp-reset" type="button">reset</button></div></div>`;
     document.body.append(e); PT.open = true;
-    let w = 0, hsv = [0, 0, 0], target = start, timer = 0, ltimer = 0, tt = 0;
+    let w = 0, hsv = [0, 0, 0], target = start, timer = 0, ltimer = 0, tt = 0, mode = 'card';
     const quietHold = new Map(), drawHold = new Map();
     const looksBox = $('#mp-looks', e), idOf = t => (t.kind === 'community' ? t.cid : t.gid);
     const sv = $('#mp-sv', e), hue = $('#mp-hue', e), hx = $('#mp-hex', e);
-    const cur = () => (SHOWN.get(target.id) || themeOf(target)).slice();
+    const backMode = () => mode === 'back' && target.kind === 'text';
+    const cur = () => { if (backMode()) { const b = backOf(lookOf(target.cid, idOf(target))); if (b) return b.slice(); } return (SHOWN.get(target.id) || themeOf(target)).slice(); };
     const show = () => {
       if (!canPaint(target)) return;
+      const bm = backMode(), has = !!backOf(lookOf(target.cid, idOf(target)));
+      $('#mp-mode', e).hidden = target.kind !== 'text'; $$('.mp-m', e).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === mode)));
+      const same = $('#mp-same', e); if (same) same.hidden = !(bm && has);
+      $('#mp-note', e).textContent = bm ? (has ? 'These colours are only for the backdrop behind this chat.' : 'The backdrop uses the card colours until you pick its own.') : 'Everyone in the community sees these colours. Only you, the owner, can change them.';
       const t = cur();
       sv.style.setProperty('--hc', fromHsv(hsv[0], 1, 1)); const th = $('#mp-svt', e); th.style.left = hsv[1] * 100 + '%'; th.style.top = (1 - hsv[2]) * 100 + '%'; th.style.background = t[w]; hue.value = Math.round(hsv[0]);
       if (document.activeElement !== hx) hx.value = t[w];
@@ -842,16 +850,18 @@
       if (!canPaint(target)) return;
       const id = idOf(target), nl = { ...lookOf(target.cid, id), ...patch }, clean = {};
       for (const k of ['card', 'chat', 'dim']) if (Number.isFinite(nl[k])) clean[k] = nl[k];
+      if (nl.back === null) clean.back = null; else if (backOf(nl)) clean.back = { main: backOf(nl)[0], hi: backOf(nl)[1] };
       LHOLD.set(id, { look: clean, until: Date.now() + 6000 }); DIMS.set(id, dimOf(clean));
       repaintColours(); if (commit) queueLook(target, clean);
     };
-    const apply = d => { setShown(target.id, d, false); HOLD.set(target.id, Date.now() + 6000); repaintColours(); show(); tint(); };
-    const commit = () => { clearTimeout(timer); queueSave(target, cur()); };
+    const apply = d => { if (backMode()) { editLook({ back: { main: d[0], hi: d[1] } }, false); show(); tint(); return; } setShown(target.id, d, false); HOLD.set(target.id, Date.now() + 6000); repaintColours(); show(); tint(); };
+    const commit = () => { clearTimeout(timer); if (backMode()) editLook({}, true); else queueSave(target, cur()); };
     const later = () => { clearTimeout(timer); timer = setTimeout(commit, 450); };
     PT.set = x => {
+      if (!target || target.id !== x.id || x.kind !== 'text') mode = 'card';
       target = x; const ok = canPaint(x); e.classList.toggle('off', !ok);
       $('#mp-name').textContent = x.kind === 'options' ? 'options' : x.name;
-      $('#mp-note').textContent = x.kind === 'options' ? 'The options room is private to each person, so it stays grey.' : 'Everyone in the community sees these colours. Only you, the owner, can change them.';
+      if (x.kind === 'options') $('#mp-note').textContent = 'The options room is private to each person, so it stays grey.';
       if (ok) { hsv = toHsv(cur()[w]); show(); }
       fillLooks();
     };
@@ -883,9 +893,11 @@
     looksBox.addEventListener('change', ev => { if (ev.target.id !== 'mp-dim') return; const v = +ev.target.value; clearTimeout(ltimer); ltimer = setTimeout(() => editLook({ dim: v }, true), 350); });
     e.onclick = ev => {
       const tl = ev.target.closest('.mp-t'); if (tl) { editLook({ [tl.dataset.k]: tl.dataset.n === '' ? null : +tl.dataset.n }, true); $$('.mp-t[data-k="' + tl.dataset.k + '"]', e).forEach(b => b.setAttribute('aria-pressed', String(b === tl))); return; }
+      const mb = ev.target.closest('.mp-m'); if (mb) { mode = mb.dataset.mode; hsv = toHsv(cur()[w]); show(); tint(); return; }
+      if (ev.target.id === 'mp-same') { clearTimeout(timer); editLook({ back: null }, true); hsv = toHsv(cur()[w]); show(); tint(); return; }
       const b = ev.target.closest('.mp-well'); if (b) { w = +b.dataset.w; hsv = toHsv(cur()[w]); show(); return; }
       const p = ev.target.closest('[data-p]'); if (p) { const d = PRESETS[+p.dataset.p].slice(); hsv = toHsv(d[w]); apply(d); commit(); return; }
-      if (ev.target.id === 'mp-reset') { const d = DEF[H(target.gid || target.cid || target.id) % DEF.length].slice(); hsv = toHsv(d[w]); apply(d); clearTimeout(timer); queueSave(target, null); { const id = idOf(target); LHOLD.set(id, { look: {}, until: Date.now() + 6000 }); DIMS.set(id, 100); repaintColours(); queueLook(target, {}); fillLooks(); } return; }
+      if (ev.target.id === 'mp-reset') { const d = DEF[H(target.gid || target.cid || target.id) % DEF.length].slice(); hsv = toHsv(d[w]); apply(d); clearTimeout(timer); queueSave(target, null); { const id = idOf(target); LHOLD.set(id, { look: {}, until: Date.now() + 6000 }); DIMS.set(id, 100); repaintColours(); queueLook(target, { back: null }); mode = 'card'; show(); fillLooks(); } return; }
       if (ev.target.id === 'mp-done') closePaint();
     };
     PT.set(start);
@@ -1037,9 +1049,20 @@
   // The owner's backdrop strength scales how bright the glyphs are (100 is today's look exactly), how dense they get above that, and how much
   // a ripple or a busy room stirs it. At 0 nothing is drawn at all.
   const lvOf = a => (a.dim == null ? 100 : a.dim) / 100;
+  // The backdrop reads as its palette: a faint wash of the main colour behind the whole chat, the ASCII in the highlight colour. The wash is only as
+  // strong as the message text can bear (contrast of the text over it stays at 7:1 or better), and the strength slider scales both (0 = nothing).
+  const BD_TEXT = '#e9e7ef', BD_BASE = '#050407';
+  function bdWash(main, lv) {
+    if (!(lv > 0)) return BD_BASE;
+    let w = Math.min(.4, .24 * lv), c = mix(BD_BASE, main, w), i = 0;
+    while (w > .01 && contrast(BD_TEXT, c) < 7 && i++ < 24) { w *= .88; c = mix(BD_BASE, main, w); }
+    return c;
+  }
+  const liftOver = (c, bg, r) => { let i = 0; while (contrast(c, bg) < r && i++ < 16) c = mix(c, '#ffffff', .12); return c; };
   function bdColours(a) {
-    const v = '#050407', b = a.f, h = a.h, lv = lvOf(a);
-    a.at = atlasOf(mix(v, b, Math.min(1, .3 * lv)), mix(v, h, Math.min(1, .44 * lv)), a.sw, a.sh, a.fs); a.atB = atlasOf(mix(v, b, Math.min(1, .55 * lv)), mix(v, lift(h, 3.4), Math.min(1, lv)), a.sw, a.sh, a.fs);   // the concept's strength at 100 %
+    const lv = lvOf(a), k = Math.min(1, lv), wash = bdWash(a.f, lv), hi = liftOver(a.h, wash, 3.2);
+    a.wash = wash; a.c.style.backgroundColor = wash;
+    a.at = atlasOf(mix(wash, hi, .38 * k), mix(wash, hi, .75 * k), a.sw, a.sh, a.fs); a.atB = atlasOf(mix(wash, hi, .62 * k), hi, a.sw, a.sh, a.fs);
   }
   /** Take the owner's chat pattern and strength for this room (live: a change from the owner fades in). */
   function bdLook(it) {
@@ -1113,7 +1136,7 @@
   function bdStart(item) {
     bdStop();
     const c = document.createElement('canvas'); c.id = 'mega-bd'; c.setAttribute('aria-hidden', 'true'); mainEl.prepend(c);
-    const a = BD = { c, g: c.getContext('2d'), gid: item.gid, fx: item.chatFx ?? item.fx, fxAuto: item.fxAuto, dim: item.dim ?? 100, f: fieldOf(item), h: hiOf(item), heat: Math.max(HEAT_FLOOR, HEAT.get(item.gid) ?? 0), t: H(item.gid) % 90, rip: [], last: performance.now(), raf: 0, nextRip: 5 + Math.random() * 6 };
+    const a = BD = { c, g: c.getContext('2d'), gid: item.gid, fx: item.chatFx ?? item.fx, fxAuto: item.fxAuto, dim: item.dim ?? 100, f: (item.back || item.theme)[0], h: (item.back || item.theme)[1], heat: Math.max(HEAT_FLOOR, HEAT.get(item.gid) ?? 0), t: H(item.gid) % 90, rip: [], last: performance.now(), raf: 0, nextRip: 5 + Math.random() * 6 };
     a.ro = new ResizeObserver(() => { clearTimeout(a.rz); a.rz = setTimeout(() => { if (BD === a) { bdSize(); focusFrame(); } }, 120); }); a.ro.observe(mainEl);
     bdSize(); if (!still()) a.raf = requestAnimationFrame(bdLoop);
   }

@@ -13,7 +13,7 @@ fn trio() -> (Net, Peer, Peer, Peer, String, String) {
     let (cid, gen) = community_with(&net, &mut a, &mut [&mut b, &mut c]);
     (net, a, b, c, cid, gen)
 }
-fn look(card: Option<u8>, chat: Option<u8>, dim: Option<u16>) -> Look { Look { card, chat, dim, oracle_quiet: None, oracle_draw: None } }
+fn look(card: Option<u8>, chat: Option<u8>, dim: Option<u16>) -> Look { Look { card, chat, dim, oracle_quiet: None, oracle_draw: None, back: None } }
 fn looks_of(p: &Peer, cid: &str) -> std::collections::BTreeMap<String, Look> { p.c.st.communities[cid].style.as_ref().map(|s| s.looks.clone()).unwrap_or_default() }
 fn cglyphs(p: &Peer, cid: &str) -> Vec<(u16, u8)> { p.c.wall_view(&format!("{CWALL_PREFIX}{cid}")).cells.into_iter().filter(|c| c.1 != 0).map(|c| (c.0, c.1)).collect() }
 fn rglyphs(p: &Peer, gid: &str) -> Vec<(u16, u8)> { p.c.wall_view(gid).cells.into_iter().filter(|c| c.1 != 0).map(|c| (c.0, c.1)).collect() }
@@ -378,4 +378,54 @@ fn palette_colours_travel_and_never_mix_forms_on_the_wire() {
         assert!(vals.iter().all(|&x| x < 24) || vals.iter().all(|&x| x >= 24), "mixed forms in one chunk: {vals:?}");
     }
     assert!(chunks.iter().any(|ch| serde_json::from_str::<serde_json::Value>(ch).unwrap()["c"].as_array().unwrap().iter().all(|x| x[1].as_u64().unwrap() < 24)), "the old-colour cells have a chunk of their own");
+}
+
+// ------------------------------------------------------------------------------------------------ backdrop colours
+#[test]
+fn backdrop_colours_are_signed_owner_only_kept_by_other_edits_and_ignored_by_a_030_reader() {
+    let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+    let owner = hex::encode(key.verifying_key().to_bytes());
+    let room = "abcdef0123456789".to_string();
+    let cid = "cc0011cc0011cc00";
+    let duo = |m: &str, h: &str| Duo { main: m.into(), hi: h.into() };
+    let with_back = |b: Option<Duo>| Look { dim: Some(80), back: b, ..Default::default() };
+    let doc = StyleDoc { ver: 2, ts: 1, rooms: [(room.clone(), duo("#112233", "#445566"))].into(), looks: [(room.clone(), with_back(Some(duo("#0a1b2c", "#fedcba"))))].into(), ..Default::default() };
+    let s = sign_style(&key, cid, &doc).unwrap();
+    assert!(s.doc.contains("\"back\":{\"main\":\"#0a1b2c\",\"hi\":\"#fedcba\"}"), "{}", s.doc);
+    assert_eq!(verify_style(&owner, cid, &s).unwrap(), doc);
+    // a look without backdrop colours prints exactly as before
+    let plain = StyleDoc { ver: 2, ts: 1, looks: [(room.clone(), with_back(None))].into(), ..Default::default() };
+    assert!(!sign_style(&key, cid, &plain).unwrap().doc.contains("back"));
+    // the old reader verifies the same signed text, still gets the card colours, and ignores the new part
+    let old = v030_verify(&owner, cid, &s).unwrap();
+    assert_eq!((old.ver, old.rooms[&room].main.as_str(), old.rooms[&room].hi.as_str()), (2, "#112233", "#445566"));
+    // a bad colour, or a look holding only a bad backdrop, is refused
+    for b in [duo("red", "#445566"), duo("#112233", "#44556"), duo("#11223g", "#445566")] {
+        assert!(sign_style(&key, cid, &StyleDoc { ver: 1, looks: [(room.clone(), with_back(Some(b)))].into(), ..Default::default() }).is_err());
+    }
+    assert!(sign_style(&key, cid, &StyleDoc { ver: 1, looks: [(room.clone(), Look { back: Some(duo("#112233", "#445566")), ..Default::default() })].into(), ..Default::default() }).is_ok());
+
+    // over the wire
+    let (_net, mut a, mut b, mut c, cid, gen) = trio();
+    a.c.set_role(&cid, &b.acct(), Role::Admin).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    let mine = Look { chat: Some(2), back: Some(duo("#ABCDEF", "#123456")), ..Default::default() };
+    assert!(b.c.set_look(&cid, Some(&gen), Some(mine.clone())).is_err() && c.c.set_look(&cid, Some(&gen), Some(mine.clone())).is_err(), "only the owner");
+    assert!(a.c.set_look(&cid, None, Some(Look { back: Some(duo("#abcdef", "#123456")), ..Default::default() })).is_err(), "rooms only");
+    assert!(a.c.set_look(&cid, Some(&gen), Some(Look { back: Some(duo("nope", "#123456")), ..Default::default() })).is_err());
+    a.c.set_look(&cid, Some(&gen), Some(mine)).unwrap();
+    // colours, lock, oracle switches keep it
+    a.c.set_style(&cid, Some(&gen), Some(duo("#111111", "#222222"))).unwrap();
+    a.c.set_wall(&cid, &gen, Some(true), true).unwrap();
+    a.c.set_oracle_quiet(&cid, &gen, true).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    for p in [&a, &b, &c] {
+        let l = p.c.look_of(&cid, Some(&gen)).unwrap();
+        assert_eq!((l.chat, l.back.clone(), l.oracle_quiet), (Some(2), Some(duo("#abcdef", "#123456")), Some(true)), "{}", p.name);
+    }
+    // "same as card": clearing the backdrop keeps the rest of the look
+    a.c.set_look(&cid, Some(&gen), Some(Look { chat: Some(2), oracle_quiet: Some(true), ..Default::default() })).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    let l = b.c.look_of(&cid, Some(&gen)).unwrap();
+    assert!(l.back.is_none() && l.chat == Some(2));
 }
