@@ -365,3 +365,25 @@ fn a_forged_clock_cannot_jam_the_wall() {
     settle(&mut [&mut a, &mut b, &mut c]);
     assert_eq!(glyphs(&mut c, &gid), vec![(5 * WALL_COLS as u16 + 5, 3)], "drawing still works for everyone");
 }
+
+#[test]
+fn snapshots_cannot_draw_on_a_locked_wall_or_name_strangers() {
+    let (_net, mut a, mut b, mut c, cid, gid) = trio();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    // Unlocked: an honest snapshot naming members applies, one naming a stranger is dropped whole.
+    let stranger = "ab".repeat(32);
+    let ok = format!("{{\"g\":0,\"i\":0,\"n\":1,\"a\":[\"{}\"],\"c\":[[10,2,5,0]]}}", b.acct());
+    b.c.debug_send_envelope(&gid, Envelope::Live { kind: "wall.s".into(), data: ok, ts: now_secs() }).unwrap();
+    let bad = format!("{{\"g\":0,\"i\":0,\"n\":1,\"a\":[\"{stranger}\"],\"c\":[[11,2,5,0]]}}");
+    b.c.debug_send_envelope(&gid, Envelope::Live { kind: "wall.s".into(), data: bad, ts: now_secs() }).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    let g = glyphs(&mut a, &gid);
+    assert!(g.iter().any(|x| x.0 == 10) && !g.iter().any(|x| x.0 == 11), "{g:?}");
+    // Locked: a member's snapshot on empty cells adds nothing.
+    a.c.set_wall(&cid, &gid, Some(true), false).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    let snap = format!("{{\"g\":0,\"i\":0,\"n\":1,\"a\":[\"{}\"],\"c\":[[300,2,9,0],[301,2,9,0]]}}", a.acct());
+    b.c.debug_send_envelope(&gid, Envelope::Live { kind: "wall.s".into(), data: snap, ts: now_secs() }).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    for p in [&mut a, &mut c] { assert!(!glyphs(p, &gid).iter().any(|x| x.0 == 300 || x.0 == 301), "{}: no cells on a locked wall", p.name); }
+}

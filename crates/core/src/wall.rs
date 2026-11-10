@@ -34,6 +34,8 @@ const MAX_CLOCK: u64 = 1 << 40;
 /// a forged clock from jumping to the ceiling, where nobody could draw any more until the owner cleared the wall.
 const MAX_CLOCK_STEP: u64 = 1 << 20;
 const MAX_ACCTS: usize = 1024;
+/// Most author-table entries one member's snapshots may add to a wall (the authors are all members, but one member must not fill the table).
+const MAX_INTRO_PER_SENDER: u16 = 48;
 
 /// glyph index, colour (0 = the room's main colour, 1 = its highlight), logical clock, index into `Wall::accts`.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +50,9 @@ pub struct Wall {
     /// Keyed by `y * WALL_COLS + x`. An erased cell is kept (glyph 0) so that an older stroke arriving late cannot bring it back.
     pub cells: BTreeMap<u16, Cell>,
     pub touched: u64,
+    /// How many author entries each snapshot sender has introduced (reset with the wall). Older saved walls have none.
+    #[serde(default)]
+    pub intro: BTreeMap<String, u16>,
 }
 
 fn is_acct(s: &str) -> bool { s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()) }
@@ -226,11 +231,24 @@ impl Client {
             let Ok(s) = serde_json::from_str::<WireS>(data) else { return };
             if s.g != gen || s.n == 0 || s.n > WALL_SNAP_CHUNKS as u64 || s.i >= s.n || s.a.len() > 16 || s.c.is_empty() || s.c.len() > 400 { return; }
             if s.a.iter().any(|a| !is_acct(a)) { return; }
+            // A snapshot is second-hand: on a locked wall only the owner's counts (a member's could carry anything), and every author it names
+            // must be someone who may draw in this room (a member; the owner too), never an arbitrary account.
+            if locked && !from_owner { return; }
+            let members: Vec<&str> = if cw {
+                let cid = &gid[CWALL_PREFIX.len()..];
+                self.st.groups.values().filter(|g| g.community == cid && !g.removed).flat_map(|g| g.accounts.iter().map(|a| a.as_str())).collect()
+            } else { self.st.groups.get(room).map(|g| g.accounts.iter().map(|a| a.as_str()).collect()).unwrap_or_default() };
+            if s.a.iter().any(|a| !members.contains(&a.as_str()) && a != &owner) { return; }
             if s.c.iter().any(|c| c[0] >= WALL_CELLS as u64 || c[1] >= WALL_GLYPHS.len() as u64 * 2 || c[2] == 0 || c[2] > MAX_CLOCK || c[3] >= s.a.len() as u64) { return; }
             let w = self.wall_mut(gid);
+            let known = s.a.iter().filter(|a| w.accts.contains(a)).count();
+            let new = (s.a.len() - known) as u16;
+            if new > 0 {
+                let used = w.intro.entry(acct.to_string()).or_insert(0);
+                if used.saturating_add(new) > MAX_INTRO_PER_SENDER { return; }
+                *used += new;
+            }
             for c in &s.c {
-                // A snapshot is second-hand. While the wall is locked it may only fill cells that are still empty, so it cannot be used to draw.
-                if locked && !from_owner && w.cells.contains_key(&(c[0] as u16)) { continue; }
                 if c[2] > w.clock.saturating_add(MAX_CLOCK_STEP) { continue; }
                 changed |= w.put(c[0] as u32, (c[1] / 2) as u8, (c[1] % 2) as u8, c[2], &s.a[c[3] as usize]);
             }
