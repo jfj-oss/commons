@@ -9,8 +9,9 @@ use commons_proto::{b64, unb64, LargeBeginReq};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, TryLockError};
+use std::time::{Duration, Instant};
 
 /// Decrypted attachments kept for the chunked reads of `file_read`: a few, and only while unlocked.
 const OPEN_FILES: usize = 4;
@@ -27,7 +28,10 @@ pub struct App {
     live_wake: (Mutex<bool>, Condvar),
     stop: Mutex<bool>,
     /// The last answer to each read-only call. The UI asks twice a second, and gets this if the client is busy.
-    seen: Mutex<HashMap<String, Value>>,
+    seen: Mutex<HashMap<String, (Value, u64, Instant)>>,
+    /// How many times the client has been held for a change (an action from the UI, a sync round, the live channel):
+    /// a cached answer from before the latest is not served as the state of now (`read`).
+    changes: AtomicU64,
     files: Mutex<Vec<(String, Arc<Vec<u8>>)>>,
     /// loopback server for "open this call in my browser" (started on first use). Desktops only: a phone has no
     /// second browser to hand a call to.
@@ -57,7 +61,29 @@ const RUNE_POLL_SECS: u64 = 15;
 /// is also the longest a new room waits to be heard.
 const LIVE_POLL_WAIT_MS: u64 = 3000;
 
+/// How long a read waits for a busy client when its cached answer is from before the UI's last action (`App::read`).
+const READ_WAIT: Duration = Duration::from_millis(1500);
+
 fn s(v: &Value, k: &str) -> String { v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string() }
+
+/// COMMONS_LOCK_TRACE set: say on stderr when the client is waited for or held for long, and when a read is answered from the cache.
+fn trace_on() -> bool { static ON: OnceLock<bool> = OnceLock::new(); *ON.get_or_init(|| std::env::var_os("COMMONS_LOCK_TRACE").is_some()) }
+const TRACE_MS: u128 = 100;
+
+/// The client, locked. Knows who took it and for how long (for the trace), and counts itself as a change when let go
+/// (`changes`, None for a read: it changes nothing). The count goes up before the client is free, so a read that then
+/// gets it sees the new count with the new state.
+pub struct Held<'a> { g: MutexGuard<'a, Option<Client>>, at: Instant, waited: Duration, who: &'static std::panic::Location<'static>, changes: Option<&'a AtomicU64> }
+impl std::ops::Deref for Held<'_> { type Target = Option<Client>; fn deref(&self) -> &Option<Client> { &self.g } }
+impl std::ops::DerefMut for Held<'_> { fn deref_mut(&mut self) -> &mut Option<Client> { &mut self.g } }
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        if let Some(c) = self.changes { c.fetch_add(1, Ordering::SeqCst); }
+        if !trace_on() { return; }
+        let held = self.at.elapsed().as_millis();
+        if held >= TRACE_MS || self.waited.as_millis() >= TRACE_MS { eprintln!("[lock] {}:{} waited {}ms held {}ms", self.who.file(), self.who.line(), self.waited.as_millis(), held); }
+    }
+}
 type R = Result<Value, String>;
 fn e<T: std::fmt::Display>(x: T) -> String { format!("{x}") }
 /// [`e`] for a relay call during a large transfer: a dropped connection, a timeout, a relay that is restarting or busy
@@ -107,7 +133,7 @@ impl App {
     pub fn with_kdf(dir: PathBuf, default_relay: &str, kdf: KdfParams) -> Arc<App> {
         Arc::new_cyclic(|me| App {
             me: me.clone(), call_seen: Mutex::new(None), pw_link: Mutex::new(None), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None),
-            wake: (Mutex::new(false), Condvar::new()), live_wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), files: Mutex::new(vec![]),
+            wake: (Mutex::new(false), Condvar::new()), live_wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), changes: AtomicU64::new(0), files: Mutex::new(vec![]),
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
             bridge: Mutex::new(None),
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
@@ -150,7 +176,13 @@ impl App {
         *self.live_wake.0.lock().unwrap() = true; self.live_wake.1.notify_all();
     }
     /// A panic in one call must not take every later call down with it.
-    fn lock(&self) -> MutexGuard<'_, Option<Client>> { self.client.lock().unwrap_or_else(|p| p.into_inner()) }
+    #[track_caller]
+    fn lock(&self) -> Held<'_> { self.lock_at(std::panic::Location::caller()) }
+    fn lock_at(&self, who: &'static std::panic::Location<'static>) -> Held<'_> {
+        let t = Instant::now();
+        let g = self.client.lock().unwrap_or_else(|p| p.into_inner());
+        Held { g, at: Instant::now(), waited: t.elapsed(), who, changes: Some(&self.changes) }
+    }
 
     /// Background sync loop: every second (or immediately after a user action). The client is held
     /// only to plan a round and to apply its result, never while waiting for the relay.
@@ -219,6 +251,17 @@ impl App {
         });
     }
 
+    /// Test hook: hold the client for `ms` from another thread, the way a long action or a sync round does, so a test can
+    /// see what a read answers meanwhile.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_hold(self: &Arc<Self>, ms: u64) {
+        let app = self.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || { let g = app.lock(); tx.send(()).unwrap(); std::thread::sleep(Duration::from_millis(ms)); drop(g); });
+        rx.recv().unwrap();   // held before this returns
+    }
+
     /// What the poller needs, without keeping the client while rune is asked.
     fn rune_settings(&self) -> Option<(bool, String)> {
         let g = self.lock();
@@ -250,33 +293,56 @@ impl App {
         r
     }
 
+    #[track_caller]
     fn with<T>(&self, f: impl FnOnce(&mut Client) -> Result<T, String>) -> Result<T, String> {
-        let mut g = self.lock();
+        let mut g = self.lock_at(std::panic::Location::caller());
         match g.as_mut() { Some(c) => f(c), None => Err("locked".into()) }
     }
 
-    /// A read-only call. If the client is busy with something long (an admin action waiting for the relay),
-    /// the last answer is good enough: the UI must not freeze for that.
+    /// A read-only call. If the client is busy with something long (an admin action waiting for the relay), the last
+    /// answer is good enough: the UI must not freeze for that. But only an answer that is still current, made since the
+    /// client was last held for a change. An older one would show the UI a state it has already moved past: the member
+    /// list from before the person was just made an admin, a friend's "listening to" from before the status that ended
+    /// it arrived. For those the client is waited for, within reason; what usually holds it (a sync round, the live
+    /// channel's threads) is done in well under a second, and a long action keeps the old answer coming meanwhile.
+    #[track_caller]
     fn read(&self, key: String, f: impl FnOnce(&Client) -> Value) -> R {
-        let g = match self.client.try_lock() {
-            Ok(g) => g,
-            Err(TryLockError::Poisoned(p)) => p.into_inner(),
-            Err(TryLockError::WouldBlock) => {
-                if let Some(v) = self.seen.lock().unwrap().get(&key) { return Ok(v.clone()); }
-                self.lock()
+        let who = std::panic::Location::caller();
+        let try_lock = || match self.client.try_lock() { Ok(g) => Some(g), Err(TryLockError::Poisoned(p)) => Some(p.into_inner()), Err(TryLockError::WouldBlock) => None };
+        let t = Instant::now();
+        let mut g = try_lock();
+        if g.is_none() {
+            let cached = self.seen.lock().unwrap().get(&key).cloned();
+            if let Some((v, n, at)) = &cached {
+                if *n == self.changes.load(Ordering::SeqCst) {
+                    if trace_on() { eprintln!("[read] stale {key}: answered from a cache {}ms old", at.elapsed().as_millis()); }
+                    return Ok(v.clone());
+                }
             }
-        };
+            while g.is_none() && t.elapsed() < READ_WAIT { std::thread::sleep(Duration::from_millis(2)); g = try_lock(); }
+            if trace_on() { eprintln!("[read] after a change {key}: waited {}ms, {}", t.elapsed().as_millis(), if g.is_some() { "fresh" } else if cached.is_some() { "still busy: the old answer" } else { "still busy: waiting on"}); }
+            if g.is_none() {
+                if let Some((v, _, _)) = cached { return Ok(v); }   // a long action is still running: the old answer rather than a frozen UI
+            }
+        }
+        let g = g.unwrap_or_else(|| self.client.lock().unwrap_or_else(|p| p.into_inner()));
+        let g = Held { g, at: Instant::now(), waited: t.elapsed(), who, changes: None };   // a read changes nothing
         let v = f(g.as_ref().ok_or("locked")?);
-        self.seen.lock().unwrap().insert(key, v.clone());
+        let n = self.changes.load(Ordering::SeqCst);   // taken while the client is held: nothing can be changing it in between
+        self.seen.lock().unwrap().insert(key, (v.clone(), n, Instant::now()));
         Ok(v)
     }
 
     /// A poll that does not wait: if the client is busy with something long it says so and the caller asks again a moment later.
+    #[track_caller]
     fn try_read(&self, f: impl FnOnce(&Client) -> Value) -> R {
         let g = match self.client.try_lock() {
             Ok(g) => g,
             Err(TryLockError::Poisoned(p)) => p.into_inner(),
-            Err(TryLockError::WouldBlock) => return Ok(json!({"busy": true, "events": [], "head": 0, "cells": []})),
+            Err(TryLockError::WouldBlock) => {
+                if trace_on() { let who = std::panic::Location::caller(); eprintln!("[read] busy {}:{}", who.file(), who.line()); }
+                return Ok(json!({"busy": true, "events": [], "head": 0, "cells": []}));
+            }
         };
         Ok(f(g.as_ref().ok_or("locked")?))
     }
