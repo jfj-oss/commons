@@ -1,5 +1,7 @@
 // Headless UI check: real relay + two dev bridges (two "windows") + Chromium on the GPU (ANGLE/Vulkan, never SwiftShader).
 // No window is ever shown. Usage: node tools/ui-check.mjs <outdir>
+// When it fails at a spot that passes alone: COMMONS_UI_RPC_TRACE=1 prints how long every call to the core took from the page's side,
+// and COMMONS_LOCK_TRACE=1 (read by the bridges) prints how long the core was held, by whom, and every answer given from the cache.
 import { spawn, execSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -79,8 +81,16 @@ class Page {
 async function open(url) {
   const t = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/new?` + encodeURIComponent(url), { method: 'PUT' })).json();
   const ws = new WebSocket(t.webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
-  const p = new Page(ws); await p.send('Page.enable'); await p.send('Runtime.enable'); await p.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }); return p;
+  const p = new Page(ws); await p.send('Page.enable'); await p.send('Runtime.enable'); await p.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+  // COMMONS_UI_RPC_TRACE=1: how long each call to the core takes from the page's side (window.__rpcTrace, printed when the check ends).
+  if (process.env.COMMONS_UI_RPC_TRACE) {
+    const source = `(() => { if (window.__rpcTrace) return; const T = window.__rpcTrace = { m: {}, slow: [] }; const w = () => { if (typeof window.rpc !== 'function') return setTimeout(w, 20); const r0 = window.rpc; window.rpc = async (m, a) => { const t = performance.now(); try { return await r0(m, a); } finally { const d = performance.now() - t, e = T.m[m] || (T.m[m] = { n: 0, max: 0, sum: 0, over: 0 }); e.n++; e.sum += d; if (d > e.max) e.max = d; if (d > 400) { e.over++; T.slow.push([new Date().toISOString().slice(11, 23), m, Math.round(d)]); if (T.slow.length > 300) T.slow.shift(); } } }; }; w(); })()`;
+    await p.send('Page.addScriptToEvaluateOnNewDocument', { source });   // the page may be reloaded by a test
+    await p.send('Runtime.evaluate', { expression: source });              // and it is already loading now
+  }
+  return p;
 }
+const dumpTrace = async () => { if (!process.env.COMMONS_UI_RPC_TRACE) return; for (const [n, P] of [['A', A], ['B', B]]) { if (!P) continue; try { console.log(`rpc trace ${n}:`, await P.ev(`(() => { const T = window.__rpcTrace; if (!T) return 'none'; return Object.entries(T.m).map(([m, e]) => m + ' n=' + e.n + ' avg=' + Math.round(e.sum / e.n) + ' max=' + Math.round(e.max) + ' over400=' + e.over).join('; ') + ' | slow: ' + JSON.stringify(T.slow.slice(-80)); })()`)); } catch (e) { console.log('rpc trace', n, 'unavailable:', e.message); } } };
 const type = (p, sel, v) => p.ev(`(()=>{const e=document.querySelector(${JSON.stringify(sel)});e.value=${JSON.stringify(v)};e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
 const click = (p, sel) => p.ev(`document.querySelector(${JSON.stringify(sel)}).click()`);
 const textOf = (p, sel) => p.ev(`document.querySelector(${JSON.stringify(sel)})?.innerText||''`);
@@ -1659,7 +1669,8 @@ try {
     await B.send('Page.bringToFront');
     const presDiag = () => B.ev(`JSON.stringify({ peers: __megaPres.peers(), dots: [...document.querySelectorAll('.mpres .mpd')].map(d => [d.className, d.closest('.mslot') && d.closest('.mslot').dataset.i]), pres: document.querySelectorAll('.mpres').length, slots: [...document.querySelectorAll('.mslot')].map(s => s.dataset.i + ':' + (s.querySelector('.msq') ? 1 : 0)), keys: __mega.list.items.map(x => x.key.slice(0, 6)), cur: __mega.list.cur, lvl: __mega.level })`);
     await B.waitFor(`__megaPres.peers().length === 1`, 20000).catch(async () => { throw new Error('presence: bob never heard of alice\'s card: ' + await A.ev(`JSON.stringify(__megaPres.state())`) + await B.ev(`JSON.stringify(__megaPres.stats)`)); });
-    await B.waitFor(`document.querySelectorAll('.mpres .mpd:not(.out)').length === 1`, 8000).catch(async () => { throw new Error('presence: bob knows alice is there but shows no single dot: ' + await presDiag()); });
+    // the dot on alice's card (an event for the community card itself, from her way here through the home screen, may come first)
+    await B.waitFor(`(() => { const i = __mega.list.items.findIndex(x => x.key === ${gj}); const s = document.querySelector('.mslot[data-i="' + i + '"]'); return !!s && s.querySelectorAll('.mpres .mpd:not(.out)').length === 1; })()`, 8000).catch(async () => { throw new Error('presence: bob knows alice is there but shows no single dot on her card: ' + await presDiag()); });
     need((await dotsOn(B, textGid)).join() === meA && await allDots(B) === 1, 'presence: the dot is not on the matching card: ' + JSON.stringify(await dotsOn(B, textGid)));
     const look = await B.ev(`(() => { const d = document.querySelector('.mpres .mpd'), l = d.parentElement, r = d.getBoundingClientRect(), q = d.closest('.msq').getBoundingClientRect(); return { pe: getComputedStyle(l).pointerEvents + '/' + getComputedStyle(d).pointerEvents, bg: getComputedStyle(d).backgroundColor, inside: r.left >= q.left && r.right <= q.right && r.top >= q.top && r.bottom <= q.bottom, label: d.textContent, hit: document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === d }; })()`);
     need(look.pe === 'none/none' && look.inside && look.label === '' && !look.hit && /^rgb/.test(look.bg), 'presence: the dot should be a plain colour, inside the card and out of the pointer\'s way: ' + JSON.stringify(look));
@@ -1976,5 +1987,6 @@ try {
     if (box.l < -1 || box.r > box.w + 1) throw new Error(`${why} overflows the phone screen: ${JSON.stringify(box)}`);
   }
   console.log('UI check OK; screenshots in', out);
-} catch (e) { console.error('UI check FAILED:', e.message); try { for (const [n, P] of [['A', A], ['B', B]]) console.error(n, 'toast:', await P.ev(`document.querySelector('#toast')?.innerText`), '| transfers:', await P.ev(`document.querySelector('#transfers')?.innerText`), '| xfer:', await P.ev(`JSON.stringify([[...XFER.keys()], XLIST])`)); } catch { } process.exitCode = 1; }
+  await dumpTrace();
+} catch (e) { console.error('UI check FAILED:', e.message); try { for (const [n, P] of [['A', A], ['B', B]]) console.error(n, 'toast:', await P.ev(`document.querySelector('#toast')?.innerText`), '| transfers:', await P.ev(`document.querySelector('#transfers')?.innerText`), '| xfer:', await P.ev(`JSON.stringify([[...XFER.keys()], XLIST])`)); } catch { } await dumpTrace(); process.exitCode = 1; }
 finally { runeSrv.close(); procs.forEach(p => { try { p.kill(); } catch { } }); }

@@ -90,13 +90,17 @@
   }
 
   // ---------------------------------------------------------------- what others do
+  // The names of a community's members, fetched once a minute (sooner when an unknown account turns up, but not twice in 8 s). Two events
+  // arriving together both wait for the same fetch: the second must not read the list while it is still empty (it would be dropped as
+  // "not a member"), nor get its answer before the first and leave an older event as the last word.
   async function members(cid, force) {
     let e = P.names.get(cid);
-    if (e && !force && Date.now() - e.at < 60000) return e.m;
-    if (e && Date.now() - e.at < 8000) return e.m;
-    const m = new Map(); e = { at: Date.now(), m }; P.names.set(cid, e);
-    try { const r = await rpc('members', { cid }); for (const x of Array.isArray(r) ? r : []) if (x && typeof x.account === 'string' && typeof x.name === 'string') m.set(x.account, x.name.slice(0, 40)); } catch { }
-    return m;
+    if (e && !force && Date.now() - e.at < 60000) return e.p;
+    if (e && Date.now() - e.at < 8000) return e.p;
+    const m = new Map();
+    const p = (async () => { try { const r = await rpc('members', { cid }); for (const x of Array.isArray(r) ? r : []) if (x && typeof x.account === 'string' && typeof x.name === 'string') m.set(x.account, x.name.slice(0, 40)); } catch { } return m; })();
+    P.names.set(cid, { at: Date.now(), m, p });
+    return p;
   }
   const cidOfGid = g => { const c = comms().find(c => !c.removed && c.channels.some(x => x.gid === g)); return c ? c.id : null; };
   async function onEvent(e) {

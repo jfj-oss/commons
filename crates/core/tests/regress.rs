@@ -381,6 +381,43 @@ fn the_ui_keeps_working_while_the_relay_hangs() {
     app.shutdown();
 }
 
+// A read while the client is busy is answered from the last answer, but never from one older than the latest change: the UI
+// asks for the member list right after making someone an admin, and for a friend's "listening to" right after the status
+// that ended it arrived, and both looked unchanged when the sync thread happened to hold the client at that moment.
+#[test]
+fn a_busy_client_never_answers_a_read_from_before_a_change() {
+    use commons_core::api::*;
+    use std::time::{Duration, Instant};
+    let net = Net::new();
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::with_kdf(dir.path().into(), &net.url(), KdfParams::TEST);
+    app.call("create_account", serde_json::json!({"name": "a", "passphrase": "passphrase1"})).unwrap();
+    let cid = app.call("create_community", serde_json::json!({"name": "club"})).unwrap()["id"].as_str().unwrap().to_string();
+    let name = |s: &serde_json::Value| s["communities"][0]["name"].as_str().unwrap().to_string();
+    assert_eq!(name(&app.call("snapshot", serde_json::json!({})).unwrap()), "club");
+    // nothing has changed since that answer: a busy client is answered from it, at once
+    app.debug_hold(800);
+    let t = Instant::now();
+    assert_eq!(name(&app.call("snapshot", serde_json::json!({})).unwrap()), "club");
+    assert!(t.elapsed() < Duration::from_millis(300), "answered from the cache, not after the hold: {:?}", t.elapsed());
+    std::thread::sleep(Duration::from_millis(900));
+    // a change, then a busy client: the read waits for it, and shows the change
+    app.call("rename_community", serde_json::json!({"cid": cid, "name": "reading circle"})).unwrap();
+    app.debug_hold(600);
+    let t = Instant::now();
+    assert_eq!(name(&app.call("snapshot", serde_json::json!({})).unwrap()), "reading circle", "the old name is not good enough after a change");
+    assert!(t.elapsed() >= Duration::from_millis(400) && t.elapsed() < Duration::from_millis(1500), "waited for the client: {:?}", t.elapsed());
+    // a long action keeps the old answer coming meanwhile rather than freezing the UI, and the truth follows when it is done
+    app.call("rename_community", serde_json::json!({"cid": cid, "name": "book club"})).unwrap();
+    app.debug_hold(4000);
+    let t = Instant::now();
+    assert_eq!(name(&app.call("snapshot", serde_json::json!({})).unwrap()), "reading circle");
+    assert!(t.elapsed() >= Duration::from_millis(1000) && t.elapsed() < Duration::from_millis(3000), "gave up waiting within reason: {:?}", t.elapsed());
+    std::thread::sleep(Duration::from_millis(4000));
+    assert_eq!(name(&app.call("snapshot", serde_json::json!({})).unwrap()), "book club");
+    app.shutdown();
+}
+
 // ---- performance: pages of a long history
 #[test]
 fn messages_come_in_pages() {

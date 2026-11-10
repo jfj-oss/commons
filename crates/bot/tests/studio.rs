@@ -874,7 +874,13 @@ fn only_the_owner_can_set_the_flag_and_the_bot_follows_it_live() {
     settle(&mut [&mut alice, &mut oracle]);
     assert!(!quiet_flag(&alice, &gen) && !quiet_flag(&oracle, &gen));
 
-    // Without the flag it talks and draws on a lively room.
+    // Without the quiet flag it talks on a lively room, but doodles on the backdrop only where the owner switched that on.
+    say(&mut alice, &mut oracle, "zero");
+    let kinds: Vec<JobKind> = bot.poll(&mut oracle.c).into_iter().map(|j| j.kind).collect();
+    assert!(kinds.contains(&JobKind::Chime) && !kinds.contains(&JobKind::Wall), "no doodles unless the owner allows them: {kinds:?}");
+    assert!(oracle.c.set_oracle_draw(&cid, &gen, true).is_err(), "a member cannot allow doodles");
+    alice.c.set_oracle_draw(&cid, &gen, true).unwrap();
+    settle(&mut [&mut alice, &mut oracle]);
     say(&mut alice, &mut oracle, "one");
     let kinds: Vec<JobKind> = bot.poll(&mut oracle.c).into_iter().map(|j| j.kind).collect();
     assert!(kinds.contains(&JobKind::Chime) && kinds.contains(&JobKind::Wall), "{kinds:?}");
