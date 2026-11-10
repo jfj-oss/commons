@@ -152,6 +152,8 @@ pub trait Chat {
     fn owner_of(&self, _gid: &str) -> Option<String> { None }
     /// Whether the owner has switched the Oracle off in this room (the signed `oracle_quiet` look). Read live from the synced community state.
     fn oracle_quiet(&self, _gid: &str) -> bool { false }
+    /// Whether the owner lets the Oracle doodle on this room's backdrop on its own (the signed `oracle_draw` look; off unless switched on).
+    fn oracle_draws(&self, _gid: &str) -> bool { false }
     /// The room's wall as it stands, or `None` when this chat has no wall.
     fn wall_info(&self, _gid: &str) -> Option<WallInfo> { None }
     /// One stroke event on the room's wall: `(x, y, glyph index, colour)`. `Ok(false)` means "not sent, try again shortly".
@@ -169,6 +171,10 @@ pub struct WallInfo {
     pub marks: HashSet<u32>,
 }
 
+fn draws_in(c: &Client, gid: &str) -> bool {
+    let Some(g) = c.st.groups.get(gid) else { return false };
+    c.look_of(&g.community, Some(gid)).and_then(|l| l.oracle_draw).unwrap_or(false)
+}
 fn quiet_in(c: &Client, gid: &str) -> bool {
     let Some(g) = c.st.groups.get(gid) else { return false };
     c.look_of(&g.community, Some(gid)).and_then(|l| l.oracle_quiet).unwrap_or(false)
@@ -227,6 +233,7 @@ impl Chat for Client {
     fn name_of(&self, account: &str) -> String { self.display_name(account) }
     fn owner_of(&self, gid: &str) -> Option<String> { owner_in(self, gid) }
     fn oracle_quiet(&self, gid: &str) -> bool { quiet_in(self, gid) }
+    fn oracle_draws(&self, gid: &str) -> bool { draws_in(self, gid) }
     fn wall_info(&self, gid: &str) -> Option<WallInfo> { wall_info_of(self, gid) }
     fn wall_draw(&mut self, gid: &str, cells: &[(u32, u32, u8, u8)]) -> Result<bool, String> { Client::wall_draw(self, gid, cells).map_err(|e| format!("{e:#}")) }
 }
@@ -251,6 +258,7 @@ impl Chat for SharedClient<'_> {
     fn name_of(&self, account: &str) -> String { self.lock().display_name(account) }
     fn owner_of(&self, gid: &str) -> Option<String> { owner_in(&self.lock(), gid) }
     fn oracle_quiet(&self, gid: &str) -> bool { quiet_in(&self.lock(), gid) }
+    fn oracle_draws(&self, gid: &str) -> bool { draws_in(&self.lock(), gid) }
     fn wall_info(&self, gid: &str) -> Option<WallInfo> { wall_info_of(&self.lock(), gid) }
     fn wall_draw(&mut self, gid: &str, cells: &[(u32, u32, u8, u8)]) -> Result<bool, String> { Client::wall_draw(&mut self.lock(), gid, cells).map_err(|e| format!("{e:#}")) }
 }
@@ -778,7 +786,7 @@ impl Bot {
             // Drawing on the wall: the same kind of dice, an active room, an unlocked wall, and never where the owner has said quiet.
             // A mention or command this round means people are talking to it, not watching the wall.
             if !addressed && chatter > 0 && !quiet && self.cfg.wall_chance_pct > 0 && log.msgs.iter().rev().find(|m| m.sender != me).is_some_and(|m| m.ts + 180 >= now)
-                && self.wall_allowed(entry, now) && c.wall_info(&gid).is_some_and(|w| !w.locked) && self.gpu.blocked().is_none() && roll(self.cfg.wall_chance_pct) {
+                && self.wall_allowed(entry, now) && c.oracle_draws(&gid) && c.wall_info(&gid).is_some_and(|w| !w.locked) && self.gpu.blocked().is_none() && roll(self.cfg.wall_chance_pct) {
                 if self.wall_busy.lock().unwrap_or_else(|p| p.into_inner()).insert(gid.clone()) {
                     if let Some(last) = log.msgs.last() {
                         found.push(Job { gid: gid.clone(), trigger: last.id.clone(), from: String::new(), text: String::new(), kind: JobKind::Wall });
@@ -1109,7 +1117,7 @@ impl Bot {
              conspiracies are absurd and invented (Babylon, lizard men, aliens, pigeons, fridges and the like), never \
              about real named people, real ethnic or religious groups, or real medicine, vaccines or elections. \
              Even mid-rant, still actually answer what was asked in a line or two, then spiral. Keep the whole reply \
-             short and punchy, like a real chat message: 2 to 5 sentences, no lists, no headings, at most one emoji, \
+             short and punchy, like a real chat message: 2 to 5 sentences, no lists, no headings, and never any emoji, \
              unless someone asks for a long story. \
              Engage with any topic people bring up and answer \
              from your own knowledge; do not refuse, lecture or hedge, and do not say you can only answer from sources. \
@@ -1565,12 +1573,38 @@ pub fn strip_model_junk(text: &str) -> String {
         let stray = matches!(t, "'" | "\"" | "}" | "}}" | "}}}" | "]");
         if fenced || !(tool_json || stray) { kept.push(line); }
     }
-    kept.join("\n").trim().to_string()
+    no_emoji(kept.join("\n").trim())
+}
+
+/// Oracle never sends emoji (the owner's rule): pictographs, flags, skin tones and the joiners that glue them are taken out, and the
+/// spaces they leave are tidied. Letters, punctuation and symbols such as (c) and the arrows stay.
+pub fn no_emoji(text: &str) -> String {
+    let emoji = |c: char| matches!(c as u32,
+        0x1F000..=0x1FAFF | 0x2600..=0x27BF | 0x2B00..=0x2BFF | 0x1F1E6..=0x1F1FF | 0xFE0F | 0x200D | 0x20E3 | 0xE0020..=0xE007F | 0x2300..=0x23FF);
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if emoji(c) {
+            // "word 😀 word" must not become "word  word": drop the space after it when one is already before it
+            if out.ends_with(' ') { while chars.peek() == Some(&' ') { chars.next(); } }
+            continue;
+        }
+        out.push(c);
+    }
+    out.lines().map(str::trim_end).collect::<Vec<_>>().join("\n").trim().to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_emoji_ever() {
+        assert_eq!(no_emoji("Wah gwan 👁️ bredda! 🦎💨 Jah know 🇯🇲"), "Wah gwan bredda! Jah know");
+        assert_eq!(no_emoji("thumbs 👍🏽 up, family 👨‍👩‍👧 here"), "thumbs up, family here");
+        assert_eq!(no_emoji("plain text, (c) 2026 -> ok"), "plain text, (c) 2026 -> ok");
+        assert_eq!(strip_model_junk("line one 😀\n```\ncode 🙂\n```"), "line one\n```\ncode\n```");
+    }
 
     #[test]
     fn tool_text_never_reaches_the_room() {
