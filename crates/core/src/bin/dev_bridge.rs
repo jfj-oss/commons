@@ -59,6 +59,13 @@ fn state_dir(ui: &std::path::Path, port: u16) -> Option<PathBuf> {
     Some(install.to_path_buf())
 }
 
+/// The program that opens mega's window, for a click on a notification when no window is open. Only an installed copy has one.
+fn launcher_path(ui: &std::path::Path) -> Option<PathBuf> {
+    let install = ui.parent()?;
+    let c = if cfg!(windows) { install.join("launcher.exe") } else if install.ends_with("Contents/Resources") { install.parent()?.join("MacOS/launcher") } else { install.join("megatron") };
+    c.is_file().then_some(c)
+}
+
 fn data_dir(port: u16) -> PathBuf {
     PathBuf::from(std::env::var("COMMONS_DATA").unwrap_or_else(|_| format!("./dev-data-{port}")))
 }
@@ -301,6 +308,17 @@ fn main() {
     }
     let app = App::with_kdf(data.into(), &relay, kdf);
     app.start_background();
+    // Notifications while no window is open (notify.rs). An installed copy shows them through the system. A bridge run from a
+    // source tree stays quiet unless MEGATRON_NATIVE_NOTIFY=1, so tests never put notes on a real screen; COMMONS_NOTIFY_LOG=<file>
+    // writes each note as a line of JSON to that file instead (the checks use it).
+    {
+        let hub = app.notify_hub();
+        if let Some(f) = std::env::var_os("COMMONS_NOTIFY_LOG") {
+            hub.set_sink(Arc::new(commons_core::notify::FileSink::new(PathBuf::from(f))));
+        } else if updatable(&ui).is_some() || std::env::var_os("MEGATRON_NATIVE_NOTIFY").is_some() {
+            hub.set_sink(Arc::new(commons_core::notify::NativeSink::new(&hub, launcher_path(&ui), "app.commons.chat.browser")));
+        }
+    }
     // After an Update on Windows the previous bridge may still be leaving, so give it a moment to free the port.
     let mut bound = TcpListener::bind(("127.0.0.1", port));
     for _ in 0..50 {
