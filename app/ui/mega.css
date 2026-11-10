@@ -469,3 +469,17 @@ html.mega.mg-room #typing { position: absolute; width: 1px; height: 1px; overflo
 #call-ppl .cp.talk { opacity: 1; box-shadow: 0 0 0 2px #050407, 0 0 0 4px var(--dk-hi, var(--m-speak)), 0 0 14px color-mix(in srgb, var(--dk-hi, var(--m-speak)) 55%, transparent); transform: scale(1.06); }
 @supports (corner-shape: squircle) { #call-ppl .cp { border-radius: 22px; corner-shape: squircle; } }
 @media (prefers-reduced-motion: reduce) { #call-ppl .cp { transition: none; } #call-ppl .cp.talk { transform: none; } }
+
+/* The chat, closer to the concept: pure black under a full-strength backdrop (no colour glow over it), a big room title
+   floating over the chat with no rule under it, and search as an icon that opens into the box (as on a phone). */
+html.mega.mg-room #main { background: #050407; }
+html.mega.mg-room #head { min-height: 64px; border-bottom-color: transparent; }
+html.mega.mg-room #chan-title { font: 400 round(down, 44px, 12px)/1 var(--m-sharp); letter-spacing: round(var(--m-track), var(--m-lsnap)); }
+@media (min-width: 761px) {
+  html.mega.mg-room .search-wrap { display: none; }
+  html.mega.mg-room #btn-search { display: inline-grid; }
+  html.mega.mg-room #head.searching .head-title, html.mega.mg-room #head.searching #btn-search { display: none; }
+  html.mega.mg-room #head.searching .head-actions { flex: 1; }
+  html.mega.mg-room #head.searching .search-wrap { display: flex; flex: 1; }
+  html.mega.mg-room #head.searching #search, html.mega.mg-room #head.searching #search:focus { width: 100%; }
+}

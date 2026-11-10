@@ -1010,7 +1010,7 @@
   };
 
   // ---- the backdrop: the room's two colours as ascii, flowing around everything on the page
-  const HEAT_FLOOR = .12;   // a quiet room still breathes: this much heat is the least it ever settles to
+  const HEAT_FLOOR = .24;   // a quiet room still breathes: this much heat is the least it ever settles to
   const HEAT = new Map();   // gid -> heat, so a room you come back to is as lively as you left it
   let BD = null, mainEl = null;
   // The owner's backdrop strength scales how bright the glyphs are (100 is today's look exactly), how dense they get above that, and how much
@@ -1018,7 +1018,7 @@
   const lvOf = a => (a.dim == null ? 100 : a.dim) / 100;
   function bdColours(a) {
     const v = '#050407', b = a.f, h = a.h, lv = lvOf(a);
-    a.at = atlasOf(mix(v, b, Math.min(1, .2 * lv)), mix(v, h, Math.min(1, .3 * lv)), a.sw, a.sh, a.fs); a.atB = atlasOf(mix(v, b, Math.min(1, .5 * lv)), mix(v, lift(h, 3.4), Math.min(1, lv)), a.sw, a.sh, a.fs);
+    a.at = atlasOf(mix(v, b, Math.min(1, .3 * lv)), mix(v, h, Math.min(1, .44 * lv)), a.sw, a.sh, a.fs); a.atB = atlasOf(mix(v, b, Math.min(1, .55 * lv)), mix(v, lift(h, 3.4), Math.min(1, lv)), a.sw, a.sh, a.fs);   // the concept's strength at 100 %
   }
   /** Take the owner's chat pattern and strength for this room (live: a change from the owner fades in). */
   function bdLook(it) {
@@ -1070,7 +1070,7 @@
     const { g, cols, rows, mask, sw, sh } = a; g.clearRect(0, 0, a.c.width, a.c.height);
     if (a.dim === 0) return;
     ST.bdDraws++;
-    const gate = (.5 - .26 * a.heat) / Math.max(1, lvOf(a)), field = FX[a.fx], rips = a.rip, nr = rips.length;
+    const gate = (.46 - .26 * a.heat) / Math.max(1, lvOf(a)), field = FX[a.fx], rips = a.rip, nr = rips.length;
     for (let y = 0, i = 0; y < rows; y++) for (let x = 0; x < cols; x++, i++) {
       if (mask[i]) continue;
       let v = field(x, y, a.t, a), lit = 0;
