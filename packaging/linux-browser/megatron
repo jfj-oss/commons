@@ -143,10 +143,11 @@ else
   fi
 fi
 if [ "$OPEN_AS" = tab ]; then
+  # the person's default browser first (whatever they chose); a Chromium-family one only if there is no xdg-open
+  command -v xdg-open >/dev/null && exec xdg-open "$URL"
   for b in brave brave-browser google-chrome google-chrome-stable chromium chromium-browser microsoft-edge microsoft-edge-stable vivaldi; do
     command -v "$b" >/dev/null && exec "$b" "$URL" >/dev/null 2>&1
   done
-  exec xdg-open "$URL"
 fi
 # The window gets a browser profile of its own, so extensions in your everyday profile cannot see it. A snap browser may
 # only write under ~/snap, a flatpak under its own folder.

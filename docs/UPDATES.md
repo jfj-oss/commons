@@ -127,8 +127,9 @@ installed copies) **Open mega as** can be changed to **A tab in my browser** for
 (`tab` or `window`) in the data folder, written by the bridge (`POST /open-as?v=tab`, protected by the secret like `/rpc`); the
 environment variable `MEGATRON_OPEN=tab|window` overrides it, and all three launchers read it. It applies the next time mega is opened
 from its icon. A tab starts the browser with only the address (no `--app`, no profile folder), so it lands in the everyday profile: on
-macOS `open -a "Brave Browser"` when Brave is installed, else the default browser; on Windows and Linux the first of Brave, Chrome,
-Chromium, Edge found (an already-running browser opens a new tab), else the system's default handler.
+macOS `open -a "Brave Browser"` when Brave is installed, else the default browser; on Windows and Linux the system's default
+browser (whatever the person chose, Firefox included), and only if that cannot be started the first of Brave, Chrome, Chromium,
+Edge found (an already-running browser opens a new tab).
 
 A tab's address is not the same as a window's. A normal browser keeps every address it visits, so the launcher does not put the secret
 in it: it writes a one-time ticket file (`.open-ticket-<port>`, mode 600, next to the secret file) and opens `/#t=<ticket>`. The page

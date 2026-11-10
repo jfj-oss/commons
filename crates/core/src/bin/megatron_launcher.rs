@@ -421,9 +421,13 @@ fn browser_paths() -> Vec<PathBuf> {
 }
 
 /// Opens the UI as a tab in the person's own browser (profile and all), with no window of ours: on macOS `open -a` Brave if it
-/// is installed, otherwise the default browser; on Windows and Linux the first Chromium-family browser found, handed only the
-/// address (an already-running browser takes it as a new tab), otherwise the system's default.
+/// is installed, otherwise the default browser; on Windows and Linux the system's default browser (whatever the person chose,
+/// Firefox included), and only if that cannot be started the first Chromium-family browser found, handed only the address.
 fn open_tab(install: &Path, url: &str) -> bool {
+    #[cfg(not(target_os = "macos"))]
+    if std::env::var_os("MEGATRON_BROWSER").is_none() && default_browser(install, url, false) {
+        return true;
+    }
     #[cfg(target_os = "macos")]
     {
         let mut apps = vec![PathBuf::from("/Applications")];
@@ -461,7 +465,10 @@ fn open_tab(install: &Path, url: &str) -> bool {
             Err(e) => log(install, &format!("could not open {}: {e}", exe.display())),
         }
     }
-    default_browser(install, url, false)
+    #[cfg(target_os = "macos")]
+    { default_browser(install, url, false) }
+    #[cfg(not(target_os = "macos"))]
+    { false }   // the default browser was tried first and could not be started
 }
 
 /// The system's own handler for an address (Windows, Linux), or Safari when asked (macOS, no Chromium browser found).
