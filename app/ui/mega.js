@@ -558,21 +558,32 @@
   let railRaf = 0;
   // Scrolling on the sidebar opens it and walks through the text rooms. The room only opens once the scrolling stops, so passing over
   // a room does not mark it read. Past the first or last text room the list itself scrolls, to reach voice rooms and options.
-  let wheelSum = 0, wheelAt = 0, wheelPick = null, wheelT = 0;
+  // Scrolling on the sidebar walks the text rooms and opens the one it stops on. The sidebar stays open while it does (closing
+  // it would shrink it out from under the pointer, and the next scroll would move the chat instead); it closes as usual when
+  // the pointer leaves. The next step counts from the room the wheel last opened, even while that room is still loading.
+  let wheelSum = 0, wheelAt = 0, wheelPick = null, wheelT = 0, wheelLast = null;
+  function wheelOpen(x) {
+    wheelLast = { key: x.key, at: Date.now() };
+    if (x.gid === S.gid && !M.opts) return;
+    M.opts = false; M.adm = false; showOpts(); openRoomVia(x.gid);
+    $$('.mitem', rail).forEach(b => b.classList.toggle('active', b.dataset.key === x.key));   // in place: a redraw would close the sidebar
+  }
   rail.addEventListener('wheel', e => {
     if (M.level !== 'chat') return;
-    e.preventDefault(); openRail();
+    e.preventDefault(); clearTimeout(M.railT); openRail();
     wheelSum += e.deltaY;
     const now = Date.now(); if (Math.abs(wheelSum) < 50 || now - wheelAt < 140) return;
     const list = textRooms(), step = wheelSum > 0 ? 1 : -1; wheelSum = 0; wheelAt = now;
     if (!list.length) return;
-    const from = wheelPick ?? Math.max(0, list.findIndex(x => x.gid === S.gid)), next = Math.max(0, Math.min(list.length - 1, from + step));
-    if (next === from && wheelPick !== null || next === from && list[from].gid === S.gid) { const it = $('#m-items'); if (it) it.scrollTop += step * 110; if (wheelPick === null) return; }
+    const last = wheelLast && now - wheelLast.at < 4000 ? list.findIndex(x => x.key === wheelLast.key) : -1;
+    const from = wheelPick ?? (last >= 0 ? last : Math.max(0, list.findIndex(x => x.gid === S.gid)));
+    const next = Math.max(0, Math.min(list.length - 1, from + step));
+    if (next === from) { const it = $('#m-items'); if (it) it.scrollTop += step * 110; return; }   // past the first or last text room: show the rest of the list
     wheelPick = next;
     const key = list[next].key;
     $$('.mitem', rail).forEach(b => { const on = b.dataset.key === key; b.classList.toggle('mwheel', on); if (on) b.scrollIntoView({ block: 'nearest', behavior: calm() ? 'auto' : 'smooth' }); });
     clearTimeout(wheelT);
-    wheelT = setTimeout(() => { const x = list[wheelPick]; wheelPick = null; $$('.mitem.mwheel', rail).forEach(b => b.classList.remove('mwheel')); if (x && (x.gid !== S.gid || M.opts)) switchChat(x, true); }, 320);
+    wheelT = setTimeout(() => { const x = list[wheelPick]; wheelPick = null; $$('.mitem.mwheel', rail).forEach(b => b.classList.remove('mwheel')); if (x) wheelOpen(x); }, 320);
   }, { passive: false });
   rail.addEventListener('mouseleave', () => { M.railT = setTimeout(closeRail, 380); hideTip(); });
   rail.addEventListener('mouseenter', () => clearTimeout(M.railT));
@@ -1134,7 +1145,7 @@
   }
   let flushRaf = 0, flushT = 0;
   function dirty(trail) {
-    if (!flushRaf) flushRaf = requestAnimationFrame(() => { flushRaf = 0; if (!roomOn()) return; focusFrame(); if (BD) { if (BD.dim === 0) { if (window.__megaWall) __megaWall.remask(); } else { bdMask(); if (still() || document.hidden) bdDraw(); } } });
+    if (!flushRaf) flushRaf = requestAnimationFrame(() => { flushRaf = 0; if (!roomOn()) return; focusFrame(); if (BD) { if (BD.dim === 0) { if (window.__megaWall) __megaWall.remask(); } else { bdMask(); bdDraw(); } } });   // drawn in the same frame as the move, so the space around the words keeps up with them
     if (trail !== false) { clearTimeout(flushT); flushT = setTimeout(() => dirty(false), 300); }   // the rows ease into their new size, so look again once they have
   }
   document.addEventListener('selectionchange', () => { if (roomOn() && !atEnd($('#stream'))) dirty(false); });

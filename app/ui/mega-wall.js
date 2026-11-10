@@ -100,7 +100,7 @@
   /** Which wall cells have words on top, for painting around them. Called after the backdrop has looked at the page. */
   function remask() {
     if (!W.canvas || !window.__mega || !__mega.eachRect) return;
-    const wait = W.lastMask + 120 - Date.now();
+    const wait = W.lastMask + 32 - Date.now();   // about every other frame while scrolling, so drawings keep up with the words
     if (wait > 0) { if (!W.maskT) W.maskT = setTimeout(() => { W.maskT = 0; remask(); }, wait); return; }
     W.lastMask = Date.now();
     const G = geo(), t = W.txt && W.txt.length === COLS * ROWS ? W.txt : (W.txt = new Uint8Array(COLS * ROWS)); t.fill(0);
