@@ -6,7 +6,10 @@
 //!   and the bot, the owner switched it on with the exact phrase, and it is checked again on every poll and message.
 //! * Nobody but the owner is ever heard there. Anyone else turning up ends the assistant room at once.
 //! * Hard-denied places (keys, tokens, password stores, browser profiles, the bot's own data...) are refused in every tier.
-//! * Reading web results or files makes the turn "tainted": even safe actions then need an approval.
+//! * Reading web results or files makes the room "tainted": even safe actions then need an approval. The taint is not cleared by
+//!   the next message (the model's own reply may quote what it read) or by a restart; only `/reset` (a fresh start, which also
+//!   cuts the history) clears it.
+//! * The local model sees only the owner's and the bot's own lines of the room's history, never anyone else's.
 pub mod approvals;
 pub mod claude;
 pub mod config;
@@ -45,6 +48,9 @@ pub struct RoomRec {
     /// The Claude Code session of this room, resumed with `--resume`.
     #[serde(default)]
     pub session: Option<String>,
+    /// The room has read outside text (web, files) since the last `/reset`.
+    #[serde(default)]
+    pub tainted: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -92,7 +98,6 @@ pub struct TaskShared { pub stop: AtomicBool, pub pid: AtomicU32, pub finished: 
 #[derive(Default)]
 pub struct RoomRt {
     chat_lock: Mutex<()>,
-    tainted: AtomicBool,
     task: Mutex<Option<Arc<TaskShared>>>,
 }
 
@@ -111,7 +116,6 @@ fn norm(text: &str) -> String {
     said.trim_end_matches(['.', '!', '?', ' ', '\n', '\t']).to_string()
 }
 
-pub fn has_continue(text: &str) -> bool { text.to_lowercase().split(|c: char| !c.is_alphanumeric()).any(|w| w == "continue") }
 
 /// `do: something` from the owner goes straight to Claude Code.
 pub fn strip_do(text: &str) -> Option<String> {
@@ -155,6 +159,8 @@ impl Assistant {
     pub fn is_enabled(&self, gid: &str) -> bool { self.state.lock().unwrap_or_else(|p| p.into_inner()).1.rooms.get(gid).is_some_and(|r| r.enabled) }
     pub fn session(&self, gid: &str) -> Option<String> { self.state.lock().unwrap_or_else(|p| p.into_inner()).1.rooms.get(gid).and_then(|r| r.session.clone()) }
     pub(crate) fn set_session(&self, gid: &str, s: Option<String>) { self.with_state(|st| st.rooms.entry(gid.to_string()).or_default().session = s); }
+    pub fn is_tainted(&self, gid: &str) -> bool { self.state.lock().unwrap_or_else(|p| p.into_inner()).1.rooms.get(gid).is_some_and(|r| r.tainted) }
+    fn set_tainted(&self, gid: &str, on: bool) { if self.is_tainted(gid) != on { self.with_state(|st| st.rooms.entry(gid.to_string()).or_default().tainted = on); } }
     fn set_enabled(&self, gid: &str, on: bool) { self.with_state(|st| st.rooms.entry(gid.to_string()).or_default().enabled = on); }
 
     /// Exactly the owner and the bot, in the room and in its community.
@@ -208,7 +214,7 @@ impl Assistant {
                 Resolved::NotEditable(code) => Route::Notice(format!("{code} has no command to edit. Answer yes or no.")),
             };
         }
-        if crate::bot::is_reset(text, name) { return Route::Notice("Memory wiped. Fresh start.".into()); }
+        if crate::bot::is_reset(text, name) { self.set_tainted(&f.gid, false); return Route::Notice("Memory wiped. Fresh start.".into()); }
         Route::Chat
     }
 
@@ -266,7 +272,6 @@ impl Assistant {
         if let Some(task) = strip_do(&job.text) {
             if task.is_empty() { self.say(c, gid, Some(&job.trigger), "Write what to do after \"do:\"."); return; }
             if self.task_running(gid) { self.say(c, gid, Some(&job.trigger), "A task is already running in this room. Answer its approval requests, or say \"@Oracle stop\" to end it."); return; }
-            self.rt(gid).tainted.store(false, Ordering::SeqCst);
             self.run_task(c, gid, &job.trigger, &task);
             return;
         }
@@ -277,8 +282,8 @@ impl Assistant {
         let rt = self.rt(gid);
         let _turn = rt.chat_lock.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(r) = pause_reply { self.say(c, gid, Some(&job.trigger), r); return; }
-        let mut taint = has_continue(&job.text) && rt.tainted.load(Ordering::SeqCst);
-        let history: Vec<Line> = c.history(gid, 20).into_iter().filter(|l| !(l.mine && machine_line(&l.text))).collect();
+        let mut taint = self.is_tainted(gid);
+        let history: Vec<Line> = c.assistant_history(gid, &self.cfg.owner, 20).into_iter().filter(|l| !(l.mine && machine_line(&l.text))).collect();
         if history.is_empty() { return; }
         let mode = llm.tool_mode();
         let specs = tools::tool_specs();
@@ -289,7 +294,7 @@ impl Assistant {
         for _ in 0..MAX_ROUNDS {
             let reply = match self.ask(c, gid, llm, &system, &messages, &specs) {
                 Ok(r) => r,
-                Err(e) => { rt.tainted.store(taint, Ordering::SeqCst); self.say(c, gid, Some(&job.trigger), &Self::error_text(&e)); return; }
+                Err(e) => { self.set_tainted(gid, taint); self.say(c, gid, Some(&job.trigger), &Self::error_text(&e)); return; }
             };
             match mode {
                 ToolMode::FunctionCalling if !reply.tool_calls.is_empty() => {
@@ -300,7 +305,7 @@ impl Assistant {
                         match self.exec_tool(c, gid, &call, &mut taint, &mut searches, searcher) {
                             ToolOut::Text(t) => messages.push(Msg::Tool { call_id: call.id, name: call.name, content: t }),
                             ToolOut::Handoff(task) => {
-                                rt.tainted.store(taint, Ordering::SeqCst);
+                                self.set_tainted(gid, taint);
                                 drop(_turn);
                                 self.run_task(c, gid, &job.trigger, &task);
                                 return;
@@ -316,7 +321,7 @@ impl Assistant {
                     messages.push(Msg::User(format!("{out}\n\nAnswer now from these results.")));
                 }
                 _ => {
-                    rt.tainted.store(taint, Ordering::SeqCst);
+                    self.set_tainted(gid, taint);
                     let text = strip_model_junk(&reply.content);
                     let text = if text.trim().is_empty() { "I do not have an answer for that.".to_string() } else { text };
                     self.say(c, gid, Some(&job.trigger), &text);
@@ -324,7 +329,7 @@ impl Assistant {
                 }
             }
         }
-        rt.tainted.store(taint, Ordering::SeqCst);
+        self.set_tainted(gid, taint);
         let last = strip_model_junk(&last_text);
         self.say(c, gid, Some(&job.trigger), if last.trim().is_empty() { "That took too many steps and I stopped. Please narrow the request." } else { &last });
     }
@@ -409,8 +414,10 @@ impl Assistant {
                     Err(e) => { self.log.line("safe", &format!("{} {}", call.name, args), "auto", "refused"); return ToolOut::Text(format!("Refused: {e}")); }
                 };
                 let what = plan.describe();
-                let by = if *taint {
-                    let note = "This chat has read web or file content, which can hide instructions, so I am asking first.";
+                let url = matches!(plan, tools::Safe::OpenUrl(_));
+                let by = if *taint || url {
+                    // a web address can carry data out in its text (and a click can do things), so it is always asked, tainted or not
+                    let note = if *taint { "This chat has read web or file content, which can hide instructions, so I am asking first." } else { "Opening a web address always needs your yes: the address itself can carry information out." };
                     if !self.ask_owner(c, gid, &format!("Action: {what}"), "", note) {
                         self.log.line("safe", &what, "owner-denied-or-timeout", "not run");
                         return ToolOut::Text("The owner did not approve this action, so it was not done.".into());

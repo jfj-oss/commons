@@ -153,6 +153,9 @@ pub struct Sent {
 pub trait Chat {
     fn my_account(&self) -> String;
     fn history(&self, gid: &str, limit: usize) -> Vec<Line>;
+    /// The history for the assistant room's local model: only lines written by `owner` or by this bot, nobody else's (a room's
+    /// earlier members, or a file name someone shared, must not reach the model as if the owner had said it).
+    fn assistant_history(&self, gid: &str, _owner: &str, limit: usize) -> Vec<Line> { self.history(gid, limit) }
     fn typing(&mut self, gid: &str);
     fn send(&mut self, gid: &str, text: &str, reply: Option<String>) -> Result<String, String>;
     /// Post an encrypted attachment through the core's ordinary file path.
@@ -213,11 +216,13 @@ fn joined_rooms_of(c: &Client) -> Vec<String> {
     rooms
 }
 
-fn history_of(c: &Client, gid: &str, limit: usize) -> Vec<Line> {
+fn history_of(c: &Client, gid: &str, limit: usize) -> Vec<Line> { history_from(c, gid, None, limit) }
+fn history_from(c: &Client, gid: &str, only_owner: Option<&str>, limit: usize) -> Vec<Line> {
     let me = c.my_account();
     let mut out = Vec::new();
     for m in c.message_log(gid) {
         if m.deleted || m.sender.is_empty() { continue; }
+        if let Some(o) = only_owner { if m.sender != o && m.sender != me { continue; } }
         let text = match &m.body {
             MsgBody::Text(t) => t.trim().to_string(),
             MsgBody::File { name, .. } => format!("[shared a file: {name}]"),
@@ -250,6 +255,7 @@ fn owner_in(c: &Client, gid: &str) -> Option<String> {
 impl Chat for Client {
     fn my_account(&self) -> String { Client::my_account(self) }
     fn history(&self, gid: &str, limit: usize) -> Vec<Line> { history_of(self, gid, limit) }
+    fn assistant_history(&self, gid: &str, owner: &str, limit: usize) -> Vec<Line> { history_from(self, gid, Some(owner), limit) }
     fn typing(&mut self, gid: &str) { self.send_typing(gid) }
     fn send(&mut self, gid: &str, text: &str, reply: Option<String>) -> Result<String, String> {
         self.send_text(gid, text, reply).map_err(|e| format!("{e:#}"))
@@ -277,6 +283,7 @@ impl SharedClient<'_> {
 impl Chat for SharedClient<'_> {
     fn my_account(&self) -> String { self.lock().my_account() }
     fn history(&self, gid: &str, limit: usize) -> Vec<Line> { history_of(&self.lock(), gid, limit) }
+    fn assistant_history(&self, gid: &str, owner: &str, limit: usize) -> Vec<Line> { history_from(&self.lock(), gid, Some(owner), limit) }
     fn typing(&mut self, gid: &str) { self.lock().send_typing(gid) }
     fn send(&mut self, gid: &str, text: &str, reply: Option<String>) -> Result<String, String> {
         self.lock().send_text(gid, text, reply).map_err(|e| format!("{e:#}"))

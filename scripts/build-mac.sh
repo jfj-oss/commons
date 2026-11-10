@@ -6,12 +6,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ID=app.commons.chat
 VER=$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' app/src-tauri/tauri.conf.json | head -1)
-if [ -z "${COMMONS_MAC_FULL:-}" ]; then
+# COMMONS_MAC_JOBS=N: the same light settings, but N jobs at normal priority (fast cores), for a Mac on power.
+if [ -n "${COMMONS_MAC_JOBS:-}" ]; then
+  export CARGO_PROFILE_RELEASE_LTO=off CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 CARGO_BUILD_JOBS="$COMMONS_MAC_JOBS"
+  RUN=()
+elif [ -z "${COMMONS_MAC_FULL:-}" ]; then
   export CARGO_PROFILE_RELEASE_LTO=off CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 CARGO_BUILD_JOBS=2
   RUN=(taskpolicy -b nice -n 19)
 else RUN=(); fi
 # custom-protocol is what puts the UI inside the binary; the Tauri CLI normally adds it.
-"${RUN[@]}" cargo build --release -p commons-app --features tauri/custom-protocol
+${RUN[@]+"${RUN[@]}"} cargo build --release -p commons-app --features tauri/custom-protocol
 A=dist/Megatron.app
 rm -rf "$A"; mkdir -p "$A/Contents/MacOS" "$A/Contents/Resources"
 cp target/release/commons-app "$A/Contents/MacOS/commons-app"

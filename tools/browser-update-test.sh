@@ -219,7 +219,8 @@ SECRET=$(sec "$PORT")
 [ "${#SECRET}" -ge 32 ] || fail "no secret was kept"
 [ "$(stat -c %a "$I/.bridge-secret-$PORT")" = 600 ] || fail "the secret file is not mode 600"
 BL=$(cat "$W/browser.log")
-case $BL in *"--app=http://127.0.0.1:$PORT/#s=$SECRET"*) ;; *) fail "the window was not opened at the fragment URL: $BL" ;; esac
+case $BL in *"--app=http://127.0.0.1:$PORT/#t="*) ;; *) fail "the window was not opened at the ticket URL: $BL" ;; esac
+case $BL in *"$SECRET"*) fail "the secret is on the browser command line: $BL" ;; esac
 case $BL in *"--user-data-dir=$W/xdg/app.commons.chat.browser-profile"*) ;; *) fail "the window has no profile of its own: $BL" ;; esac
 [ "$(stat -c %a "$W/xdg/app.commons.chat.browser-profile")" = 700 ] || fail "the profile folder is not private"
 RPC='{"method":"state","args":{}}'
@@ -272,7 +273,7 @@ CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST --data "$RPC" "http://127.
 [ "$CODE" = 200 ] || fail "the old launcher is locked out of the new bridge (HTTP $CODE)"
 curl -sf "http://127.0.0.1:$PORT/mode" | grep -q '"secret":false' || fail "the bridge claims a secret it was never given"
 sleep 0.5
-grep -q 'megatron-launcher-protocol: 2' "$I/megatron" || fail "the bridge did not refresh the old launcher script"
+grep -q 'megatron-launcher-protocol: 3' "$I/megatron" || fail "the bridge did not refresh the old launcher script"
 [ -f "$I/megatron.old" ] && grep -q 'pgrep' "$I/megatron.old" || fail "the old launcher was not kept as megatron.old"
 curl -sf "http://127.0.0.1:$PORT/mode" | grep -q '"launcher_updated":true' || fail "the page is not told the launcher was refreshed"
 OLDPID=$(cat "$I/.pid")
@@ -282,7 +283,7 @@ wait_port "$PORT"
 SECRET=$(sec "$PORT")
 [ "${#SECRET}" -ge 32 ] || fail "the refreshed launcher did not start a protected bridge"
 [ "$(cat "$I/.pid")" != "$OLDPID" ] || fail "the old open-mode bridge was not replaced"
-case $(cat "$W/browser.log") in *"#s=$SECRET"*) ;; *) fail "no fragment after the upgrade" ;; esac
+case $(cat "$W/browser.log") in *"#t="*) ;; *) fail "no ticket fragment after the upgrade" ;; esac
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST --data "$RPC" "http://127.0.0.1:$PORT/rpc")
 [ "$CODE" = 403 ] || fail "the bridge stayed open after the upgrade (HTTP $CODE)"
 stop_bridge
