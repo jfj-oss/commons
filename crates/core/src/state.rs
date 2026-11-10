@@ -348,6 +348,9 @@ pub enum MsgBody {
         /// Too large for one blob: the real size, chunk layout and whole-file hash. Absent for ordinary files.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         large: Option<LargeFile>,
+        /// A voice message (see `Envelope::File`). Absent for ordinary files.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        voice: Option<crate::envelope::Voice>,
     },
     /// System line shown in the timeline (decrypt failures, rejoin notices...). Never silent.
     Notice(String),

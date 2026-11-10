@@ -567,7 +567,8 @@ impl App {
             "set_listening_sharing" => self.with(|c| c.set_listening_sharing(a["on"].as_bool().unwrap_or(false), &s(&a, "rune")).map(|_| json!({})).map_err(e)),
             "send_file" => {
                 let data = unb64(&s(&a, "data")).map_err(e)?;
-                let (f, (api, k)) = self.with(|c| Ok((c.file_prepare(&s(&a, "gid"), &s(&a, "name"), &s(&a, "mime"), &data, &s(&a, "caption")).map_err(e)?, c.net_handle().map_err(e)?)))?;
+                let voice = a.get("voice").filter(|v| v.is_object()).map(|v| crate::envelope::Voice { ms: v["ms"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32, peaks: v["peaks"].as_str().unwrap_or("").to_string() });
+                let (f, (api, k)) = self.with(|c| Ok((c.file_prepare_voice(&s(&a, "gid"), &s(&a, "name"), &s(&a, "mime"), &data, &s(&a, "caption"), voice).map_err(e)?, c.net_handle().map_err(e)?)))?;
                 f.upload(&api, &k).map_err(e)?; // the slow part, with the client free
                 self.with(|c| c.file_queue(f).map(|id| json!({"id": id})).map_err(e))
             }
@@ -1004,7 +1005,7 @@ fn messages(c: &Client, gid: &str, limit: usize, around: &str) -> Value {
     let out: Vec<Value> = all[start..].iter().map(|m| {
         let (kind, text, file) = match &m.body {
             MsgBody::Text(t) => ("text", t.clone(), Value::Null),
-            MsgBody::File { name, mime, size, caption, large, .. } => {
+            MsgBody::File { name, mime, size, caption, large, voice, .. } => {
                 let mut f = json!({"name": name, "mime": mime, "size": large.as_ref().map(|l| l.size).unwrap_or(*size)});
                 if let Some(l) = large {
                     f["large"] = json!({"size": l.size, "chunks": l.chunks, "chunk_size": l.chunk_size, "sha256": l.sha256, "expires": l.expires});
@@ -1012,6 +1013,7 @@ fn messages(c: &Client, gid: &str, limit: usize, around: &str) -> Value {
                         f["download"] = json!({"done": d.done, "chunks": d.chunks, "size": d.size, "finished": d.finished, "path": d.path, "save_name": d.save_name});
                     }
                 }
+                if let Some(v) = voice { f["voice"] = json!({"ms": v.ms, "peaks": v.peaks}); }
                 ("file", caption.clone(), f)
             }
             MsgBody::Notice(t) => match member_line(c, t) { Some(line) => ("member", line, Value::Null), None => ("notice", t.clone(), Value::Null) },
