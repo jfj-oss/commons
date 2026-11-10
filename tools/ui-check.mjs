@@ -1,5 +1,7 @@
 // Headless UI check: real relay + two dev bridges (two "windows") + Chromium on the GPU (ANGLE/Vulkan, never SwiftShader).
 // No window is ever shown. Usage: node tools/ui-check.mjs <outdir>
+// When it fails at a spot that passes alone: COMMONS_UI_RPC_TRACE=1 prints how long every call to the core took from the page's side,
+// and COMMONS_LOCK_TRACE=1 (read by the bridges) prints how long the core was held, by whom, and every answer given from the cache.
 import { spawn, execSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
