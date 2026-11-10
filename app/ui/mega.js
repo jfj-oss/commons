@@ -127,7 +127,7 @@
     const k = a.sq.offsetWidth / sr.width, settled = a.sq.closest('.mslot')?.classList.contains('settled'); a.mask.fill(0);
     const hit = r => { const x0 = Math.max(0, Math.floor((r.left - sr.left) * k / a.cw) - 1), x1 = Math.min(a.cols, Math.ceil((r.right - sr.left) * k / a.cw) + 1), y0 = Math.max(0, Math.floor((r.top - sr.top) * k / a.ch)), y1 = Math.min(a.rows, Math.ceil((r.bottom - sr.top) * k / a.ch)); for (let y = y0; y < y1; y++) a.mask.fill(1, y * a.cols + x0, y * a.cols + Math.max(x0, x1)); };
     const rg = document.createRange();
-    $$('.mtop>span:not(.mat),.mti,.mnu' + (settled ? ',.mpreview' : ''), a.sq).forEach(e => { rg.selectNodeContents(e); [...rg.getClientRects()].forEach(hit); });
+    $$('.mtop>span:not(.mat),.mti,.mnu,.mlb,.mct,.mvc' + (settled ? ',.mpreview' : ''), a.sq).forEach(e => { rg.selectNodeContents(e); [...rg.getClientRects()].forEach(hit); });
     $$('.mat' + (settled ? ',.mwho>span,.mvact button,.mfaces-row' : ''), a.sq).forEach(e => hit(e.getBoundingClientRect()));
     if (window.__megaWall) __megaWall.cardMask(a);   // the words are cut out; now the drawing on the card is an obstacle too
   }
@@ -552,10 +552,18 @@
   }
   function openRail() {
     if (M.rail || M.level !== 'chat') return; M.rail = true; hideTip(); if (window.__megaNew) __megaNew.railUsed();
-    $$('.mitem', rail).forEach((b, i) => { const x = M.railItems[i]; if (x) b.style.cssText += ';' + cardVars(x, true); });
+    $$('.mitem', rail).forEach((b, i) => { const x = M.railItems[i]; if (x) b.style.cssText += ';' + cardVars(x, false); });
     rail.classList.add('open'); const a = $('.mitem.active', rail); if (a) setTimeout(() => a.scrollIntoView({ block: 'center', behavior: calm() ? 'auto' : 'smooth' }), 240);
+    // the open rail's cards move like the big ones: a live ascii field on each, started once they have their open size
+    clearTimeout(M.railAsciiT);
+    M.railAsciiT = setTimeout(() => {
+      if (!M.rail) return;
+      railAsciiOff();
+      $$('.mitem', rail).forEach((b, i) => { const x = M.railItems[i]; if (x && x.kind !== 'options' && x.kind !== 'admin') { const o = asciiOn(b, x); if (o) M.railAscii.push(o); } });
+    }, 300);
   }
-  function closeRail() { if (!M.rail) return; M.rail = false; clearTimeout(M.railT); rail.classList.remove('open'); $$('.mitem', rail).forEach(i => i.style.transform = ''); const it = $('#m-items'); if (it) it.scrollTop = 0; }
+  function railAsciiOff() { (M.railAscii || []).forEach(asciiOff); M.railAscii = []; }
+  function closeRail() { if (!M.rail) return; M.rail = false; clearTimeout(M.railT); clearTimeout(M.railAsciiT); railAsciiOff(); rail.classList.remove('open'); $$('.mitem', rail).forEach(i => i.style.transform = ''); const it = $('#m-items'); if (it) it.scrollTop = 0; }
   let railRaf = 0;
   // Scrolling on the sidebar opens it and walks through the text rooms. The room only opens once the scrolling stops, so passing over
   // a room does not mark it read. Past the first or last text room the list itself scrolls, to reach voice rooms and options.
