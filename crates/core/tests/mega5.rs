@@ -211,7 +211,7 @@ fn a_community_wall_reaches_everyone_and_never_a_rooms_wall() {
     let send = |p: &mut Peer, kind: &str, data: String| p.c.debug_send_envelope(&texts[1], Envelope::Live { kind: kind.into(), data, ts: me }).unwrap();
     let before = sorted(cglyphs(&c, &cid));
     send(&mut b, "cwall.d", format!("{{\"g\":0,\"k\":9,\"c\":[[1,2],[{},2]]}}", WALL_CELLS));
-    send(&mut b, "cwall.d", "{\"g\":0,\"k\":9,\"c\":[[1,2],[2,99]]}".into());
+    send(&mut b, "cwall.d", "{\"g\":0,\"k\":9,\"c\":[[1,2],[2,200]]}".into());
     send(&mut b, "cwall.d", "{\"g\":0,\"k\":0,\"c\":[[1,2]]}".into());
     send(&mut b, "cwall.d", "{\"g\":4,\"k\":9,\"c\":[[1,2]]}".into());
     settle(&mut [&mut a, &mut b, &mut c]);
@@ -310,4 +310,72 @@ fn a_030_document_with_a_community_wall_lock_still_verifies_and_the_carrier_may_
     a.c.debug_send_envelope(&other, Envelope::Live { kind: "cwall.d".into(), data: format!("{{\"g\":1,\"k\":900,\"c\":[[{},3]]}}", 2 * WALL_COLS), ts: now_secs() }).unwrap();
     settle(&mut [&mut a, &mut b, &mut c]);
     assert!(cglyphs(&c, &cid).contains(&(2 * WALL_COLS as u16, 1)) && cglyphs(&b, &cid).contains(&(2 * WALL_COLS as u16, 1)), "an event from any room of the community counts");
+}
+
+/// Regression: the owner changing colours or the look of a room or card must never touch what is drawn on the walls, on any device,
+/// at generation 0 and after a clear, for a room's wall and for the community card's wall.
+#[test]
+fn colour_and_look_changes_keep_every_wall() {
+    let (_net, mut a, mut b, mut c, cid, gid) = trio();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    let cw = format!("{CWALL_PREFIX}{cid}");
+    let duo = |m: &str, h: &str| Duo { main: m.into(), hi: h.into() };
+    for round in 0..2 {
+        if round == 1 {   // after a clear: generation 1 in the document
+            a.c.set_wall(&cid, &gid, None, true).unwrap();
+            a.c.set_wall(&cid, &cid, None, true).unwrap();
+            settle(&mut [&mut a, &mut b, &mut c]);
+        }
+        a.c.wall_draw(&gid, &[(1, 1, 1, 0), (2, 1, 2, 1), (3, 1, 3, 0)]).unwrap();
+        b.c.wall_draw(&cw, &[(5, 5, 2, 0), (6, 5, 4, 1)]).unwrap();
+        settle(&mut [&mut a, &mut b, &mut c]);
+        let (room0, card0) = (rglyphs(&a, &gid), cglyphs(&a, &cid));
+        assert_eq!((room0.len(), card0.len()), (3, 2), "round {round}: drawn");
+        let steps: Vec<Box<dyn Fn(&mut Peer)>> = vec![
+            Box::new(|p| p.c.set_style(&cid, Some(&gid), Some(duo("#2288cc", "#ffee00"))).unwrap()),
+            Box::new(|p| p.c.set_style(&cid, None, Some(duo("#33aa55", "#ffffff"))).unwrap()),
+            Box::new(|p| p.c.set_look(&cid, Some(&gid), Some(look(Some(3), Some(5), Some(55)))).unwrap()),
+            Box::new(|p| p.c.set_look(&cid, None, Some(look(Some(4), None, None))).unwrap()),
+            Box::new(|p| p.c.set_look(&cid, Some(&gid), None).unwrap()),
+            Box::new(|p| p.c.set_style(&cid, Some(&gid), None).unwrap()),
+        ];
+        for (i, step) in steps.iter().enumerate() {
+            step(&mut a);
+            settle(&mut [&mut a, &mut b, &mut c]);
+            for p in [&a, &b, &c] {
+                assert_eq!(rglyphs(p, &gid), room0, "round {round} step {i}: {} lost the room wall", p.name);
+                assert_eq!(cglyphs(p, &cid), card0, "round {round} step {i}: {} lost the card wall", p.name);
+            }
+        }
+    }
+}
+
+/// Palette colours: they reach every device, in strokes and in snapshots, and what goes on the wire can never trip an older device's check.
+/// An older device (0.3.0 on) drops a whole event if any value is `>= glyphs * 2`, so events must be all-old-form or all-palette-form.
+#[test]
+fn palette_colours_travel_and_never_mix_forms_on_the_wire() {
+    let (_net, mut a, mut b, mut c, cid, gid) = trio();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    let cols = |p: &Peer, g: &str| -> Vec<(u16, u8, u8)> { p.c.wall_view(g).cells.into_iter().map(|c| (c.0, c.1, c.2)).collect() };
+    a.c.wall_draw(&gid, &[(1, 1, 1, 0), (2, 1, 2, 1)]).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    a.c.wall_draw(&gid, &[(3, 1, 3, 5), (4, 1, 4, 11), (5, 1, 0, 7)]).unwrap();   // the erase has no colour
+    settle(&mut [&mut a, &mut b, &mut c]);
+    let want = vec![(WALL_COLS as u16 + 1, 1, 0), (WALL_COLS as u16 + 2, 2, 1), (WALL_COLS as u16 + 3, 3, 5), (WALL_COLS as u16 + 4, 4, 11), (WALL_COLS as u16 + 5, 0, 0)];
+    for p in [&a, &b, &c] { assert_eq!(cols(p, &gid), want, "{}", p.name); }
+    assert!(a.c.wall_draw(&gid, &[(1, 1, 1, 12)]).is_err(), "a colour past the palette is refused");
+    // the same on a community card
+    let cw = format!("{CWALL_PREFIX}{cid}");
+    b.c.wall_draw(&cw, &[(9, 9, 2, 10)]).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    for p in [&a, &b, &c] { assert_eq!(cols(p, &cw), vec![(9 * WALL_COLS as u16 + 9, 2, 10)], "{}", p.name); }
+    // snapshots: each chunk is one form (an old device drops a chunk it cannot read, and must not lose old-form cells with it), and a late device gets all
+    let chunks = a.c.wall_snapshot(&gid).unwrap();
+    assert!(chunks.len() >= 2, "{chunks:?}");
+    for ch in &chunks {
+        let v: serde_json::Value = serde_json::from_str(ch).unwrap();
+        let vals: Vec<u64> = v["c"].as_array().unwrap().iter().map(|x| x[1].as_u64().unwrap()).collect();
+        assert!(vals.iter().all(|&x| x < 24) || vals.iter().all(|&x| x >= 24), "mixed forms in one chunk: {vals:?}");
+    }
+    assert!(chunks.iter().any(|ch| serde_json::from_str::<serde_json::Value>(ch).unwrap()["c"].as_array().unwrap().iter().all(|x| x[1].as_u64().unwrap() < 24)), "the old-colour cells have a chunk of their own");
 }

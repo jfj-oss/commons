@@ -21,6 +21,10 @@
 (() => {
   const root = document.documentElement;
   const COLS = 120, ROWS = 54, CW = 10, CH = 17, GLYPHS = ' #*+.o=~/|-x', CWP = 'cw:';
+  // Colours: 0 and 1 are the room's (or card's) own main and highlight ink; 2 to 11 are fixed, chosen to read on the dark backdrop. The numbers are what the core stores
+  // and sends (crates/core/src/wall.rs WALL_COLOURS); older apps only know 0 and 1 and ignore a stroke that uses any other.
+  const PAL = [['white', '#ffffff'], ['light grey', '#c4c8d4'], ['red', '#ff5a5f'], ['orange', '#ff9f43'], ['yellow', '#ffe14d'], ['green', '#5fe08a'], ['teal', '#2fd8c8'], ['blue', '#5aa8ff'], ['purple', '#b58cff'], ['pink', '#ff7ac8']];
+  const inkOf = (ink, c) => (c < 2 ? ink[c] : (PAL[c - 2] || PAL[0])[1]);
   const GAP = 500, BATCH = 200, PRESENT_MS = 180000, MSG_MS = 600000, ASK_EVERY = 600000;
   // mode 'room': the open room's wall behind the chat. mode 'card': the focused card of the list (polled, and drawable).
   const W = { mode: 'room', gid: null, cid: null, canvas: null, sq: null, item: null, hit: null, pend: new Map(), out: new Map(), gen: 0, locked: false, on: false, brush: 1, col: 0,
@@ -93,7 +97,7 @@
     for (const [p, v] of marksOf(key)) {
       if (hide && hide[p]) continue;
       const x = p % COLS, y = (p / COLS) | 0;
-      g.fillStyle = v[1] ? ink[1] : ink[0];
+      g.fillStyle = inkOf(ink, v[1]);
       g.fillText(GLYPHS[v[0]], (G.ox + (x + .5) * G.cw) * dpr, (G.oy + (y + .5) * G.ch) * dpr);
     }
   }
@@ -203,7 +207,7 @@
   // ------------------------------------------------------------------ the pen
   function put(x, y) {
     if (x < 0 || y < 0 || x >= COLS || y >= ROWS) return;
-    const p = y * COLS + x, v = [W.brush, W.col];
+    const p = y * COLS + x, v = [W.brush, W.brush ? W.col : 0];   // an erase has no colour
     const cur = W.pend.get(p) || entry(W.gid).cells.get(p);
     if (cur && cur[0] === v[0] && cur[1] === v[1]) return;
     if (!cur && v[0] === 0) return;
@@ -222,7 +226,9 @@
   async function flush() {
     W.sendT = 0; const gid = W.gid; if (!gid || !W.out.size || W.flushing) return;
     W.flushing = true; W.lastSend = Date.now();
-    const keys = [...W.out.keys()].slice(0, BATCH), cells = keys.map(p => [p % COLS, (p / COLS) | 0, W.out.get(p)[0], W.out.get(p)[1]]);
+    // One kind of stroke per event: the room's two colours (every app version shows them) or a palette colour (newer apps only; older ones drop the whole event)
+    const pal = p => W.out.get(p)[1] > 1, first = [...W.out.keys()][0];
+    const keys = [...W.out.keys()].filter(p => pal(p) === pal(first)).slice(0, BATCH), cells = keys.map(p => [p % COLS, (p / COLS) | 0, W.out.get(p)[0], W.out.get(p)[1]]);
     const share = present();
     if (!share) { W.localOnly = gid; ask('draw'); }   // nobody seen yet: it stays here until someone turns up, and is then sent as a snapshot
     let r = null; try { r = await rpc('wall_draw', { gid, cells, share }); } catch (e) { r = { error: true }; }
@@ -314,14 +320,19 @@
     t = document.createElement('div'); t.id = 'mega-wallbar'; t.setAttribute('role', 'toolbar'); t.setAttribute('aria-label', 'Drawing tools');
     const [c0, c1] = theme();
     t.innerHTML = `<span class="mwb-tag">everyone sees this</span><div class="mwb-g" id="mw-glyphs">${[...GLYPHS].map((g, i) => i ? `<button type="button" data-g="${i}" aria-pressed="${i === W.brush}" aria-label="glyph ${g}">${g === '<' ? '&lt;' : g}</button>` : '').join('')}<button type="button" data-g="0" aria-pressed="${W.brush === 0}">erase</button></div>
-      <div class="mwb-c" id="mw-cols"><button type="button" data-c="0" aria-pressed="${W.col === 0}" aria-label="main colour" style="--sw:${c0}"></button><button type="button" data-c="1" aria-pressed="${W.col === 1}" aria-label="highlight colour" style="--sw:${c1}"></button></div>
+      <div class="mwb-c" id="mw-cols" role="group" aria-label="Colour">${[['room colour', c0], ['room highlight', c1], ...PAL].map(([n, hx], i) => `<button type="button" data-c="${i}" aria-pressed="${i === W.col}" aria-label="${n}" title="${n}" style="--sw:${hx}"></button>`).join('')}</div>
       ${isOwner() ? `<button type="button" class="mwb-b" id="mw-lock" aria-pressed="${W.locked}">${W.locked ? 'locked' : 'lock'}</button><button type="button" class="mwb-b" id="mw-clear">clear</button>` : ''}
       <button type="button" class="mwb-b" id="mw-done">done</button>`;
     host.append(t);
+    const pickColour = (i, focus) => { W.col = i; $$q('#mw-cols button', t).forEach(x => { const on = +x.dataset.c === i; x.setAttribute('aria-pressed', String(on)); if (on && focus) x.focus(); }); };
+    t.onkeydown = ev => {   // arrow keys walk the colours (and pick them), as in a radio group
+      const b = ev.target.closest && ev.target.closest('#mw-cols button'); if (!b || !/^Arrow(Left|Right|Up|Down)$/.test(ev.key)) return;
+      ev.preventDefault(); const n = 2 + PAL.length; pickColour((+b.dataset.c + (ev.key === 'ArrowLeft' || ev.key === 'ArrowUp' ? n - 1 : 1)) % n, true);
+    };
     t.onclick = async ev => {
       const b = ev.target.closest('button'); if (!b) return;
       if (b.dataset.g != null) { W.brush = +b.dataset.g; $$q('#mw-glyphs button', t).forEach(x => x.setAttribute('aria-pressed', String(x === b))); }
-      else if (b.dataset.c != null) { W.col = +b.dataset.c; $$q('#mw-cols button', t).forEach(x => x.setAttribute('aria-pressed', String(x === b))); }
+      else if (b.dataset.c != null) pickColour(+b.dataset.c);
       else if (b.id === 'mw-done') off();
       else if (b.id === 'mw-lock') { try { await rpc('set_wall', { cid: W.cid, room: wallRoom(), lock: W.locked ? '0' : '1' }); W.locked = !W.locked; chrome(); } catch (e) { try { toast(e.message); } catch { } } }
       else if (b.id === 'mw-clear') {

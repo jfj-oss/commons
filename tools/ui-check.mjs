@@ -1441,6 +1441,52 @@ try {
     const wst = P => P.ev(`__megaWall.state()`);
     // wall_get answers "busy" with no cells while the core is occupied, which is not the same as an empty wall
     const roomCells = (P, gid) => P.ev(`(async () => { for (;;) { const r = await rpc('wall_get', { gid: ${JSON.stringify(gid)} }); if (!r.busy) return r.cells.length; await new Promise(z => setTimeout(z, 200)); } })()`);
+    // The owner's colours panel must never touch the drawings: after every change, on both clients, the wall is still there (cache, core and pixels).
+    const wallKeep = async (label, key, n, openPanel, changes, bobInRoom, burst) => {
+      const kj = JSON.stringify(key);
+      const inkOf = P => P.ev(`(() => { const c = ${bobInRoom && P === B ? "document.querySelector('#mega-wall')" : "__mega.list.sq().querySelector('canvas.mwallc')"}; if (!c) return -1; const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let k = 0; for (let i = 3; i < d.length; i += 20) if (d[i] > 40) k++; return k; })()`);
+      const here = async P => ({ cache: await P.ev(`__megaWall.cellsOf(${kj}).length`), core: await roomCells(P, key), ink: await inkOf(P) });
+      const fits = P => P.ev(`(() => { const sq = __mega.list.sq(), c = sq.querySelector('canvas.mwallc'); if (!c) return 'no canvas'; const dpr = Math.min(devicePixelRatio || 1, 2); return Math.abs(c.offsetWidth - sq.offsetWidth) <= 2 && Math.abs(c.offsetHeight - sq.offsetHeight) <= 2 && Math.abs(c.width - Math.round(sq.offsetWidth * dpr)) <= 2 ? 'ok' : JSON.stringify([c.offsetWidth, c.offsetHeight, c.width, c.height, sq.offsetWidth, sq.offsetHeight, dpr]); })()`);
+      const bad = async () => JSON.stringify([await here(A), await here(B), await wst(A), await wst(B)]);
+      need(openPanel, 'keep: no panel');
+      if (bobInRoom) { await enterFocused(B); await wf(B, `__megaWall.state().marks === ${n}`, 30000); }
+      if (!bobInRoom) { await A.send('Page.bringToFront'); await wf(A, `__megaWall.cellsOf(${kj}).length === ${n}`, 30000); }
+      await A.ev(`document.querySelector('#mega [data-m="paint"]').click()`); await sleep(500);
+      if (burst) {   // everything at once, as a person does when trying colours: the commits queue behind each other
+        let stop = false, worst = null;
+        const sampler = (async () => { while (!stop) { const a = await here(A), b = await here(B); if (!(a.cache === n && a.core === n && b.cache === n && b.core === n && a.ink > 20 && b.ink > 20) && !worst) worst = JSON.stringify([a, b]); await sleep(150); } })();
+        const v0 = await styleVer(B);
+        for (const [, run] of changes) { await A.ev(run); await sleep(120); }
+        await wf(B, `((S.snap.communities.find(c => c.id === ${cidj}).style || {}).ver || 0) > ${v0}`, 60000);
+        await sleep(6000); stop = true; await sampler;
+        need(!worst, `wall-keep: ${label}: during a burst of changes the drawing went missing (want ${n}): ` + worst + ' ' + await bad());
+        await A.ev(`document.querySelector('#mega-paint #mp-done').click()`); await sleep(300);
+        return;
+      }
+      for (const [name, run] of changes) {
+        const v0 = await styleVer(B);
+        await A.ev(run); await sleep(200);
+        await wf(B, `((S.snap.communities.find(c => c.id === ${cidj}).style || {}).ver || 0) > ${v0}`, 60000).catch(() => { throw new Error(`mega: wall-keep: ${label}: ${name} never reached bob`); });
+        await A.shot('wallkeep-' + label.replace(/\W+/g, '-') + '-' + name.replace(/\W+/g, '-'));
+        for (let i = 0; i < 12; i++) {   // the change settles (tween, repaint, snapshot refresh): the drawing must be there the whole time
+          const a = await here(A), b = await here(B);
+          if (!bobInRoom) need(await fits(A) === 'ok' && await fits(B) === 'ok', `wall-keep: ${label}: after "${name}" the card's drawing canvas does not fit the card: ` + await fits(A) + ' / ' + await fits(B));
+          need(a.cache === n && a.core === n && b.cache === n && b.core === n && a.ink > 20 && b.ink > 20, `wall-keep: ${label}: after "${name}" the drawing is gone/changed (want ${n}): ` + await bad());
+          await sleep(350);
+        }
+      }
+      await A.ev(`document.querySelector('#mega-paint #mp-done').click()`); await sleep(300);
+      if (bobInRoom) { await toServer(B); await focusCard(B, g); }
+      if (!key.startsWith('cw:')) {   // and walking into the room afterwards shows the drawing too, for the owner and for the member
+        for (const P of [A, B]) {
+          await enterFocused(P);
+          await wf(P, `__megaWall.state().marks === ${n}`, 20000).catch(async () => { throw new Error(`mega: wall-keep: ${label}: the room shows no drawing after the changes: ` + await bad()); });
+          need(await P.ev(`(() => { const c = document.querySelector('#mega-wall'); if (!c) return 0; const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let k = 0; for (let i = 3; i < d.length; i += 20) if (d[i] > 40) k++; return k; })()`) > 20, `wall-keep: ${label}: no drawing pixels in the room`);
+          await toServer(P); await focusCard(P, g);
+          if (P === A) await A.ev(`S.gid = null; resetRoom(); 1`);   // alice has no room open afterwards (an open room reads its messages as they come)
+        }
+      }
+    };
     const chip = P => P.ev(`(() => { const b = document.querySelector('#mega [data-m="draw"]'); return !!b && !b.hidden; })()`);
     await toServer(A); await toServer(B);
     await focusCard(A, g); await focusCard(B, g);
@@ -1466,7 +1512,7 @@ try {
     const w1 = await stat(A), sent5 = (w1.kinds['wall.d'] || 0) - (w0.kinds['wall.d'] || 0);
     need(sent5 >= 1 && sent5 <= 10, 'cards: a 4 second scribble on a card produced ' + sent5 + ' wall.d events (budget 10)');
     need((w1.sent - w0.sent) <= 12, 'cards: a card scribble sent too many live events in all: ' + (w1.sent - w0.sent));
-    const nCard = (await wst(A)).marks;
+    let nCard = (await wst(A)).marks;
     need(nCard > 30, 'cards: the scribble left only ' + nCard + ' marks');
     await wf(B, `__megaWall.state().cards.some(c => c.key === ${g} && c.marks === ${nCard})`, 30000).catch(async () => { throw new Error('mega: cards: the stroke did not appear on bob\'s card: ' + JSON.stringify([nCard, await wst(B)])); });
     need(JSON.stringify(await A.ev(`__megaWall.cellsOf(${g}).sort((a, b) => a[0] - b[0])`)) === JSON.stringify(await B.ev(`__megaWall.cellsOf(${g}).sort((a, b) => a[0] - b[0])`)), 'cards: the two cards show different drawings');
@@ -1490,6 +1536,50 @@ try {
     await wf(B, `!document.querySelector('#mega [data-m="draw"]').hidden`, 60000).catch(() => { throw new Error('mega: cards: unlock did not bring the chip back'); });
     await A.ev(`document.querySelector('#mw-done').click()`); await sleep(400);
     need(await A.ev(`!document.querySelector('#mega-wallhit-card') && !document.documentElement.classList.contains('mg-drawing-card')`), 'cards: done did not leave the pen');
+    // ---- palette: draw in several colours; the other client sees the same colours (and the stored colours are the palette's)
+    { await A.ev(`document.querySelector('#mega [data-m="draw"]').click()`); await sleep(500);
+      const sw = await A.ev(`[...document.querySelectorAll('#mw-cols button')].map(b => [b.dataset.c, b.getAttribute('aria-label'), b.getAttribute('aria-pressed'), b.offsetWidth])`);
+      need(sw.length === 12 && sw[0][1] === 'room colour' && sw[1][1] === 'room highlight' && sw.every(x => x[3] >= 28) && sw.filter(x => x[2] === 'true').length === 1, 'palette: the toolbar swatches are wrong: ' + JSON.stringify(sw));
+      const stroke = (P, c, row) => P.ev(`(async () => {
+        document.querySelector('#mw-cols [data-c="${c}"]').click(); document.querySelector('#mw-glyphs [data-g="1"]').click();
+        const hit = document.querySelector('#mega-wallhit-card'), G = __megaWall.state().geo, px = x => ({ clientX: G.b.left + (G.ox + (x + .5) * G.cw) / G.u, clientY: G.b.top + (G.oy + (${row} + .5) * G.ch) / G.u, pointerId: 9, bubbles: true, button: 0 });
+        hit.dispatchEvent(new PointerEvent('pointerdown', px(96))); for (let x = 97; x <= 110; x++) hit.dispatchEvent(new PointerEvent('pointermove', px(x))); hit.dispatchEvent(new PointerEvent('pointerup', px(110))); return true; })()`);
+      const picks = [[2, 3], [4, 4], [7, 5], [11, 6], [0, 7]];   // the right-hand side of the card, clear of the scribble and of the words
+      for (const [c, row] of picks) { await stroke(A, c, row); await sleep(700); }
+      need(await A.ev(`document.querySelector('#mw-cols [data-c="0"]').getAttribute('aria-pressed') === 'true' && document.querySelector('#mw-cols [data-c="11"]').getAttribute('aria-pressed') === 'false'`), 'palette: the selected swatch is not marked');
+      // the keyboard walks the colours
+      await A.ev(`document.querySelector('#mw-cols [data-c="0"]').focus()`); await key(A, 'ArrowRight'); await key(A, 'ArrowRight');
+      need(await A.ev(`document.querySelector('#mw-cols [aria-pressed="true"]').dataset.c`) === '2', 'palette: arrow keys did not move the colour');
+      const rowCols = P => P.ev(`(() => { const o = {}; for (const [p, g, c] of __megaWall.cellsOf(${g})) { const y = (p / 120) | 0; if (y < 10 && p % 120 >= 95) (o[y] = o[y] || new Set()).add(c); } return Object.fromEntries(Object.entries(o).map(([y, s]) => [y, [...s]])); })()`);
+      const want = JSON.stringify({ 3: [2], 4: [4], 5: [7], 6: [11], 7: [0] });
+      await wf(B, `JSON.stringify((() => { const o = {}; for (const [p, g, c] of __megaWall.cellsOf(${g})) { const y = (p / 120) | 0; if (y < 10 && p % 120 >= 95) (o[y] = o[y] || new Set()).add(c); } return Object.fromEntries(Object.entries(o).map(([y, s]) => [y, [...s]])); })()) === ${JSON.stringify(want)}`, 30000).catch(async () => { throw new Error('mega: palette: bob does not see the colours: ' + JSON.stringify([await rowCols(A), await rowCols(B)])); });
+      need(JSON.stringify(await rowCols(A)) === want, 'palette: alice\'s colours are wrong: ' + JSON.stringify(await rowCols(A)));
+      // real pixels: bob's card canvas holds the palette's red (#ff5a5f), green (#5fe08a) and pink (#ff7ac8)
+      const has = (P, r, gg, b) => P.ev(`(() => { const c = document.querySelector('.msq canvas.mwallc'); if (!c) return -1; const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 60 && Math.abs(d[i] - ${r}) < 40 && Math.abs(d[i + 1] - ${gg}) < 40 && Math.abs(d[i + 2] - ${b}) < 40) n++; return n; })()`);
+      await B.shot('mega5-palette-bob');
+      need(await has(B, 255, 90, 95) > 5 && await has(B, 95, 224, 138) > 5 && await has(B, 255, 122, 200) > 5, 'palette: bob\'s card lacks the red/green/pink pixels: ' + [await has(B, 255, 90, 95), await has(B, 95, 224, 138), await has(B, 255, 122, 200)]);
+      await A.shot('mega5-palette-alice'); await B.shot('mega5-palette-bob');
+      await A.ev(`document.querySelector('#mw-done').click()`); await sleep(400);
+      nCard = (await wst(A)).marks; await wf(B, `__megaWall.state().cards.some(c => c.key === ${g} && c.marks === ${nCard})`, 30000);
+      if (process.env.COMMONS_UI_STOP_AFTER === 'palette') { console.log('UI check stopped after the palette slice (COMMONS_UI_STOP_AFTER)'); process.exit(0); } }
+    const hexSet = c => `(() => { const h = document.querySelector('#mp-hex'); h.value = '${c}'; h.dispatchEvent(new Event('input', { bubbles: true })); })()`;
+    const tile = (k, n) => `document.querySelector('#mp-looks .mp-t[data-k="${k}"][data-n="${n}"]').click()`;
+    const slide = v => `(() => { const s = document.querySelector('#mp-dim'); s.value = ${v}; s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); })()`;
+    await wallKeep('room', textGid, nCard, true, [['colour', hexSet('#2288cc')], ['card pattern', tile('card', 3)], ['chat pattern', tile('chat', 5)], ['backdrop strength', slide(55)], ['colour again', hexSet('#cc4488')]]);
+    await wallKeep('room, burst', textGid, nCard, true, [['colour', hexSet('#ee7711')], ['card pattern', tile('card', 1)], ['chat pattern', tile('chat', 2)], ['backdrop strength', slide(80)], ['colour', hexSet('#7711ee')], ['card pattern', tile('card', 7)], ['backdrop strength', slide(30)]], false, true);
+    // changing a NEIGHBOUR card (another room) leaves this room's drawing alone, on its card too
+    { const og = (await A.ev(`S.snap.communities.find(c => c.id === ${cidj}).channels.map(x => x.gid)`)).find(x => x !== textGid);
+      const slotInk = P => P.ev(`(() => { const i = __mega.list.items.findIndex(x => x.key === ${g}); const c = document.querySelectorAll('.mslot')[i] && document.querySelectorAll('.mslot')[i].querySelector('canvas.mwallc'); if (!c) return -1; const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let k = 0; for (let i = 3; i < d.length; i += 20) if (d[i] > 40) k++; return k; })()`);
+      need(og, 'wall-keep: no second room');
+      await A.send('Page.bringToFront'); await focusCard(A, JSON.stringify(og));
+      await A.ev(`document.querySelector('#mega [data-m="paint"]').click()`); await sleep(500);
+      for (const [name, run] of [['colour', hexSet('#99aa22')], ['card pattern', tile('card', 8)]]) {
+        const v0 = await styleVer(B); await A.ev(run);
+        await wf(B, `((S.snap.communities.find(c => c.id === ${cidj}).style || {}).ver || 0) > ${v0}`, 60000);
+        for (let i = 0; i < 8; i++) { const c = await A.ev(`__megaWall.cellsOf(${g}).length`), k = await slotInk(A); need(c === nCard && k > 20, `wall-keep: neighbour: after changing the next room's ${name}, this room's drawing is gone (cache ${c}/${nCard}, card ink ${k})`); await sleep(350); }
+      }
+      await A.ev(`document.querySelector('#mega-paint #mp-done').click()`); await sleep(300); await focusCard(A, g); }
+    await wallKeep('room, bob inside', textGid, nCard, true, [['colour', hexSet('#118855')], ['card pattern', tile('card', 2)], ['chat pattern', tile('chat', 6)], ['backdrop strength', slide(120)], ['backdrop strength off', slide(0)], ['backdrop strength back', slide(100)]], true);
 
     // ---- 3. the community card has a wall of its own, carried in a room and never drawn in any room
     // a room's own wall may still be arriving from the other device: the baseline is taken once both agree
@@ -1518,6 +1608,9 @@ try {
     need(await A.ev(`__megaWall.state().carrier`) !== null, 'cards: no carrier room for the community wall');
     await A.shot('mega5-10-community-drawn-alice'); await B.shot('mega5-11-community-drawn-bob');
     need(await roomCells(A, textGid) === roomBefore && await roomCells(B, textGid) === roomBeforeB, 'cards: the community drawing reached a room wall: ' + JSON.stringify([roomBefore, roomBeforeB, await roomCells(A, textGid), await roomCells(B, textGid)]));
+    await A.ev(`document.querySelector('#mw-done').click()`); await sleep(400);
+    await wallKeep('community card', 'cw:' + cid, nComm, true, [['colour', hexSet('#33aa55')], ['card pattern', tile('card', 4)]]);
+    await A.ev(`document.querySelector('#mega [data-m="draw"]').click()`); await sleep(500);
     const otherGids = await A.ev(`S.snap.communities.find(c => c.id === ${cidj}).channels.map(x => x.gid).filter(g => g !== ${JSON.stringify(textGid)})`);
     const otherRooms = []; for (const g of otherGids) otherRooms.push(await roomCells(A, g));
     need(otherRooms.reduce((a, b) => a + b, 0) === 0, 'cards: a room other than the drawn one holds marks: ' + JSON.stringify(otherRooms));
@@ -1532,6 +1625,11 @@ try {
     need((await wst(A)).marks === 0, 'cards: the owner\'s community wall did not clear');
     await A.ev(`document.querySelector('#mw-done').click()`); await sleep(400);
     need(await roomCells(A, textGid) === roomBefore, 'cards: clearing the community wall touched a room wall');
+    // after a clear (generation 1) a new drawing must survive the owner's colour changes too
+    { const key = 'cw:' + cid, cl = Array.from({ length: 40 }, (_, i) => [10 + i, 20, 2, i % 2]);
+      await A.ev(`rpc('wall_draw', { gid: ${JSON.stringify(key)}, cells: ${JSON.stringify(cl)}, share: true }).then(() => 1)`);
+      await wf(B, `__megaWall.state().cards.some(c => c.key === ${JSON.stringify(key)} && c.marks === 40)`, 40000).catch(async () => { throw new Error('mega: wall-keep: bob never got the post-clear drawing: ' + JSON.stringify(await wst(B))); });
+      await wallKeep('community card after a clear', key, 40, true, [['colour', hexSet('#aa5533')], ['card pattern', tile('card', 6)]]); }
     need((await A.ev(`rpc('messages', { gid: ${g}, limit: 300 }).then(m => m.messages.filter(x => x.kind === 'text').map(x => x.text).join('|'))`)).indexOf('cwall') < 0, 'cards: wall data appeared in the history');
     await toServer(A); await toServer(B);
     // back to the chat for what follows
