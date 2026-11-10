@@ -425,7 +425,7 @@ impl Sink for FileSink {
 /// Shows notes through the operating system. `launcher` is the program that opens mega's window (a click on a note
 /// starts it when no window is open); None makes a click do nothing more than dismiss the note.
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
-pub struct NativeSink { hub: std::sync::Weak<Hub>, launcher: Option<PathBuf>, app_id: String, waiting: Arc<std::sync::atomic::AtomicUsize> }
+pub struct NativeSink { hub: std::sync::Weak<Hub>, launcher: Option<PathBuf>, #[cfg_attr(not(target_os = "macos"), allow(dead_code))] app_id: String, waiting: Arc<std::sync::atomic::AtomicUsize> }
 
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 impl NativeSink {
