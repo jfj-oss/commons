@@ -1,0 +1,63 @@
+/* Voice messages: the mic button, the recording bar, and the player on a message (mega-voice.js). */
+
+/* ---- the mic next to send ---- */
+#mic { color: var(--ink-2); padding: 7px; touch-action: none; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; border-radius: 50%; }
+#mic[hidden] { display: none; }
+html.mega #mic { color: var(--m-mute); }
+html.mega #mic:hover, html.mega #mic.on { color: var(--m-paper); }
+#mic.on { color: var(--danger, #ff6b62); }
+html.mega #mic.on { color: var(--m-danger, #ff6b62); }
+#composer.editing #mic { display: none; }
+
+/* ---- the recording bar replaces the row while it records ---- */
+.slip.recording > .row, .slip.recording > .replybar { display: none; }
+.vrec { display: flex; align-items: center; gap: 10px; padding: 6px 8px 6px 14px; min-height: 48px; color: var(--ink); }
+.vrec[hidden] { display: none; }
+html.mega .vrec { color: var(--m-paper); font-family: var(--m-ui); }
+.vdot { width: 10px; height: 10px; border-radius: 50%; background: var(--danger, #ff6b62); flex: none; animation: vpulse 1.2s ease-in-out infinite; }
+html.mega .vdot { background: var(--m-danger, #ff6b62); }
+@keyframes vpulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .vdot { animation: none; } }
+.vtimer { font-variant-numeric: tabular-nums; min-width: 2.6em; font-weight: 600; }
+.vlive { flex: 1; min-width: 40px; height: 32px; display: block; }
+.vhint { font-size: 12px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
+html.mega .vhint { color: var(--m-mute); }
+.vrec.cancelling .vhint, .vrec.cancelling .vdot { color: var(--danger, #ff6b62); }
+.vrec.cancelling .vlive { opacity: .35; }
+/* Buttons only in the clicked (locked) mode, or once the five minutes are up; holding has no buttons. */
+.vrec .vcancel, .vrec .vsend { display: none; }
+.vrec[data-mode="lock"] .vcancel, .vrec[data-mode="lock"] .vsend, .vrec[data-state="ready"] .vcancel, .vrec[data-state="ready"] .vsend { display: inline-flex; }
+.vrec[data-mode="lock"] .vhint, .vrec[data-state="ready"] .vhint { display: none; }
+.vrec[data-state="ready"] .vhint { display: block; }
+.vrec .vcancel { color: var(--ink-2); }
+html.mega .vrec .vcancel { color: var(--m-mute); border-radius: 50%; }
+html.mega .vrec .vsend { min-height: 36px; border-radius: 999px; background: var(--m-paper); color: var(--m-void); }
+@media (max-width: 640px) { .vrec .vsend span { display: none; } .vrec .vhint { font-size: 11px; } }
+
+/* ---- the player on a message ---- */
+.vmsg { --vc: var(--ink-3); --vf: var(--ink); display: flex; align-items: center; gap: 10px; max-width: 420px; padding: 8px 12px 8px 8px;
+  background: var(--card, rgb(255 255 255 / .06)); border: var(--hair, 1px) solid var(--line, rgb(255 255 255 / .12)); border-radius: 22px; }
+html.mega .vmsg { --vc: rgb(255 255 255 / .28); --vf: var(--m-paper); background: var(--m-glass); border-color: var(--m-line); border-radius: 26px; color: var(--m-paper); }
+.vplay { flex: none; width: 36px; height: 36px; padding: 0; display: grid; place-items: center; border-radius: 50%; border: 0; cursor: pointer; background: var(--act, var(--ink)); color: var(--act-ink, var(--page)); }
+html.mega .vplay { background: var(--m-paper); color: var(--m-void); }
+.vplay .ic { width: 18px; height: 18px; fill: currentColor; stroke: currentColor; stroke-width: 1.2; }
+.vmsg.playing .vplay .ic { fill: none; stroke-width: 2.6; }
+.vmsg.loading .vplay { opacity: .6; cursor: progress; }
+.vwave { position: relative; flex: 1; min-width: 80px; height: 34px; cursor: pointer; touch-action: none; border-radius: 6px; -webkit-user-select: none; user-select: none; }
+.vwave:focus-visible { outline: 2px solid var(--vf); outline-offset: 2px; }
+.vbars { position: absolute; inset: 0; display: flex; align-items: center; gap: 1.5px; }
+.vbars i { flex: 1; min-width: 1px; height: calc(var(--h, .2) * 100%); min-height: 3px; border-radius: 2px; background: var(--vc); }
+.vbars.vfill { clip-path: inset(0 calc(100% - var(--p, 0%)) 0 0); pointer-events: none; }
+.vbars.vfill i { background: var(--vf); }
+.vtime { flex: none; font: 600 12px var(--m-ui, var(--sans)); font-variant-numeric: tabular-nums; color: var(--ink-2); white-space: nowrap; }
+html.mega .vtime { color: var(--m-mute); }
+.vspeed { flex: none; min-width: 38px; height: 26px; padding: 0 8px; border-radius: 999px; border: var(--hair, 1px) solid var(--line, rgb(255 255 255 / .12)); background: none; color: inherit; font: 650 12px var(--m-ui, var(--sans)); cursor: pointer; }
+html.mega .vspeed { border-color: var(--m-line); color: var(--m-paper); }
+.vmsg .vdl { flex: none; display: grid; place-items: center; width: 28px; height: 28px; color: var(--ink-3); border-radius: 50%; }
+html.mega .vmsg .vdl { color: var(--m-mute); }
+.vmsg .vdl:hover { color: var(--ink); }
+html.mega .vmsg .vdl:hover { color: var(--m-paper); }
+.vmsg.nope { padding: 10px 12px; }
+.vmsg .vnote { flex: 1; min-width: 0; font-size: 13px; color: var(--ink-2); }
+html.mega .vmsg .vnote { color: var(--m-mute); }
+@media (max-width: 640px) { .vmsg { gap: 8px; padding-right: 8px; } .vwave { min-width: 60px; } }

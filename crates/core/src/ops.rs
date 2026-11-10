@@ -616,6 +616,9 @@ impl Client {
     }
     /// Everything about a file message that can go wrong before any bytes move. Encrypts the file (no network).
     pub fn file_prepare(&self, gid: &str, name: &str, mime: &str, data: &[u8], caption: &str) -> Result<OutFile> {
+        self.file_prepare_voice(gid, name, mime, data, caption, None)
+    }
+    pub fn file_prepare_voice(&self, gid: &str, name: &str, mime: &str, data: &[u8], caption: &str, voice: Option<crate::envelope::Voice>) -> Result<OutFile> {
         self.check_chan(gid)?;
         if data.len() > MAX_BLOB_BYTES - 64 { bail!("file is larger than the {} MB limit", MAX_BLOB_BYTES / 1024 / 1024); }
         if caption.len() > MAX_TEXT { bail!("the caption is longer than {MAX_TEXT} bytes"); }
@@ -624,7 +627,7 @@ impl Client {
         let ct = ChaCha20Poly1305::new((&key).into()).encrypt(Nonce::from_slice(&nonce), data).map_err(|_| anyhow!("encrypt"))?;
         let safe: String = name.chars().filter(|c| !c.is_control()).collect();
         let safe = cut_name(safe.trim(), 200);
-        let env = Envelope::File { id: rand_hex(16), name: if safe.is_empty() { "file".into() } else { safe }, mime: clean_mime(mime), size: data.len() as u64, blob: rand_hex(16), key: hex::encode(key), nonce: hex::encode(nonce), caption: caption.into(), reply: None, ts: now_secs(), large: None };
+        let env = Envelope::File { id: rand_hex(16), name: if safe.is_empty() { "file".into() } else { safe }, mime: clean_mime(mime), size: data.len() as u64, blob: rand_hex(16), key: hex::encode(key), nonce: hex::encode(nonce), caption: caption.into(), reply: None, ts: now_secs(), large: None, voice };
         env.validate().map_err(|e| anyhow!("{e}"))?;
         Ok(OutFile { gid: gid.into(), env, ct })
     }

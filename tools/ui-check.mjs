@@ -11,7 +11,7 @@ import path from 'node:path';
 const out = process.argv[2] || '/tmp/commons-ui';
 fs.mkdirSync(out, { recursive: true });
 const root = path.resolve(new URL('..', import.meta.url).pathname);
-const bin = p => path.join(root, 'target/debug', p);
+const bin = p => path.join(process.env.COMMONS_UI_TARGET || path.join(root, 'target'), 'debug', p);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const procs = [];
 // Every bridge here runs the way the browser version's launcher starts it: with a per-start secret that the page gets in the
@@ -56,8 +56,13 @@ for (const [n, port] of [['alice', A_PORT], ['bob', B_PORT]]) {
 }
 await sleep(1500);
 
+// A known sound for the fake microphone: a 440 Hz tone for 0.4 s, then 0.4 s of silence, over and over (48 kHz mono, 16 bit).
+const beepWav = path.join(out, 'beeps.wav');
+{ const rate = 48000, n = rate * 3.2, pcm = Buffer.alloc(n * 2); for (let i = 0; i < n; i++) pcm.writeInt16LE(Math.floor(i / (rate * .4)) % 2 === 0 ? Math.round(Math.sin(2 * Math.PI * 440 * i / rate) * 14000) : 0, i * 2);
+  const h = Buffer.alloc(44); h.write('RIFF', 0); h.writeUInt32LE(36 + pcm.length, 4); h.write('WAVEfmt ', 8); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22); h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * 2, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34); h.write('data', 36); h.writeUInt32LE(pcm.length, 40);
+  fs.writeFileSync(beepWav, Buffer.concat([h, pcm])); }
 const chrome = run(process.env.COMMONS_UI_BROWSER || 'chromium', ['--headless=new', '--password-store=basic', '--use-mock-keychain', `--remote-debugging-port=${CDP_PORT}`, '--user-data-dir=' + path.join(out, 'chrome'), '--use-gl=angle', '--use-angle=vulkan',
-  '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu', '--ozone-platform=headless', '--disable-software-rasterizer', '--mute-audio', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', '--disable-audio-output', '--no-first-run', '--window-size=1280,800', 'about:blank']);
+  '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu', '--ozone-platform=headless', '--disable-software-rasterizer', '--mute-audio', '--autoplay-policy=no-user-gesture-required', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', `--use-file-for-fake-audio-capture=${beepWav}`, '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', '--disable-audio-output', '--no-first-run', '--window-size=1280,800', 'about:blank']);
 let ver; for (let i = 0; i < 50; i++) { try { ver = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)).json(); break; } catch { await sleep(200); } }
 if (!ver) throw new Error('chromium did not start');
 
@@ -413,6 +418,103 @@ try {
   await A.ev(`delete document.documentElement.dataset.theme`);
   await A.ev(`[...document.querySelectorAll('#rooms .room')].find(r => r.dataset.g === ${JSON.stringify(textGid)}).click()`);
   await sleep(200);
+
+  // ---- voice messages (mega-voice.js): alice records, bob plays ----
+  {
+    const tj = JSON.stringify(textGid);
+    const open = P => P.ev(`[...document.querySelectorAll('#rooms .room')].find(r => r.dataset.g === ${tj}).click()`);
+    for (const P of [A, B]) await P.ev(`S.people && document.querySelector('#btn-people').click()`);
+    await open(B); await open(A); await sleep(1200);
+    const vneed = (c, why) => { if (!c) throw new Error('voice: ' + why); };
+    vneed(await A.ev(`!document.querySelector('#mic').hidden`), 'no mic button in a text room');
+    const centre = async (P, sel) => { const r = await P.ev(`(() => { const b = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return [b.x + b.width / 2, b.y + b.height / 2]; })()`); return r; };
+    const mouse = (P, type, [x, y]) => P.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
+    const voices = P => P.ev(`S.msgs.messages.filter(m => m.file && m.file.voice).map(m => ({ id: m.id, ms: m.file.voice.ms, peaks: m.file.voice.peaks, mime: m.file.mime, name: m.file.name }))`);
+    const v0 = (await voices(B)).length;
+    // 1. press and hold about 2 s, let go: sent. The bar shows while it records.
+    let mic = await centre(A, '#mic');
+    vneed(await A.ev(`(() => { const r = document.querySelector('#mic').getBoundingClientRect(); const e = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return e && e.closest('#mic') ? true : (e ? e.outerHTML.slice(0, 120) : 'nothing'); })()`) === true, 'something covers the mic button: ' + await A.ev(`(() => { const r = document.querySelector('#mic').getBoundingClientRect(); const e = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return JSON.stringify([r, e && e.outerHTML.slice(0, 120), S.gid, document.querySelector('#composer').hidden]); })()`));
+    await mouse(A, 'mousePressed', mic); await sleep(2200);
+    const bar = await A.ev(`({ hidden: document.querySelector('#vrec').hidden, st: MegaVoice.state.st, mode: MegaVoice.state.mode, recording: document.querySelector('.slip').classList.contains('recording'), timer: document.querySelector('.vtimer').textContent })`);
+    vneed(!bar.hidden && bar.recording && bar.st === 'recording' && bar.mode === 'hold', 'the recording bar is not showing while the button is held: ' + JSON.stringify(bar));
+    await A.shot('voice-1-recording');
+    await mouse(A, 'mouseReleased', mic);
+    await B.waitFor(`S.msgs.messages.filter(m => m.file && m.file.voice).length >= ${v0 + 1}`, 20000);
+    let vs = await voices(B); const c1 = vs[vs.length - 1];
+    vneed(c1.ms >= 1800 && c1.ms <= 3500, 'wrong length: ' + c1.ms);
+    vneed(/^audio\//.test(c1.mime) && c1.peaks.length === 128, 'wrong type or waveform size: ' + JSON.stringify(c1));
+    const pk = c1.peaks.match(/../g).map(h => parseInt(h, 16)); vneed(Math.max(...pk) - Math.min(...pk) > 100, 'the waveform does not follow the sound: ' + c1.peaks);
+    vneed(await A.ev(`MegaVoice.state.st === 'idle' && document.querySelector('#vrec').hidden && !document.querySelector('.slip').classList.contains('recording')`), 'the bar stayed after sending');
+    // 2. bob sees a player with the right duration and plays it
+    await B.waitFor(`document.querySelector('.vmsg[data-vid="${c1.id}"]')`, 8000);
+    const pv = await B.ev(`(() => { const e = document.querySelector('.vmsg[data-vid="${c1.id}"]'); return { tot: e.querySelector('.vtot').textContent, bars: e.querySelectorAll('.vbars:not(.vfill) i').length, play: !!e.querySelector('.vplay'), speed: e.querySelector('.vspeed').textContent, dl: !!e.querySelector('.vdl') }; })()`);
+    vneed(pv.bars === 64 && pv.play && pv.dl && pv.speed === '1×' && pv.tot === (sec => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`)(Math.round(c1.ms / 1000)), 'player is incomplete: ' + JSON.stringify(pv));
+    vneed(await B.ev(`!document.querySelector('#stream audio, #stream video') && ![...document.querySelectorAll('audio')].length`), 'a clip is on the page before anyone pressed play');
+    await B.shot('voice-2-player');
+    await B.ev(`document.querySelector('.vmsg[data-vid="${c1.id}"] .vplay').click()`);
+    await B.waitFor(`(MegaVoice.audio('${c1.id}') || {}).currentTime > 0.3`, 8000).catch(async er => { throw new Error(er.message + ' :: ' + await B.ev(`(() => { const a = MegaVoice.audio('${c1.id}'); return a ? JSON.stringify({ t: a.currentTime, d: a.duration, paused: a.paused, rs: a.readyState, ns: a.networkState, err: a.error && a.error.message, src: a.src.slice(0, 30), type: a.canPlayType('audio/webm; codecs=opus') }) : 'no audio'; })()`)); });
+    vneed(await B.ev(`document.querySelector('.vmsg[data-vid="${c1.id}"]').classList.contains('playing')`), 'the player does not show playing');
+    // seek by clicking the waveform, then change speed
+    const wv = await B.ev(`(() => { const b = document.querySelector('.vmsg[data-vid="${c1.id}"] .vwave').getBoundingClientRect(); return [b.x, b.y + b.height / 2, b.width]; })()`);
+    await B.ev(`MegaVoice.audio('${c1.id}').pause()`);
+    await mouse(B, 'mousePressed', [wv[0] + wv[2] * .75, wv[1]]); await mouse(B, 'mouseReleased', [wv[0] + wv[2] * .75, wv[1]]); await sleep(500);
+    const at = await B.ev(`MegaVoice.audio('${c1.id}').currentTime`);
+    vneed(Math.abs(at - c1.ms * .00075) < .35, `seek landed at ${at}s, wanted ${c1.ms * .00075}`);
+    await B.ev(`document.querySelector('.vmsg[data-vid="${c1.id}"] .vspeed').click()`);
+    vneed(await B.ev(`MegaVoice.audio('${c1.id}').playbackRate === 1.5 && document.querySelector('.vmsg[data-vid="${c1.id}"] .vspeed').textContent === '1.5×'`), 'speed did not change to 1.5');
+    await B.ev(`document.querySelector('.vmsg[data-vid="${c1.id}"] .vspeed').click()`);
+    vneed(await B.ev(`MegaVoice.audio('${c1.id}').playbackRate === 2`), 'speed did not change to 2');
+    await B.ev(`document.querySelector('.vmsg[data-vid="${c1.id}"] .vspeed').click()`);
+    // 3. a click (not a hold) keeps recording with buttons; send it, and only one clip plays at a time
+    mic = await centre(A, '#mic');
+    await mouse(A, 'mousePressed', mic); await mouse(A, 'mouseReleased', mic); await sleep(1800);
+    const lock = await A.ev(`({ mode: MegaVoice.state.mode, send: getComputedStyle(document.querySelector('.vsend')).display, cancel: getComputedStyle(document.querySelector('.vcancel')).display, t: document.querySelector('.vtimer').textContent })`);
+    vneed(lock.mode === 'lock' && lock.send !== 'none' && lock.cancel !== 'none' && lock.t !== '0:00', 'a click did not start a recording with buttons: ' + JSON.stringify(lock));
+    await A.shot('voice-3-locked');
+    await click(A, '.vsend');
+    await B.waitFor(`S.msgs.messages.filter(m => m.file && m.file.voice).length >= ${v0 + 2}`, 20000);
+    vs = await voices(B); const c2 = vs[vs.length - 1];
+    await B.waitFor(`document.querySelector('.vmsg[data-vid="${c2.id}"]')`, 8000);
+    await B.ev(`MegaVoice.audio('${c1.id}').play()`); await sleep(300);
+    await B.ev(`document.querySelector('.vmsg[data-vid="${c2.id}"] .vplay').click()`);
+    await B.waitFor(`(MegaVoice.audio('${c2.id}') || {}).currentTime > 0.2`, 8000);
+    vneed(await B.ev(`MegaVoice.audio('${c1.id}').paused`), 'two clips played at once');
+    await B.ev(`MegaVoice.audio('${c2.id}').pause()`);
+    // 4. cancel sends nothing, and the microphone is let go
+    const before = (await voices(B)).length, filesBefore = await B.ev(`S.msgs.messages.filter(m => m.kind === 'file').length`);
+    mic = await centre(A, '#mic');
+    await mouse(A, 'mousePressed', mic); await mouse(A, 'mouseReleased', mic); await sleep(1200);
+    await click(A, '.vcancel'); await sleep(2500);
+    vneed(await A.ev(`MegaVoice.state.st === 'idle' && document.querySelector('#vrec').hidden`), 'cancel left the bar open');
+    vneed((await voices(B)).length === before && await B.ev(`S.msgs.messages.filter(m => m.kind === 'file').length`) === filesBefore, 'cancelling sent something');
+    // sliding away while holding cancels too
+    await mouse(A, 'mousePressed', mic); await sleep(900);
+    await A.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: mic[0] - 220, y: mic[1], button: 'left', buttons: 1 });
+    vneed(await A.ev(`document.querySelector('#vrec').classList.contains('cancelling')`), 'sliding away does not mark the recording as cancelled');
+    await mouse(A, 'mouseReleased', [mic[0] - 220, mic[1]]); await sleep(2500);
+    vneed((await voices(B)).length === before, 'a recording slid away from was sent');
+    // 5. a browser with no MediaRecorder records raw sound and sends a WAV
+    await A.ev(`MegaVoice.forcePcm = true`);
+    mic = await centre(A, '#mic');
+    await mouse(A, 'mousePressed', mic); await mouse(A, 'mouseReleased', mic); await sleep(2000);
+    await click(A, '.vsend');
+    await B.waitFor(`S.msgs.messages.filter(m => m.file && m.file.voice).length >= ${v0 + 3}`, 20000);
+    vs = await voices(B); const c3 = vs[vs.length - 1];
+    await A.ev(`MegaVoice.forcePcm = false`);
+    vneed(c3.mime === 'audio/wav' && c3.ms >= 1500 && c3.ms <= 4000, 'the WAV fallback clip is wrong: ' + JSON.stringify(c3));
+    const pk3 = c3.peaks.match(/../g).map(h => parseInt(h, 16)); vneed(Math.max(...pk3) - Math.min(...pk3) > 100, 'the WAV fallback waveform is flat: ' + c3.peaks);
+    await B.waitFor(`document.querySelector('.vmsg[data-vid="${c3.id}"] .vplay')`, 8000);
+    await B.ev(`document.querySelector('.vmsg[data-vid="${c3.id}"] .vplay').click()`);
+    await B.waitFor(`(MegaVoice.audio('${c3.id}') || {}).currentTime > 0.3`, 8000);
+    await B.ev(`MegaVoice.audio('${c3.id}').pause()`);
+    const wavLen = await B.ev(`MegaVoice.audio('${c3.id}').duration`);
+    vneed(Math.abs(wavLen * 1000 - c3.ms) < 700, `the WAV is ${wavLen}s long but says ${c3.ms} ms`);
+    // 6. a clip nothing here can play shows a download link
+    const nope = await B.ev(`MegaVoice.row({ id: 'ab'.repeat(16), file: { mime: 'audio/x-nothing-real', name: 'v.xyz', voice: { ms: 4000, peaks: '' } } })`);
+    vneed(/vmsg nope/.test(nope) && /class="dl vdl"/.test(nope), 'an unplayable clip has no download link');
+    await B.shot('voice-4-after');
+  }
+  if (process.env.COMMONS_UI_STOP_AFTER === 'voice') { console.log('UI check stopped after the voice messages section (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
 
   // ---- mega: the navigation around the chat ----
   // The old rail is kept only for its dock; people move through home -> a community's rooms -> the chat with dots.

@@ -23,6 +23,7 @@
 <link rel="stylesheet" href="mega-presence.css">
 <link rel="stylesheet" href="mega-invite.css">
 <link rel="stylesheet" href="mega-design.css">
+<link rel="stylesheet" href="mega-voice.css">
 <script src="fresco-rail-dither.js" defer></script>
 <script src="wave-dither.js" defer></script>
 </head>
@@ -65,6 +66,8 @@
     <!-- A small voice-in-progress mark beside a room with people in its call. -->
     <symbol id="i-wave" viewBox="0 0 20 20"><path d="M3 10v0M6 7v6M9 4.5v11M12 7v6M15 8.5v3M18 10v0"/></symbol>
     <symbol id="i-play" viewBox="0 0 20 20"><path d="M6.5 4.5l9 5.5-9 5.5z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 20 20"><path d="M7 4.5v11M13 4.5v11"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 20 20"><rect x="7.5" y="2.5" width="5" height="9" rx="2.5"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5"/></symbol>
     <!-- A voice room: its call is the room. -->
     <symbol id="i-speaker" viewBox="0 0 20 20"><path d="M3.5 7.5h3l4-3v11l-4-3h-3zM14 7.2a4 4 0 0 1 0 5.6"/></symbol>
   </g>
@@ -158,6 +161,7 @@
           <button id="attach" class="mini" title="Attach a file" aria-label="Attach a file"><svg class="ic"><use href="#i-clip"/></svg></button>
           <input type="file" id="file" hidden>
           <textarea id="input" rows="1" placeholder="Write a message" aria-label="Write a message"></textarea>
+          <button id="mic" class="mini" title="Record a voice message: hold to record, let go to send" aria-label="Record a voice message"><svg class="ic"><use href="#i-mic"/></svg></button>
           <button id="send" class="btn" title="Send"><svg class="ic"><use href="#i-send"/></svg><span id="send-label">Send</span></button>
         </div>
       </div>
@@ -190,6 +194,7 @@
 <script src="mega-notify.js"></script>
 <script src="mega-direct.js"></script>
 <script src="mega-presence.js"></script>
+<script src="mega-voice.js"></script>
 <script src="update-ui.js"></script>
 <script src="browser-update.js"></script>
 </body>
