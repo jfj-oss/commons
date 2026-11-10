@@ -500,6 +500,47 @@ try {
     await sleep(1500);
   }
 
+  // ---------------------------------------------------------------- DC. calling one person directly: a hidden two-person community, rung and joined through the normal paths
+  {
+    for (const n of ['alice', 'bob', 'dave']) { await call(n, `c.phase === 'idle' ? true : c.leave()`).catch(() => { }); await page(n).ev(`(pref.set('sound', 'off'), true)`); }
+    await sleep(1500);
+    const cards = n => page(n).ev(`[...document.querySelectorAll('#mega-ring .rg-card')].map(c => c.innerText.replace(/\\s+/g, ' ').trim())`);
+    const bobAcct = P('bob').account;
+    const commsBefore = await page('alice').ev(`S.snap.communities.length`);
+    // alice calls bob from the code behind the phone on his row in the People list
+    check('DC0 the People list has a call button on other people\'s rows', await page('alice').ev(`(document.getElementById('btn-people').click(), 0)`) === 0 && await until(() => page('alice').ev(`document.querySelectorAll('#people .dr-row').length >= 2`), 15000, 'dr-row').then(() => true, () => false));
+    await page('alice').ev(`(document.getElementById('btn-people').click(), 0)`);
+    const started = await page('alice').ev(`__megaDirect.call(${J(bobAcct)}, 'Bob')`);
+    const dr = await until(() => page('alice').ev(`S.snap.direct.length === 1 && S.snap.direct[0].room`), 40000, 'alice has the direct room').catch(() => null);
+    check('DC1 alice has a direct community with one voice room, named after bob', !!started && !!dr && await page('alice').ev(`S.snap.direct[0].name === 'Bob' && S.snap.direct[0].channels.length === 1 && S.snap.direct[0].channels[0].kind === 'voice'`));
+    await until(() => call('alice', `c.phase === 'connected' && c.gid === ${J(dr)}`), 40000, 'alice in the direct call').catch(() => { });
+    check('DC2 the caller is in the call in that room, which the call strip names after bob', await call('alice', `c.phase === 'connected' && c.gid === ${J(dr)} && c.roomName === 'Bob'`), await call('alice', `JSON.stringify({ phase: c.phase, gid: c.gid, name: c.roomName })`).catch(() => ''));
+    const seen = await until(async () => { const c = await cards('bob'); return c.length === 1 ? c : null; }, 60000, 'bob sees the ring').catch(() => null);
+    check('DC3 bob is rung: the normal ring card, from alice, for him, saying direct call and not the community', !!seen && /alice/i.test(seen[0]) && /calling you/.test(seen[0]) && /direct call/.test(seen[0]) && !/Test club/.test(seen[0]), J(seen));
+    check('DC4 nobody else is rung or sees anything: dave has no card, no direct room and no join in progress', (await cards('dave')).length === 0 && await page('dave').ev(`(S.snap.direct || []).length === 0 && !JSON.stringify(S.snap).includes(${J(dr)})`), J(await cards('dave')));
+    await page('bob').ev(`document.querySelector('#mega-ring .rg-b.yes').click()`);
+    await until(() => call('bob', `c.phase === 'connected' && c.gid === ${J(dr)}`), 40000, 'bob joined from the ring').catch(() => { });
+    check('DC5 bob joins from the card through the normal join, and the call is named after alice', await call('bob', `c.phase === 'connected' && c.gid === ${J(dr)} && c.roomName === 'Alice'`) && (await cards('bob')).length === 0);
+    const ea2 = await call('alice', `c.snapshot().encryption`), eb2 = await call('bob', `c.snapshot().encryption`);
+    check('DC6 the call uses end-to-end frame encryption on both sides, with the same key epoch', (await call('alice', `c.room.isE2EEEnabled`)) && (await call('bob', `c.room.isE2EEEnabled`)) && ea2.active && eb2.active && ea2.epoch === eb2.epoch, J({ ea2, eb2 }));
+    check('DC7 bob hears alice, through the encryption', await hears('bob', 'alice'));
+    check('DC8 alice hears bob, through the encryption', await hears('alice', 'bob'));
+    const droom = (await rpc(P('alice').port, 'call_token', { gid: dr })).room;
+    const dparts = (await lkAdmin('ListParticipants', { room: droom })).participants || [];
+    check('DC9 at the media server: two bare device ids, no names, a room name that is not the group id, every track marked encrypted', dparts.length === 2 && dparts.every(p => /^[0-9a-f]{64}$/.test(p.identity) && !p.name && (p.tracks || []).length > 0 && p.tracks.every(t => t.encryption === 'GCM' || t.encryption === 1)) && droom !== dr && !/Alice|Bob|direct/i.test(droom), J({ droom: droom.slice(0, 12), parts: dparts.map(p => [p.identity.slice(0, 8), p.name, (p.tracks || []).map(t => t.encryption)]) }));
+    check('DC10 it is in no list: not among the communities (alice, bob, dave), not in the rooms, not in the page text', await Promise.all(['alice', 'bob', 'dave'].map(n => page(n).ev(`S.snap.communities.length === ${commsBefore} && !JSON.stringify(S.snap.communities).includes(${J(dr)}) && ![...document.querySelectorAll('#rooms .room')].some(r => r.dataset.g === ${J(dr)}) && !/Direct call [(]open in a newer/i.test(document.body.innerText)`))).then(a => a.every(Boolean)));
+    // the same two call again: found, not made again, and rung straight away
+    for (const n of ['alice', 'bob']) await call(n, `c.leave()`).catch(() => { });
+    await sleep(1500);
+    await page('bob').ev(`__megaDirect.call(${J(P('alice').account)}, 'Alice')`);
+    const again = await until(async () => { const c = await cards('alice'); return c.length === 1 ? c : null; }, 60000, 'alice is rung by bob').catch(() => null);
+    check('DC11 calling again finds the same community (still one) and rings the other person at once', !!again && /bob/i.test(again[0]) && /direct call/.test(again[0]) && await page('alice').ev(`S.snap.direct.length === 1 && S.snap.direct[0].room === ${J(dr)}`), J(again));
+    await page('alice').ev(`document.querySelector('#mega-ring .rg-b.no')?.click()`).catch(() => { });
+    for (const n of ['alice', 'bob']) await call(n, `c.phase === 'idle' ? true : c.leave()`).catch(() => { });
+    await page('alice').ev(`(document.getElementById('people').hidden || document.getElementById('btn-people').click(), 0)`).catch(() => { });
+    await sleep(1500);
+  }
+
   // ---------------------------------------------------------------- R. voice reliability: joining, healing, nothing left behind
   for (const n of ['alice', 'bob', 'dave']) await call(n, `c.phase === 'idle' ? true : c.leave()`).catch(() => { });
   await sleep(1500);

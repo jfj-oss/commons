@@ -223,6 +223,7 @@ impl Client {
         }
         r.pair_ack = self.pair_ack.clone();
         self.plan_joins(&mut r, now);
+        if !self.st.direct_announced { self.st.direct_announced = true; self.st.profile_dirty = true; }
         if self.st.profile_dirty && !self.st.name.is_empty() {
             self.st.profile_dirty = false;
             let name = self.st.name.clone();
@@ -234,10 +235,11 @@ impl Client {
             let avatar_cleared = std::mem::replace(&mut self.st.avatar_removed, false);
             let ts = self.st.profiles.get(&me).map_or_else(now_secs, |p| p.ts.max(now_secs()));
             let ctls: Vec<String> = self.st.groups.values().filter(|g| g.kind == Kind::Control && !g.removed && !g.broken).map(|g| g.gid.clone()).collect();
-            for g in ctls { self.queue_env(&g, Envelope::Profile { name: name.clone(), ts, listen: listen.clone(), avatar: avatar.clone(), avatar_cleared }); }
+            for g in ctls { self.queue_env(&g, Envelope::Profile { name: name.clone(), ts, listen: listen.clone(), avatar: avatar.clone(), avatar_cleared, direct: true }); }
         }
         self.flush_live();
         self.reconcile();
+        self.direct_tick();
         self.plan_relay_secret();
         // nothing goes out unless the state behind it is on disk
         if let Err(e) = self.encrypt_outbox().and_then(|_| self.save()) { log::warn!("save before sending: {e}"); r.sync = Some(self.sync_req(wait_ms)); return r; }
@@ -427,7 +429,7 @@ impl Client {
                 }
                 self.st.outbox.iter().any(|i| i.cipher.is_some())
             }
-            Err(_) if matches!(self.st.outbox[pos].env, Envelope::Live { .. } | Envelope::Ring { .. }) => { self.st.outbox.remove(pos); false } // live data is never retried
+            Err(_) if matches!(self.st.outbox[pos].env, Envelope::Live { .. } | Envelope::Ring { .. } | Envelope::Direct { .. }) => { self.st.outbox.remove(pos); false } // live data is never retried
             Err(e) => {
                 match relay_status(&e) {
                     Some(400) | Some(413) => { self.st.outbox.remove(pos); self.notice("outbox", format!("the relay refused an unsent message, so it was dropped: {e}")); }

@@ -82,6 +82,20 @@ pub struct State {
     /// When this device last asked its other devices for the secret, per community's control group.
     #[serde(default)]
     pub relay_secret_asked: BTreeMap<String, u64>,
+    /// One-to-one calls (direct.rs). The other person of each direct community we founded (the nonce commits to them, but
+    /// before they join nobody else can tell which account it is), when each direct community last had a call, the ones we
+    /// joined on a caller's word and are still waiting to hear back from, and the accounts whose calls we refuse.
+    #[serde(default)]
+    pub direct_peers: BTreeMap<String, String>,
+    #[serde(default)]
+    pub direct_last: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub direct_joining: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub direct_refused: BTreeSet<String>,
+    /// This app has told everyone it takes direct calls (one profile refresh after an update).
+    #[serde(default)]
+    pub direct_announced: bool,
     /// When we last asked to join (community id -> time), and when we may next try.
     pub join_asked: BTreeMap<String, u64>,
     pub join_retry: BTreeMap<String, u64>,
@@ -184,6 +198,9 @@ pub struct JoinRefused { pub name: String, pub reason: String, pub ts: u64 }
 pub struct Profile {
     pub name: String,
     pub ts: u64,
+    /// Their app can take part in one-to-one calls (their newest profile said so). False for older apps.
+    #[serde(default)]
+    pub direct: bool,
     /// Where this account's picture is, if it has one. One picture per account, as there is one name per account.
     #[serde(default)]
     pub avatar: Option<AvatarRef>,
@@ -235,6 +252,15 @@ pub struct Community {
     /// repairs keep being needed within ten minutes (up to ten minutes). A hostile member cannot make the owner commit faster.
     #[serde(default)]
     pub style_repub_gap: u64,
+    /// The founder (the account the community id is pinned to), which stays the same when ownership moves.
+    #[serde(default)]
+    pub founder: String,
+    /// Set when this is a hidden one-to-one call community (see `direct.rs`): the other person's account, as the nonce commits to it.
+    #[serde(default)]
+    pub direct: Option<String>,
+    /// A one-to-one community that no longer has its exact shape (a third account, another room): never shown, and left.
+    #[serde(default)]
+    pub direct_bad: bool,
 }
 impl Community {
     /// Take a verified document if it is newer than the one in force: higher version, then later time, then the

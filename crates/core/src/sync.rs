@@ -495,9 +495,14 @@ impl Client {
         if kind == Kind::Control {
             if let Some(ext) = mls::group_ext(group.extensions()) {
                 if let Ok((owner, admins)) = ext.verify_control(gid) {
-                    if let GroupExt::Control { name, nonce, channels, invites, banned, transfers, consents, style, .. } = ext {
+                    if let GroupExt::Control { owner: founder, name, nonce, channels, invites, banned, transfers, consents, style, .. } = ext {
+                        // Is this a hidden one-to-one community, and is it still exactly one? (direct.rs)
+                        let accts = self.st.groups[gid].accounts.clone();
+                        let known = self.st.direct_peers.get(gid).cloned();
+                        let (direct, direct_bad) = crate::direct::mark(&founder, &nonce, &me, &accts, &channels, known.as_deref());
                         let c = self.st.communities.entry(gid.to_string()).or_insert_with(|| Community { id: gid.into(), ..Default::default() });
                         c.name = name; c.owner = owner; c.admins = admins; c.nonce = nonce; c.channels = channels; c.invites = invites; c.banned = banned; c.transfers = transfers;
+                        c.founder = founder; c.direct = direct; c.direct_bad = direct_bad;
                         if let Some(doc) = style.as_ref().and_then(|ss| verify_style(&c.owner, gid, ss).ok().map(|d| (d, ss.sig.clone()))) { c.adopt_style(doc.0, &doc.1); }
                         // The removal itself may take our entry out of the table: what we knew before it is what gets withdrawn.
                         if let Some(mine) = consents.iter().find(|x| x.account == me && verify_consent(gid, x).is_ok()) { c.my_consent = Some(mine.clone()); }
@@ -576,13 +581,14 @@ impl Client {
         let comm = self.st.groups[gid].community.clone();
         let acct = cert.account.clone();
         match (&kind, env) {
-            (Kind::Control, Envelope::Profile { name, ts, listen, avatar, avatar_cleared }) => {
+            (Kind::Control, Envelope::Profile { name, ts, listen, avatar, avatar_cleared, direct }) => {
                 let ts = sane_ts(ts);
                 let newer = {
                     let p = self.st.profiles.entry(acct.clone()).or_default();
                     if ts >= p.ts {
                         p.name = name;
                         p.ts = ts;
+                        p.direct = direct;
                         // An older app sends this same message with neither picture field. That must not wipe a picture
                         // set from a newer one, so only a picture or an explicit removal changes it.
                         if avatar_cleared { p.avatar = None; }
@@ -641,6 +647,7 @@ impl Client {
             }
             (Kind::Channel, Envelope::Live { kind, data, ts }) => self.take_live(gid, &acct, kind, data, ts),
             (Kind::Channel, Envelope::Ring { id, ts, to, end }) => self.take_ring(gid, &acct, id, ts, to, end),
+            (Kind::Channel, Envelope::Direct { id, ts, to, nonce, link }) => self.take_direct(gid, &acct, id, ts, to, nonce, link),
             (Kind::Channel, Envelope::Typing) => { self.typing.insert(format!("{gid}|{acct}"), now_secs()); }
             (Kind::Channel, env @ (Envelope::Text { .. } | Envelope::File { .. } | Envelope::Edit { .. } | Envelope::Delete { .. } | Envelope::React { .. })) => {
                 self.apply_chat(gid, seq, cert, env, false);

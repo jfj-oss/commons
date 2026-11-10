@@ -2,6 +2,7 @@
 pub mod call;
 pub mod callbridge;
 pub mod client;
+pub mod direct;
 pub mod envelope;
 pub mod large;
 pub mod mls;

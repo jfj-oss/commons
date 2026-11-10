@@ -176,6 +176,13 @@ pub enum Envelope {
         #[serde(default, skip_serializing_if = "is_false")]
         end: bool,
     },
+    /// "Take this invite and call me": the start of a one-to-one call. Sent inside a room the two people already share, so the
+    /// relay sees one more encrypted message. `to` is the one account it is for (everyone else in the room can read it, and
+    /// can do nothing with it: the invite is for a two-person community whose id commits to exactly these two accounts, see
+    /// `direct.rs`). `nonce` is the community's nonce, so the receiver can check the marker before it joins anything; `link` is
+    /// an invite link to that community. Like `Ring` it is for now, not history: never stored or shown, never retried, and an
+    /// older app has no such kind, parses it as `Unknown` and notes "newer version" once; nothing else happens.
+    Direct { id: String, ts: u64, to: String, nonce: String, link: String },
     /// A person's profile refresh. Extra fields ride on it rather than new kinds: an older Megatron parses this as the
     /// `Profile` it already knows and serde ignores the rest, so nothing new ever reaches an old app's `Unknown` notice.
     /// `listen` is the shared "listening to" status (`None` = nothing to share); `avatar`/`avatar_cleared` the picture.
@@ -189,6 +196,9 @@ pub enum Envelope {
         /// The picture was removed. A separate field because a missing field and a JSON `null` both become `None`.
         #[serde(default, skip_serializing_if = "is_false")]
         avatar_cleared: bool,
+        /// This app can take part in one-to-one calls. Absent from older apps, which is how a caller can tell.
+        #[serde(default, skip_serializing_if = "is_false")]
+        direct: bool,
     },
     /// "I am leaving" (the leaver cannot remove itself in MLS; an admin commits the removal).
     Leave,
@@ -274,6 +284,7 @@ impl Envelope {
             }
             Typing | Leave | Unknown => {}
             Live { kind, data, .. } => if !valid_live_kind(kind) || data.len() > MAX_LIVE { return bad("bad live event"); },
+            Direct { id, to, nonce, link, .. } => if !is_id(id) || !is_key(to) || !is_id(nonce) || link.len() > 3000 || InviteLink::decode(link).is_err() { return bad("bad direct call"); },
             Ring { id, to, .. } => if !is_id(id) || to.as_deref().is_some_and(|t| !is_key(t)) { return bad("bad ring"); },
             Profile { name, listen, avatar, avatar_cleared, .. } => {
                 if name.is_empty() || !short(name, 64) { return bad("bad profile"); }
@@ -643,7 +654,7 @@ mod compat_tests {
         let removed = br#"{"t":"Profile","name":"Ana","ts":6,"avatar_cleared":true}"#;
         assert_eq!(serde_json::from_slice::<OldEnvelope>(removed).unwrap(), OldEnvelope::Profile { name: "Ana".into(), ts: 6 });
         // With no picture, the bytes are exactly what 0.2.x sends and expects.
-        let plain = Envelope::Profile { name: "Ana".into(), ts: 5, listen: None, avatar: None, avatar_cleared: false };
+        let plain = Envelope::Profile { name: "Ana".into(), ts: 5, listen: None, avatar: None, avatar_cleared: false, direct: false };
         // (listen is always written, as null when there is none: 0.2.x ignores it, and null clears a shown status)
         assert_eq!(plain.to_bytes(), br#"{"t":"Profile","name":"Ana","ts":5,"listen":null}"#);
     }
