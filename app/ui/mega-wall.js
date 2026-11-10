@@ -259,7 +259,12 @@
     if (RESP.has(key)) return;
     RESP.set(key, setTimeout(async () => {
       RESP.delete(key); if (!serving(key)) return;
-      let r; try { r = await rpc('wall_get', { gid: key }); } catch { return; }
+      let r;
+      for (let i = 0; i < 8; i++) {                                      // "busy" means the core is occupied for a moment, not that there is nothing to send
+        try { r = await rpc('wall_get', { gid: key }); } catch { return; }
+        if (!r.busy) break;
+        await new Promise(z => setTimeout(z, 400));
+      }
       if (r.busy || (r.snap_at || 0) * 1000 > since || !serving(key)) return;   // somebody else already answered
       const g = sendGid(key, r.carrier); if (!g) return;
       if (!(await sendSnapshot(key, g))) __megaLive.send(g, prefix(key) + 'h', '{}');

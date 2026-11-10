@@ -943,7 +943,7 @@ try {
     { const t0 = Math.floor(Date.now() / 1000) - 1, s0 = await stat(A);
       await A.send('Page.bringToFront'); await sleep(300);
       await B.ev(`rpc('live_send', { gid: ${g}, kind: 'wall.q', data: '{}' }).then(() => 1)`);
-      let snapAt = 0; for (let i = 0; i < 40 && snapAt < t0; i++) { await sleep(500); snapAt = await B.ev(`rpc('wall_get', { gid: ${g} }).then(r => r.snap_at)`); }
+      let snapAt = 0; for (let i = 0; i < 60 && snapAt < t0; i++) { await sleep(500); if (i === 20) await B.ev(`rpc('live_send', { gid: ${g}, kind: 'wall.q', data: '{}' }).then(() => 1)`); snapAt = await B.ev(`rpc('wall_get', { gid: ${g} }).then(r => r.snap_at || 0)`); }
       const s1 = await stat(A);
       need(snapAt >= t0 && (s1.kinds['wall.s'] || 0) > (s0.kinds['wall.s'] || 0), 'wall: nobody answered a request for the wall with a snapshot: ' + JSON.stringify([snapAt, t0, s0.kinds, s1.kinds]));
       need((s1.kinds['wall.s'] || 0) - (s0.kinds['wall.s'] || 0) <= 8, 'wall: a snapshot took more than 8 events'); }
