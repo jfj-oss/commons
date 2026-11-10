@@ -35,7 +35,7 @@ elif [ -z "${COMMONS_MAC_FULL:-}" ]; then
   RUN=(taskpolicy -b nice -n 19)
 else RUN=(); fi
 export MEGATRON_BROWSER_VERSION="$VER" MEGATRON_BROWSER_PUBKEY="$PUB"
-"${RUN[@]}" cargo build --release -p commons-core --features devbridge --bin dev_bridge --bin megatron_launcher
+${RUN[@]+"${RUN[@]}"} cargo build --release -p commons-core --features devbridge --bin dev_bridge --bin megatron_launcher
 # A staging folder, not dist/Megatron.app: scripts/build-mac.sh puts the desktop app there, and publish-update.sh
 # packages that one for the desktop updater. The zip still contains Megatron.app at its top level.
 STAGE=dist/.mac-browser-app

@@ -15,7 +15,7 @@ elif [ -z "${COMMONS_MAC_FULL:-}" ]; then
   RUN=(taskpolicy -b nice -n 19)
 else RUN=(); fi
 # custom-protocol is what puts the UI inside the binary; the Tauri CLI normally adds it.
-"${RUN[@]}" cargo build --release -p commons-app --features tauri/custom-protocol
+${RUN[@]+"${RUN[@]}"} cargo build --release -p commons-app --features tauri/custom-protocol
 A=dist/Megatron.app
 rm -rf "$A"; mkdir -p "$A/Contents/MacOS" "$A/Contents/Resources"
 cp target/release/commons-app "$A/Contents/MacOS/commons-app"
