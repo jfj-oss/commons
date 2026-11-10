@@ -294,6 +294,7 @@ fn the_claude_settings_deny_the_same_places_and_sudo_and_run_the_sandbox() {
     assert!(deny.contains(&format!("Read({ssh})")) && deny.contains(&format!("Edit({ssh})")), "{deny:?}");
     assert!(deny.contains(&"Bash(sudo:*)".to_string()) && deny.iter().any(|d| d.starts_with("Bash(curl")) && deny.iter().any(|d| d.contains("deepseek-key")));
     assert_eq!(s["permissions"]["allow"], json!([]));
+    assert!(s["permissions"]["ask"].as_array().unwrap().iter().any(|v| v == "Bash"));
     assert_eq!(s["sandbox"]["enabled"], true);
     assert_eq!(s["sandbox"]["failIfUnavailable"], true);
     assert_eq!(s["sandbox"]["allowUnsandboxedCommands"], false);

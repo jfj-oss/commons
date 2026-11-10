@@ -198,7 +198,8 @@ pub fn claude_settings(d: &Deny, allowed_domains: &[String]) -> Value {
     });
     if !allowed_domains.is_empty() { sandbox["network"] = json!({ "allowedDomains": allowed_domains }); }
     json!({
-        "permissions": { "deny": deny, "allow": [], "defaultMode": "default" },
+        // "ask" on every shell command, so even the ones Claude Code treats as read-only (ls, cat, df...) come to the room
+        "permissions": { "deny": deny, "ask": ["Bash", "WebFetch", "WebSearch"], "allow": [], "defaultMode": "default" },
         "sandbox": sandbox,
         "includeCoAuthoredBy": false,
         "enableAllProjectMcpServers": false,
