@@ -49,7 +49,8 @@ fs.writeFileSync(path.join(fakeBin, 'xdg-open'), '#!/bin/sh\nprintf "%s\\n" "$1"
 const startRelay = () => run(bin('commons-relay'), ['--bind', `127.0.0.1:${RELAY_PORT}`, '--data', path.join(out, 'data/relay')]);
 let relayProc = startRelay();
 for (const [n, port] of [['alice', A_PORT], ['bob', B_PORT]]) {
-  const env = { COMMONS_DATA: path.join(out, 'data', n), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(port) };
+  // COMMONS_NOTIFY_LOG: what the background part would have shown as a system notification goes to a file, never to a screen.
+  const env = { COMMONS_DATA: path.join(out, 'data', n), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(port), COMMONS_NOTIFY_LOG: path.join(out, `notify-${n}.log`) };
   if (n === 'bob') Object.assign(env, { PATH: fakeBin + ':' + process.env.PATH, COMMONS_XDG_MARKER: xdgMarker, COMMONS_PICKED: path.join(out, 'downloads-bob') });
   run(bin('dev_bridge'), [String(port), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], env);
 }
@@ -765,6 +766,158 @@ try {
     const gone = await mu(); need(gone.mode === '' && gone.note === '', 'music: the note should go when the status does: ' + JSON.stringify(gone));
     await A.ev(`__megaMusic._sources(null); window.AudioContext = window.__realAC; 1`);
   }
+
+  // ---- notifications: the rules, the room menu, the marks, and who shows what (mega-notify.js, crates/core/src/notify.rs) ----
+  {
+    const tj = JSON.stringify(textGid);
+    const cid = await A.ev(`S.snap.communities.find(c => c.channels.some(x => x.gid === ${tj})).id`), cj = JSON.stringify(cid);
+    const roomName = await A.ev(`S.snap.communities.flatMap(c => c.channels).find(x => x.gid === ${tj}).name`);
+    const bobName = await B.ev(`S.snap.me.name`), aliceName = await A.ev(`S.snap.me.name`);
+    const nget = () => A.ev(`rpc('notify_get')`);
+    const alog = path.join(out, 'notify-alice.log');
+    const nlog = () => (fs.existsSync(alog) ? fs.readFileSync(alog, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
+    const NO = 'notify: ';
+    const bsay = t => B.ev(`rpc('send_text', { gid: ${tj}, text: ${JSON.stringify(t)}, reply: null }).then(() => 1)`);
+    const toChatRoom = async gid => { await A.ev(`__mega.api.toChat(${cj}, ${gid ? JSON.stringify(gid) : 'null'}); 1`); await sleep(900); };
+    // defaults, kept on the device
+    let n0 = await nget();
+    need(n0.mode === 'all' && n0.show_text === false && Object.keys(n0.rooms).length === 0, NO + 'defaults wrong: ' + JSON.stringify(n0));
+    // the options room: next to the sound setting, applies at once
+    await toChatRoom(null);
+    const ui0 = await A.ev(`(() => { const o = document.querySelector('#mega-opts'); return { snd: !!o.querySelector('#snd'), ntf: !!o.querySelector('#ntf'), txt: !!o.querySelector('#ntf-text'), perm: !!o.querySelector('#ntf-perm'), labels: [...o.querySelectorAll('#ntf ~ .seg button')].map(b => b.textContent), order: o.innerHTML.indexOf('id="snd"') < o.innerHTML.indexOf('id="ntf"') }; })()`);
+    need(ui0.snd && ui0.ntf && ui0.txt && ui0.perm && ui0.order && ui0.labels.join('|') === 'All messages|Only @mentions and replies|Off', NO + 'the options room lacks the notification controls: ' + JSON.stringify(ui0));
+    await A.ev(`document.querySelector('#mega-opts .seg[data-for="ntf"] button[data-v="mentions"]').click()`); await sleep(500);
+    need((await nget()).mode === 'mentions', NO + 'the options room did not save the mode');
+    await A.ev(`(() => { const c = document.querySelector('#mega-opts #ntf-text'); c.checked = true; c.dispatchEvent(new Event('change', { bubbles: true })); })()`); await sleep(500);
+    need((await nget()).show_text === true, NO + 'the options room did not save the text switch');
+    await A.shot('notify-1-options');
+    // Settings (the dialog) shows the same state and saves too
+    await click(A, '#btn-settings'); await A.waitFor(`document.querySelector('.modal #ntf')`);
+    const md = await A.ev(`(() => ({ mode: document.querySelector('.modal #ntf').value, text: document.querySelector('.modal #ntf-text').checked, near: document.querySelector('.modal').innerHTML.indexOf('id="snd"') < document.querySelector('.modal').innerHTML.indexOf('id="ntf"') }))()`);
+    need(md.mode === 'mentions' && md.text === true && md.near, NO + 'Settings does not show the saved state: ' + JSON.stringify(md));
+    await A.ev(`document.querySelector('.modal .seg[data-for="ntf"] button[data-v="off"]').click(); document.querySelector('.modal #ntf-text').checked = false; 1`);
+    await A.ev(`[...document.querySelectorAll('.modal .acts button')].find(b => b.textContent === 'Save').click()`); await sleep(900);
+    let n1 = await nget(); need(n1.mode === 'off' && n1.show_text === false, NO + 'Settings did not save: ' + JSON.stringify(n1));
+    await A.ev(`rpc('notify_set', { mode: 'all' }).then(() => 1)`);
+    // the room menu on a dot of the sidebar
+    await toChatRoom(textGid);
+    await A.waitFor(`document.querySelector('#mega-rail .mitem[data-key=${tj}]')`);
+    const ctx = (sel, x = 90, y = 160) => A.ev(`document.querySelector(${JSON.stringify(sel)}).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: ${x}, clientY: ${y} })); 1`);
+    const dot = `#mega-rail .mitem[data-key=${tj}]`;
+    await ctx(dot); await sleep(300);
+    const mn = await A.ev(`(() => { const m = document.querySelector('.nm-menu'); return m && { labels: [...m.querySelectorAll('button')].map(b => b.textContent), role: m.getAttribute('role'), on: m.getBoundingClientRect().left >= 0 && m.getBoundingClientRect().right <= innerWidth }; })()`);
+    need(mn && mn.role === 'menu' && mn.on && ['Mute for 1 hour', 'Mute for 8 hours', 'Mute until I unmute', 'Mentions only'].every(l => mn.labels.includes(l)), NO + 'the room menu is wrong: ' + JSON.stringify(mn));
+    need(mn.labels.includes('Colours…') && !mn.labels.includes('Unmute'), NO + 'owner sees Colours… and nothing to unmute yet: ' + JSON.stringify(mn.labels));
+    await A.shot('notify-2-menu');
+    await A.ev(`[...document.querySelectorAll('.nm-menu button')].find(b => b.textContent === 'Mute for 1 hour').click()`); await sleep(600);
+    let n2 = await nget(); const r2 = n2.rooms[textGid];
+    need(r2 && r2.kind === 'muted' && Math.abs(r2.until - (n2.now + 3600)) < 30 && !(await A.ev(`!!document.querySelector('.nm-menu')`)), NO + 'one hour mute: ' + JSON.stringify(n2.rooms));
+    const mk = await A.ev(`(() => { const d = document.querySelector(${JSON.stringify(dot)}); return { mark: !!d.querySelector('.mmute svg'), cls: d.classList.contains('is-muted'), snd: __megaNotify.soundOk(${tj}, false), sndAt: __megaNotify.soundOk(${tj}, true) }; })()`);
+    need(mk.mark && mk.cls && mk.snd === false && mk.sndAt === false, NO + 'a muted room shows its mark and is silent: ' + JSON.stringify(mk));
+    await A.shot('notify-3-muted-dot');
+    await ctx(dot); await sleep(300);
+    need(await A.ev(`[...document.querySelectorAll('.nm-menu button')].some(b => b.textContent === 'Unmute')`), NO + 'a muted room offers Unmute');
+    await A.ev(`[...document.querySelectorAll('.nm-menu button')].find(b => b.textContent === 'Mentions only').click()`); await sleep(500);
+    const r3 = (await nget()).rooms[textGid]; const mk3 = await A.ev(`(() => ({ at: !!document.querySelector(${JSON.stringify(dot)} + ' .mmute.at'), snd: __megaNotify.soundOk(${tj}, false), sndAt: __megaNotify.soundOk(${tj}, true) }))()`);
+    need(r3 && r3.kind === 'mentions' && mk3.at && mk3.snd === false && mk3.sndAt === true, NO + 'mentions only: ' + JSON.stringify([r3, mk3]));
+    await ctx(dot); await sleep(300);
+    await A.ev(`[...document.querySelectorAll('.nm-menu button')].find(b => b.textContent === 'Unmute').click()`); await sleep(500);
+    need(Object.keys((await nget()).rooms).length === 0 && await A.ev(`!document.querySelector(${JSON.stringify(dot)} + ' .mmute')`), NO + 'unmute left a rule or a mark');
+    // Escape and a click elsewhere close it; the keyboard moves through it
+    const esc_ = () => A.ev(`(document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); 1`);
+    await ctx(dot); await sleep(250);
+    await A.ev(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })); 1`);
+    need(await A.ev(`document.activeElement.closest('.nm-menu') && document.activeElement.textContent === 'Mute for 8 hours'`), NO + 'the arrow keys leave the menu');
+    await esc_(); await sleep(250);
+    need(await A.ev(`!document.querySelector('.nm-menu')`), NO + 'Escape did not close the menu');
+    await ctx(dot); await sleep(250); await A.ev(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); 1`); await sleep(250);
+    need(await A.ev(`!document.querySelector('.nm-menu')`), NO + 'a click elsewhere did not close the menu');
+    // Colours… still reaches the owner's picker (the right-click that used to open it directly)
+    await ctx(dot); await sleep(250);
+    await A.ev(`[...document.querySelectorAll('.nm-menu button')].find(b => b.textContent === 'Colours…').click()`); await sleep(700);
+    need(await A.ev(`!!document.querySelector('#mega-paint') && !document.querySelector('.nm-menu')`), NO + 'Colours… did not open the picker');
+    await A.ev(`document.querySelector('#mp-done').click(); 1`); await sleep(500);
+    need(await A.ev(`!document.querySelector('#mega-paint')`), NO + 'the picker did not close');
+    // touch: holding a room opens the menu, and the click that ends the hold does not open the room
+    await A.ev(`document.querySelector(${JSON.stringify(dot)}).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch', clientX: 90, clientY: 160 })); 1`); await sleep(800);
+    need(await A.ev(`!!document.querySelector('.nm-menu')`), NO + 'holding a room did not open the menu');
+    await esc_(); await sleep(250);
+    // a card at the room list
+    for (let i = 0; i < 6 && await lvl(A) === 'chat'; i++) { await A.ev(`document.activeElement && document.activeElement.blur && document.activeElement.blur()`); await key(A, 'Escape'); await sleep(900); }
+    need(await lvl(A) === 'server', NO + 'could not reach the room cards');
+    const slot = `#mega .mslot[data-i="${await A.ev(`__mega.list.items.findIndex(x => x.key === ${tj})`)}"]`;
+    await ctx(slot + ' .mcard', 400, 300); await sleep(300);
+    need(await A.ev(`!!document.querySelector('.nm-menu')`) && !(await A.ev(`[...document.querySelectorAll('.nm-menu button')].some(b => b.textContent === 'Colours…')`)), NO + 'a card has the mute menu');
+    await A.ev(`[...document.querySelectorAll('.nm-menu button')].find(b => b.textContent === 'Mute until I unmute').click()`); await sleep(600);
+    need(await A.ev(`!!document.querySelector(${JSON.stringify(slot + ' .msq > .mmute')})`) && (await nget()).rooms[textGid].until == null, NO + 'a muted card shows its mark');
+    await A.shot('notify-4-muted-card');
+    await ctx(slot + ' .mcard', 400, 300); await sleep(300);
+    await A.ev(`[...document.querySelectorAll('.nm-menu button')].find(b => b.textContent === 'Unmute').click()`); await sleep(500);
+    need(await A.ev(`!document.querySelector(${JSON.stringify(slot + ' .msq > .mmute')})`), NO + 'the card kept its mark after Unmute');
+
+    // ---- who shows what. A's page pretends to be hidden (and may use the browser's notifications); A's background part writes to a file.
+    await A.send('Browser.grantPermissions', { permissions: ['notifications'], origin: `http://127.0.0.1:${A_PORT}` }).catch(() => { });
+    await A.ev(`(() => {
+      window.__ntfs = []; window.__realNotification = window.Notification;
+      window.Notification = class { constructor(t, o) { __ntfs.push({ title: t, body: o && o.body, tag: o && o.tag }); } close() { } static get permission() { return 'granted'; } static requestPermission() { return Promise.resolve('granted'); } };
+      Object.defineProperty(document, 'visibilityState', { get: () => window.__vis || 'visible', configurable: true });
+      window.__vis = 'hidden'; document.hasFocus = () => window.__vis === 'visible';
+      window.__realRpc = window.rpc; return 1; })()`);
+    await A.ev(`__megaNotify.beat(); 1`); await sleep(800);
+    const before = nlog().length;
+    const waitNtf = async (n, ms) => { try { await A.waitFor(`window.__ntfs.length >= ${n}`, ms); return true; } catch { return false; } };
+    // 1. a hidden page that may notify shows it itself, once, saying who and where but not what; the background part is silent
+    await bsay('the secret plan is at noon');
+    need(await waitNtf(1, 12000), NO + 'a hidden page did not show a notification');
+    const w1 = await A.ev(`window.__ntfs[0]`);
+    need(w1.title === 'mega' && w1.body === `New message from ${bobName} in #${roomName}` && w1.tag === 'mega-' + textGid && !JSON.stringify(w1).includes('secret'), NO + 'the page note is wrong: ' + JSON.stringify(w1));
+    await sleep(2500);
+    need(nlog().length === before, NO + 'both the page and the background part showed a notification: ' + JSON.stringify(nlog().slice(before)));
+    // 2. a muted room shows nothing
+    await A.ev(`rpc('notify_room', { gid: ${tj}, kind: 'mute', secs: 0 }).then(() => 1)`);
+    await sleep(5500);   // past the one-note-per-room window
+    await bsay('muted words'); await sleep(7000);
+    need((await A.ev(`window.__ntfs.length`)) === 1 && nlog().length === before, NO + 'a muted room notified');
+    await A.ev(`rpc('notify_room', { gid: ${tj}, kind: 'none' }).then(() => 1)`);
+    // 3. with the text switched on the text is in it (cut), and a burst is one note
+    await A.ev(`rpc('notify_set', { show_text: true }).then(() => 1)`);
+    await sleep(5500);
+    for (const t of ['one', 'two', 'three']) await bsay(t + ' ' + 'x'.repeat(150));
+    need(await waitNtf(2, 12000), NO + 'the burst gave no notification');
+    await sleep(6500);
+    const got = await A.ev(`window.__ntfs.slice(1)`);
+    need(got.length >= 1 && got.length <= 2 && got.every(g => g.title.includes(bobName)) && got.some(g => g.body.length <= 100 + 12 && g.body.includes('x')), NO + 'a burst should be one or two notes with the text: ' + JSON.stringify(got));
+    await A.ev(`rpc('notify_set', { show_text: false }).then(() => 1)`);
+    // 4. only mentions: a plain message is silent, a mention and a reply are not
+    await A.ev(`rpc('notify_set', { mode: 'mentions' }).then(() => 1)`);
+    await sleep(5500);
+    const c4 = await A.ev(`window.__ntfs.length`);
+    await bsay('just chatting'); await sleep(6500);
+    need((await A.ev(`window.__ntfs.length`)) === c4, NO + 'mentions-only mode notified for a plain message');
+    await bsay(`hey @${aliceName.split(/\s+/)[0]} are you there`);
+    need(await waitNtf(c4 + 1, 12000), NO + 'mentions-only mode missed a mention');
+    need((await A.ev(`window.__ntfs[window.__ntfs.length - 1].body`)) === `${bobName} mentioned you in #${roomName}`, NO + 'the mention note: ' + await A.ev(`window.__ntfs[window.__ntfs.length - 1].body`));
+    await A.ev(`rpc('notify_set', { mode: 'all' }).then(() => 1)`);
+    // 5. the page goes quiet (closed, asleep): ten seconds on, the background part shows it, the page does not
+    await A.ev(`window.rpc = async (m, a) => { if (m === 'notify_beat') throw new Error('page asleep'); return window.__realRpc(m, a); }; 1`);
+    await sleep(11500);
+    const c5 = await A.ev(`window.__ntfs.length`), l5 = nlog().length;
+    await bsay('are you still there'); await sleep(8000);
+    const nl = nlog().slice(l5);
+    need(nl.length === 1 && nl[0].body === `New message from ${bobName} in #${roomName}` && nl[0].title === 'mega' && (await A.ev(`window.__ntfs.length`)) === c5, NO + 'with no page the background part should show it once: ' + JSON.stringify(nl));
+    // 6. the page is back and being looked at: nobody notifies
+    await A.ev(`window.rpc = window.__realRpc; window.__vis = 'visible'; __megaNotify.beat(); 1`); await sleep(1500);
+    const l6 = nlog().length, c6 = await A.ev(`window.__ntfs.length`);
+    await sleep(5500); await bsay('while you look'); await sleep(7000);
+    need(nlog().length === l6 && (await A.ev(`window.__ntfs.length`)) === c6, NO + 'a page being looked at must be left alone');
+    // a click on the page's own note opens its room: the helper the click handler uses
+    await A.ev(`delete document.hasFocus; delete document.visibilityState; window.Notification = window.__realNotification; 1`);
+    await A.send('Browser.resetPermissions').catch(() => { });
+    await A.ev(`rpc('notify_set', { mode: 'all', show_text: false }).then(() => 1)`);
+    need(Object.keys((await nget()).rooms).length === 0, NO + 'left a rule behind');
+    await toChatRoom(textGid);
+  }
+  if (process.env.COMMONS_UI_STOP_AFTER === 'notify') { console.log('UI check stopped after the notification checks (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
 
   if (!process.env.COMMONS_UI_ONLY6) {   // COMMONS_UI_ONLY6=1 skips phases 3 to 5 while working on phase 6
   // ---- mega phase 3: owner colours (through the encrypted core) and the live channel ----

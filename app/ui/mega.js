@@ -298,7 +298,7 @@
       else if (x.pv && x.pv.text) mid = `<div class="mpreview"><b>${esc(x.pv.who)}</b> ${esc(x.pv.text)}</div>`;
     }
     return `<div class="msq" style="${cardVars(x)}"><div class="mtop"><span>${esc(sub)}</span>${x.at ? `<span class="mat" aria-label="${x.at} mention${x.at === 1 ? '' : 's'}">@${x.at}</span>` : ''}</div>
-      <div class="mmid">${mid}</div>${ti(x.name)}${num !== '' ? `<div class="mnu" aria-label="${num}">${letters(String(num))}</div>` : ''}</div>`;
+      <div class="mmid">${mid}</div>${window.__megaNotify ? __megaNotify.mark(x) : ''}${ti(x.name)}${num !== '' ? `<div class="mnu" aria-label="${num}">${letters(String(num))}</div>` : ''}</div>`;
   }
   const cardLabel = x => [x.name, x.kind === 'voice' ? 'voice room' : '', x.kind === 'voice' && x.people.length ? x.people.length + ' in the call' : '', x.unread && x.kind !== 'voice' ? x.unread + ' unread' : '', x.at ? x.at + ' mentions of you' : '', x.locked ? 'waiting for keys' : ''].filter(Boolean).join(', ');
 
@@ -539,7 +539,7 @@
     const vo = x.kind === 'voice', active = x.kind === 'options' ? M.opts && !M.adm : x.kind === 'admin' ? M.adm : (!M.opts && x.gid === S.gid);
     const say = [x.name, vo ? 'voice room' : '', vo && x.people.length ? x.people.length + ' in the call' : '', x.unread && !active ? x.unread + ' unread' : '', x.at ? x.at + ' mentions of you' : '', x.locked ? 'waiting for keys' : ''].filter(Boolean).join(', ');
     const un = x.unread && !active && !vo;
-    return `<button class="mitem ${vo ? 'voice' : ''} ${active ? 'active' : ''} ${un ? 'un' : ''} ${un && x.at ? 'at' : ''} ${vo && x.people.length ? 'live' : ''} ${vo && x.here ? 'here' : ''} ${x.kind === 'options' ? 'opt' : x.kind === 'admin' ? 'adm' : ''} ${x.locked ? 'pending' : ''}" type="button" data-key="${esc(x.key)}" aria-label="${esc(say)}"${active ? ' aria-current="true"' : ''} style="--c:${dotOf(x)};--mh:${markOf(x)};--m-cink:${bestInk(fieldOf(x))};--n:${i}">${x.at && !active ? `<span class="mbadge">${x.at}</span>` : ''}${vo ? `<span class="mvc">${x.people.length ? esc(x.people.map(p => p.me ? 'you' : p.name).join(', ')) : 'empty'}</span>` : ''}${ti(x.name, 'mlb', 'span')}${(vo ? x.people.length : un ? x.unread : 0) ? `<span class="mct">${vo ? x.people.length : x.unread}</span>` : ''}</button>`;
+    return `<button class="mitem ${vo ? 'voice' : ''} ${active ? 'active' : ''} ${un ? 'un' : ''} ${un && x.at ? 'at' : ''} ${vo && x.people.length ? 'live' : ''} ${vo && x.here ? 'here' : ''} ${x.kind === 'options' ? 'opt' : x.kind === 'admin' ? 'adm' : ''} ${x.locked ? 'pending' : ''}" type="button" data-key="${esc(x.key)}" aria-label="${esc(say)}"${active ? ' aria-current="true"' : ''} style="--c:${dotOf(x)};--mh:${markOf(x)};--m-cink:${bestInk(fieldOf(x))};--n:${i}">${x.at && !active ? `<span class="mbadge">${x.at}</span>` : ''}${vo ? `<span class="mvc">${x.people.length ? esc(x.people.map(p => p.me ? 'you' : p.name).join(', ')) : 'empty'}</span>` : ''}${ti(x.name, 'mlb', 'span')}${window.__megaNotify ? __megaNotify.mark(x) : ''}${(vo ? x.people.length : un ? x.unread : 0) ? `<span class="mct">${vo ? x.people.length : x.unread}</span>` : ''}</button>`;
   }
   const railSig = c => JSON.stringify([c.id, S.gid, M.opts, M.adm, roomItems(c).map(x => x.sig), comms().map(o => o.id !== c.id && unreadIn(o) > 0)]);
   function drawRail(arriving) {
@@ -637,7 +637,8 @@
     const wave = window.__waveDither ? window.__waveDither.palettes : [];
     const th = pref.get('theme') || '';
     return `<div class="mopts-in mrise">${ti('options', '', 'h1')}<p>Only on this device. Nobody else can see these.</p>
-      <section><h3>alerts and sound</h3><label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p>Plays when mega is in the background or the message is in another room.</p></section>
+      <section><h3>alerts and sound</h3><label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p>Plays when mega is in the background or the message is in another room. A room you mute is silent here too.</p></section>
+      ${window.__megaNotify ? __megaNotify.optsHTML() : ''}
       <section><h3>on the cards</h3><label class="check"><input type="checkbox" id="pres" ${window.__megaPres && !__megaPres.on ? '' : 'checked'}><span>Show where I am on the cards — friends who share a community see a small dot in your colour on the card you are looking at; the relay sees only that a small packet was sent</span></label></section>
       <section><h3>typing hints</h3><label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints — the relay can see that a message-sized packet was sent at that moment</span></label></section>
       ${mobileApp() ? '' : `<section><h3>large files</h3><label for="dl-dir">Large-file downloads folder</label><input type="text" id="dl-dir" value="${esc(S.snap.download_dir || '')}" spellcheck="false"><p>Written here as they arrive, one verified piece at a time. Leave empty for your usual Downloads folder. Each download still asks where to save it.</p></section>`}
@@ -654,11 +655,13 @@
     $$('button', g).forEach(x => x.setAttribute('aria-checked', x === b));
     $('#' + id, optsEl).value = v;
     if (id === 'snd') pref.set('sound', v === 'all' ? '' : v);
+    else if (id === 'ntf' && window.__megaNotify) __megaNotify.set({ mode: v });
     else if (id === 'th') { pref.set('theme', v); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh(); const r = $('#wave-row', optsEl); if (r) r.hidden = v !== 'wave'; }
   });
   optsEl.addEventListener('change', async e => {
     try {
-      if (e.target.id === 'pres') { if (window.__megaPres) __megaPres.set(e.target.checked); }
+      if (e.target.id === 'ntf-text' && window.__megaNotify) __megaNotify.set({ show_text: e.target.checked });
+      else if (e.target.id === 'pres') { if (window.__megaPres) __megaPres.set(e.target.checked); }
       else if (e.target.id === 'ty') { await rpc('set_typing_enabled', { on: e.target.checked }); tick(); }
       else if (e.target.id === 'dl-dir') { await rpc('set_download_dir', { dir: e.target.value }); tick(); }
       else if (e.target.id === 'wave-pal') { pref.set('wavePalette', e.target.value); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh(); }
@@ -960,7 +963,7 @@
   // ---------------------------------------------------------------- keys: Esc steps back one level
   function modalOpen() { return !!document.querySelector('#modal-root > .scrim'); }
   function back(e) {
-    if (modalOpen() || document.querySelector('.lightbox, .emojis, #call-pop')) return false;   // those answer Esc themselves
+    if (modalOpen() || document.querySelector('.lightbox, .emojis, #call-pop, .nm-menu')) return false;   // those answer Esc themselves
     const t = e.target, typing = t && /INPUT|TEXTAREA|SELECT/.test(t.tagName || '');
     if (typing && t.id === 'input' && (S.reply || S.edit || !$('#mention-pop').hidden)) return false;
     if (typing && t.id === 'search' && !$('#search-pop').hidden) return false;

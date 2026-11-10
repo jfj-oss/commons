@@ -1,0 +1,25 @@
+/* mega: notifications. The muted mark on a room, and the small menu to mute it. */
+.mmute { position: absolute; display: grid; place-items: center; pointer-events: none; color: var(--m-paper, #efedf2); }
+.mmute svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.mmute.at { font: 700 10px/1 var(--m-ui, system-ui); }
+/* the dots of the sidebar: a small badge on the lower right; the open sidebar's cards carry it in the corner */
+.mitem > .mmute { right: -7px; bottom: -7px; width: 14px; height: 14px; padding: 2px; border-radius: 50%; background: var(--m-void, #050407); box-shadow: 0 0 0 1px var(--m-line, rgb(255 255 255 / .2)); }
+#mega-rail.open .mitem > .mmute { right: 10px; bottom: 10px; width: 22px; height: 22px; padding: 4px; }
+#mega-rail.open .mitem > .mmute.at { font-size: 12px; }
+.mitem.is-muted { opacity: .5; }
+#mega-rail.open .mitem.is-muted { opacity: .85; }
+/* a card: top, beside the count */
+.msq > .mmute { right: clamp(22px, 3.2cqw, 48px); bottom: clamp(22px, 3.2cqw, 48px); width: 30px; height: 30px; padding: 6px; border-radius: 50%; background: rgb(5 4 7 / .62); z-index: 4; }
+.msq > .mmute.at { font-size: 15px; }
+/* the old room list */
+.room > .mmute, .room.is-muted > .mmute { position: static; width: 14px; height: 14px; margin-left: 6px; color: var(--ink-3, currentColor); opacity: .8; }
+.room.is-muted .nm { opacity: .7; }
+
+.nm-menu { position: fixed; z-index: 400; min-width: 210px; max-width: calc(100vw - 16px); padding: 6px; border-radius: 14px; background: var(--m-glass, rgb(26 24 32 / .94)); color: var(--m-paper, #efedf2); border: 1px solid var(--m-line, rgb(255 255 255 / .14)); box-shadow: 0 12px 40px rgb(0 0 0 / .5); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); font: 500 14px/1.3 var(--m-ui, system-ui); }
+.nm-menu .nm-h { padding: 6px 10px 8px; font-weight: 600; opacity: .7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nm-menu button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 40px; padding: 8px 10px; text-align: left; background: none; border: 0; border-radius: 9px; color: inherit; font: inherit; cursor: pointer; }
+.nm-menu button:hover, .nm-menu button:focus-visible { background: rgb(255 255 255 / .12); outline: none; }
+.nm-menu button[aria-checked="true"]::after { content: '\2713'; margin-left: auto; opacity: .85; }
+.nm-menu hr { border: 0; border-top: 1px solid var(--m-line, rgb(255 255 255 / .14)); margin: 4px 6px; }
+.nm-menu .nm-n { padding: 4px 10px 6px; font-size: 12px; opacity: .6; }
+.ntf-ask { margin: 6px 0 2px; }

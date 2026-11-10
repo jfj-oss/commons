@@ -64,6 +64,13 @@ pub fn run() {
             let relay = std::env::var("COMMONS_RELAY").unwrap_or_else(|_| include_str!("../default-relay.txt").trim().to_string());
             let app = App::new(dir, &relay);
             app.start_background();
+            // The same notifier as the browser version's background part: a new message while this window is hidden or not
+            // focused is shown by the system (the page reports that through its heartbeat). Phones have their own path.
+            #[cfg(desktop)]
+            {
+                let hub = app.notify_hub();
+                hub.set_sink(Arc::new(commons_core::notify::NativeSink::new(&hub, None, "app.commons.chat")));
+            }
             t.manage(app);
             Ok(())
         })

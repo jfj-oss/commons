@@ -21,3 +21,4 @@ pub mod api;
 pub mod update;
 pub mod browser_update;
 pub mod bridge_auth;
+pub mod notify;

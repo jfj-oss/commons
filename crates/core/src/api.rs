@@ -47,6 +47,8 @@ pub struct App {
     /// fails (a relay that wants its secret, a full relay, a lost connection), trying again must not spend another.
     pw_link: Mutex<Option<(String, String, std::time::Instant)>>,
     me: std::sync::Weak<App>,
+    /// Notification rules and hand-over between the page and the background part (notify.rs).
+    notify: Arc<crate::notify::Hub>,
 }
 
 /// A running call asks the core at least every few seconds (call.js: the key poll every 1.5 s, the game-key heartbeat
@@ -131,8 +133,9 @@ pub fn bridge_request_ok(host: Option<&str>, origin: Option<&str>, port: u16) ->
 impl App {
     pub fn new(dir: PathBuf, default_relay: &str) -> Arc<App> { Self::with_kdf(dir, default_relay, KdfParams::STRONG) }
     pub fn with_kdf(dir: PathBuf, default_relay: &str, kdf: KdfParams) -> Arc<App> {
+        let notify = Arc::new(crate::notify::Hub::new(Some(dir.clone())));
         Arc::new_cyclic(|me| App {
-            me: me.clone(), call_seen: Mutex::new(None), pw_link: Mutex::new(None), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None),
+            notify, me: me.clone(), call_seen: Mutex::new(None), pw_link: Mutex::new(None), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None),
             wake: (Mutex::new(false), Condvar::new()), live_wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), changes: AtomicU64::new(0), files: Mutex::new(vec![]),
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
             bridge: Mutex::new(None),
@@ -140,6 +143,8 @@ impl App {
             game: commons_gamekeys::Service::new(),
         })
     }
+    /// The notification hub: the program that owns this core installs how notes are shown (`Hub::set_sink`).
+    pub fn notify_hub(&self) -> Arc<crate::notify::Hub> { self.notify.clone() }
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     fn open_call_in_browser(&self, gid: &str, name: &str, launch: bool) -> R {
         self.with(|c| c.call_state(gid).map(|_| ()).map_err(e))?;      // only for rooms we are really in
@@ -236,6 +241,16 @@ impl App {
                 None => std::thread::sleep(Duration::from_millis(500)),
             }
         });
+        // New messages while no window is being looked at (notify.rs). Does nothing until the program installs a sink.
+        let app = self.clone();
+        std::thread::spawn(move || loop {
+            if *app.stop.lock().unwrap() { break; }
+            std::thread::sleep(Duration::from_millis(1000));
+            if !app.notify.has_sink() { continue; }
+            // A look, not a change: if the client is busy it is simply looked at a second later.
+            let g = match app.client.try_lock() { Ok(g) => g, Err(TryLockError::Poisoned(p)) => p.into_inner(), Err(TryLockError::WouldBlock) => continue };
+            if let Some(c) = g.as_ref() { app.notify.tick(c); }
+        });
         // Its own thread, because asking rune is a network wait that must not hold up the relay loop or the UI.
         let app = self.clone();
         std::thread::spawn(move || {
@@ -285,11 +300,12 @@ impl App {
     }
 
     pub fn call(&self, method: &str, a: Value) -> R {
+        if method.starts_with("notify_") { return self.notify.call(method, &a); }
         let in_call = matches!(method, "call_state" | "call_token" | "game_mute_wait");
         if in_call { self.saw_call(); }
         let r = self.dispatch(method, a);
         if in_call && r.is_ok() { self.saw_call(); }
-        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "file_transfers" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait" | "call_presence" | "live_poll" | "ring_poll" | "wall_get" | "pcaudio_status" | "pcaudio_caps" | "pcaudio_streams") { self.nudge(); }
+        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "file_transfers" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait" | "call_presence" | "live_poll" | "ring_poll" | "wall_get" | "notify_get" | "notify_beat" | "pcaudio_status" | "pcaudio_caps" | "pcaudio_streams") { self.nudge(); }
         r
     }
 

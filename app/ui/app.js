@@ -387,7 +387,8 @@ let seenUnread = null, titleNow = '';
 function news(sn) {
   const now = new Map(); let total = 0;
   for (const c of sn.communities) if (!c.removed) for (const ch of c.channels) { now.set(ch.gid, ch.unread); total += ch.unread; }
-  const fresh = seenUnread && [...now].some(([g, n]) => n > (seenUnread.get(g) || 0) && (away() || g !== S.gid));
+  const quietRoom = g => !!(window.__megaNotify && !__megaNotify.soundOk(g, false));   // muted, or mentions only: a plain message is silent (mentions have their own chime)
+  const fresh = seenUnread && [...now].some(([g, n]) => n > (seenUnread.get(g) || 0) && (away() || g !== S.gid) && !quietRoom(g));
   seenUnread = now;
   if (fresh && soundPref() === 'all') chime();
   const t = (total ? `(${total > 99 ? '99+' : total}) ` : '') + 'mega';
@@ -395,7 +396,7 @@ function news(sn) {
 }
 let seenMentions = 0;
 function mentionNews() {
-  const n = [...S.mention].filter(([g]) => g !== S.gid || away()).reduce((a, [, b]) => a + b, 0);
+  const n = [...S.mention].filter(([g]) => (g !== S.gid || away()) && !(window.__megaNotify && !__megaNotify.soundOk(g, true))).reduce((a, [, b]) => a + b, 0);
   if (n > seenMentions) {
     if (soundPref() !== 'off') chime();
     if (away()) try { T && T.window && T.window.getCurrentWindow().requestUserAttention(2).catch(() => { }); } catch { }
@@ -588,7 +589,7 @@ function renderRail() {
       ? '<svg class="kh speaker" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-speaker"/></svg>'
       : '<svg class="kh" viewBox="0 0 12 14" aria-hidden="true"><use href="#i-keyhole"/></svg>';
     const speaker = inCall && !voice ? '<svg class="ic live-ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-wave"/></svg>' : '';
-    return { k: ch.gid, h: `<div class="room-wrap"><button class="room ${inCall ? 'live' : ''} ${active ? 'active' : ''} ${ch.joined ? '' : 'pending'} ${un ? 'unread' : ''} ${at ? 'mention' : ''}" data-g="${esc(ch.gid)}" aria-label="${esc(said)}"${active ? ' aria-current="true"' : ''}>${icon}<span class="nm">${esc(ch.name)}</span>${speaker}${at ? '<span class="at-mark">@</span>' : ''}${un ? `<span class="pill">${un}</span>` : ''}</button>${liveRow(ch)}</div>` };
+    return { k: ch.gid, h: `<div class="room-wrap"><button class="room ${inCall ? 'live' : ''} ${active ? 'active' : ''} ${ch.joined ? '' : 'pending'} ${un ? 'unread' : ''} ${at ? 'mention' : ''}" data-g="${esc(ch.gid)}" aria-label="${esc(said)}"${active ? ' aria-current="true"' : ''}>${icon}<span class="nm">${esc(ch.name)}</span>${speaker}${at ? '<span class="at-mark">@</span>' : ''}${un ? `<span class="pill">${un}</span>` : ''}${!voice && window.__megaNotify ? __megaNotify.mark({ kind: 'text', gid: ch.gid }) : ''}</button>${liveRow(ch)}</div>` };
   };
   const chans = c ? c.channels : [];
   const voice = chans.filter(ch => ch.kind === 'voice');
@@ -1525,7 +1526,8 @@ $('#btn-settings').onclick = () => {
   ${document.documentElement.classList.contains('mega') ? `<h3 class="set-h">Chat</h3>
   <label>Chat font</label>${seg('cf', [['', 'Bellefair'], ['raster', 'Raster']], pref.get('chatFont') || '')}<p class="muted small">For messages and the message box on this device. Names and menus keep their font.</p>` : ''}
   <h3 class="set-h">Sound</h3>
-  <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when mega is in the background or the message is in another room.</p>
+  <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when mega is in the background or the message is in another room. A room you mute is silent here too.</p>
+  ${window.__megaNotify ? __megaNotify.settingsHTML() : ''}
   <h3 class="set-h">Advanced</h3>
   <label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints — the relay can see that a message-sized packet was sent at that moment</span></label>
   <label class="check"><input type="checkbox" id="lstr" ${S.snap.share_listening ? 'checked' : ''}><span>Share what I'm listening to</span></label>
@@ -1543,7 +1545,7 @@ $('#btn-settings').onclick = () => {
     const secret = val(w, 'rs').trim();
     if (secret) await rpc('set_relay_invite', { secret });
     if (!mobileApp() && val(w, 'dl-dir').trim() !== (S.snap.download_dir || '')) await rpc('set_download_dir', { dir: val(w, 'dl-dir') });
-    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('wavePalette', val(w, 'wave-pal')); pref.set('theme', val(w, 'th')); if (document.documentElement.classList.contains('mega')) pref.set('chatFont', val(w, 'cf')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh();
+    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('wavePalette', val(w, 'wave-pal')); pref.set('theme', val(w, 'th')); if (document.documentElement.classList.contains('mega')) pref.set('chatFont', val(w, 'cf')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); if (window.__megaNotify) await __megaNotify.save(w); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh();
   } }]);
   fillAvatars();
   if (!window.__TAURI__) BRIDGE.fetch('/open-as').then(r => r.json()).then(j => {
