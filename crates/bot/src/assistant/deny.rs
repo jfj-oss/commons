@@ -169,6 +169,11 @@ pub fn claude_settings(d: &Deny, allowed_domains: &[String]) -> Value {
         }
         deny_read_paths.push(p.to_string_lossy().to_string());
     }
+    // Secret-looking files anywhere (a project's .env, keys, keystores), for Claude too, even inside the read dirs it may read freely.
+    for pat in ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/*.p12", "**/*.pfx", "**/*.kdbx", "**/*.keystore", "**/id_rsa*", "**/id_ed25519*", "**/id_ecdsa*", "**/.netrc", "**/.npmrc", "**/.pypirc", "**/credentials*", "**/*secret*", "**/*token*"] {
+        deny.push(format!("Read({pat})"));
+        deny.push(format!("Edit({pat})"));
+    }
     let mut deny_write_paths = deny_read_paths.clone();
     for p in &d.no_write {
         let a = abs(p);
