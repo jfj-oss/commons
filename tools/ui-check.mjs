@@ -539,8 +539,8 @@ try {
   {
     const keep = await A.ev(`({ c: __mega.cid, g: S.gid })`);
     const reload = async () => { await A.ev(`location.reload(); 1`).catch(() => { }); await sleep(1500); await A.waitFor(`window.__megaTour && document.querySelector('#mega:not([hidden]) .mcard')`, 60000); };
-    await A.ev(`sessionStorage.setItem('tourtest', '1'); localStorage.removeItem('commons.tour'); 1`); await reload();
-    await A.waitFor(`document.querySelector('#mega-tour.on .mt-t')`, 20000).catch(() => { throw new Error('mega: tour: it did not appear on a first visit'); });
+    await A.send('Page.bringToFront'); await A.ev(`sessionStorage.setItem('tourtest', '1'); localStorage.removeItem('commons.tour'); 1`); await reload();
+    await A.waitFor(`document.querySelector('#mega-tour.on .mt-t')`, 20000).catch(async () => { throw new Error('mega: tour: it did not appear on a first visit: ' + await A.ev(`JSON.stringify({ st: __megaTour.state(), mega: document.documentElement.classList.contains('mega'), card: !!document.querySelector('#mega:not([hidden]) .mcard'), blockers: [...document.querySelectorAll('#modal-root > .scrim, #mega-pal, .mpop, #mega-hint')].map(e => e.id + '.' + e.className), vis: document.visibilityState, ls: localStorage.getItem('commons.tour'), p: String(pref.get('tour')) })`).catch(e => String(e))); });
     await sleep(500);
     const t0 = await A.ev(`(() => { const t = document.querySelector('#mega-tour'); return { text: t.querySelector('.mt-t').innerText, n: t.querySelector('.mt-n').innerText, live: t.querySelector('[aria-live]').textContent, ring: getComputedStyle(t.querySelector('.mt-ring')).opacity }; })()`);
     need(/communities/.test(t0.text) && /1 of 5/.test(t0.n) && /step 1 of 5/.test(t0.live) && t0.ring === '1', 'tour: first step is wrong: ' + JSON.stringify(t0));
