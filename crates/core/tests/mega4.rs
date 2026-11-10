@@ -100,7 +100,7 @@ fn merging_converges_whatever_order_batches_arrive_in() {
 fn every_part_of_a_stroke_is_checked() {
     let mut w = Wall::default();
     let a = acct(1);
-    for (pos, g, c, k) in [(WALL_CELLS, 1u8, 0u8, 1u64), (u32::MAX, 1, 0, 1), (0, 12, 0, 1), (0, 200, 0, 1), (0, 1, 2, 1), (0, 1, 0, 0), (0, 1, 0, (1 << 40) + 1)] {
+    for (pos, g, c, k) in [(WALL_CELLS, 1u8, 0u8, 1u64), (u32::MAX, 1, 0, 1), (0, 12, 0, 1), (0, 200, 0, 1), (0, 1, 12, 1), (0, 1, 0, 0), (0, 1, 0, (1 << 40) + 1)] {
         assert!(!w.put(pos, g, c, k, &a), "{pos} {g} {c} {k}");
     }
     assert!(!w.put(0, 1, 0, 1, "not-an-account"));
@@ -129,7 +129,7 @@ fn strokes_reach_friends_and_bad_ones_are_dropped_whole() {
     assert!(a.c.wall_draw(&gid, &[(WALL_COLS, 0, 1, 0)]).is_err());
     assert!(a.c.wall_draw(&gid, &[(0, WALL_ROWS, 1, 0)]).is_err());
     assert!(a.c.wall_draw(&gid, &[(0, 0, 12, 0)]).is_err());
-    assert!(a.c.wall_draw(&gid, &[(0, 0, 1, 2)]).is_err());
+    assert!(a.c.wall_draw(&gid, &[(0, 0, 1, 12)]).is_err());
     assert!(a.c.wall_draw("nonsense", &[(0, 0, 1, 0)]).is_err());
     assert!(a.c.wall_draw(&gid, &vec![(1, 1, 1, 0); WALL_BATCH]).is_ok(), "200 cells is the limit and fits");
     // Strokes are never silently replaced: when one is still waiting or the second's four are used, the next says "later" and changes nothing.
@@ -142,7 +142,7 @@ fn strokes_reach_friends_and_bad_ones_are_dropped_whole() {
     settle(&mut [&mut a, &mut b, &mut c]);
     let before = glyphs(&mut c, &gid);
     send(&mut b, format!("{{\"g\":0,\"k\":9,\"c\":[[1,2],[{},2]]}}", WALL_CELLS));          // one cell off the grid
-    send(&mut b, "{\"g\":0,\"k\":9,\"c\":[[1,2],[2,99]]}".into());                           // a glyph that does not exist
+    send(&mut b, "{\"g\":0,\"k\":9,\"c\":[[1,2],[2,200]]}".into());                           // a glyph that does not exist
     send(&mut b, "{\"g\":0,\"k\":0,\"c\":[[1,2]]}".into());                                  // clock 0
     send(&mut b, "{\"g\":0,\"k\":9,\"c\":[]}".into());                                       // empty
     settle(&mut [&mut a, &mut b, &mut c]);

@@ -1225,7 +1225,7 @@ try {
     const w1 = await stat(A), sent5 = (w1.kinds['wall.d'] || 0) - (w0.kinds['wall.d'] || 0);
     need(sent5 >= 1 && sent5 <= 10, 'cards: a 4 second scribble on a card produced ' + sent5 + ' wall.d events (budget 10)');
     need((w1.sent - w0.sent) <= 12, 'cards: a card scribble sent too many live events in all: ' + (w1.sent - w0.sent));
-    const nCard = (await wst(A)).marks;
+    let nCard = (await wst(A)).marks;
     need(nCard > 30, 'cards: the scribble left only ' + nCard + ' marks');
     await wf(B, `__megaWall.state().cards.some(c => c.key === ${g} && c.marks === ${nCard})`, 30000).catch(async () => { throw new Error('mega: cards: the stroke did not appear on bob\'s card: ' + JSON.stringify([nCard, await wst(B)])); });
     need(JSON.stringify(await A.ev(`__megaWall.cellsOf(${g}).sort((a, b) => a[0] - b[0])`)) === JSON.stringify(await B.ev(`__megaWall.cellsOf(${g}).sort((a, b) => a[0] - b[0])`)), 'cards: the two cards show different drawings');
@@ -1249,6 +1249,32 @@ try {
     await wf(B, `!document.querySelector('#mega [data-m="draw"]').hidden`, 60000).catch(() => { throw new Error('mega: cards: unlock did not bring the chip back'); });
     await A.ev(`document.querySelector('#mw-done').click()`); await sleep(400);
     need(await A.ev(`!document.querySelector('#mega-wallhit-card') && !document.documentElement.classList.contains('mg-drawing-card')`), 'cards: done did not leave the pen');
+    // ---- palette: draw in several colours; the other client sees the same colours (and the stored colours are the palette's)
+    { await A.ev(`document.querySelector('#mega [data-m="draw"]').click()`); await sleep(500);
+      const sw = await A.ev(`[...document.querySelectorAll('#mw-cols button')].map(b => [b.dataset.c, b.getAttribute('aria-label'), b.getAttribute('aria-pressed'), b.offsetWidth])`);
+      need(sw.length === 12 && sw[0][1] === 'room colour' && sw[1][1] === 'room highlight' && sw.every(x => x[3] >= 28) && sw.filter(x => x[2] === 'true').length === 1, 'palette: the toolbar swatches are wrong: ' + JSON.stringify(sw));
+      const stroke = (P, c, row) => P.ev(`(async () => {
+        document.querySelector('#mw-cols [data-c="${c}"]').click(); document.querySelector('#mw-glyphs [data-g="1"]').click();
+        const hit = document.querySelector('#mega-wallhit-card'), G = __megaWall.state().geo, px = x => ({ clientX: G.b.left + (G.ox + (x + .5) * G.cw) / G.u, clientY: G.b.top + (G.oy + (${row} + .5) * G.ch) / G.u, pointerId: 9, bubbles: true, button: 0 });
+        hit.dispatchEvent(new PointerEvent('pointerdown', px(96))); for (let x = 97; x <= 110; x++) hit.dispatchEvent(new PointerEvent('pointermove', px(x))); hit.dispatchEvent(new PointerEvent('pointerup', px(110))); return true; })()`);
+      const picks = [[2, 3], [4, 4], [7, 5], [11, 6], [0, 7]];   // the right-hand side of the card, clear of the scribble and of the words
+      for (const [c, row] of picks) { await stroke(A, c, row); await sleep(700); }
+      need(await A.ev(`document.querySelector('#mw-cols [data-c="0"]').getAttribute('aria-pressed') === 'true' && document.querySelector('#mw-cols [data-c="11"]').getAttribute('aria-pressed') === 'false'`), 'palette: the selected swatch is not marked');
+      // the keyboard walks the colours
+      await A.ev(`document.querySelector('#mw-cols [data-c="0"]').focus()`); await key(A, 'ArrowRight'); await key(A, 'ArrowRight');
+      need(await A.ev(`document.querySelector('#mw-cols [aria-pressed="true"]').dataset.c`) === '2', 'palette: arrow keys did not move the colour');
+      const rowCols = P => P.ev(`(() => { const o = {}; for (const [p, g, c] of __megaWall.cellsOf(${g})) { const y = (p / 120) | 0; if (y < 10 && p % 120 >= 95) (o[y] = o[y] || new Set()).add(c); } return Object.fromEntries(Object.entries(o).map(([y, s]) => [y, [...s]])); })()`);
+      const want = JSON.stringify({ 3: [2], 4: [4], 5: [7], 6: [11], 7: [0] });
+      await wf(B, `JSON.stringify((() => { const o = {}; for (const [p, g, c] of __megaWall.cellsOf(${g})) { const y = (p / 120) | 0; if (y < 10 && p % 120 >= 95) (o[y] = o[y] || new Set()).add(c); } return Object.fromEntries(Object.entries(o).map(([y, s]) => [y, [...s]])); })()) === ${JSON.stringify(want)}`, 30000).catch(async () => { throw new Error('mega: palette: bob does not see the colours: ' + JSON.stringify([await rowCols(A), await rowCols(B)])); });
+      need(JSON.stringify(await rowCols(A)) === want, 'palette: alice\'s colours are wrong: ' + JSON.stringify(await rowCols(A)));
+      // real pixels: bob's card canvas holds the palette's red (#ff5a5f), green (#5fe08a) and pink (#ff7ac8)
+      const has = (P, r, gg, b) => P.ev(`(() => { const c = document.querySelector('.msq canvas.mwallc'); if (!c) return -1; const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 60 && Math.abs(d[i] - ${r}) < 40 && Math.abs(d[i + 1] - ${gg}) < 40 && Math.abs(d[i + 2] - ${b}) < 40) n++; return n; })()`);
+      await B.shot('mega5-palette-bob');
+      need(await has(B, 255, 90, 95) > 5 && await has(B, 95, 224, 138) > 5 && await has(B, 255, 122, 200) > 5, 'palette: bob\'s card lacks the red/green/pink pixels: ' + [await has(B, 255, 90, 95), await has(B, 95, 224, 138), await has(B, 255, 122, 200)]);
+      await A.shot('mega5-palette-alice'); await B.shot('mega5-palette-bob');
+      await A.ev(`document.querySelector('#mw-done').click()`); await sleep(400);
+      nCard = (await wst(A)).marks; await wf(B, `__megaWall.state().cards.some(c => c.key === ${g} && c.marks === ${nCard})`, 30000);
+      if (process.env.COMMONS_UI_STOP_AFTER === 'palette') { console.log('UI check stopped after the palette slice (COMMONS_UI_STOP_AFTER)'); process.exit(0); } }
     const hexSet = c => `(() => { const h = document.querySelector('#mp-hex'); h.value = '${c}'; h.dispatchEvent(new Event('input', { bubbles: true })); })()`;
     const tile = (k, n) => `document.querySelector('#mp-looks .mp-t[data-k="${k}"][data-n="${n}"]').click()`;
     const slide = v => `(() => { const s = document.querySelector('#mp-dim'); s.value = ${v}; s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); })()`;

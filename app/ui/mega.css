@@ -390,10 +390,13 @@ html.mega #call-dock { --rail-ink: var(--m-paper); --rail-mute: rgba(255, 255, 2
 #mega-wallbar button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; min-width: 30px; height: 30px; padding: 0 10px; border-radius: 999px; font-family: var(--m-mono, ui-monospace, monospace); font-weight: 700; font-size: 14px; }
 #mega-wallbar button:hover { background: rgb(255 255 255 / .12); }
 #mega-wallbar button[aria-pressed="true"] { background: var(--m-paper, #f2f0f6); color: var(--m-void, #050407); }
-#mega-wallbar .mwb-c button { min-width: 30px; padding: 0; }
-#mega-wallbar .mwb-c button::before { content: ""; display: block; width: 16px; height: 16px; margin: auto; border-radius: 50%; background: var(--sw); box-shadow: 0 0 0 1px rgb(255 255 255 / .4); }
-#mega-wallbar .mwb-c button[aria-pressed="true"] { background: rgb(255 255 255 / .25); color: inherit; }
+#mega-wallbar .mwb-c { max-width: 100%; gap: 3px; }
+#mega-wallbar .mwb-c button { min-width: 32px; width: 32px; height: 32px; padding: 0; }
+#mega-wallbar .mwb-c button::before { content: ""; display: block; width: 20px; height: 20px; margin: auto; border-radius: 50%; background: var(--sw); box-shadow: 0 0 0 1px rgb(255 255 255 / .35); transition: transform .12s; }
+#mega-wallbar .mwb-c button[aria-pressed="true"] { background: rgb(255 255 255 / .22); color: inherit; }
+#mega-wallbar .mwb-c button[aria-pressed="true"]::before { transform: scale(1.18); box-shadow: 0 0 0 2px var(--m-void, #050407), 0 0 0 4px var(--m-paper, #fff); }
 #mega-wallbar .mwb-b { font-family: var(--m-ui); font-size: 12px; background: rgb(255 255 255 / .1); }
+@media (max-width: 760px) { #mega-wallbar .mwb-c { width: 100%; } #mega-wallbar .mwb-c button { min-width: 0; width: 15%; max-width: 46px; height: 36px; } }   /* twelve colours: two rows of six */
 #mega-wallbar :focus-visible { outline: 2px solid var(--m-paper, #fff); outline-offset: 2px; }
 html.mg-drawing #stream { user-select: none; -webkit-user-select: none; }
 @media (max-width: 760px) { #main > #mega-wallbar { top: 52px; width: calc(100% - 20px); border-radius: 22px; } #mega-wallbar .mwb-g { width: 100%; } #mega-wallbar button { min-width: 34px; } }
