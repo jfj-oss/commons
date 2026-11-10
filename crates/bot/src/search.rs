@@ -37,7 +37,7 @@ pub fn tools() -> Vec<ToolSpec> {
 pub fn web_search_tool() -> ToolSpec {
     ToolSpec {
         name: TOOL_NAME.to_string(),
-        description: "Search the web with DuckDuckGo and get the top results (title, URL and snippet). Use it only \
+        description: "Search the web and get the top results (title, URL and snippet). Use it only \
                       when a question needs current or factual information you do not have, and at most twice per \
                       question."
             .to_string(),
@@ -124,8 +124,58 @@ impl WebSearch for DuckDuckGo {
             .call()
             .map_err(|e| format!("the search engine could not be reached: {e}"))?;
         let html = r.into_string().map_err(|e| format!("the search results could not be read: {e}"))?;
-        Ok(parse_results(&html, self.max_results))
+        let found = parse_results(&html, self.max_results);
+        // DuckDuckGo answers automated clients with a challenge page instead of results: say so, rather than "nothing found".
+        if found.is_empty() && html.contains("anomaly") { return Err("the search engine refused the search (it asks for a human check); answer from what you know and say you could not look it up".into()); }
+        Ok(found)
     }
+}
+
+/// A SearXNG instance (self-hosted metasearch) asked for JSON: `<base>/search?q=…&format=json`. The instance must have `json`
+/// in `search.formats`. Same limits as the DuckDuckGo client.
+pub struct SearXng {
+    base: String,
+    timeout: Duration,
+    max_results: usize,
+    max_query_chars: usize,
+    limit: Mutex<MinuteLimit>,
+}
+
+impl SearXng {
+    pub fn new(base: &str, timeout: Duration) -> SearXng {
+        SearXng { base: base.trim_end_matches('/').to_string(), timeout, max_results: MAX_RESULTS, max_query_chars: MAX_QUERY_CHARS, limit: Mutex::new(MinuteLimit::new(MAX_SEARCHES_PER_MINUTE)) }
+    }
+}
+
+impl WebSearch for SearXng {
+    fn search(&self, query: &str) -> Result<Vec<SearchResult>, String> {
+        let query: String = query.trim().chars().take(self.max_query_chars).collect();
+        if query.is_empty() { return Err("the search query is empty".into()); }
+        if !self.limit.lock().unwrap_or_else(|p| p.into_inner()).allow() {
+            return Err(format!("the web search limit ({MAX_SEARCHES_PER_MINUTE} a minute) is used up; answer from what you have"));
+        }
+        let url = format!("{}/search?q={}&format=json&safesearch=1", self.base, url_encode(&query));
+        let r = ureq::AgentBuilder::new().timeout(self.timeout).build().get(&url)
+            .set("User-Agent", "megatron-bot/1 (Oracle, local SearXNG)")
+            .call()
+            .map_err(|e| format!("the search engine could not be reached: {e}"))?;
+        let body = r.into_string().map_err(|e| format!("the search results could not be read: {e}"))?;
+        parse_searxng(&body, self.max_results)
+    }
+}
+
+/// The results of a SearXNG JSON answer, in order, at most `max`, without entries lacking a title or an http(s) address.
+pub fn parse_searxng(body: &str, max: usize) -> Result<Vec<SearchResult>, String> {
+    let v: serde_json::Value = serde_json::from_str(body).map_err(|_| "the search results were not readable".to_string())?;
+    let mut out = Vec::new();
+    for r in v["results"].as_array().into_iter().flatten() {
+        let (title, url) = (r["title"].as_str().unwrap_or("").trim(), r["url"].as_str().unwrap_or("").trim());
+        if title.is_empty() || !(url.starts_with("https://") || url.starts_with("http://")) { continue; }
+        let snippet = r["content"].as_str().unwrap_or("").trim();
+        out.push(SearchResult { title: one_line(title), url: url.to_string(), snippet: one_line(snippet) });
+        if out.len() >= max { break; }
+    }
+    Ok(out)
 }
 
 /// Pull the top results out of DuckDuckGo's plain HTML page. Kept small and forgiving: it looks for the
@@ -317,6 +367,17 @@ fn url_encode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn searxng_json_is_read_in_order_and_cleaned() {
+        let body = r#"{"results":[{"title":"BTC price","url":"https://example.com/btc","content":"Live\nprice"},{"title":"","url":"https://x.y"},{"title":"No link","url":"javascript:alert(1)"},{"title":"Second","url":"http://example.org/2","content":"two"}]}"#;
+        let r = parse_searxng(body, 5).unwrap();
+        assert_eq!(r.len(), 2);
+        assert_eq!((r[0].title.as_str(), r[0].url.as_str()), ("BTC price", "https://example.com/btc"));
+        assert!(!r[0].snippet.contains('\n'));
+        assert_eq!(parse_searxng(body, 1).unwrap().len(), 1);
+        assert!(parse_searxng("<html>not json</html>", 5).is_err());
+    }
+
     use super::*;
 
     const PAGE: &str = r#"

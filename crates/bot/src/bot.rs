@@ -7,6 +7,8 @@
 //! The model has exactly two tools — [`crate::search::TOOL_NAME`] (web search) and [`crate::studio::TOOL_NAME`] (make a
 //! picture, song, sound or video in the owner's Studio). `tools()` is the whole list, and `run_tool` is the only
 //! executor: any other name is refused without touching anything.
+use crate::avatar;
+use crate::assistant::{Assistant, Route, RoomFacts};
 use crate::gpu::{GpuCheck, Pause};
 use crate::llm::{AskError, Llm, ModelReply, Msg, ToolCall, ToolMode, ToolSpec};
 use crate::safety;
@@ -74,6 +76,12 @@ pub struct Config {
     pub wall_daily_max: u32,
     /// Pause between two stroke events on the wall. The core's budget is two a second, so this is never below 500.
     pub wall_stroke_gap_ms: u64,
+    /// Once a day Oracle invents a new profile picture for himself and sets it. Off unless switched on.
+    pub avatar_daily: bool,
+    /// The local hour (0..=23) from which the day's picture is tried; busy GPU means retrying later that day.
+    pub avatar_hour: u32,
+    /// After a new picture, say one short line about it in every room where he may join in.
+    pub avatar_announce: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -83,6 +91,7 @@ impl Default for Config {
             chime_chance_pct: 0, chime_min_gap_secs: 900, chime_min_messages: 4, chime_daily_max: 20, chime_delay_secs: (6, 40),
             chime_max_chars: 320, art_chance_pct: 0, art_min_gap_secs: 5400, art_daily_max: 3,
             wall_chance_pct: 0, wall_min_gap_secs: 1800, wall_daily_max: 2, wall_stroke_gap_ms: 500,
+            avatar_daily: false, avatar_hour: 6, avatar_announce: true,
         }
     }
 }
@@ -115,6 +124,10 @@ pub enum JobKind {
     SetChime { on: bool },
     /// "@Oracle allow studio for <name>" where nobody in the room has that name (or more than one does).
     StudioUnknownPerson(String),
+    /// The owner's message in an assistant room (see `crate::assistant`). Handled on its own thread.
+    Assistant,
+    /// A plain notice from the assistant machinery, to be said in the room.
+    AssistantNotice(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,6 +171,10 @@ pub trait Chat {
     fn wall_info(&self, _gid: &str) -> Option<WallInfo> { None }
     /// One stroke event on the room's wall: `(x, y, glyph index, colour)`. `Ok(false)` means "not sent, try again shortly".
     fn wall_draw(&mut self, _gid: &str, _cells: &[(u32, u32, u8, u8)]) -> Result<bool, String> { Err("no wall".into()) }
+    /// Set the bot's own profile picture (the core checks type and size).
+    fn set_avatar(&mut self, _mime: &str, _data: &[u8]) -> Result<(), String> { Err("no profile picture".into()) }
+    /// Every room the bot has joined (the group ids).
+    fn joined_rooms(&self) -> Vec<String> { Vec::new() }
 }
 
 /// What the bot needs to know about a room's wall before and while it draws.
@@ -183,6 +200,17 @@ fn wall_info_of(c: &Client, gid: &str) -> Option<WallInfo> {
     c.st.groups.get(gid)?;
     let v = c.wall_view(gid);
     Some(WallInfo { gen: v.gen, locked: v.locked, marks: v.cells.iter().filter(|(_, g, _, _)| *g != 0).map(|(p, ..)| *p as u32).collect() })
+}
+
+/// Where Oracle may announce his new picture: only each community's "general" room (owner's choice), never every room.
+fn joined_rooms_of(c: &Client) -> Vec<String> {
+    let mut rooms = Vec::new();
+    for co in c.st.communities.values().filter(|x| !x.removed) {
+        for ch in c.channels_of(&co.id) {
+            if ch.joined && ch.name.trim_start_matches('#').eq_ignore_ascii_case("general") { rooms.push(ch.gid.clone()); }
+        }
+    }
+    rooms
 }
 
 fn history_of(c: &Client, gid: &str, limit: usize) -> Vec<Line> {
@@ -236,6 +264,8 @@ impl Chat for Client {
     fn oracle_draws(&self, gid: &str) -> bool { draws_in(self, gid) }
     fn wall_info(&self, gid: &str) -> Option<WallInfo> { wall_info_of(self, gid) }
     fn wall_draw(&mut self, gid: &str, cells: &[(u32, u32, u8, u8)]) -> Result<bool, String> { Client::wall_draw(self, gid, cells).map_err(|e| format!("{e:#}")) }
+    fn set_avatar(&mut self, mime: &str, data: &[u8]) -> Result<(), String> { Client::set_avatar(self, mime, data).map(|_| ()).map_err(|e| format!("{e:#}")) }
+    fn joined_rooms(&self) -> Vec<String> { joined_rooms_of(self) }
 }
 
 /// A client shared with the background sync thread. Every call is a separate short lock, so a model answering for a
@@ -261,6 +291,8 @@ impl Chat for SharedClient<'_> {
     fn oracle_draws(&self, gid: &str) -> bool { draws_in(&self.lock(), gid) }
     fn wall_info(&self, gid: &str) -> Option<WallInfo> { wall_info_of(&self.lock(), gid) }
     fn wall_draw(&mut self, gid: &str, cells: &[(u32, u32, u8, u8)]) -> Result<bool, String> { Client::wall_draw(&mut self.lock(), gid, cells).map_err(|e| format!("{e:#}")) }
+    fn set_avatar(&mut self, mime: &str, data: &[u8]) -> Result<(), String> { Client::set_avatar(&mut self.lock(), mime, data).map(|_| ()).map_err(|e| format!("{e:#}")) }
+    fn joined_rooms(&self) -> Vec<String> { joined_rooms_of(&self.lock()) }
 }
 
 /// A mention of the bot's name: "@Oracle", anywhere in the text, touching no letters on its ends (so "@Oracle's" counts
@@ -547,6 +579,17 @@ pub struct BotState {
     pub art_day: u64,
     #[serde(default)]
     pub art_count: u32,
+    /// The local calendar day (days since the epoch, local time) whose profile picture is settled: set, or skipped on purpose.
+    #[serde(default)]
+    pub avatar_day: u64,
+    /// The day the failure count below belongs to, and how many real attempts failed that day.
+    #[serde(default)]
+    pub avatar_try_day: u64,
+    #[serde(default)]
+    pub avatar_tries: u32,
+    /// The last few picture ideas, so he does not repeat himself.
+    #[serde(default)]
+    pub avatar_history: Vec<String>,
 }
 
 struct Store {
@@ -627,7 +670,42 @@ pub struct Bot {
     pending: Mutex<HashMap<String, u64>>,
     /// Rooms where a wall drawing is being made right now: one at a time per room.
     wall_busy: Mutex<HashSet<String>>,
+    /// Not before this moment may the daily picture be tried again after a deferral or failure (in memory only).
+    avatar_next: Mutex<Option<Instant>>,
+    /// The assistant room feature; `None` when it is off.
+    assistant: Option<Arc<Assistant>>,
 }
+
+/// What one look at the daily profile picture came to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AvatarOutcome {
+    Disabled,
+    /// Before the configured hour.
+    NotYet,
+    /// Today's picture is already settled.
+    Settled,
+    /// Three real failures today: nothing more until tomorrow.
+    GaveUp,
+    /// The GPU, Studio or its queue is busy: try again later today. Nothing was spent.
+    Deferred(String),
+    /// Today is skipped on purpose (the safety rules, the Studio cap).
+    Skipped(String),
+    /// Something broke; counts as one of today's attempts.
+    Failed(String),
+    /// The picture is set; the number of rooms that were told.
+    Set { announced: usize },
+}
+
+/// A few seeds so the days do not all come out the same.
+const AVATAR_VIBES: [&str; 16] = [
+    "a creature", "a robot", "a cursed piece of fruit", "a cosmic prophet", "a deep-sea thing", "a haunted appliance", "a lizard sage",
+    "a mushroom oracle", "a pigeon in a tin-foil crown", "an alien dignitary", "a living statue", "a clockwork saint", "a weather spirit",
+    "a vegetable emperor", "a masked trickster", "a moth priest",
+];
+/// Studio's per-person daily cap counts the daily picture under this name.
+const AVATAR_CAP_KEY: &str = "@avatar";
+const AVATAR_TRIES_PER_DAY: u32 = 3;
+const AVATAR_RETRY_EVERY: Duration = Duration::from_secs(10 * 60);
 
 impl Bot {
     pub fn new(
@@ -643,9 +721,14 @@ impl Bot {
         let studio_queue = StudioQueue { gate: Mutex::new(()), taken: Mutex::new(0), max: cfg.studio_queue_max + 1 };
         Bot {
             cfg, local, deepseek, search, studio, gpu, store: Mutex::new(Store::load(state_path.as_ref().to_path_buf())),
-            rate: Mutex::new(rate), studio_queue, pending: Mutex::new(HashMap::new()), wall_busy: Mutex::new(HashSet::new()),
+            rate: Mutex::new(rate), studio_queue, pending: Mutex::new(HashMap::new()), wall_busy: Mutex::new(HashSet::new()), avatar_next: Mutex::new(None), assistant: None,
         }
     }
+
+    /// Switch the assistant room feature on.
+    pub fn with_assistant(mut self, a: Arc<Assistant>) -> Bot { self.assistant = Some(a); self }
+
+    pub fn assistant(&self) -> Option<&Arc<Assistant>> { self.assistant.as_ref() }
 
     pub fn deepseek_on(&self, gid: &str) -> bool { self.store.lock().unwrap_or_else(|p| p.into_inner()).data.rooms.get(gid).is_some_and(|r| r.deepseek) }
 
@@ -695,10 +778,28 @@ impl Bot {
             let mut chatter = 0usize;
             let mut deepseek_now = known.as_ref().is_some_and(|r| r.deepseek);
             let roles = c.people_of(&cid);
+            let facts = self.assistant.as_ref().map(|_| RoomFacts::from_client(c, &cid, &gid));
+            let mut assist_room = false;
+            if let (Some(a), Some(f)) = (&self.assistant, &facts) {
+                if let Some(notice) = a.sync_room(f) {
+                    found.push(Job { gid: gid.clone(), trigger: String::new(), from: String::new(), text: String::new(), kind: JobKind::AssistantNotice(notice) });
+                }
+                assist_room = a.is_active(f);
+            }
             for m in &log.msgs {
                 if m.seq > 0 { max_seq = max_seq.max(m.seq); }
                 if m.seq <= start || m.deleted || m.sender.is_empty() || m.sender == me { continue; }
                 let MsgBody::Text(text) = &m.body else { continue };
+                if let (Some(a), Some(f)) = (&self.assistant, &facts) {
+                    let job = |kind| Job { gid: gid.clone(), trigger: m.id.clone(), from: m.sender.clone(), text: text.clone(), kind };
+                    match a.route(f, &self.cfg.name, &m.sender, text) {
+                        Route::Pass => {}
+                        Route::Drop | Route::Handled => { assist_room = a.is_active(f); continue; }
+                        Route::Notice(t) => { found.push(job(JobKind::AssistantNotice(t))); assist_room = a.is_active(f); continue; }
+                        Route::Chat => { found.push(job(JobKind::Assistant)); continue; }
+                    }
+                    assist_room = a.is_active(f);
+                }
                 if is_reset(text, &self.cfg.name) {
                     found.push(Job { gid: gid.clone(), trigger: m.id.clone(), from: m.sender.clone(), text: text.clone(), kind: JobKind::Reset });
                     continue;
@@ -756,7 +857,7 @@ impl Bot {
             let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
             if !found.is_empty() {
                 pending.remove(&gid);
-            } else if self.cfg.chime_chance_pct > 0 && !entry.chime_off && !quiet && !entry.deepseek && (chatter > 0 || pending.contains_key(&gid)) {
+            } else if !assist_room && self.cfg.chime_chance_pct > 0 && !entry.chime_off && !quiet && !entry.deepseek && (chatter > 0 || pending.contains_key(&gid)) {
                 let since_me = log.msgs.iter().rev().take_while(|m| m.sender != me).filter(|m| !m.deleted && matches!(m.body, MsgBody::Text(_))).count();
                 let newest = log.msgs.iter().rev().find(|m| m.sender != me).map_or(0, |m| m.ts);
                 let mine = log.msgs.iter().rev().find(|m| m.sender == me).map_or(0, |m| m.ts);
@@ -785,7 +886,7 @@ impl Bot {
             drop(pending);
             // Drawing on the wall: the same kind of dice, an active room, an unlocked wall, and never where the owner has said quiet.
             // A mention or command this round means people are talking to it, not watching the wall.
-            if !addressed && chatter > 0 && !quiet && self.cfg.wall_chance_pct > 0 && log.msgs.iter().rev().find(|m| m.sender != me).is_some_and(|m| m.ts + 180 >= now)
+            if !assist_room && !addressed && chatter > 0 && !quiet && self.cfg.wall_chance_pct > 0 && log.msgs.iter().rev().find(|m| m.sender != me).is_some_and(|m| m.ts + 180 >= now)
                 && self.wall_allowed(entry, now) && c.oracle_draws(&gid) && c.wall_info(&gid).is_some_and(|w| !w.locked) && self.gpu.blocked().is_none() && roll(self.cfg.wall_chance_pct) {
                 if self.wall_busy.lock().unwrap_or_else(|p| p.into_inner()).insert(gid.clone()) {
                     if let Some(last) = log.msgs.last() {
@@ -806,6 +907,11 @@ impl Bot {
     /// client free, while a typing hint is refreshed now and then.
     pub fn answer(&self, c: &mut dyn Chat, job: &Job) -> Option<Sent> {
         let (text, deepseek, sources) = match &job.kind {
+            JobKind::Assistant => { self.assistant_turn(c, job); return None; }
+            JobKind::AssistantNotice(t) => {
+                if let Some(a) = &self.assistant { a.say(c, &job.gid, Some(&job.trigger), t); }
+                return None;
+            }
             JobKind::Chime => return self.chime(c, job),
             JobKind::Wall => { self.draw_on_wall(c, job); return None; }
             JobKind::SetChime { on: true } if c.oracle_quiet(&job.gid) => (
@@ -848,6 +954,14 @@ impl Bot {
             }
         };
         self.post(c, job, &text, &sources, deepseek)
+    }
+
+    /// The owner spoke in an assistant room: the plain assistant answers (and may hand work to Claude Code).
+    fn assistant_turn(&self, c: &mut dyn Chat, job: &Job) {
+        let Some(a) = &self.assistant else { return };
+        // a game or Studio owns the GPU: say so without loading the model (a "do:" task does not need the local model)
+        let pause = self.gpu.blocked().map(|p| p.reply().to_string());
+        a.handle(c, job, self.local.as_ref(), self.search.as_ref(), pause.as_deref());
     }
 
     /// Join the conversation unasked: sometimes with something made in Studio, otherwise a remark. Everything here fails
@@ -987,6 +1101,151 @@ impl Bot {
 
     /// Long enough for the typing hint to be seen; nothing in tests, which set no delay at all.
     fn typing_floor(&self) -> u64 { if self.cfg.chime_delay_secs.1 == 0 { 0 } else { 900 } }
+
+    /// Called every minute or so by the service: tries today's profile picture when it is due, with a pause of ten minutes
+    /// between tries that were deferred or failed. Cheap when disabled or already settled.
+    pub fn avatar_tick(&self, c: &mut dyn Chat) -> AvatarOutcome {
+        if !self.cfg.avatar_daily { return AvatarOutcome::Disabled; }
+        if self.avatar_next.lock().unwrap_or_else(|p| p.into_inner()).is_some_and(|t| Instant::now() < t) { return AvatarOutcome::NotYet; }
+        let (day, hour) = avatar::local_day_hour(now_secs());
+        let out = self.avatar_try_at(c, day, hour);
+        if matches!(out, AvatarOutcome::Deferred(_) | AvatarOutcome::Failed(_)) {
+            *self.avatar_next.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now() + AVATAR_RETRY_EVERY);
+        }
+        out
+    }
+
+    fn avatar_fail(&self, day: u64, why: String) -> AvatarOutcome {
+        let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+        if store.data.avatar_try_day != day { store.data.avatar_try_day = day; store.data.avatar_tries = 0; }
+        store.data.avatar_tries += 1;
+        store.save();
+        AvatarOutcome::Failed(why)
+    }
+
+    fn avatar_settle(&self, day: u64, look: Option<&str>) {
+        let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+        store.data.avatar_day = day;
+        if let Some(l) = look {
+            store.data.avatar_history.push(l.chars().take(160).collect());
+            let n = store.data.avatar_history.len();
+            if n > 7 { store.data.avatar_history.drain(..n - 7); }
+        }
+        store.save();
+    }
+
+    /// The whole daily picture, for the given local `day` and `hour`: ask the local model for an idea, vet it, make it in
+    /// Studio, shrink it, set it, and say one line about it. Anything that only means "not now" returns `Deferred` and
+    /// spends nothing, so it is simply tried again later the same day.
+    pub fn avatar_try_at(&self, c: &mut dyn Chat, day: u64, hour: u32) -> AvatarOutcome {
+        if !self.cfg.avatar_daily { return AvatarOutcome::Disabled; }
+        if hour < self.cfg.avatar_hour { return AvatarOutcome::NotYet; }
+        let history = {
+            let store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            if store.data.avatar_day == day { return AvatarOutcome::Settled; }
+            if store.data.avatar_try_day == day && store.data.avatar_tries >= AVATAR_TRIES_PER_DAY { return AvatarOutcome::GaveUp; }
+            store.data.avatar_history.clone()
+        };
+        if let Some(p) = self.gpu.blocked() { return AvatarOutcome::Deferred(format!("GPU busy: {}", p.reason())); }
+        match self.studio.state() {
+            Err(e) => return AvatarOutcome::Deferred(format!("Studio unreachable: {e}")),
+            Ok(s) if s.game => return AvatarOutcome::Deferred("a game is running".into()),
+            Ok(s) if !s.paused.is_empty() => return AvatarOutcome::Deferred(format!("Studio is paused ({})", s.paused)),
+            Ok(_) => {}
+        }
+        // Studio's daily cap counts this like a person's request, under its own name.
+        let utc_day = now_secs() / 86_400;
+        {
+            let store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            let used = store.data.studio_use.get(AVATAR_CAP_KEY).filter(|u| u.day == utc_day).map_or(0, |u| u.total as usize);
+            if used >= self.cfg.studio_daily_cap {
+                drop(store);
+                self.avatar_settle(day, None);
+                return AvatarOutcome::Skipped("Studio's daily cap is used up".into());
+            }
+        }
+        // 1. the idea
+        let vibe = AVATAR_VIBES[(random() % AVATAR_VIBES.len() as u64) as usize];
+        let recent = if history.is_empty() { String::new() } else { format!(" Your recent looks (do not repeat them): {}.", history.join(" | ")) };
+        let system = format!(
+            "You are {}, the unhinged Rastaman prophet and conspiracy theorist of a private group chat. Once a day you design your own profile \
+             picture. Answer with exactly two lines and nothing else: a line starting \"LOOK:\" and a line starting \"LINE:\".", self.cfg.name);
+        let ask = format!(
+            "Invent today's profile picture for yourself. LOOK: one vivid sentence describing a character headshot (one face or head, \
+             centred, plain or simple background). It can be as wild as you like (today's seed: {vibe}), anything that suits your \
+             persona. Never a real, named or recognisable person, no celebrity likeness, nothing sexual, no children, no gore or blood. \
+             LINE: one short sentence in your own thick Jamaican Patois voice to the group about your new look, no emoji.{recent}");
+        let reply = match self.local.complete(&system, &[Msg::User(ask)], &[]) {
+            Ok(r) => r,
+            Err(AskError::Unavailable(e)) => return AvatarOutcome::Deferred(format!("local model unavailable: {e}")),
+            Err(AskError::Failed(e)) => return self.avatar_fail(day, format!("local model: {e}")),
+        };
+        let Some(idea) = avatar::parse_idea(&reply.content) else { return self.avatar_fail(day, "the model gave no LOOK line".into()) };
+        // 2. the safety rules; a trip skips the whole day
+        let mut check = idea.look.clone();
+        if let Some(l) = &idea.line { check.push(' '); check.push_str(&safety::without_mention(l, &self.cfg.name)); }
+        if let Some(why) = avatar::unsafe_reason(&check) {
+            self.avatar_settle(day, None);
+            return AvatarOutcome::Skipped(format!("the idea tripped the safety rules: {why}"));
+        }
+        // 3. Studio (never ahead of a person's request) -- the local model leaves the GPU first
+        let _ = self.local.unload();
+        let Some(_ticket) = self.studio_queue.enter_if_idle() else { return AvatarOutcome::Deferred("Studio has work queued".into()) };
+        let req = studio::Request {
+            kind: studio::Kind::Picture, prompt: avatar::studio_prompt(&idea.look), style: "none".into(),
+            lyrics: String::new(), length: String::new(), size: "square".into(),
+        };
+        let id = match self.studio.submit(&req) {
+            Ok(id) => id,
+            Err(e) if e.contains("is busy") => return AvatarOutcome::Deferred(e),
+            Err(e) => return self.avatar_fail(day, format!("Studio refused the job: {e}")),
+        };
+        {
+            let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            let u = store.data.studio_use.entry(AVATAR_CAP_KEY.to_string()).or_default();
+            if u.day != utc_day { *u = DailyUse { day: utc_day, total: 0, video: 0 }; }
+            u.total += 1;
+            store.save();
+        }
+        let deadline = Instant::now() + studio::JOB_TIMEOUT;
+        let mut misses = 0u32;
+        loop {
+            match self.studio.status(id) {
+                Ok(JobState::Done) => break,
+                Ok(JobState::Failed(e)) => return self.avatar_fail(day, format!("Studio job failed: {e}")),
+                Ok(JobState::Cancelled) => return self.avatar_fail(day, "the Studio job was cancelled".into()),
+                Ok(JobState::Waiting) => misses = 0,
+                Err(e) => { misses += 1; if misses >= 5 { return self.avatar_fail(day, format!("Studio stopped answering: {e}")); } }
+            }
+            if Instant::now() >= deadline { return self.avatar_fail(day, "the Studio job took too long".into()); }
+            std::thread::sleep(studio::POLL_EVERY);
+        }
+        let data = match self.studio.download(req.kind, id) {
+            Ok(d) => d,
+            Err(e) => return self.avatar_fail(day, format!("could not download the picture: {e}")),
+        };
+        drop(_ticket);
+        // 4. shrink and set
+        let (mime, small) = match avatar::shrink_to_avatar(&data) {
+            Ok(x) => x,
+            Err(e) => return self.avatar_fail(day, e),
+        };
+        if let Err(e) = c.set_avatar(mime, &small) { return self.avatar_fail(day, format!("could not set the picture: {e}")); }
+        self.avatar_settle(day, Some(&idea.look));
+        // 5. one line, once, where he may join in
+        let mut announced = 0;
+        if self.cfg.avatar_announce {
+            if let Some(line) = idea.line.as_deref().and_then(|l| clean_chime(l, &self.cfg.name, self.cfg.chime_max_chars)) {
+                for gid in c.joined_rooms() {
+                    let off = self.store.lock().unwrap_or_else(|p| p.into_inner()).data.rooms.get(&gid).is_some_and(|r| r.chime_off);
+                    if off || c.oracle_quiet(&gid) { continue; }
+                    if !self.rate.lock().unwrap_or_else(|p| p.into_inner()).allow() { break; }
+                    if c.send(&gid, &line, None).is_ok() { announced += 1; }
+                }
+            }
+        }
+        AvatarOutcome::Set { announced }
+    }
 
     /// Whether a surprise piece is allowed here now: the room's gap and the day's cap across every room.
     fn art_allowed(&self, gid: &str) -> bool {
