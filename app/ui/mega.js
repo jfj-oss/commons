@@ -232,10 +232,10 @@
     if (p && p.sig === sig && Date.now() - p.t < ttl) return false;   // the snapshot has no "last activity", so look again every so often
     let n;
     try {
-      const m = await rpc('messages', { gid: ch.gid, limit: 8 });
-      const last = [...m.messages].reverse().find(x => !x.deleted && x.kind !== 'notice' && x.kind !== 'member');
-      n = { sig, t: Date.now(), ts: last ? last.ts || 0 : 0, who: last ? last.name : '', text: last ? plain(last.text || (last.file ? last.file.name : '')) : '' };
-    } catch { n = { sig, t: Date.now(), ts: 0, who: '', text: '' }; }
+      const h = await fetchMessages({ gid: ch.gid, limit: 8 }, p && p.h);   // only what changed since the last look (app.js)
+      const last = [...h.m.messages].reverse().find(x => !x.deleted && x.kind !== 'notice' && x.kind !== 'member');
+      n = { sig, t: Date.now(), ts: last ? last.ts || 0 : 0, who: last ? last.name : '', text: last ? plain(last.text || (last.file ? last.file.name : '')) : '', h };
+    } catch { n = { sig, t: Date.now(), ts: 0, who: '', text: '', h: p && p.h }; }
     PREV.set(ch.gid, n);
     return !p || p.who !== n.who || p.text !== n.text;
   }
