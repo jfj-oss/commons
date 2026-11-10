@@ -981,9 +981,10 @@ fn same_or(r: R, a: &Value) -> R {
     Ok(v)
 }
 
-/// Windows remembered per `messages` key, and keys remembered at all (a page browsing rooms makes a key per room).
+/// Windows remembered per `messages` key, and keys remembered at all (the open room, and the cards' one look at the
+/// newest line of every room, make a key per room and window size).
 const WINDOWS_PER_KEY: usize = 4;
-const WINDOW_KEYS: usize = 32;
+const WINDOW_KEYS: usize = 96;
 
 impl App {
     /// The answer to `messages`, sized to what the page already holds. `if` names (by hash) the answer the page has: the

@@ -37,11 +37,13 @@
         if (p && p.sig === sig) continue;
         let n;
         try {
-          const m = await rpc('messages', { gid: r.gid, limit: Math.min(80, r.n + 12) });
+          // only what changed since the last look (app.js); the window grows in steps so the core can keep answering with differences
+          const limit = Math.min(80, Math.max(20, Math.ceil((r.n + 12) / 20) * 20));
+          const h = await fetchMessages({ gid: r.gid, limit }, p && p.h), m = h.m;
           const list = m.messages.filter(x => !x.deleted && x.kind !== 'notice' && x.kind !== 'member'), last = list[list.length - 1];
           const hit = r.at ? [...list].reverse().find(x => !x.mine && (mentionsMe(x.text) || repliesToMe(x, m.messages))) : null, pick = hit || last;
-          n = { sig, who: pick ? pick.name : '', text: pick ? plain(pick.text || (pick.file ? pick.file.name : '')) : '', ts: last ? last.ts || 0 : 0 };
-        } catch { n = { sig, who: '', text: '', ts: 0 }; }
+          n = { sig, who: pick ? pick.name : '', text: pick ? plain(pick.text || (pick.file ? pick.file.name : '')) : '', ts: last ? last.ts || 0 : 0, h };
+        } catch { n = { sig, who: '', text: '', ts: 0, h: p && p.h }; }
         if (!p || p.who !== n.who || p.text !== n.text || p.ts !== n.ts) changed = true;
         NEWS.set(r.gid, n);
         if (changed && window.__megaRender) window.__megaRender();

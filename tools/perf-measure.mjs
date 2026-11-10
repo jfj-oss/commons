@@ -56,6 +56,7 @@ const rpcOf = port => async (method, args = {}) => {
 const A = rpcOf(A_PORT), B = rpcOf(B_PORT);
 async function until(f, what, ms = 45000) { const t = Date.now(); let last; while (Date.now() - t < ms) { try { last = await f(); if (last) return last; } catch (e) { last = e.message; } await sleep(250); } throw new Error(`timed out: ${what} (${JSON.stringify(last)})`); }
 await until(() => A('state').then(() => true), 'alice up'); await until(() => B('state').then(() => true), 'bob up');
+await until(() => fetch(`${RELAY}/health`).then(r => r.ok), 'relay up');   // on a busy machine the relay can start after the bridges
 await A('create_account', { passphrase: 'perf test pass', name: 'alice', relay: RELAY });
 await B('create_account', { passphrase: 'perf test pass', name: 'bob', relay: RELAY });
 // two communities so the page lands on the home cards; a text room and a voice room in each, bob in both
@@ -104,7 +105,7 @@ await P.send('Page.navigate', { url: `http://127.0.0.1:${A_PORT}/#s=${secret}` }
 await P.waitFor(`!document.querySelector('#app').hidden && window.__mega && __mega.started && !!S.snap`);
 await P.waitFor(`document.querySelectorAll('.mcard').length >= 2`);
 // count every call the page makes to its core: calls, bytes up (request body), bytes down (Content-Length)
-await P.ev(`(() => { const f = window.fetch; window.__perfNet = { n: 0, up: 0, down: 0, by: {} }; window.fetch = async function (u, o) { const r = await f.apply(this, arguments); try { const N = window.__perfNet; let m = String(u).replace(/^.*\\/\\//, '').replace(/^[^/]*/, ''); if (o && typeof o.body === 'string') { try { m = JSON.parse(o.body).method || m; } catch { } N.up += o.body.length; } const cl = +r.headers.get('content-length') || 0; N.n++; N.down += cl; const b = N.by[m] || (N.by[m] = { n: 0, down: 0 }); b.n++; b.down += cl; } catch { } return r; }; return 1; })()`);
+await P.ev(`(() => { const f = window.fetch; window.__perfNet = { n: 0, up: 0, down: 0, by: {} }; window.fetch = async function (u, o) { const r = await f.apply(this, arguments); try { const N = window.__perfNet; let m = String(u).replace(/^.*\\/\\//, '').replace(/^[^/]*/, ''); if (o && typeof o.body === 'string') { try { m = JSON.parse(o.body).method || m; } catch { } N.up += o.body.length; } const cl = +r.headers.get('content-length') || 0; N.n++; N.down += cl; const b = N.by[m] || (N.by[m] = { n: 0, down: 0 }); b.n++; b.down += cl; if (m === 'messages') { const t = await r.clone().text(); const k = t.includes('"same":true') ? 'same' : t.includes('"delta":true') ? 'delta' : 'full'; b[k] = (b[k] || 0) + 1; if (k === 'full' && !/"if":/.test(o.body)) b.noIf = (b.noIf || 0) + 1; } } catch { } return r; }; return 1; })()`);
 // when a message marked lat-N first appears anywhere on the page (its row in the stream, or a card's preview)
 await P.ev(`(() => { window.__lat = {}; new MutationObserver(ms => { const now = Date.now(); for (const m of ms) for (const n of m.addedNodes) { const t = n.textContent || ''; let x; const re = /lat-(\\d+)\\b/g; while ((x = re.exec(t))) if (!(x[1] in __lat)) __lat[x[1]] = now; } }).observe(document.body, { childList: true, subtree: true, characterData: false }); return 1; })()`);
 
@@ -123,7 +124,8 @@ async function measure(name, secs, during) {
   await P.ev(`(() => { const N = window.__perfNet; N.n = 0; N.up = 0; N.down = 0; N.by = {}; return 1; })()`);
   NET.reset();
   const h0 = await heap(), c0 = await cpuTimes(), t0 = Date.now();
-  const sent = during ? await during(secs) : null;
+  let sent = null;
+  if (during) sent = await during(secs); else await sleep(secs * 1000);
   const c1 = await cpuTimes(), dt = (Date.now() - t0) / 1000, h1 = await heap();
   const page = await P.ev(`JSON.stringify(window.__perfNet)`);
   let latency = null;
@@ -137,7 +139,7 @@ async function measure(name, secs, during) {
   const pct = k => +(100 * ((c1[k] || 0) - (c0[k] || 0)) / dt).toFixed(1);
   const r = { secs: +dt.toFixed(1), load: `${c0.load}->${c1.load}`, cpu: { renderer: pct('renderer'), gpu: pct('gpu'), browser: pct('browser'), bridgeA: pct('bridgeA'), bridgeB: pct('bridgeB') },
     heapMB: { start: +MB(h0.js), end: +MB(h1.js), nodes: h1.nodes, listeners: h1.listeners }, bridgeRssMB: { alice: +MB(procStat(bridges.alice.pid).rss), bob: +MB(procStat(bridges.bob.pid).rss) },
-    pageToCore: (() => { const N = JSON.parse(page); const per = 60 / dt; return { reqPerMin: Math.round(N.n * per), upKBPerMin: +(N.up * per / 1024).toFixed(1), downKBPerMin: +(N.down * per / 1024).toFixed(1), by: Object.fromEntries(Object.entries(N.by).map(([k, v]) => [k, { perMin: Math.round(v.n * per), downKB: +(v.down * per / 1024).toFixed(1) }])) }; })(),
+    pageToCore: (() => { const N = JSON.parse(page); const per = 60 / dt; return { reqPerMin: Math.round(N.n * per), upKBPerMin: +(N.up * per / 1024).toFixed(1), downKBPerMin: +(N.down * per / 1024).toFixed(1), by: Object.fromEntries(Object.entries(N.by).map(([k, v]) => [k, { perMin: Math.round(v.n * per), downKB: +(v.down * per / 1024).toFixed(1), ...(k === 'messages' ? { same: v.same || 0, delta: v.delta || 0, full: v.full || 0, fullNoIf: v.noIf || 0 } : {}) }])) }; })(),
     coreToRelay2devices: (() => { const per = 60 / dt; return { reqPerMin: Math.round(Object.values(NET.by).reduce((a, b) => a + b, 0) * per), connsPerMin: Math.round(NET.conns * per), upKBPerMin: +(NET.up * per / 1024).toFixed(1), downKBPerMin: +(NET.down * per / 1024).toFixed(1), by: Object.fromEntries(Object.entries(NET.by).map(([k, v]) => [k, Math.round(v * per)])) }; })() };
   if (latency) r.latency = latency;
   results[name] = r;

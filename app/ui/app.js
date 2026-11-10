@@ -167,7 +167,7 @@ const quiet = x => x.kind === 'notice' || x.kind === 'member';   // lines nobody
 const S = {
   snap: null, cid: null, gid: null, msgs: null, reply: null, edit: null, people: false, last: '', lastMsgs: '', imgs: new Map(), limit: 200,
   members: [], membersFor: null, membersKey: '',
-  mention: new Map(), mentionSig: new Map(),   // gid -> unread messages that name me, gid -> unread count it was computed for
+  mention: new Map(), mentionSig: new Map(), mentionWin: new Map(),   // gid -> unread messages that name me, gid -> unread count it was computed for, gid -> the window looked at
   outgoing: [],   // sent but not yet back from the core: shown at once, so pressing Send never looks like nothing happened
   first: true, painted: 0, firstNew: null, newCount: 0, jumpTo: null, pinned: true, below: 0, drafts: new Map(),
   presence: new Map(), presenceCid: null, presenceSig: '', presenceAt: 0, presenceBackoff: 0,   // gid -> people in that room's call (from the relay)
@@ -416,22 +416,29 @@ async function tickOnce() {
     refreshAvatars(changed);   // small read call; downloads only pictures whose version changed
     const gid = S.gid;
     if (gid) {
-      // `delta: 1` says this page can take only what changed since the answer it holds (api.rs messages_answer); the
-      // core sends that when it remembers that answer, the whole window otherwise.
-      const r = await rpc('messages', { gid, limit: S.limit, around: S.jumpTo || '', delta: 1, ...(S.lastMsgs ? { if: S.lastMsgs } : {}) });
+      const h = await fetchMessages({ gid, limit: S.limit, around: S.jumpTo || '' }, S.msgs && S.lastMsgs ? { m: S.msgs, hash: S.lastMsgs } : null);
       if (gid !== S.gid) return;
-      if (!r.same) {
-        const m = r.delta ? mergeMessages(S.msgs, S.lastMsgs, r) : r;
-        if (!m) { S.lastMsgs = ''; tick.again = true; }   // a difference to an answer this page no longer holds: ask for the whole window
-        else {
-          if (S.jumpTo) S.limit = Math.max(S.limit, m.messages.length);
-          S.lastMsgs = m.hash || ''; S.msgs = m; renderStream();
-        }
+      if (h.m !== S.msgs) {
+        if (S.jumpTo) S.limit = Math.max(S.limit, h.m.messages.length);
+        S.lastMsgs = h.hash; S.msgs = h.m; renderStream();
       }
       const ch = currentChannel();
       if (ch && ch.unread > 0 && document.visibilityState === 'visible' && !(window.__megaIdle && window.__megaIdle())) { await rpc('mark_read', { gid }); }   // mega: nothing is read while the cards are showing
     }
   } catch (e) { const st = $('#sync-status'); st.textContent = 'Not reachable: ' + e.message; st.className = 'sync bad down'; }
+}
+// A room's messages, asked for cheaply: `held` is what the last call for the same `args` returned (or null), and goes
+// back to the core as the hash of the answer this page holds, with `delta: 1` to say the page can take only what changed
+// since it (api.rs messages_answer). Nothing changed: `held` itself comes back. A difference: merged into a new answer.
+// The whole window (a first look, or an answer the core no longer remembers) is taken as it is. Returns { m, hash }.
+async function fetchMessages(args, held) {
+  const r = await rpc('messages', { ...args, delta: 1, ...(held && held.hash ? { if: held.hash } : {}) });
+  if (r.same && held) return held;
+  if (r.delta) {
+    const m = mergeMessages(held && held.m, held && held.hash, r);
+    return m ? { m, hash: m.hash } : fetchMessages(args, null);   // a difference to an answer this page no longer holds
+  }
+  return { m: r, hash: r.hash || '' };
 }
 // The full answer the core would have sent, built from the one this page holds (`have`, with hash `hash`) and the
 // difference `d`: rows that are new or changed replace or append, `drop` names the ids that left the window, and `order`
@@ -705,7 +712,11 @@ async function refreshMentions() {
     for (const c of S.snap.communities) for (const ch of c.channels) {
       if (!ch.unread) { S.mentionSig.delete(ch.gid); if (S.mention.delete(ch.gid)) dirty = true; continue; }
       if (S.mentionSig.get(ch.gid) === ch.unread) continue;
-      const list = (await rpc('messages', { gid: ch.gid, limit: ch.unread + 50 })).messages;
+      // only what changed since the last look (fetchMessages); the window grows in steps so the core can keep answering with differences
+      const limit = Math.max(60, Math.ceil((ch.unread + 50) / 50) * 50), held = S.mentionWin.get(ch.gid);
+      const h = await fetchMessages({ gid: ch.gid, limit }, held && held.limit === limit ? held : null);
+      S.mentionWin.set(ch.gid, { ...h, limit });
+      const list = h.m.messages;
       let left = ch.unread, n = 0;
       for (let i = list.length - 1; i >= 0 && left > 0; i--) { const x = list[i]; if (x.mine || x.deleted || quiet(x)) continue; left--; if (mentionsMe(x.text) || repliesToMe(x, list)) n++; }
       S.mentionSig.set(ch.gid, ch.unread);
