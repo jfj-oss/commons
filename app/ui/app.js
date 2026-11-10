@@ -124,9 +124,11 @@ function fillAvatars(root = document) {
     if (img.getAttribute('src') !== a.url) img.src = a.url;
   }
 }
-async function refreshAvatars() {
-  if (AVS.polling || !S.snap) return;
-  AVS.polling = true;
+// Pictures change when a profile arrives, which also changes the snapshot: so the versions are asked for when it did,
+// and otherwise only every few seconds (several places call this on their own timers).
+async function refreshAvatars(force) {
+  if (AVS.polling || !S.snap || (!force && Date.now() - (AVS.at || 0) < 4000)) return;
+  AVS.polling = true; AVS.at = Date.now();
   try {
     const vers = await rpc('avatar_versions');
     let changed = false;
@@ -404,19 +406,22 @@ async function tick() {
 }
 async function tickOnce() {
   try {
-    const snap = await rpc('snapshot');
+    // The core answers with a hash of what it sent; sending that back gets a short "same" when nothing changed, which is
+    // nearly every time, so the page neither receives nor parses the whole thing again. S.last / S.lastMsgs hold the hashes;
+    // clearing one forces a full answer and a repaint.
+    const snap = await rpc('snapshot', S.last ? { if: S.last } : {});
     const st = $('#sync-status'); if (st.classList.contains('down')) { st.className = 'sync'; S.last = ''; }
-    const key = JSON.stringify(snap);
-    const changed = key !== S.last; S.last = key; S.snap = snap;
-    if (changed) { renderRail(); refreshMembers(); refreshMentions(); news(snap); }
-    refreshAvatars();   // small read call; downloads only pictures whose version changed
+    const changed = !snap.same;
+    if (changed) { S.last = snap.hash || ''; S.snap = snap; renderRail(); refreshMembers(); refreshMentions(); news(snap); }
+    refreshAvatars(changed);   // small read call; downloads only pictures whose version changed
     const gid = S.gid;
     if (gid) {
-      const m = await rpc('messages', { gid, limit: S.limit, around: S.jumpTo || '' });
+      const m = await rpc('messages', { gid, limit: S.limit, around: S.jumpTo || '', ...(S.lastMsgs ? { if: S.lastMsgs } : {}) });
       if (gid !== S.gid) return;
-      if (S.jumpTo) S.limit = Math.max(S.limit, m.messages.length);
-      const k2 = JSON.stringify(m);
-      if (k2 !== S.lastMsgs) { S.lastMsgs = k2; S.msgs = m; renderStream(); }
+      if (!m.same) {
+        if (S.jumpTo) S.limit = Math.max(S.limit, m.messages.length);
+        S.lastMsgs = m.hash || ''; S.msgs = m; renderStream();
+      }
       const ch = currentChannel();
       if (ch && ch.unread > 0 && document.visibilityState === 'visible' && !(window.__megaIdle && window.__megaIdle())) { await rpc('mark_read', { gid }); }   // mega: nothing is read while the cards are showing
     }

@@ -16,6 +16,8 @@ use std::sync::Arc;
 /// How many taken-back consents a device remembers, and how many fit in a pairing payload (the mailbox holds 8 KB).
 pub(crate) const MAX_WITHDRAWN: usize = 256;
 const PAIR_WITHDRAWN: usize = 40;
+/// After a pairing starts, how long both devices refresh their own device list every round rather than as the cache expires.
+const PAIR_HOT_SECS: u64 = 180;
 
 pub fn rand_hex(n: usize) -> String { let mut b = vec![0u8; n]; rand::rngs::OsRng.fill_bytes(&mut b); hex::encode(b) }
 pub(crate) fn hex32(s: &str) -> Result<[u8; 32]> { Ok(unhex32(s)?) }
@@ -93,6 +95,8 @@ pub struct Client {
     /// Device lists and key packages are fetched between rounds, so that planning a change needs no network.
     pub(crate) dir_cache: HashMap<String, (u64, Vec<(DeviceCert, bool)>)>,
     pub(crate) dir_wanted: BTreeSet<String>,
+    /// Until this time (seconds) every round refreshes our own device list: set when a pairing starts, on both devices.
+    pub(crate) dir_hot_until: u64,
     pub(crate) kp_cache: HashMap<String, Vec<Vec<u8>>>,
     pub(crate) kp_wanted: BTreeMap<String, u32>,
     pub(crate) kp_refill: bool,
@@ -176,7 +180,7 @@ impl Client {
         if !st.typing_default_applied { st.typing_default_applied = true; st.typing_enabled = true; }
         let walls = st.walls.clone();
         Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), wall_peer_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), live_in: Default::default(), live_next: 0, live: Default::default(), ring_in: Default::default(), ring_next: 0, ring_seen: BTreeMap::new(), ring_rate: BTreeMap::new(), ring_ends: BTreeMap::new(), ring_sent: BTreeMap::new(), direct_seen: BTreeMap::new(), direct_rate: BTreeMap::new(), direct_joined: Default::default(), direct_out: vec![], live_out: BTreeMap::new(), live_sent: BTreeMap::new(), live_rate: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new(),
-            lock: Some(lock), dir_ttl_secs: 30, acl_check_secs: 60, dir_cache: HashMap::new(), dir_wanted: BTreeSet::new(), kp_cache: HashMap::new(), kp_wanted: BTreeMap::new(), kp_refill: false, seen_welcomes: HashSet::new(), last_parked_try: 0,
+            lock: Some(lock), dir_ttl_secs: 30, acl_check_secs: 60, dir_cache: HashMap::new(), dir_wanted: BTreeSet::new(), dir_hot_until: 0, kp_cache: HashMap::new(), kp_wanted: BTreeMap::new(), kp_refill: false, seen_welcomes: HashSet::new(), last_parked_try: 0,
             more: false, sync_cap: SYNC_MAX_BYTES, pair_ack: None, net: NetStatus::default(), consent_offered: HashMap::new() }
     }
     fn blank(dir: &Path, vault: Vault, relay: &str, name: &str, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
@@ -449,6 +453,7 @@ impl Client {
         self.st.registered = false;
         self.save()?;
         self.pair_ack = Some((p.rid, self.my_device()));
+        self.dir_hot_until = now_secs() + PAIR_HOT_SECS;
         self.notice("pair", "this device is now paired; the other device will add it to your communities");
         Ok(true)
     }
@@ -483,6 +488,7 @@ impl Client {
     pub fn pairing_approve(&mut self, code: &str) -> Result<String> {
         let (rid, sealed, check) = self.pairing_seal(code)?;
         self.api.rv_put(&self.dev_key()?, &rid, "a", &sealed)?;
+        self.dir_hot_until = now_secs() + PAIR_HOT_SECS;
         self.notice("pair", "pairing data sent; the new device will appear in your device list once it registers");
         Ok(check)
     }

@@ -258,7 +258,11 @@ impl Client {
             r.acls.push((j.clone(), AclReq { add: j.add.clone(), remove: j.remove.clone(), demote: j.demote.clone(), promote: j.promote.clone(), call_remove: j.call_remove.clone(), transfer: j.transfer.clone(), grant: self.my_grant(&cid), ..Default::default() }));
         }
         self.plan_rejoins(&mut r, &k, now);
-        self.dir_wanted.insert(self.my_account());
+        // Our own device list (a new device of ours to let into the groups, or one nobody expected): every round while a
+        // pairing is under way, otherwise at half the directory cache's age, not every round as before.
+        let me = self.my_account();
+        let fresh = self.dir_cache.get(&me).is_some_and(|(t, _)| now < t + self.dir_ttl_secs / 2);
+        if now < self.dir_hot_until || !fresh { self.dir_wanted.insert(me); }
         r.dirs = std::mem::take(&mut self.dir_wanted).into_iter().collect();
         r.kps = std::mem::take(&mut self.kp_wanted).into_iter().take(64).collect();
         if self.last_dir_check.get("acl").is_none_or(|t| now >= t + self.acl_check_secs) {
