@@ -51,8 +51,12 @@ fn updatable(ui: &std::path::Path) -> Option<(PathBuf, &'static str)> {
 
 /// Where the launcher keeps its runtime files (pid, log, the open ticket): MEGATRON_NOTE_DIR, which for a macOS bundle is the
 /// data folder (Contents/Resources is sealed), otherwise the install folder.
-fn state_dir(ui: &std::path::Path) -> Option<PathBuf> {
-    std::env::var_os("MEGATRON_NOTE_DIR").map(PathBuf::from).or_else(|| ui.parent().map(PathBuf::from))
+fn state_dir(ui: &std::path::Path, port: u16) -> Option<PathBuf> {
+    if let Some(d) = std::env::var_os("MEGATRON_NOTE_DIR") { return Some(PathBuf::from(d)); }
+    let install = ui.parent()?;
+    // A launcher that does not set it (an older one) must not make us write into a sealed .app bundle.
+    if install.ends_with("Contents/Resources") { return Some(data_dir(port)); }
+    Some(install.to_path_buf())
 }
 
 fn data_dir(port: u16) -> PathBuf {
@@ -61,9 +65,9 @@ fn data_dir(port: u16) -> PathBuf {
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 /// Appends a line to the launcher's log (the data folder for a macOS bundle), and to stderr (bridge.log).
-fn launcher_log(ui: &std::path::Path, msg: &str) {
+fn launcher_log(ui: &std::path::Path, port: u16, msg: &str) {
     eprintln!("{msg}");
-    if let Some(dir) = state_dir(ui) {
+    if let Some(dir) = state_dir(ui, port) {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("launcher.log")) {
             let _ = writeln!(f, "bridge: {msg}");
         }
@@ -179,7 +183,7 @@ fn request(s: &mut TcpStream, r: &mut BufReader<TcpStream>, app: &App, ui: &std:
         let mut body = vec![0u8; len];
         if r.read_exact(&mut body).is_err() { return reply(s, 400, "text/plain", b"bad body", false); }
         let ticket = String::from_utf8_lossy(&body).trim().to_string();
-        let ok = state_dir(ui).is_some_and(|d| bridge_auth::take_ticket(&d, port, &ticket));
+        let ok = state_dir(ui, port).is_some_and(|d| bridge_auth::take_ticket(&d, port, &ticket));
         if !ok { return reply(s, 403, "text/plain", b"bad ticket", false); }
         return reply(s, 200, "application/json", serde_json::json!({"secret": secret}).to_string().as_bytes(), false);
     }
@@ -286,12 +290,12 @@ fn main() {
     // Contents/MacOS/launcher here, before the port is bound, so a launcher that is waiting for this bridge does not
     // sign the bundle at the same time.
     #[cfg(target_os = "macos")]
-    if let (Some(install), Some(state)) = (ui.parent(), state_dir(&ui)) {
+    if let (Some(install), Some(state)) = (ui.parent(), state_dir(&ui, port)) {
         use commons_core::browser_update::{refresh_mac_launcher, resign_bundle, LauncherSwap};
         match refresh_mac_launcher(install, &state, &|| resign_bundle(install)) {
-            LauncherSwap::Replaced => { LAUNCHER_REFRESHED.store(true, Ordering::SeqCst); launcher_log(&ui, "replaced the older launcher with the current one and signed the app again"); }
-            LauncherSwap::Same => launcher_log(&ui, "the launcher is already current; signed the app again"),
-            LauncherSwap::Failed(e) => launcher_log(&ui, &format!("could not replace the launcher: {e}")),
+            LauncherSwap::Replaced => { LAUNCHER_REFRESHED.store(true, Ordering::SeqCst); launcher_log(&ui, port, "replaced the older launcher with the current one and signed the app again"); }
+            LauncherSwap::Same => launcher_log(&ui, port, "the launcher is already current; signed the app again"),
+            LauncherSwap::Failed(e) => launcher_log(&ui, port, &format!("could not replace the launcher: {e}")),
             LauncherSwap::Skipped | LauncherSwap::Nothing => {}
         }
     }
