@@ -87,7 +87,9 @@ class Page {
 async function open(url) {
   const t = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/new?` + encodeURIComponent(url), { method: 'PUT' })).json();
   const ws = new WebSocket(t.webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
-  const p = new Page(ws); await p.send('Page.enable'); await p.send('Runtime.enable'); await p.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+  const p = new Page(ws); await p.send('Page.enable'); await p.send('Runtime.enable');
+  // the first-run tour would sit over every other check; it is marked as seen on each load unless the tour check has asked for it
+  await p.send('Page.addScriptToEvaluateOnNewDocument', { source: `try { if (!sessionStorage.getItem('tourtest')) localStorage.setItem('commons.tour', '1'); } catch {}` }); await p.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
   // COMMONS_UI_RPC_TRACE=1: how long each call to the core takes from the page's side (window.__rpcTrace, printed when the check ends).
   if (process.env.COMMONS_UI_RPC_TRACE) {
     const source = `(() => { if (window.__rpcTrace) return; const T = window.__rpcTrace = { m: {}, slow: [] }; const w = () => { if (typeof window.rpc !== 'function') return setTimeout(w, 20); const r0 = window.rpc; window.rpc = async (m, a) => { const t = performance.now(); try { return await r0(m, a); } finally { const d = performance.now() - t, e = T.m[m] || (T.m[m] = { n: 0, max: 0, sum: 0, over: 0 }); e.n++; e.sum += d; if (d > e.max) e.max = d; if (d > 400) { e.over++; T.slow.push([new Date().toISOString().slice(11, 23), m, Math.round(d)]); if (T.slow.length > 300) T.slow.shift(); } } }; }; w(); })()`;
@@ -533,6 +535,36 @@ try {
     const bright = await P.ev(`(async () => { const b = await createImageBitmap(new Blob([Uint8Array.from(atob('${shot.result.data}'), c => c.charCodeAt(0))], { type: 'image/png' })), c = new OffscreenCanvas(b.width, b.height), g = c.getContext('2d'); g.drawImage(b, 0, 0); const d = g.getImageData(0, 0, b.width, b.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 330) n++; return n; })()`);
     return { bright, ...r };
   };
+  // ---- the first-run tour: seen on a first visit, stepped through, gone after a reload, back from the options room ----
+  {
+    const keep = await A.ev(`({ c: __mega.cid, g: S.gid })`);
+    const reload = async () => { await A.ev(`location.reload(); 1`).catch(() => { }); await sleep(1500); await A.waitFor(`window.__megaTour && document.querySelector('#mega:not([hidden]) .mcard')`, 60000); };
+    await A.ev(`sessionStorage.setItem('tourtest', '1'); localStorage.removeItem('commons.tour'); 1`); await reload();
+    await A.waitFor(`document.querySelector('#mega-tour.on .mt-t')`, 20000).catch(() => { throw new Error('mega: tour: it did not appear on a first visit'); });
+    await sleep(500);
+    const t0 = await A.ev(`(() => { const t = document.querySelector('#mega-tour'); return { text: t.querySelector('.mt-t').innerText, n: t.querySelector('.mt-n').innerText, live: t.querySelector('[aria-live]').textContent, ring: getComputedStyle(t.querySelector('.mt-ring')).opacity }; })()`);
+    need(/communities/.test(t0.text) && /1 of 5/.test(t0.n) && /step 1 of 5/.test(t0.live) && t0.ring === '1', 'tour: first step is wrong: ' + JSON.stringify(t0));
+    await A.shot('mega-tour-1');
+    for (let i = 2; i <= 5; i++) { await key(A, 'Enter'); await sleep(350); need(await A.ev(`document.querySelector('#mega-tour .mt-n').innerText === '${i} of 5'`), 'tour: Enter did not go to step ' + i); }
+    need(await A.ev(`document.querySelector('#mega-tour .mt-skip').hidden && document.querySelector('#mega-tour .mt-next').innerText === 'done'`), 'tour: the last step should say done');
+    await key(A, 'Enter'); await sleep(600);
+    need(await A.ev(`!document.querySelector('#mega-tour') && localStorage.getItem('commons.tour') === '1'`), 'tour: it did not close and remember at the end');
+    await reload(); await sleep(3500);
+    need(await A.ev(`!document.querySelector('#mega-tour')`), 'tour: it came back after a reload');
+    // Esc skips
+    await A.ev(`__megaTour.start(); 1`); await sleep(500); need(await A.ev(`!!document.querySelector('#mega-tour')`), 'tour: start() did not open it');
+    await key(A, 'Escape'); await sleep(600); need(await A.ev(`!document.querySelector('#mega-tour')`), 'tour: Esc did not skip: ' + await A.ev(`JSON.stringify({ t: document.querySelectorAll('#mega-tour').length, st: __megaTour.state(), ae: document.activeElement.className, ls: localStorage.getItem('commons.tour') })`));
+    // the options room offers it again
+    await A.ev(`__mega.api.toChat(${JSON.stringify(keep.c)}, null); 1`);
+    await A.waitFor(`document.querySelector('#mega-opts:not([hidden]) #m-tour-again')`, 15000).catch(() => { throw new Error('mega: tour: the options room has no "show the tour again"'); });
+    await click(A, '#m-tour-again'); await sleep(600);
+    need(await A.ev(`!!document.querySelector('#mega-tour.on') && document.querySelector('#mega-tour .mt-n').innerText === '1 of 5'`), 'tour: the options button did not reopen it');
+    await A.shot('mega-tour-again'); await key(A, 'Escape'); await sleep(500);
+    await A.ev(`sessionStorage.removeItem('tourtest'); localStorage.setItem('commons.tour', '1'); 1`); await reload();
+    await A.ev(`__mega.api.toChat(${JSON.stringify(keep.c)}, ${JSON.stringify(keep.g)}); 1`); await sleep(800);
+  }
+  if (process.env.COMMONS_UI_STOP_AFTER === 'tour') { console.log('UI check stopped after the tour (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
+
   // entering a room shows the dots and the existing stream
   need(await lvl(A) === 'chat', 'a chat should be open, level is ' + await lvl(A));
   const chat = await A.ev(`(() => { const r = document.querySelector('#mega-rail'), s = document.querySelector('#stream').getBoundingClientRect(), d = [...document.querySelectorAll('#mega-rail .mitem')];
