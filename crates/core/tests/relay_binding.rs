@@ -64,7 +64,20 @@ fn a_captured_request_is_good_only_at_the_relay_it_was_made_for() {
     let path = format!("/v1/groups/{gid}/acl");
     let t = HttpTransport::new(&via);
     assert_eq!(t.request(Some(&dev), "POST", &path, &body, Duration::from_secs(5)).unwrap().status, 200);
-    let captured = seen.lock().unwrap().iter().find(|r| r.starts_with(format!("POST {path}").as_bytes())).cloned().expect("the request was seen");
+    // Exactly that one request out of the connection's bytes: its headers, then as many body bytes as Content-Length says
+    // (a kept-alive connection can carry other requests before and after it).
+    let captured = {
+        let start = format!("POST {path}");
+        let conns = seen.lock().unwrap().clone();
+        conns.iter().find_map(|c| {
+            let at = c.windows(start.len()).position(|w| w == start.as_bytes())?;
+            let rest = &c[at..];
+            let head_end = rest.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
+            let head = String::from_utf8_lossy(&rest[..head_end]).to_lowercase();
+            let len: usize = head.lines().find_map(|l| l.strip_prefix("content-length:")).map(|v| v.trim().parse().unwrap_or(0)).unwrap_or(0);
+            (rest.len() >= head_end + len).then(|| rest[..head_end + len].to_vec())
+        }).expect("the request was seen whole")
+    };
     let text = String::from_utf8_lossy(&captured).to_lowercase();
     assert!(text.contains("x-commons-auth2:") && !text.contains("\r\nx-commons-auth:"), "a bound relay gets only the bound header");
     // The same bytes, played at relay A again (same relay: still accepted within the window, as documented) and at relay B (refused).
