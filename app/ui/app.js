@@ -416,16 +416,34 @@ async function tickOnce() {
     refreshAvatars(changed);   // small read call; downloads only pictures whose version changed
     const gid = S.gid;
     if (gid) {
-      const m = await rpc('messages', { gid, limit: S.limit, around: S.jumpTo || '', ...(S.lastMsgs ? { if: S.lastMsgs } : {}) });
+      // `delta: 1` says this page can take only what changed since the answer it holds (api.rs messages_answer); the
+      // core sends that when it remembers that answer, the whole window otherwise.
+      const r = await rpc('messages', { gid, limit: S.limit, around: S.jumpTo || '', delta: 1, ...(S.lastMsgs ? { if: S.lastMsgs } : {}) });
       if (gid !== S.gid) return;
-      if (!m.same) {
-        if (S.jumpTo) S.limit = Math.max(S.limit, m.messages.length);
-        S.lastMsgs = m.hash || ''; S.msgs = m; renderStream();
+      if (!r.same) {
+        const m = r.delta ? mergeMessages(S.msgs, S.lastMsgs, r) : r;
+        if (!m) { S.lastMsgs = ''; tick.again = true; }   // a difference to an answer this page no longer holds: ask for the whole window
+        else {
+          if (S.jumpTo) S.limit = Math.max(S.limit, m.messages.length);
+          S.lastMsgs = m.hash || ''; S.msgs = m; renderStream();
+        }
       }
       const ch = currentChannel();
       if (ch && ch.unread > 0 && document.visibilityState === 'visible' && !(window.__megaIdle && window.__megaIdle())) { await rpc('mark_read', { gid }); }   // mega: nothing is read while the cards are showing
     }
   } catch (e) { const st = $('#sync-status'); st.textContent = 'Not reachable: ' + e.message; st.className = 'sync bad down'; }
+}
+// The full answer the core would have sent, built from the one this page holds (`have`, with hash `hash`) and the
+// difference `d`: rows that are new or changed replace or append, `drop` names the ids that left the window, and `order`
+// is there only when appending did not give the right order. Null when the page does not hold what the difference is to.
+function mergeMessages(have, hash, d) {
+  if (!have || !hash || have.hash !== hash || !Array.isArray(have.messages)) return null;
+  const gone = new Set(d.drop || []);
+  const list = have.messages.filter(x => !gone.has(x.id));
+  const at = new Map(list.map((x, i) => [x.id, i]));
+  for (const x of d.rows || []) { const i = at.get(x.id); if (i == null) { at.set(x.id, list.length); list.push(x); } else list[i] = x; }
+  const messages = d.order ? d.order.map(id => list[at.get(id)]).filter(Boolean) : list;
+  return { messages, more: d.more, typing: d.typing || [], status: d.status, hash: d.hash };
 }
 const currentCommunity = () => S.snap && S.snap.communities.find(c => c.id === S.cid);
 const currentChannel = () => { const c = currentCommunity(); return c && c.channels.find(x => x.gid === S.gid); };
