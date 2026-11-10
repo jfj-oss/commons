@@ -211,7 +211,11 @@ try {
   await A.shot('09-listening-own'); await B.shot('10-listening-people');
   // Playback stops in rune: friends stop seeing it at once, not when the ten-minute TTL runs out.
   runeSong.status = 'stopped'; runeSong.index = -1; runeSong.queue = [];
-  await B.waitFor(`![...document.querySelectorAll('.person .listen')].some(e=>e.innerText.includes('Detective'))`, 90000);
+  await B.waitFor(`![...document.querySelectorAll('.person .listen')].some(e=>e.innerText.includes('Detective'))`, 90000).catch(async () => {
+    const a = await A.ev(`rpc('state').then(s => JSON.stringify({ listening: s.listening, share: s.share_listening, outbox: s.outbox, net: s.net }))`);
+    const b = await B.ev(`(async () => { const s = S.snap; const cid = s.communities[0] && s.communities[0].id; const m = cid ? await rpc('members', { cid }) : []; return JSON.stringify({ people: !!S.people, outbox: s.outbox, net: s.net, members: m.map(x => [x.name, x.listening]), shown: [...document.querySelectorAll('.person .listen')].map(e => e.innerText) }); })()`);
+    throw new Error('listening: friends still see the song after it stopped. alice ' + a + ' bob ' + b);
+  });
 
   // ---- profile pictures ----
   // Alice picks a phone-style JPEG: its EXIF orientation says "rotate 90° clockwise". Stored, the four quadrants are
@@ -1296,7 +1300,7 @@ try {
     const d1 = await dot();
     need(d1 && d1.un && !d1.at && d1.anim === 'mn-un' && /^#[0-9a-f]{6}$/i.test(d1.mh), 'dots: an unread room should pulse a ring in its highlight colour: ' + JSON.stringify(d1));
     await sendB([textGid, '@' + me + ' whatsnew second']);
-    await A.waitFor(`document.querySelector('#mega-rail .mitem[data-key="${JSON.stringify(textGid).slice(1, -1)}"]')?.classList.contains('at')`, 30000).catch(() => { throw new Error('dots: a mention did not get its stronger mark'); });
+    await A.waitFor(`document.querySelector('#mega-rail .mitem[data-key="${JSON.stringify(textGid).slice(1, -1)}"]')?.classList.contains('at')`, 30000).catch(async () => { throw new Error('dots: a mention did not get its stronger mark: ' + await A.ev(`(async () => { const g = ${JSON.stringify(textGid)}, d = document.querySelector('#mega-rail .mitem[data-key="' + g + '"]'), ch = S.snap.communities.flatMap(c => c.channels).find(x => x.gid === g), m = await rpc('messages', { gid: g, limit: 20 }); return JSON.stringify({ cls: d && d.className, unread: ch && ch.unread, mention: S.mention.get(g) || 0, sig: S.mentionSig.get(g), me: S.snap.me.name, last: m.messages.slice(-3).map(x => [x.mine, x.text, x.kind]), level: __mega.level, gidOpen: S.gid }); })()`)); });
     const d2 = await dot();
     need(d2.un && d2.at && d2.anim === 'mn-at' && d2.mh === d1.mh, 'dots: a mention should have a stronger mark in the same colour: ' + JSON.stringify([d1, d2]));
     await A.shot('mega6-2-dots-marks');
@@ -1603,7 +1607,19 @@ try {
     const chan = (P, mode) => P.ev(`(() => { if (!window.__rpc0) window.__rpc0 = window.rpc; window.__chanMode = ${JSON.stringify(mode)}; window.rpc = (m, a) => m === 'live_chan' && window.__chanMode !== 'real' ? Promise.resolve({ chan: window.__chanMode === 'on' }) : window.__rpc0(m, a); __megaPres._reset(); return 1; })()`);
     const idx = (P, g) => P.ev(`__mega.list.items.findIndex(x => x.key === ${JSON.stringify(g)})`);
     const optIdx = P => P.ev(`__mega.list.items.findIndex(x => x.kind === 'options')`);
-    const focus = async (P, i) => { await P.send('Page.bringToFront'); await P.ev(`__mega.list.go(${i}, true)`); await P.waitFor(`__mega.list.settled && __mega.list.cur === ${i}`, 8000); };
+    // by the card, not only its position: the list can be rebuilt (a card appearing or going) between finding a card and going to it
+    const focus = async (P, i) => {
+      await P.send('Page.bringToFront');
+      const key = await P.ev(`(__mega.list.items[${i}] || {}).key || ''`);
+      for (let t = 0; t < 5; t++) {
+        const at = await P.ev(`__mega.list.items.findIndex(x => x.key === ${JSON.stringify(key)})`);
+        await P.ev(`__mega.list.go(${'${at < 0 ? ' + i + ' : at}'}, true)`.replace('${at < 0 ? ' + i + ' : at}', String(at < 0 ? i : at)));
+        await P.waitFor(`__mega.list.settled`, 8000);
+        if (await P.ev(`(__mega.list.item || {}).key === ${JSON.stringify(key)}`)) return;
+        await sleep(400);
+      }
+      throw new Error('presence: could not settle on the card ' + key);
+    };
     const focusSend = async (P, i) => { await focus(P, i); await sleep(2300); };   // a hidden tab sends nothing, so the sender stays in front until it has
     const dotsOn = (P, g) => P.ev(`(() => { const i = __mega.list.items.findIndex(x => x.key === ${JSON.stringify(g)}); const s = document.querySelector('.mslot[data-i="' + i + '"]'); return s ? [...s.querySelectorAll('.mpres .mpd:not(.out)')].map(d => d.dataset.n) : []; })()`);
     const allDots = P => P.ev(`document.querySelectorAll('.mpres .mpd:not(.out)').length`);
@@ -1616,8 +1632,9 @@ try {
     // alice rests on a room card: bob sees a dot there, in alice's colour, and nowhere else
     await focusSend(A, await idx(A, textGid));
     await B.send('Page.bringToFront');
+    const presDiag = () => B.ev(`JSON.stringify({ peers: __megaPres.peers(), dots: [...document.querySelectorAll('.mpres .mpd')].map(d => [d.className, d.closest('.mslot') && d.closest('.mslot').dataset.i]), pres: document.querySelectorAll('.mpres').length, slots: [...document.querySelectorAll('.mslot')].map(s => s.dataset.i + ':' + (s.querySelector('.msq') ? 1 : 0)), keys: __mega.list.items.map(x => x.key.slice(0, 6)), cur: __mega.list.cur, lvl: __mega.level })`);
     await B.waitFor(`__megaPres.peers().length === 1`, 20000).catch(async () => { throw new Error('presence: bob never heard of alice\'s card: ' + await A.ev(`JSON.stringify(__megaPres.state())`) + await B.ev(`JSON.stringify(__megaPres.stats)`)); });
-    await B.waitFor(`document.querySelectorAll('.mpres .mpd:not(.out)').length === 1`, 8000);
+    await B.waitFor(`document.querySelectorAll('.mpres .mpd:not(.out)').length === 1`, 8000).catch(async () => { throw new Error('presence: bob knows alice is there but shows no single dot: ' + await presDiag()); });
     need((await dotsOn(B, textGid)).join() === meA && await allDots(B) === 1, 'presence: the dot is not on the matching card: ' + JSON.stringify(await dotsOn(B, textGid)));
     const look = await B.ev(`(() => { const d = document.querySelector('.mpres .mpd'), l = d.parentElement, r = d.getBoundingClientRect(), q = d.closest('.msq').getBoundingClientRect(); return { pe: getComputedStyle(l).pointerEvents + '/' + getComputedStyle(d).pointerEvents, bg: getComputedStyle(d).backgroundColor, inside: r.left >= q.left && r.right <= q.right && r.top >= q.top && r.bottom <= q.bottom, label: d.textContent, hit: document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === d }; })()`);
     need(look.pe === 'none/none' && look.inside && look.label === '' && !look.hit && /^rgb/.test(look.bg), 'presence: the dot should be a plain colour, inside the card and out of the pointer\'s way: ' + JSON.stringify(look));
