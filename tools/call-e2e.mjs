@@ -521,6 +521,8 @@ try {
     await page('bob').ev(`document.querySelector('#mega-ring .rg-b.yes').click()`);
     await until(() => call('bob', `c.phase === 'connected' && c.gid === ${J(dr)}`), 40000, 'bob joined from the ring').catch(() => { });
     check('DC5 bob joins from the card through the normal join, and the call is named after alice', await call('bob', `c.phase === 'connected' && c.gid === ${J(dr)} && c.roomName === 'Alice'`) && (await cards('bob')).length === 0);
+    // bob joining moves the room's key epoch on; alice takes the new epoch at her next sync, a moment later
+    await until(async () => (await call('alice', `c.snapshot().encryption.epoch`)) === (await call('bob', `c.snapshot().encryption.epoch`)), 15000, 'both sides on the same key epoch').catch(() => { });
     const ea2 = await call('alice', `c.snapshot().encryption`), eb2 = await call('bob', `c.snapshot().encryption`);
     check('DC6 the call uses end-to-end frame encryption on both sides, with the same key epoch', (await call('alice', `c.room.isE2EEEnabled`)) && (await call('bob', `c.room.isE2EEEnabled`)) && ea2.active && eb2.active && ea2.epoch === eb2.epoch, J({ ea2, eb2 }));
     check('DC7 bob hears alice, through the encryption', await hears('bob', 'alice'));
