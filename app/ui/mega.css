@@ -37,6 +37,11 @@ html.mega #btn-rooms { display: none !important; }
    the characters the trial face lacks (" @ # % & _ + =) */
 html.mega, html.mega:root[data-read] { --read: var(--m-chat); --read-size: 24px; --read-lead: 1.22; }   /* an old "Plain" choice no longer applies */
 html.mega .body, html.mega #input { letter-spacing: 0; }
+/* Settings → Chat font → Raster: the chat text as it was before Bellefair */
+html.mega[data-mchat="raster"] { --m-chat: var(--m-msg); }
+html.mega[data-mchat="raster"], html.mega[data-mchat="raster"]:root[data-read] { --read-lead: 1.05; }
+html.mega[data-mchat="raster"] .body, html.mega[data-mchat="raster"] #input, html.mega[data-mchat="raster"] .mpreview, html.mega[data-mchat="raster"] .mnp,
+html.mega[data-mchat="raster"] .quote span:last-child, html.mega[data-mchat="raster"] .replybar .ex { letter-spacing: calc(var(--m-small) * .5); }
 html.mega #chan-title { font-family: var(--m-sharp); font-weight: 400; font-size: round(down, 36px, 12px); line-height: 1; letter-spacing: var(--m-track); }
 html.mega .body.gone { font-style: normal; }
 @media (max-width: 760px) { html.mega #chan-title { font-size: round(down, 24px, 12px); } }

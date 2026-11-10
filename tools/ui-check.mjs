@@ -1388,6 +1388,25 @@ try {
     await sleep(400); await wheelOn(-wheelDir);
     await A.waitFor(`S.gid === ${JSON.stringify(wheelFrom)}`, 8000).catch(() => { throw new Error('sidebar: scrolling back did not return to the room'); });
     await sleep(500);
+    // chat font: Bellefair by default, Raster from Settings, names keep their face either way
+    {
+      const faces = () => A.ev(`(() => { const b = document.querySelector('#stream .msg .body'), n = document.querySelector('#stream .msg .who .name'); return JSON.stringify({ body: b ? getComputedStyle(b).fontFamily : '', name: n ? getComputedStyle(n).fontFamily : '', at: document.documentElement.dataset.mchat || '' }); })()`).then(JSON.parse);
+      const pick = async v => {
+        await click(A, '#btn-settings'); await A.waitFor(`document.querySelector('.seg[data-for="cf"]')`, 8000).catch(() => { throw new Error('chat font: no choice in Settings'); });
+        await A.ev(`document.querySelector('.seg[data-for="cf"] button[data-v="${v}"]').click()`);
+        await click(A, '.modal .acts button:last-child'); await sleep(600);
+      };
+      const f0 = await faces();
+      need(/^"?Bellefair/.test(f0.body) && !/Bellefair/.test(f0.name) && f0.at === '', 'chat font: messages should start in Bellefair and names in their own face: ' + JSON.stringify(f0));
+      await pick('raster');
+      const f1 = await faces();
+      need(/Raster/.test(f1.body.split(',')[0]) && f1.at === 'raster', 'chat font: choosing Raster did not change the messages: ' + JSON.stringify(f1));
+      await A.shot('mega6-5-chat-raster');
+      await pick('');
+      const f2 = await faces();
+      need(/^"?Bellefair/.test(f2.body) && f2.at === '', 'chat font: choosing Bellefair again did not bring it back: ' + JSON.stringify(f2));
+      await A.shot('mega6-6-chat-bellefair');
+    }
     // 390 px: the menu fits
     await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(900);
     await A.ev(`document.querySelector('#btn-density').click()`); await sleep(400);
