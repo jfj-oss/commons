@@ -149,7 +149,7 @@ impl GpuGate {
             if let Ok(raw) = std::fs::read(dir.join("cmdline")) {
                 for arg in raw.split(|b| *b == 0) {
                     let arg = String::from_utf8_lossy(arg);
-                    if is_steam_common(&arg) { return Some(format!("a game under steamapps/common ({arg})")); }
+                    if is_steam_common(&arg) && names_a_program(&arg) { return Some(format!("a game under steamapps/common ({arg})")); }
                 }
             }
         }
@@ -217,6 +217,23 @@ pub fn is_steam_common(s: &str) -> bool {
     low.contains("/steamapps/common/") || low.contains("\\steamapps\\common\\")
 }
 
+/// Does this command-line argument name a program to run, rather than merely mention a path? Only then can it mark a
+/// game. A shell command, a script or a tool that happens to pass a Steam folder (a symlink to an install, a test run
+/// reading a game's data files) is not a game: that is how a terminal command once kept Oracle "paused for a game".
+/// A program here: an absolute path (Unix, or a Windows drive path from Proton), no shell syntax, and either a Windows
+/// .exe or an existing regular file someone may execute.
+pub fn names_a_program(arg: &str) -> bool {
+    let a = arg.trim();
+    if a.is_empty() || a.chars().any(|c| matches!(c, ';' | '&' | '|' | '$' | '`' | '"' | '\'' | '\n' | '<' | '>')) { return false; }
+    let b = a.as_bytes();
+    let windows = b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
+    if windows { return a.to_ascii_lowercase().ends_with(".exe"); }
+    if !a.starts_with('/') { return false; }
+    if a.to_ascii_lowercase().ends_with(".exe") { return true; }
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(a).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+}
+
 /// The owner's game names from the voice app's settings (read only), else the same defaults Studio uses.
 pub fn read_game_processes(path: &Path) -> Vec<String> {
     if let Ok(text) = std::fs::read_to_string(path) {
@@ -234,6 +251,30 @@ pub fn read_game_processes(path: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_program_under_steamapps_common_is_a_game() {
+        // a terminal command that mentions a Steam folder is not a game
+        assert!(!names_a_program("source ~/.snap.sh && ln -s \"/home/u/.local/share/Steam/steamapps/common/Distant Worlds Universe\" x"));
+        assert!(!names_a_program("cd /home/u/.local/share/Steam/steamapps/common/Game; ls"));
+        // a folder is not a program
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("steamapps/common/Game");
+        std::fs::create_dir_all(&game).unwrap();
+        assert!(!names_a_program(game.to_str().unwrap()));
+        // a data file is not a program; an executable file is
+        let data = game.join("races.txt");
+        std::fs::write(&data, "x").unwrap();
+        assert!(!names_a_program(data.to_str().unwrap()));
+        let bin = game.join("game.x86_64");
+        std::fs::write(&bin, "x").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(names_a_program(bin.to_str().unwrap()));
+        // Proton games carry Windows paths
+        assert!(names_a_program("Z:\\home\\u\\.local\\share\\Steam\\steamapps\\common\\Deadlock\\game\\bin\\win64\\deadlock.exe"));
+        assert!(!names_a_program("Z:\\home\\u\\.local\\share\\Steam\\steamapps\\common\\Deadlock\\game\\readme.txt"));
+    }
 
     #[test]
     fn steam_common_is_recognised_with_either_separator() {
