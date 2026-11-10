@@ -25,7 +25,9 @@ fn recorder(target: String) -> (String, Arc<Mutex<Vec<Vec<u8>>>>) {
                 std::thread::spawn(move || { let mut b = [0u8; 65536]; while let Ok(n) = up2.read(&mut b) { if n == 0 || c2.write_all(&b[..n]).is_err() { break; } } });
                 let mut c = c;
                 let mut b = [0u8; 65536];
-                while let Ok(n) = c.read(&mut b) { if n == 0 { break; } seen.lock().unwrap().push(b[..n].to_vec()); if up.write_all(&b[..n]).is_err() { break; } }
+                // One entry per connection, the whole of what was sent: a request's headers and body can arrive in separate reads.
+                let slot = { let mut s = seen.lock().unwrap(); s.push(Vec::new()); s.len() - 1 };
+                while let Ok(n) = c.read(&mut b) { if n == 0 { break; } seen.lock().unwrap()[slot].extend_from_slice(&b[..n]); if up.write_all(&b[..n]).is_err() { break; } }
             });
         }
     });

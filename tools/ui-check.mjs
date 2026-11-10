@@ -824,8 +824,14 @@ try {
     // the live channel's test hook: one event across, never in the history
     const msgsBefore = await B.ev(`rpc('messages', { gid: ${JSON.stringify(textGid)}, limit: 200 }).then(m => m.messages.length)`);
     await A.ev(`rpc('live_send', { gid: ${JSON.stringify(textGid)}, kind: 'probe', data: 'hello' }).then(() => 1)`);
-    await sleep(2500);
-    const live = await B.ev(`rpc('live_poll', { since: 0 }).then(r => r.events.filter(e => e.kind === 'probe').map(e => e.data + ':' + e.account.slice(0, 4)))`);
+    // a poll answers "busy" with no events while the core is occupied, so ask until it answers or a while has passed
+    let live = [];
+    for (let i = 0; i < 30 && !live.length; i++) {
+      await sleep(500);
+      live = await B.ev(`rpc('live_poll', { since: 0 }).then(r => r.busy ? [] : r.events.filter(e => e.kind === 'probe').map(e => e.data + ':' + e.account.slice(0, 4)))`);
+    }
+    await sleep(1500);
+    live = await B.ev(`(async () => { for (let i = 0; i < 20; i++) { const r = await rpc('live_poll', { since: 0 }); if (!r.busy) return r.events.filter(e => e.kind === 'probe').map(e => e.data + ':' + e.account.slice(0, 4)); await new Promise(z => setTimeout(z, 300)); } return []; })()`);
     need(live.length === 1 && live[0].startsWith('hello:'), 'live: the event did not arrive exactly once: ' + JSON.stringify(live));
     need(await B.ev(`rpc('messages', { gid: ${JSON.stringify(textGid)}, limit: 200 }).then(m => m.messages.length)`) === msgsBefore, 'live: an event showed up in the history');
     for (const Q of [A, B]) need(await Q.ev(`rpc('notices').then(n => n.filter(x => x.kind === 'newer').length)`) === 0, 'live: a newer-version notice appeared between two current clients');
