@@ -125,7 +125,7 @@
     const name = s.roomName || (room && room.name) || 'Call';
     const dot = s.phase === 'connected' ? 'ok' : s.phase === 'error' ? 'bad' : 'wait';
     let notes = '';
-    if (s.error) notes += `<div class="cd-err" role="status">${esc(s.error.msg)}</div>`;
+    if (s.error) notes += `<div class="cd-err" role="status" title="Click to close">${esc(s.error.msg)}</div>`;
     else if (!sup.ok) notes += `<div class="cd-err">Calls are not available in this window.</div>`;
     if (!sup.ok && desktopApp() && room) notes += `<div class="cd-row"><button type="button" class="btn ghost" id="c-browser">Open this call in my browser</button></div>`;
     if (s.gameMuted) notes += `<div class="cd-note">Muted by game key${s.gameName ? ' (' + esc(s.gameName) + ')' : ''}. Friends see you as muted.</div>`;
@@ -146,6 +146,7 @@
   function wireDock() {
     if (dockWired) return; dockWired = true;
     dock.addEventListener('click', e => {
+      if (e.target.closest('.cd-err')) { call.dismissError(); return; }   // a click on a notice closes it
       const b = e.target.closest('button'); if (!b || !dock.contains(b)) return;
       switch (b.id) {
         case 'c-mute':

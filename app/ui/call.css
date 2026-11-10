@@ -19,7 +19,7 @@
 .cd-dot-sep { opacity: .45; }
 .cd-phase { color: var(--rail-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
 .cd-room { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--rail-mute); font-weight: 400; }
-.cd-err { margin-top: var(--s-1); font-size: var(--t-xs); line-height: 1.35; color: var(--danger); }
+.cd-err { cursor: pointer; margin-top: var(--s-1); font-size: var(--t-xs); line-height: 1.35; color: var(--danger); }
 .cd-note { margin-top: var(--s-1); font-size: var(--t-xs); line-height: 1.35; color: var(--rail-mute); }
 .cd-note.bad { color: var(--danger); }
 .cd-row { margin-top: var(--s-1); }

@@ -92,6 +92,9 @@
     return r;
   }
 
+  // Notices about one attempt that failed: they fade after a few seconds. The rest describe the call itself and stay.
+  const PASSING_ERRORS = new Set(['screen', 'no-screen', 'busy', 'device', 'play']);
+  const LASTING_ERRORS = new Set(['network', 'removed', 'unsupported', 'audio-blocked']);
   class Call extends EventTarget {
     static support() { return describeSupport(); }
 
@@ -121,7 +124,18 @@
 
     log(msg) { this.events.push({ ts: Date.now(), msg }); if (this.events.length > 100) this.events.shift(); }
     changed() { if (this._pending) return; this._pending = setTimeout(() => { this._pending = null; this.dispatchEvent(new Event('change')); }, 60); }
-    fail(kind, msg) { this.error = { kind, msg }; this.log('error: ' + msg); this.changed(); }
+    fail(kind, msg) {
+      this.error = { kind, msg }; this.log('error: ' + msg); this.changed();
+      // A notice about one thing that did not work (a cancelled screen share, a busy device) fades on its own: it is not the
+      // state of the call, and it used to stay up until the next call. Lasting problems (removed, unsupported, network) stay.
+      clearTimeout(this._errT);
+      if (PASSING_ERRORS.has(kind)) {
+        const e = this.error;
+        this._errT = setTimeout(() => { if (this.error === e) { this.error = null; this.changed(); } }, 8000);
+      }
+    }
+    /** Close the current notice (a click on it). */
+    dismissError() { if (this.error && !LASTING_ERRORS.has(this.error.kind)) { clearTimeout(this._errT); this.error = null; this.changed(); } }
     savePrefs() { lsSet('commons.call.prefs', this.prefs); }
 
     // ------------------------------------------------------------------ join / leave
@@ -624,6 +638,7 @@
           { screenShareEncoding: prof.preset.encoding, screenShareSimulcastLayers: prof.layers, videoCodec: 'vp8', degradationPreference: prof.keep });
         if (pub && !pub.isEncrypted) { await this.room.localParticipant.setScreenShareEnabled(false); throw new CallError('no-e2ee', 'The screen share was not encrypted and was stopped.'); }
         this.sharing = true;
+        if (this.error && (this.error.kind === 'screen' || this.error.kind === 'no-screen')) this.error = null;   // it worked this time
         const audioPub = this.room.localParticipant.getTrackPublication(this.LK.Track.Source.ScreenShareAudio);
         this.shareHasAudio = !!audioPub;
         if (wantAudio && !audioPub) this.log('no audio came with the screen share (the chosen surface or this browser has no shareable audio)');
