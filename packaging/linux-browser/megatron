@@ -8,7 +8,8 @@
 #
 # What keeps other programs out (docs/THREAT-MODEL.md, "The browser edition"):
 #  * a random secret per start of the background part, kept in a file only you can read, and handed to the window in the
-#    address after the "#" (which is never sent to a server). The window sends it with every request.
+#    one-time ticket in the address after the "#" (never sent to a server; the secret itself is never on a command line). The page
+#    trades the ticket for the secret and sends the secret with every request.
 #  * the window uses its own browser profile, so the extensions of your everyday browser profile do not see it.
 #  * before opening, this script asks whatever answers on the port to prove it knows the secret; if something else is
 #    there it refuses instead of showing your window to it.
@@ -130,16 +131,15 @@ if [ "$LEGACY" = 1 ]; then
   say "This copy of mega's background part is too old to protect the window with a key. It works, but other programs on this computer could reach it. Install the newest mega to fix that."
   URL="http://127.0.0.1:$PORT/"
 else
-  URL="http://127.0.0.1:$PORT/#s=$SECRET"
-  if [ "$OPEN_AS" = tab ]; then
-    # A tab lands in the everyday browser, which keeps the addresses it visits: the address carries a one-time ticket (spent when
-    # the page trades it for the secret; good for two minutes), never the secret.
-    TICKET="$(new_secret)"
-    if printf '%s' "$TICKET" > "$D/.open-ticket-$PORT.tmp" && chmod 600 "$D/.open-ticket-$PORT.tmp" && mv -f "$D/.open-ticket-$PORT.tmp" "$D/.open-ticket-$PORT"; then
-      URL="http://127.0.0.1:$PORT/#t=$TICKET"
-    else
-      OPEN_AS=window
-    fi
+  # The address (and, for a window, the browser's command line, which other users can read in /proc) carries a one-time ticket, spent
+  # when the page trades it for the secret (good for two minutes), never the secret. A tab also lands in the everyday browser, which
+  # keeps the addresses it visits.
+  TICKET="$(new_secret)"
+  if printf '%s' "$TICKET" > "$D/.open-ticket-$PORT.tmp" && chmod 600 "$D/.open-ticket-$PORT.tmp" && mv -f "$D/.open-ticket-$PORT.tmp" "$D/.open-ticket-$PORT"; then
+    URL="http://127.0.0.1:$PORT/#t=$TICKET"
+  else
+    say "mega could not write its start-up ticket in $D, so it did not open."
+    exit 1
   fi
 fi
 if [ "$OPEN_AS" = tab ]; then

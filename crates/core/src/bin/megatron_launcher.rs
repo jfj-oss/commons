@@ -663,22 +663,22 @@ fn main() {
             alert("This copy of mega's background part is too old to protect the window with a key. It works, but other programs on this computer could reach it. Install the newest mega to fix that.");
         }
     }
-    let mut how = open_as(&data, std::env::var("MEGATRON_OPEN").ok().as_deref());
+    let how = open_as(&data, std::env::var("MEGATRON_OPEN").ok().as_deref());
     let url = match (&secret, legacy) {
-        (Some(sec), false) if how == OpenAs::Tab => {
-            // A tab lands in the everyday browser, which keeps every address it visits. So the address carries a one-time ticket
-            // (spent when the page trades it for the secret, and good for two minutes), never the secret itself.
+        (Some(_), false) => {
+            // The address (and with --app= the browser's command line, which other users on the computer can read) carries a one-time
+            // ticket, never the secret: the page trades it for the secret at /session, and it is spent then (or after two minutes).
+            // A tab also lands in the everyday browser, which keeps every address it visits.
             let ticket = commons_core::bridge_auth::new_secret();
             match commons_core::bridge_auth::write_secret_file(&commons_core::bridge_auth::ticket_path(&state_dir(&install), port), &ticket) {
                 Ok(()) => format!("http://127.0.0.1:{port}/#t={ticket}"),
                 Err(e) => {
-                    log(&install, &format!("could not write the open ticket ({e}); opening a window of its own instead"));
-                    how = OpenAs::Window;
-                    format!("http://127.0.0.1:{port}/#s={sec}")
+                    log(&install, &format!("could not write the open ticket ({e}); not opening, so that the secret is never put in an address"));
+                    alert(&format!("mega could not write its start-up ticket in {} ({e}), so it did not open.", state_dir(&install).display()));
+                    return;
                 }
             }
         }
-        (Some(sec), false) => format!("http://127.0.0.1:{port}/#s={sec}"),
         _ => format!("http://127.0.0.1:{port}/"),
     };
     if std::env::var_os("MEGATRON_NO_BROWSER").is_none() {
