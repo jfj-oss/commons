@@ -455,7 +455,8 @@ html.mega.mg-room #typing { position: absolute; width: 1px; height: 1px; overflo
    narrower than that anyway. The card is its own size container, so the name and the count scale with the card, not the window.
    The space either side on a wide screen is left empty for now. */
 .mcard { max-width: min(1800px, 72cqh); container-type: inline-size; }
-.mti { font-size: round(down, calc(clamp(40px, 17cqw, 138px) * var(--m-dz)), var(--m-dsnap)); }
+.mti { font-size: round(down, calc(clamp(40px, 13cqw, 138px) * var(--m-dz)), var(--m-dsnap)); overflow-wrap: normal; word-break: normal; hyphens: none; }
+.mti:has(> i:nth-child(14)) { overflow-wrap: anywhere; }   /* a single very long name may still break */
 .mnu { font-size: round(down, clamp(64px, 25cqw, 210px), var(--m-dsnap)); }
 
 /* who is in the call, under the call dock: one square picture each, the speaker ringed in the room's highlight */
