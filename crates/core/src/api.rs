@@ -437,6 +437,8 @@ impl App {
                 let since = a["since"].as_u64().unwrap_or(0);
                 self.try_read(|c| json!({"events": c.ring_poll(since).into_iter().map(|v| json!({"id": v.id, "gid": v.gid, "account": v.account, "ring": v.ring, "ts": v.ts, "end": v.end, "direct": v.direct})).collect::<Vec<_>>(), "head": c.ring_next}))
             }
+            // Whether live events now travel on the unstored channel (relay known to carry it, not the log fallback). Presence on the cards sends only then.
+            "live_chan" => self.try_read(|c| json!({"chan": c.live_chan_on() && c.live_support() == crate::live::Support::Yes})),
             // A poll: it never waits behind a long action (it answers "busy" and is asked again) and never wakes the sync loop.
             "live_poll" => {
                 let (gid, since) = (s(&a, "gid"), a["since"].as_u64().unwrap_or(0));

@@ -1541,6 +1541,133 @@ try {
     await key(A, 'Escape'); await sleep(300); await shotP(A, 'leaving'); await sleep(1600);
     await toLevel('server'); await sleep(500);
   }
+  // ---- mega: presence dots on the cards (mega-presence.js) ----
+  {
+    const cid = await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`), cj = JSON.stringify(cid), gj = JSON.stringify(textGid);
+    const meA = await A.ev(`S.snap.me.name`), accA = await A.ev(`S.snap.me.account`);
+    const toSrv = async P => {
+      await P.send('Page.bringToFront');
+      for (let i = 0; i < 6 && await lvl(P) === 'chat'; i++) { await P.ev(`document.activeElement && document.activeElement.blur && document.activeElement.blur()`); await key(P, 'Escape'); await sleep(900); }
+      if (await lvl(P) === 'home') { await P.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.kind === 'community' && x.cid === ${cj}), true)`); await sleep(1200); await key(P, 'Enter'); await sleep(1800); }
+      need(await lvl(P) === 'server', 'presence: could not reach the rooms level');
+    };
+    // the unstored channel is only known to the core's new rpc; the check pins the answer so the page logic is exercised on any build
+    const chan = (P, mode) => P.ev(`(() => { if (!window.__rpc0) window.__rpc0 = window.rpc; window.__chanMode = ${JSON.stringify(mode)}; window.rpc = (m, a) => m === 'live_chan' && window.__chanMode !== 'real' ? Promise.resolve({ chan: window.__chanMode === 'on' }) : window.__rpc0(m, a); __megaPres._reset(); return 1; })()`);
+    const idx = (P, g) => P.ev(`__mega.list.items.findIndex(x => x.key === ${JSON.stringify(g)})`);
+    const optIdx = P => P.ev(`__mega.list.items.findIndex(x => x.kind === 'options')`);
+    const focus = async (P, i) => { await P.send('Page.bringToFront'); await P.ev(`__mega.list.go(${i}, true)`); await P.waitFor(`__mega.list.settled && __mega.list.cur === ${i}`, 8000); };
+    const focusSend = async (P, i) => { await focus(P, i); await sleep(2300); };   // a hidden tab sends nothing, so the sender stays in front until it has
+    const dotsOn = (P, g) => P.ev(`(() => { const i = __mega.list.items.findIndex(x => x.key === ${JSON.stringify(g)}); const s = document.querySelector('.mslot[data-i="' + i + '"]'); return s ? [...s.querySelectorAll('.mpres .mpd:not(.out)')].map(d => d.dataset.n) : []; })()`);
+    const allDots = P => P.ev(`document.querySelectorAll('.mpres .mpd:not(.out)').length`);
+    const sent = P => P.ev(`__megaPres.stats.sent`);
+    await toSrv(A); await toSrv(B);
+    const real = await A.ev(`rpc('live_chan', {}).then(r => JSON.stringify(r), e => 'missing: ' + e.message)`);
+    console.log('presence: the core answers live_chan with', real);
+    await chan(A, 'on'); await chan(B, 'on');
+    need(await A.ev(`__megaPres.on === true`), 'presence: the switch should be on by default');
+    // alice rests on a room card: bob sees a dot there, in alice's colour, and nowhere else
+    await focusSend(A, await idx(A, textGid));
+    await B.send('Page.bringToFront');
+    await B.waitFor(`__megaPres.peers().length === 1`, 20000).catch(async () => { throw new Error('presence: bob never heard of alice\'s card: ' + await A.ev(`JSON.stringify(__megaPres.state())`) + await B.ev(`JSON.stringify(__megaPres.stats)`)); });
+    await B.waitFor(`document.querySelectorAll('.mpres .mpd:not(.out)').length === 1`, 8000);
+    need((await dotsOn(B, textGid)).join() === meA && await allDots(B) === 1, 'presence: the dot is not on the matching card: ' + JSON.stringify(await dotsOn(B, textGid)));
+    const look = await B.ev(`(() => { const d = document.querySelector('.mpres .mpd'), l = d.parentElement, r = d.getBoundingClientRect(), q = d.closest('.msq').getBoundingClientRect(); return { pe: getComputedStyle(l).pointerEvents + '/' + getComputedStyle(d).pointerEvents, bg: getComputedStyle(d).backgroundColor, inside: r.left >= q.left && r.right <= q.right && r.top >= q.top && r.bottom <= q.bottom, label: d.textContent, hit: document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === d }; })()`);
+    need(look.pe === 'none/none' && look.inside && look.label === '' && !look.hit && /^rgb/.test(look.bg), 'presence: the dot should be a plain colour, inside the card and out of the pointer\'s way: ' + JSON.stringify(look));
+    await focus(B, await idx(B, textGid)); await sleep(1800); await B.shot('mega7-1-presence-dot');
+    // the name shows on hover without the dot taking the pointer
+    const hv = await B.ev(`(() => { const r = document.querySelector('.mpres .mpd').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+    await B.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: hv[0], y: hv[1] }); await sleep(300);
+    need(await B.ev(`(() => { const t = document.querySelector('#mega-pres-tip'); return !!t && !t.hidden && t.textContent === ${JSON.stringify(meA)} && getComputedStyle(t).pointerEvents === 'none'; })()`), 'presence: no name on hover');
+    await B.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 3, y: 3 }); await sleep(200);
+    // 390 px
+    await B.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(1200);
+    await B.shot('mega7-1b-presence-dot-390');
+    need(await B.ev(`(() => { const d = document.querySelector('.mpres .mpd'); if (!d) return false; const r = d.getBoundingClientRect(); return r.right <= innerWidth && r.left >= 0 && document.documentElement.scrollWidth <= innerWidth + 1; })()`), 'presence: the dot overflows at 390 px');
+    await B.send('Emulation.clearDeviceMetricsOverride'); await sleep(800);
+    // reduced motion and fx-lite: static dots
+    await B.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] }); await sleep(300);
+    need(await B.ev(`getComputedStyle(document.querySelector('.mpres .mpd')).animationName === 'none'`), 'presence: dots still move with reduced motion');
+    await B.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] }); await sleep(300);
+    need(await B.ev(`getComputedStyle(document.querySelector('.mpres .mpd')).animationName !== 'none'`), 'presence: dots should drift with motion on');
+    await B.ev(`document.documentElement.classList.add('fx-lite')`); await sleep(200);
+    need(await B.ev(`getComputedStyle(document.querySelector('.mpres .mpd')).animationName === 'none'`), 'presence: dots still move in fx-lite');
+    await B.ev(`document.documentElement.classList.remove('fx-lite')`);
+    // a settled card sends nothing more than the heartbeat: idle, visible, 6 s
+    await A.send('Page.bringToFront'); await sleep(1500);
+    const s0 = await sent(A); await sleep(6000);
+    need(await sent(A) === s0, 'presence: events were sent while idle');
+    // scrolling quickly past cards sends nothing for each card
+    const n0 = await sent(A);
+    for (const i of [0, 1, 2, 0, 1, 2]) { await A.ev(`__mega.list.go(${i}, true)`); await sleep(120); }
+    await focus(A, await idx(A, textGid)); await sleep(2500);
+    need(await sent(A) - n0 <= 2, 'presence: a quick scroll past cards sent ' + (await sent(A) - n0) + ' events');
+    // moving to another card moves the dot; leaving the card screens removes it
+    const other = await A.ev(`__mega.list.items.find(x => x.kind === 'text' && x.key !== ${gj}) ? __mega.list.items.find(x => x.kind === 'text' && x.key !== ${gj}).key : null`);
+    if (other) {
+      await focusSend(A, await idx(A, other)); await B.send('Page.bringToFront');
+      await B.waitFor(`(() => { const i = __mega.list.items.findIndex(x => x.key === ${JSON.stringify(other)}); const s = document.querySelector('.mslot[data-i="' + i + '"]'); return !!s && s.querySelectorAll('.mpres .mpd:not(.out)').length === 1; })()`, 15000).catch(() => { throw new Error('presence: the dot did not move to the next card'); });
+      await B.waitFor(`document.querySelectorAll('.mpres .mpd:not(.out)').length === 1`, 8000);
+    }
+    await focusSend(A, await optIdx(A));
+    await B.send('Page.bringToFront');
+    await B.waitFor(`document.querySelectorAll('.mpres .mpd:not(.out)').length === 0 && __megaPres.peers().length === 0`, 15000).catch(() => { throw new Error('presence: the dot stayed after alice moved to a card with no one to show'); });
+    // the switch in the options room stops sending, and nothing else
+    await A.send('Page.bringToFront'); await key(A, 'Enter'); await A.waitFor(`__mega.level === 'chat' && !!document.querySelector('#mega-opts #pres')`, 10000).catch(() => { throw new Error('presence: no switch in the options room'); });
+    need(await A.ev(`document.querySelector('#pres').checked === true`), 'presence: the switch should show on');
+    await A.shot('mega7-2-options-switch');
+    await A.ev(`document.querySelector('#pres').click()`); await sleep(400);
+    need(await A.ev(`__megaPres.on === false && localStorage.getItem('commons.presence') === 'off'`), 'presence: the switch did not turn it off');
+    for (let i = 0; i < 4 && await lvl(A) === 'chat'; i++) { await key(A, 'Escape'); await sleep(900); }
+    const off0 = await sent(A);
+    await focus(A, await idx(A, textGid)); await sleep(3500);
+    need(await sent(A) === off0 && (await B.ev(`__megaPres.peers().length`)) === 0, 'presence: events were sent with the switch off');
+    await A.ev(`__megaPres.set(true)`); await sleep(2300);
+    await B.send('Page.bringToFront');
+    await B.waitFor(`__megaPres.peers().length === 1`, 15000).catch(() => { throw new Error('presence: turning the switch on again did not show alice'); });
+    // the chat level and a hidden tab send nothing
+    await A.send('Page.bringToFront'); await A.ev(`Object.defineProperty(document, 'visibilityState', { get: () => 'hidden', configurable: true }); 1`);
+    const h0 = await sent(A);
+    await focus(A, await optIdx(A)); await sleep(500); await focus(A, await idx(A, textGid)); await sleep(2800);
+    need(await sent(A) === h0, 'presence: events were sent while the tab was hidden');
+    await A.ev(`delete document.visibilityState; 1`);
+    // a heartbeat about every 20 s, and nothing else, while it stays
+    await sleep(1500);
+    const b0 = await A.ev(`__megaPres.stats.beats`), t0 = await sent(A);
+    await sleep(23000);
+    const b1 = await A.ev(`__megaPres.stats.beats`), t1 = await sent(A);
+    need(b1 - b0 === 1 && t1 - t0 <= 2, `presence: expected one heartbeat in 23 s, got ${b1 - b0} beats and ${t1 - t0} events`);
+    // nothing on the log fallback (the page asks the core whether the unstored channel is in use)
+    await chan(A, 'off'); await sleep(200);
+    const fk0 = await A.ev(`__megaLive.stats.kinds['pres.f'] || 0`), fs0 = await sent(A);
+    await focus(A, await optIdx(A)); await sleep(1500); await focus(A, await idx(A, textGid)); await sleep(3500);
+    need(await sent(A) === fs0 && await A.ev(`(__megaLive.stats.kinds['pres.f'] || 0)`) === fk0, 'presence: events were sent on the log fallback');
+    await chan(A, 'on');
+    // invalid events are ignored (alice stops sending so that her real events cannot mix in)
+    await A.ev(`__megaPres.set(false)`); await sleep(1500);
+    await B.send('Page.bringToFront'); await sleep(2500);   // what alice sent before is read now
+    await B.ev(`__megaPres._reset(); 1`);
+    const memB = await B.ev(`rpc('members', { cid: ${cj} }).then(m => m.find(x => !x.me).account)`);
+    const ev = (o) => B.ev(`__megaPres.onEvent(${JSON.stringify({ id: 1, gid: textGid, account: memB, kind: 'pres.f', data: JSON.stringify({ v: 1, c: cid, r: '' }), ts: 1, ...o })}).then(() => __megaPres.peers().length)`);
+    const bad0 = await B.ev(`__megaPres.stats.bad`);
+    const cases = [
+      { gid: 'f'.repeat(32) }, { account: 'a'.repeat(64) }, { account: '' }, { data: '{nope' }, { data: JSON.stringify({ v: 2, c: cid, r: '' }) },
+      { data: JSON.stringify({ v: 1, c: 'f'.repeat(32), r: '' }) }, { data: JSON.stringify({ v: 1, c: cid, r: 'zz' }) }, { data: JSON.stringify({ v: 1, c: cid, r: 'e'.repeat(32) }) },
+      { data: JSON.stringify({ v: 1, c: cid, r: { x: 1 } }) }, { data: 'x'.repeat(400) }, { kind: 'pres.g' }, { data: JSON.stringify({ v: 1, c: cid, r: '', o: 7 }) },
+    ];
+    for (const c of cases) need(await ev(c) === 0, 'presence: an invalid event was taken: ' + JSON.stringify(c).slice(0, 120));
+    await B.ev(`new Promise(r => setTimeout(r, 300))`);
+    need(await B.ev(`__megaPres.stats.bad`) > bad0 && await allDots(B) === 0, 'presence: invalid events left a dot: ' + await B.ev(`JSON.stringify({ bad: __megaPres.stats.bad, peers: __megaPres.peers(), dots: document.querySelectorAll('.mpres .mpd').length })`) + ' bad0=' + bad0);
+    need(await ev({}) === 1, 'presence: a valid event from a member was not taken');
+    // at most 6 dots on a card, then +N
+    await B.ev(`__megaPres._inject(Array.from({ length: 9 }, (_, i) => ({ a: 'acct' + i, c: ${cj}, r: ${gj}, name: 'Friend ' + i })))`); await sleep(500);
+    const cap = await B.ev(`(() => { const i = __mega.list.items.findIndex(x => x.key === ${gj}); const s = document.querySelector('.mslot[data-i="' + i + '"]'); return { dots: s.querySelectorAll('.mpd:not(.out)').length, more: (s.querySelector('.mpm') || {}).textContent }; })()`);
+    need(cap.dots === 6 && cap.more === '+3', 'presence: the cap is wrong: ' + JSON.stringify(cap));
+    await B.shot('mega7-3-presence-cap');
+    await B.ev(`__megaPres._reset(); 1`);
+    await A.ev(`__megaPres.set(true)`);
+    await focus(A, await idx(A, textGid));
+    await toSrv(B);
+  }
   if (process.env.COMMONS_UI_STOP_AFTER === 'mega6') { console.log('UI check stopped after mega phase 6 (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
 
   // ---- large files ----
