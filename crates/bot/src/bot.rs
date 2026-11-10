@@ -7,6 +7,7 @@
 //! The model has exactly two tools — [`crate::search::TOOL_NAME`] (web search) and [`crate::studio::TOOL_NAME`] (make a
 //! picture, song, sound or video in the owner's Studio). `tools()` is the whole list, and `run_tool` is the only
 //! executor: any other name is refused without touching anything.
+use crate::assistant::{Assistant, Route, RoomFacts};
 use crate::gpu::{GpuCheck, Pause};
 use crate::llm::{AskError, Llm, ModelReply, Msg, ToolCall, ToolMode, ToolSpec};
 use crate::safety;
@@ -115,6 +116,10 @@ pub enum JobKind {
     SetChime { on: bool },
     /// "@Oracle allow studio for <name>" where nobody in the room has that name (or more than one does).
     StudioUnknownPerson(String),
+    /// The owner's message in an assistant room (see `crate::assistant`). Handled on its own thread.
+    Assistant,
+    /// A plain notice from the assistant machinery, to be said in the room.
+    AssistantNotice(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -627,6 +632,8 @@ pub struct Bot {
     pending: Mutex<HashMap<String, u64>>,
     /// Rooms where a wall drawing is being made right now: one at a time per room.
     wall_busy: Mutex<HashSet<String>>,
+    /// The assistant room feature; `None` when it is off.
+    assistant: Option<Arc<Assistant>>,
 }
 
 impl Bot {
@@ -643,9 +650,14 @@ impl Bot {
         let studio_queue = StudioQueue { gate: Mutex::new(()), taken: Mutex::new(0), max: cfg.studio_queue_max + 1 };
         Bot {
             cfg, local, deepseek, search, studio, gpu, store: Mutex::new(Store::load(state_path.as_ref().to_path_buf())),
-            rate: Mutex::new(rate), studio_queue, pending: Mutex::new(HashMap::new()), wall_busy: Mutex::new(HashSet::new()),
+            rate: Mutex::new(rate), studio_queue, pending: Mutex::new(HashMap::new()), wall_busy: Mutex::new(HashSet::new()), assistant: None,
         }
     }
+
+    /// Switch the assistant room feature on.
+    pub fn with_assistant(mut self, a: Arc<Assistant>) -> Bot { self.assistant = Some(a); self }
+
+    pub fn assistant(&self) -> Option<&Arc<Assistant>> { self.assistant.as_ref() }
 
     pub fn deepseek_on(&self, gid: &str) -> bool { self.store.lock().unwrap_or_else(|p| p.into_inner()).data.rooms.get(gid).is_some_and(|r| r.deepseek) }
 
@@ -695,10 +707,28 @@ impl Bot {
             let mut chatter = 0usize;
             let mut deepseek_now = known.as_ref().is_some_and(|r| r.deepseek);
             let roles = c.people_of(&cid);
+            let facts = self.assistant.as_ref().map(|_| RoomFacts::from_client(c, &cid, &gid));
+            let mut assist_room = false;
+            if let (Some(a), Some(f)) = (&self.assistant, &facts) {
+                if let Some(notice) = a.sync_room(f) {
+                    found.push(Job { gid: gid.clone(), trigger: String::new(), from: String::new(), text: String::new(), kind: JobKind::AssistantNotice(notice) });
+                }
+                assist_room = a.is_active(f);
+            }
             for m in &log.msgs {
                 if m.seq > 0 { max_seq = max_seq.max(m.seq); }
                 if m.seq <= start || m.deleted || m.sender.is_empty() || m.sender == me { continue; }
                 let MsgBody::Text(text) = &m.body else { continue };
+                if let (Some(a), Some(f)) = (&self.assistant, &facts) {
+                    let job = |kind| Job { gid: gid.clone(), trigger: m.id.clone(), from: m.sender.clone(), text: text.clone(), kind };
+                    match a.route(f, &self.cfg.name, &m.sender, text) {
+                        Route::Pass => {}
+                        Route::Drop | Route::Handled => { assist_room = a.is_active(f); continue; }
+                        Route::Notice(t) => { found.push(job(JobKind::AssistantNotice(t))); assist_room = a.is_active(f); continue; }
+                        Route::Chat => { found.push(job(JobKind::Assistant)); continue; }
+                    }
+                    assist_room = a.is_active(f);
+                }
                 if is_reset(text, &self.cfg.name) {
                     found.push(Job { gid: gid.clone(), trigger: m.id.clone(), from: m.sender.clone(), text: text.clone(), kind: JobKind::Reset });
                     continue;
@@ -756,7 +786,7 @@ impl Bot {
             let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
             if !found.is_empty() {
                 pending.remove(&gid);
-            } else if self.cfg.chime_chance_pct > 0 && !entry.chime_off && !quiet && !entry.deepseek && (chatter > 0 || pending.contains_key(&gid)) {
+            } else if !assist_room && self.cfg.chime_chance_pct > 0 && !entry.chime_off && !quiet && !entry.deepseek && (chatter > 0 || pending.contains_key(&gid)) {
                 let since_me = log.msgs.iter().rev().take_while(|m| m.sender != me).filter(|m| !m.deleted && matches!(m.body, MsgBody::Text(_))).count();
                 let newest = log.msgs.iter().rev().find(|m| m.sender != me).map_or(0, |m| m.ts);
                 let mine = log.msgs.iter().rev().find(|m| m.sender == me).map_or(0, |m| m.ts);
@@ -785,7 +815,7 @@ impl Bot {
             drop(pending);
             // Drawing on the wall: the same kind of dice, an active room, an unlocked wall, and never where the owner has said quiet.
             // A mention or command this round means people are talking to it, not watching the wall.
-            if !addressed && chatter > 0 && !quiet && self.cfg.wall_chance_pct > 0 && log.msgs.iter().rev().find(|m| m.sender != me).is_some_and(|m| m.ts + 180 >= now)
+            if !assist_room && !addressed && chatter > 0 && !quiet && self.cfg.wall_chance_pct > 0 && log.msgs.iter().rev().find(|m| m.sender != me).is_some_and(|m| m.ts + 180 >= now)
                 && self.wall_allowed(entry, now) && c.oracle_draws(&gid) && c.wall_info(&gid).is_some_and(|w| !w.locked) && self.gpu.blocked().is_none() && roll(self.cfg.wall_chance_pct) {
                 if self.wall_busy.lock().unwrap_or_else(|p| p.into_inner()).insert(gid.clone()) {
                     if let Some(last) = log.msgs.last() {
@@ -806,6 +836,11 @@ impl Bot {
     /// client free, while a typing hint is refreshed now and then.
     pub fn answer(&self, c: &mut dyn Chat, job: &Job) -> Option<Sent> {
         let (text, deepseek, sources) = match &job.kind {
+            JobKind::Assistant => { self.assistant_turn(c, job); return None; }
+            JobKind::AssistantNotice(t) => {
+                if let Some(a) = &self.assistant { a.say(c, &job.gid, Some(&job.trigger), t); }
+                return None;
+            }
             JobKind::Chime => return self.chime(c, job),
             JobKind::Wall => { self.draw_on_wall(c, job); return None; }
             JobKind::SetChime { on: true } if c.oracle_quiet(&job.gid) => (
@@ -848,6 +883,14 @@ impl Bot {
             }
         };
         self.post(c, job, &text, &sources, deepseek)
+    }
+
+    /// The owner spoke in an assistant room: the plain assistant answers (and may hand work to Claude Code).
+    fn assistant_turn(&self, c: &mut dyn Chat, job: &Job) {
+        let Some(a) = &self.assistant else { return };
+        // a game or Studio owns the GPU: say so without loading the model (a "do:" task does not need the local model)
+        let pause = self.gpu.blocked().map(|p| p.reply().to_string());
+        a.handle(c, job, self.local.as_ref(), self.search.as_ref(), pause.as_deref());
     }
 
     /// Join the conversation unasked: sometimes with something made in Studio, otherwise a remark. Everything here fails
