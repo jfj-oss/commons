@@ -8,7 +8,7 @@
 use commons_bot::bot::{Bot, Config, Job, JobKind, SharedClient, DEFAULT_NAME};
 use commons_bot::gpu::{GpuGate, Pause};
 use commons_bot::llm::{DeepSeek, Ollama, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DEFAULT_OLLAMA};
-use commons_bot::search::{DuckDuckGo, WebSearch, DEFAULT_SEARCH_URL, SEARCH_TIMEOUT};
+use commons_bot::search::{DuckDuckGo, SearXng, WebSearch, DEFAULT_SEARCH_URL, SEARCH_TIMEOUT};
 use commons_bot::studio::{HttpStudio, StudioApi, DEFAULT_STUDIO_URL};
 use commons_core::client::Client;
 use commons_core::envelope::InviteLink;
@@ -192,7 +192,11 @@ fn run() -> Result<(), String> {
     let ds_model = env_string("MEGATRON_BOT_DEEPSEEK_MODEL").unwrap_or_else(|| DEFAULT_DEEPSEEK_MODEL.into());
     let deepseek = DeepSeek::new(&ds_url, deepseek_key_file(), &ds_model, timeout);
     let search_url = env_string("MEGATRON_BOT_SEARCH_URL").unwrap_or_else(|| DEFAULT_SEARCH_URL.into());
-    let searcher: Arc<dyn WebSearch> = Arc::new(DuckDuckGo::new(&search_url, SEARCH_TIMEOUT));
+    // MEGATRON_BOT_SEARXNG_URL (e.g. http://127.0.0.1:8092): a local SearXNG instance instead of DuckDuckGo's HTML page.
+    let searcher: Arc<dyn WebSearch> = match env_string("MEGATRON_BOT_SEARXNG_URL") {
+        Some(sx) => { eprintln!("[bot] web search: SearXNG at {sx}"); Arc::new(SearXng::new(&sx, SEARCH_TIMEOUT)) }
+        None => Arc::new(DuckDuckGo::new(&search_url, SEARCH_TIMEOUT)),
+    };
     let studio_url = env_string("MEGATRON_BOT_STUDIO_URL").unwrap_or_else(|| DEFAULT_STUDIO_URL.into());
     let studio: Arc<dyn StudioApi> = Arc::new(HttpStudio::new(&studio_url, &studio_token_file()));
     let gate = Arc::new(GpuGate::from_env());
