@@ -124,6 +124,8 @@
   }
   // opening the cards by wheel, swipe in or swipe along the dots is the lesson learnt
   N.railUsed = () => hideHint(true);
+  // switching the chat font in Settings: the density stops change with it (Raster keeps to whole stops)
+  new MutationObserver(() => { applyDensity(); closePop(); }).observe(root, { attributes: true, attributeFilter: ['data-mchat'] });
   let wasChat = false;
   new MutationObserver(() => {
     const chat = root.classList.contains('mg-chat');
@@ -141,11 +143,17 @@
   }
 
   // ---------------------------------------------------------------- 3. density per room
-  // Five stops; the middle one (0) is exactly today's look and sets nothing. Each stop is a size for ordinary messages, a size for each
-  // length tier, and the space between rows (all sizes on Raster's 12 px grid, see mega-new.css).
-  const STOPS = [-2, -1, 0, 1, 2], NAMES = { '-2': 'tightest', '-1': 'tighter', '0': 'as it was', '1': 'larger', '2': 'largest' };
+  // The middle stop (0) is exactly today's look and sets nothing. Each stop is a size for ordinary messages, a size for each length
+  // tier, and the space between rows. The Raster chat face is a pixel font, sharp only on its 12 px grid: five stops (mega-new.css).
+  // Bellefair scales cleanly, so it gets half steps too: nine stops, the same ends (12 px and 48 px), sizes set here.
+  const raster = () => root.dataset.mchat === 'raster';
+  const step = () => (raster() ? 1 : 0.5);
+  const NAMES = { '-2': 'tightest', '-1.5': 'tighter', '-1': 'tighter', '-0.5': 'a bit tighter', '0': 'as it was', '0.5': 'a bit larger', '1': 'larger', '1.5': 'larger', '2': 'largest' };
+  // Bellefair, from -2 to 2 in half steps: [message, short, shorter, shortest, row gap, row padding] in px
+  const FINE = [[12, 12, 24, 36, 2, 0], [15, 16, 28, 42, 3, 0], [18, 21, 34, 50, 4, 1], [21, 28, 40, 60, 6, 1], null,
+    [28, 42, 56, 78, 10, 2], [33, 50, 68, 88, 12, 3], [40, 60, 82, 104, 15, 3], [48, 72, 96, 120, 18, 4]];
   const attr = n => (n < 0 ? 'm' : 'p') + Math.abs(n);
-  const clamp = v => { v = parseInt(v, 10); return STOPS.includes(v) ? v : 0; };
+  const clamp = v => { v = Number(v); if (!Number.isFinite(v)) return 0; v = Math.max(-2, Math.min(2, Math.round(v / step()) * step())); return Object.is(v, -0) ? 0 : v; };
   const D = {
     all: () => pref.get('densAll') === '1',
     global: () => clamp(pref.get('dens')),
@@ -155,10 +163,13 @@
   };
   N.density = gid => D.of(gid);
   function applyDensity() {
-    const n = D.gid ? D.of(D.gid) : 0, was = root.dataset.mdens || '';
-    const want = n ? attr(n) : '';
-    if (want === was) return;
+    const n = D.gid ? D.of(D.gid) : 0, was = root.dataset.mdens || '', wasFine = root.style.getPropertyValue('--dz0');
+    const fine = !raster() && n ? FINE[(n + 2) * 2] : null;
+    const want = n ? (fine ? 'f' + n : attr(n)) : '';
+    if (want === was && !!fine === !!wasFine) return;
     const st = document.getElementById('stream'), pinned = st && st.scrollHeight - st.scrollTop - st.clientHeight < 80;
+    // Bellefair's sizes ride on the root (no #stream rule sets them for an f… value), the Raster stops on their own CSS rules
+    ['--dz0', '--dz1', '--dz2', '--dz3', '--dgap', '--dpad'].forEach((k, i) => (fine ? root.style.setProperty(k, fine[i] + 'px') : root.style.removeProperty(k)));
     if (want) root.dataset.mdens = want; else delete root.dataset.mdens;
     if (st && pinned) st.scrollTop = st.scrollHeight;
     if (M.relook) M.relook();   // the rows changed size: the focus ring, the backdrop mask and the ascii all look again
@@ -200,7 +211,7 @@
     const b = headButton(); if (!b || !D.gid) return;
     const p = pop = document.createElement('div'); p.id = 'mega-dens'; p.className = 'mpop'; p.setAttribute('role', 'dialog'); p.setAttribute('aria-label', 'Density');
     p.innerHTML = `<div class="md-h"><span>density</span><span class="md-for"></span></div>
-      <input type="range" id="md-r" min="-2" max="2" step="1" value="0" aria-label="How much chat fits on screen">
+      <input type="range" id="md-r" min="-2" max="2" step="${step()}" value="0" aria-label="How much chat fits on screen">
       <div class="md-s"><span>more on screen</span><span id="md-v"></span><span>larger</span></div>
       <label class="md-c"><input type="checkbox" id="md-all"><span>same in every room</span></label>`;
     document.body.append(p);

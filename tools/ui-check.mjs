@@ -1333,7 +1333,7 @@ try {
     const setDens = v => A.ev(`(() => { const r = document.querySelector('#md-r'); r.value = ${v}; r.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     await setDens(-2); await sleep(500);
     const small = await px(A);
-    need(small.fs === '12px' && small.attr === 'm2' && parseFloat(small.mt) < parseFloat(base.mt), 'density: the slider did not change this room live: ' + JSON.stringify(small));
+    need(small.fs === '12px' && /^(m2|f-2)$/.test(small.attr) && parseFloat(small.mt) < parseFloat(base.mt), 'density: the slider did not change this room live: ' + JSON.stringify(small));
     need(await A.ev(`localStorage.getItem('commons.dens.' + ${g}) === '-2' && !localStorage.getItem('commons.dens')`), 'density: it should be stored for this room, on this device');
     await A.shot('mega6-3-density-menu');
     need(await styleVer() === ver0, 'density: it touched the owner document');
@@ -1354,7 +1354,7 @@ try {
     await A.ev(`document.querySelector('#mega-rail .mitem[data-key="${JSON.stringify(musicGid).slice(1, -1)}"]').click()`);
     await A.waitFor(`S.gid === ${mg}`, 15000); await sleep(900);
     const all = await px(A);
-    need(all && all.fs === '12px' && all.attr === 'm2', 'density: "same in every room" did not apply to the other room: ' + JSON.stringify(all));
+    need(all && all.fs === '12px' && /^(m2|f-2)$/.test(all.attr), 'density: "same in every room" did not apply to the other room: ' + JSON.stringify(all));
     await A.ev(`document.querySelector('#btn-density').click()`); await sleep(300);
     await A.ev(`document.querySelector('#md-all').click()`); await sleep(400);
     need(await A.ev(`!localStorage.getItem('commons.densAll')`) && (await px(A)).fs === '12px', 'density: off should leave the room as it shows: ' + JSON.stringify(await px(A)));
