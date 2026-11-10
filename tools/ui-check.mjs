@@ -458,6 +458,8 @@ try {
   need(await A.ev(`__mega.list.item.kind === 'voice' && document.querySelector('.mslot.settled')`), 'the voice card did not come into focus');
   need(await A.ev(`window.__joined === null`), 'resting on a voice card joined its call');
   await A.shot('mega-4-voice-card');
+  // design: the section label above the voice cards steps aside while its card is the settled one (it used to sit under the bar's chips)
+  need(await A.ev(`(() => { const s = document.querySelector('.msect:has(+ .mslot.settled)'); return !s || getComputedStyle(s).opacity === '0'; })()`), 'design: the voice section label shows over the bar while the voice card is centred');
   await A.ev(`document.querySelector('.mslot.settled .mcard').dispatchEvent(new MouseEvent('click', { bubbles: true }))`); await sleep(300);
   need(await A.ev(`window.__joined === null`), 'clicking the body of a voice card joined its call');
   await key(A, 'Enter'); await sleep(300);
@@ -627,8 +629,8 @@ try {
     need(sz.noon === '36px' && sz.men === '48px' && sz.hl && sz.body === '24px', 'sizes by length are wrong: ' + JSON.stringify(sz));
     need((await st(A)).lands > s2.lands, 'a mention should land with the pulse');
     // centre focus: nothing is scaled at the latest message
-    for (let i = 0; i < 18; i++) await A.ev(`rpc('send_text', { gid: ${JSON.stringify(textGid)}, text: 'filler line number ${i} to make the room long enough to scroll back through', reply: null }).then(() => 1)`);
-    await A.waitFor(`document.querySelectorAll('.msg').length > 22`, 15000); await sleep(1500);
+    for (let i = 0; i < 30; i++) await A.ev(`rpc('send_text', { gid: ${JSON.stringify(textGid)}, text: 'filler line number ${i} to make the room long enough to scroll back through', reply: null }).then(() => 1)`);
+    await A.waitFor(`document.querySelectorAll('.msg').length > 34`, 15000); await sleep(1500);
     await A.ev(`(() => { const s = document.querySelector('#stream'); s.scrollTop = s.scrollHeight; })()`); await sleep(500);
     const f1 = await A.ev(`[...document.querySelectorAll('#stream .msg')].filter(m => m.style.transform || m.style.opacity).length`);
     need(f1 === 0, 'at the latest message every row must be full size, but ' + f1 + ' are scaled');
@@ -651,8 +653,24 @@ try {
     const ty = await A.ev(`({ who: document.querySelector('#mega-typing .mmascot')?.dataset.who, words: document.querySelector('#typing').innerText, dots: getComputedStyle(document.querySelector('#typing .dots') || document.body).display })`);
     need(/typing/.test(ty.words) && ty.who && ty.dots === 'none', 'the typing mascot is wrong: ' + JSON.stringify(ty));
     await A.shot('mega2-3-mascot');
-    const clearLeft = await A.ev(`(() => { let least = Infinity; const stream = document.querySelector('#stream').getBoundingClientRect(); __mega.eachRect(r => { if (r.top >= stream.top && r.bottom <= stream.bottom && r.width) least = Math.min(least, r.left); }); return { least, nameLeft: [...document.querySelectorAll('#stream .msg .who .name')].reduce((m, e) => { const g = document.createRange(); g.selectNodeContents(e); const b = g.getBoundingClientRect(); return b.width ? Math.min(m, b.left) : m; }, Infinity) }; })()`);
-    need(clearLeft.least >= clearLeft.nameLeft - 2, 'backdrop: it must only be cleared around words and pictures, not the empty column left of the names: ' + JSON.stringify(clearLeft));
+    const clearLeft = await A.ev(`(() => { let least = Infinity; const stream = document.querySelector('#stream').getBoundingClientRect(); __mega.eachRect(r => { if (r.top >= stream.top && r.bottom <= stream.bottom && r.width) least = Math.min(least, r.left); }); const left = (sel) => [...document.querySelectorAll(sel)].reduce((m, e) => { const g = document.createRange(); g.selectNodeContents(e); const b = g.getBoundingClientRect(); return b.width ? Math.min(m, b.left) : m; }, Infinity); const box = (sel) => [...document.querySelectorAll(sel)].reduce((m, e) => { const b = e.getBoundingClientRect(); return b.width ? Math.min(m, b.left) : m; }, Infinity); return { least, nameLeft: Math.min(left('#stream .msg .who .name'), box('#stream .msg .who .seal'), left('#stream .msg .body')) }; })()`);
+    need(clearLeft.least >= clearLeft.nameLeft - 2, 'backdrop: it must only be cleared around words and pictures, not the empty margin left of the avatars and words: ' + JSON.stringify(clearLeft));
+    // design: the avatar sits left of a small name over the words (the name column is gone), the time stays small beside the name,
+    // the composer and search placeholders are lowercase, and a mention at a bumped size is a tint
+    { const lay = await A.ev(`(() => { const st = document.querySelector('#stream').getBoundingClientRect(); const m = [...document.querySelectorAll('#stream .msg:not(.cont)')].find(m => m.getBoundingClientRect().height && m.querySelector('.who .seal') && m.querySelector('.body')); if (!m) return null; const r = s => { const e = m.querySelector(s); if (!e) return null; const g = document.createRange(); g.selectNodeContents(e); const b = g.getBoundingClientRect(); return { l: b.left, r: b.right, t: b.top, b: b.bottom }; }; const sb = m.querySelector('.who .seal').getBoundingClientRect();
+        return { seal: { l: sb.left, r: sb.right, t: sb.top }, name: r('.who .name'), body: r('.body'), time: r('time.when'), timeFs: parseFloat(getComputedStyle(m.querySelector('time.when')).fontSize), stream: { l: st.left, w: st.width }, nameFs: parseFloat(getComputedStyle(m.querySelector('.who .name')).fontSize), ph: [getComputedStyle(document.querySelector('#search'), '::placeholder').textTransform, document.querySelector('#input').placeholder] }; })()`);
+      need(lay && lay.seal.r <= lay.name.l + 1 && lay.name.t < lay.body.t && lay.name.b <= lay.body.t + 8 && lay.body.l >= lay.name.l - 14 && lay.time.l >= lay.name.r - 1 && Math.abs(lay.time.t - lay.name.t) < 8 && lay.timeFs <= 12 && lay.nameFs <= 13, 'layout: avatar, small name over the words, small time beside the name: ' + JSON.stringify(lay));
+      need(lay.seal.l - lay.stream.l < 220, 'layout: too much empty space left of the avatars: ' + JSON.stringify(lay));
+      need(lay.ph[0] === 'lowercase' && /^write to /.test(lay.ph[1]), 'placeholders: the search and composer placeholders must be lowercase: ' + JSON.stringify(lay.ph));
+      const mz = await A.ev(`(() => { const probe = sel => { const b = document.querySelector(sel); if (!b) return null; const s = document.createElement('span'); s.className = 'at self'; s.textContent = '@x'; b.append(s); const cs = getComputedStyle(s); const o = { bg: cs.backgroundColor, color: cs.color }; s.remove(); return o; }; return { big: probe('#stream .msg[data-mz] .body'), small: probe('#stream .msg:not([data-mz]):not(.cont) .body'), hi: getComputedStyle(document.documentElement).getPropertyValue('--mg-hi').trim() }; })()`);
+      const alpha = c => { const m = /\/\s*([\d.]+)\s*\)|rgba\([^)]*,\s*([\d.]+)\)/.exec(c || ''); return m ? +(m[1] || m[2]) : 1; };
+      need(!mz.big || (Math.abs(alpha(mz.big.bg) - .28) < .03 && mz.big.color !== mz.big.bg), 'mentions: at a bumped size a mention should be a 28% tint with the highlight as text: ' + JSON.stringify(mz));
+      need(!mz.small || alpha(mz.small.bg) > .95, 'mentions: at body size a mention must stay a solid block: ' + JSON.stringify(mz));
+      // contrast of the highlight over its own 28% tint on every default palette (large text, 3:1)
+      const lin = v => { v /= 255; return v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }, L = c => .2126 * lin(c[0]) + .7152 * lin(c[1]) + .0722 * lin(c[2]), cr = (a, b) => (Math.max(L(a), L(b)) + .05) / (Math.min(L(a), L(b)) + .05);
+      const hx = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)), mx = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+      const lift = h => { let c = hx(h), i = 0; while (cr(c, [5, 4, 7]) < 4.8 && i++ < 16) c = mx(c, [255, 255, 255], .12); return c; };
+      for (const h of ['#ffe14d', '#45f0d0', '#c2124a', '#d8ff3e', '#1b33ff', '#ff2e63', '#ffb3f0', '#fff275', '#5a189a', '#ffb703', '#f1faee', '#e9c46a']) { const hi = lift(h), bg = mx([10, 9, 16], hi, .28); need(cr(hi, bg) >= 3, 'mentions: the tint is unreadable on the palette with highlight ' + h + ': ' + cr(hi, bg).toFixed(2)); } }
     need((await A.ev(`document.querySelector('#mega-typing .mtwho').textContent`)) === 'Bob is typing', 'typing: the words beside the mascot are wrong');
     const twoTyping = await A.ev(`(() => { __mega.typingDraw(['Bob', 'Kai']); const m = [...document.querySelectorAll('#mega-typing .mmascot:not([data-out])')].map(e => e.getBoundingClientRect()), w = document.querySelector('#mega-typing .mtwho'), r = w.getBoundingClientRect(); return { n: m.length, text: w.textContent, joined: m.length === 2 && Math.abs(m[1].left - m[0].right) < 3, right: r.left >= m[m.length - 1].right, onScreen: r.width > 20 && r.right <= innerWidth }; })()`);
     need(twoTyping.n === 2 && twoTyping.text === 'Bob and Kai are typing' && twoTyping.joined && twoTyping.right && twoTyping.onScreen, 'typing: two mascots should sit together with one label to their right: ' + JSON.stringify(twoTyping));
@@ -1514,6 +1532,17 @@ try {
     await A.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.name === 'Book club'), true)`); await sleep(1500);
     await key(A, 'Enter'); await sleep(250); await shotP(A, 'entering'); await sleep(1900); await shotP(A, 'rooms');
     await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(1200); await shotP(A, 'rooms-390');
+    // design: on a phone the card bar is one row (it used to wrap onto two or three, over the card) and the community name keeps some width
+    { const bar = await A.ev(`(() => { const b = document.querySelector('.mbar').getBoundingClientRect(), m = document.querySelector('.mmark').getBoundingClientRect(), c = document.querySelector('.mslot.settled .msq').getBoundingClientRect(); const tops = new Set([...document.querySelectorAll('.mbar .mchip')].filter(x => x.getBoundingClientRect().width > 0).map(x => Math.round(x.getBoundingClientRect().top / 12))); return { h: b.height, rows: tops.size, mark: m.width, cardTop: c.top, barBottom: b.bottom }; })()`);
+      need(bar.rows === 1 && bar.h <= 60 && bar.mark >= 100 && bar.cardTop >= bar.barBottom - 1, 'design: the phone card bar wraps or crushes the name: ' + JSON.stringify(bar)); }
+    // design: on a phone "colours" and "draw" leave the bar and wait in the "more" menu, so the chips that matter all fit
+    { const mm = await A.ev(`(() => { const c = n => { const b = document.querySelector('#mega .mbar [data-m="' + n + '"]'); return b ? { hidden: b.hidden, shown: getComputedStyle(b).display !== 'none', label: b.textContent } : null; }; return { paint: c('paint'), draw: c('draw'), clipped: [...document.querySelectorAll('.mbar .mchip')].filter(b => getComputedStyle(b).display !== 'none' && b.getBoundingClientRect().right > innerWidth + 1).map(b => b.dataset.m) }; })()`);
+      need(mm.paint && mm.draw && !mm.paint.shown && !mm.draw.shown && !mm.clipped.length, 'design: on a phone colours and draw must leave the card bar and every chip must fit: ' + JSON.stringify(mm));
+      await A.ev(`document.querySelector('#mega [data-m="more"]').click()`); await sleep(400);
+      const items = await A.ev(`[...document.querySelectorAll('.mmenu button')].map(b => b.textContent)`);
+      for (const k of ['paint', 'draw']) need(mm[k].hidden || items.includes(mm[k].label), 'design: the more menu is missing ' + k + ': ' + JSON.stringify([mm, items]));
+      need(items.includes('settings'), 'design: the more menu lost its old items: ' + JSON.stringify(items));
+      await shotP(A, 'more-menu-390'); await key(A, 'Escape'); await sleep(300); }
     await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(900);
     await A.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.kind === 'text'), true)`); await sleep(1500);
     await key(A, 'Enter'); await sleep(300); await shotP(A, 'enterroom'); await sleep(2500); await shotP(A, 'chat');
@@ -1533,9 +1562,14 @@ try {
     const quiet = { fps: +((e1 - e0) / du).toFixed(2), taskMsPerSec: +((val(q1, 'TaskDuration') - val(q0, 'TaskDuration')) * 1000 / du).toFixed(1), scriptMsPerSec: +((val(q1, 'ScriptDuration') - val(q0, 'ScriptDuration')) * 1000 / du).toFixed(1), heat: await A.ev(`+__mega.bdInfo().heat.toFixed(3)`) };
     console.log('parity quiet room', JSON.stringify(quiet)); fs.writeFileSync(path.join(pdir, 'quiet.json'), JSON.stringify(quiet));
     await shotP(A, 'chat-later');
-    await A.ev(`__mega.api.openRail()`); await sleep(900); await shotP(A, 'dots-open'); await A.ev(`document.querySelector('#mega-rail').dispatchEvent(new MouseEvent('mouseleave'))`); await sleep(900);
+    await A.ev(`__mega.api.openRail()`); await sleep(900); await shotP(A, 'dots-open');
+    // design: the pop-out labels are set letter by letter in <i>; they must not come out italic
+    need(await A.ev(`[...document.querySelectorAll('#mega-rail .mlb i')].every(i => getComputedStyle(i).fontStyle === 'normal')`), 'design: the pop-out labels are italic'); await A.ev(`document.querySelector('#mega-rail').dispatchEvent(new MouseEvent('mouseleave'))`); await sleep(900);
     await A.ev(`(() => { const a = __mega.bdApi.bd(); })()`);
     await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(1500); await shotP(A, 'chat-390');
+    // design: on a phone the chat header keeps the room name (five labelled chips once squeezed it to zero width) and nothing sticks out of the screen
+    { const hd = await A.ev(`(() => { const h = document.querySelector('#head').getBoundingClientRect(), t = document.querySelector('.head-title').getBoundingClientRect(), a = document.querySelector('.head-actions').getBoundingClientRect(); return { head: h.width, title: t.width, titleText: document.querySelector('#chan-title').textContent, right: a.right, w: innerWidth, h1: getComputedStyle(document.querySelector('#chan-title')).fontSize }; })()`);
+      need(hd.title >= Math.min(100, hd.head * .3) && hd.right <= hd.w + 1, 'design: the phone chat header crushes the room name: ' + JSON.stringify(hd)); }
     await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(900);
     if (!base) need(idle.fps >= 7 && idle.heat >= .11, 'parity: an idle room should keep drawing at about 10 fps: ' + JSON.stringify(idle));
     await key(A, 'Escape'); await sleep(300); await shotP(A, 'leaving'); await sleep(1600);

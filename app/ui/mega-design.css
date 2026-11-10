@@ -1,0 +1,118 @@
+/* mega: the design pass. Fixes found by looking at real screens against the prototype: phone layouts that crushed or
+   wrapped, leftovers of the old look, and small alignment and type-grid slips. Styling only, scoped under html.mega,
+   loaded after every other sheet so it wins without !important. */
+
+/* ---- the pop-out dots: labels are set letter by letter in <i> for kerning, which the browser italicised ---- */
+.mlb i, .mnn i, .mitem i { font-style: normal; }
+
+/* ---- a phone's chat header: the room name had been squeezed to nothing by five labelled chips ----
+   The chips keep only their icons (the labels come back on a computer) and the name keeps at least a third of the row;
+   the chips still scroll sideways inside the header when they do not fit. */
+@media (max-width: 760px) {
+  html.mega #head .head-title { flex: 1 1 auto; min-width: 36%; }
+  /* the words stay in the page for the accessible name; only the pixels go */
+  html.mega #head #btn-invite span, html.mega #head #btn-people .lbl { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  html.mega #head #btn-invite, html.mega #head #btn-people { padding: 0 10px; gap: 0; }
+  html.mega #head #btn-people:has(.stack:not(:empty)) { padding-left: 12px; }
+  html.mega #head #btn-density { padding: 0 9px; }
+  html.mega #head .head-actions { gap: 6px; }
+  html.mega.mg-room #chan-title { font-size: round(down, 24px, 12px); }
+  html.mega.mg-room #chan-sub { font-size: 12px; }
+}
+
+/* ---- a phone's card bar: one row that scrolls sideways, instead of wrapping onto two or three rows over the card ---- */
+@media (max-width: 760px) {
+  .mbar { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; pointer-events: auto; padding-block: 10px; gap: 6px; -webkit-overflow-scrolling: touch; }
+  .mbar::-webkit-scrollbar { display: none; }
+  .mbar > * { flex: none; }
+  .mmark { flex: 0 1 auto; min-width: 30vw; max-width: none; }
+  .mgrow { flex: 1 0 6px; }
+  .mchip { min-height: 34px; padding: 0 11px; }
+  /* with the bar on one row the cards can have their height back */
+  .mcard { height: 80cqh; margin-top: -40cqh; }
+  .mslot { height: 70cqh; }
+  .mlist { padding-block: 15cqh; }
+}
+
+/* ---- the section label above the voice cards: at 70 px it sat right under the bar's chips whenever the voice card was
+   centred. Smaller, on the grid, and it steps aside while the card below it is the settled one. ---- */
+.msect { font-size: round(down, clamp(24px, 4cqw, 48px), var(--m-dsnap)); transition: opacity .3s; }
+.msect:has(+ .mslot.settled) { opacity: 0; }
+@media (prefers-reduced-motion: reduce) { .msect { transition: none; } }
+
+/* ---- the card bar on a computer never wraps either: the community name gives way first (it is on the card in any
+   case), and in a narrow stage (the camera stack open) the keyboard tag goes. ---- */
+@media (min-width: 761px) {
+  .mbar { flex-wrap: nowrap; }
+  .mbar > * { flex: none; }
+  .mmark { flex: 0 1 auto; min-width: 120px; max-width: none; }
+  .mgrow { flex: 1 0 8px; }
+}
+@container (max-width: 1040px) { .mbar .mchip[data-m="jump"] .mtag, .mbar .mchip[data-m="jump"] .mhide-s { display: none; } }
+
+/* ---- offline: the relay line is drawn where the composer's small print is; the small print steps aside for it ---- */
+@media (min-width: 761px) {
+  html.mega #app:has(#sync-status.bad:not([hidden])) #composer .foot .hint { visibility: hidden; }
+  html.mega #rail#rail #sync-status { font: 400 12px/1.3 var(--m-name); letter-spacing: var(--m-small); }
+}
+
+/* ---- the camera stack: the tile bars wore the browser's grey select and squeezed the name to "Bob · scre…" ---- */
+html.mega #c-shares .ctile .bar { gap: 6px; padding: 6px 8px; font: 500 11px/1 var(--m-ui); letter-spacing: var(--m-small); background: linear-gradient(transparent, rgb(5 4 7 / .78)); }
+html.mega #c-shares .ctile .bar .grow { flex: 1 1 64px; }
+html.mega #c-shares .ctile .bar select, html.mega #c-shares .ctile .bar button { appearance: none; -webkit-appearance: none; flex: none; height: 24px; padding: 0 9px; border: 0; border-radius: 999px; background: rgb(5 4 7 / .72); color: var(--m-paper); font: 500 11px/1 var(--m-ui); letter-spacing: var(--m-small); text-transform: lowercase; cursor: pointer; }
+html.mega #c-shares .ctile .bar select { padding-right: 22px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23efedf2' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 8px center; background-size: 9px 6px; }
+html.mega #c-shares .ctile .bar select option { background: #17151e; color: var(--m-paper); }
+html.mega #c-shares .ctile .bar select:hover, html.mega #c-shares .ctile .bar button:hover { background-color: rgb(5 4 7 / .9); }
+html.mega #c-shares .ctile .bar select:focus-visible, html.mega #c-shares .ctile .bar button:focus-visible { outline: 2px solid var(--m-paper); outline-offset: 1px; }
+
+/* ---- display type on the 12 px grid: the sizes that had drifted off it ---- */
+html.mega .modal h2, html.mega .modal-out h2 { font-size: 36px; }
+.mi-t { font-size: 24px; }
+#mi-rec .mi-rt b { font-size: 24px; }
+.rg-who b { font-size: round(down, clamp(36px, 5vw, 48px), 12px); }
+.mi-code, .mi-first #ipw { font-size: 24px; }
+
+/* ---- a placeholder that does not fit ends in an ellipsis instead of mid-word ---- */
+html.mega input::placeholder, html.mega textarea::placeholder { text-overflow: ellipsis; }
+
+/* ---- small consistency: the offline line warns in the warning colour, not the room's highlight; the people sheet fills a
+   phone's width instead of leaving a sliver of the bar behind it; segmented controls are lowercase like every other button ---- */
+html.mega .sync.bad { color: var(--warn); }
+html.mega .sync.bad::before { background: var(--warn); }
+@media (max-width: 760px) { html.mega #people { width: 100vw; } }
+html.mega .seg button { text-transform: lowercase; }
+
+/* ---- lowercase words: placeholders and the summaries that open a fold. The composer is left out of the rule because its
+   placeholder carries the room's name, which is never changed; app.js writes that one lowercase around the name. ---- */
+html.mega input::placeholder, html.mega textarea:not(#input)::placeholder { text-transform: lowercase; }
+html.mega summary { text-transform: lowercase; }
+
+/* ---- a mention at the bumped sizes is a tint, not a block the width of a word: the highlight at 28% behind the highlight ---- */
+html.mega.mg-room .msg[data-mz] .body .at.self { background: color-mix(in srgb, var(--mg-hi) 28%, transparent); color: var(--mg-hi); }
+
+/* ---- a phone's card bar: "colours" and "draw" move into "more" (moreMenu in mega.js), so the four chips that matter fit ---- */
+@media (max-width: 760px) { .mbar .mchip[data-m="paint"], .mbar .mchip[data-m="draw"] { display: none; } }
+
+/* ---- chat on a computer: the avatar sits on the left, the small name and time over the words, as in the prototype. The
+   150 px the right-aligned name column took go to the conversation. A narrow stream keeps its stacked layout (style.css). ---- */
+@container main (min-width: 661px) {
+  html.mega #stream > *, html.mega #composer > * { --gutter: 58px; --timecol: 0px; --measure: 800px; }
+  html.mega .msg, html.mega .sys { grid-template-columns: 36px minmax(0, max-content) minmax(0, 1fr); column-gap: 0; padding-inline: 10px; }
+  html.mega .msg > .who, html.mega .sys > .who { display: contents; }
+  html.mega .msg .who .name, html.mega .sys .who .name { grid-column: 2; grid-row: 1; align-self: center; display: block; text-align: left; padding: 0; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; margin-left: 12px; }
+  html.mega .msg .who > :not(.name):not(.sr), html.mega .sys .who > :not(.name):not(.sr) { grid-column: 1; grid-row: 1 / span 2; align-self: start; justify-self: start; margin: 3px 0 0; }
+  html.mega .msg .who .seal { --s: 36px; }
+  html.mega .msg .who .name .chip { vertical-align: middle; margin-left: 6px; }
+  html.mega .msg > .txt, html.mega .sys > .txt { grid-column: 2 / -1; grid-row: 2; margin-left: 12px; }
+  html.mega .msg > .when, html.mega .sys > .when { grid-column: 3; grid-row: 1; align-self: center; justify-self: start; padding: 0 0 0 10px; text-align: left; font: 400 11px/1.3 var(--m-name); letter-spacing: 0; color: var(--m-mute); }
+  html.mega .msg > .when .state, html.mega .sys > .when .state { display: inline-flex; margin-left: 6px; }
+  /* a continued message: no avatar, no name; its time waits in the avatar column until the row is pointed at */
+  html.mega .msg.cont > .txt { grid-row: 1; margin-top: 0; }
+  html.mega .msg.cont > .when { grid-column: 1; grid-row: 1; align-self: start; justify-self: stretch; padding: 5px 0 0; text-align: center; font-size: 10px; }
+  html.mega .msg.cont > .when .state { display: none; }   /* the dimmed words already say it is sending */
+  html.mega .newline { padding-left: 58px; }
+}
+/* a stacked row (a phone, or a narrow stream): the time is as small as it is beside the name on a computer */
+@container main (max-width: 660px) {
+  html.mega .msg > .when, html.mega .sys > .when { font: 400 11px/1.3 var(--m-name); letter-spacing: 0; color: var(--m-mute); }
+}
