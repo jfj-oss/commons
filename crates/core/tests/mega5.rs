@@ -311,3 +311,41 @@ fn a_030_document_with_a_community_wall_lock_still_verifies_and_the_carrier_may_
     settle(&mut [&mut a, &mut b, &mut c]);
     assert!(cglyphs(&c, &cid).contains(&(2 * WALL_COLS as u16, 1)) && cglyphs(&b, &cid).contains(&(2 * WALL_COLS as u16, 1)), "an event from any room of the community counts");
 }
+
+/// Regression: the owner changing colours or the look of a room or card must never touch what is drawn on the walls, on any device,
+/// at generation 0 and after a clear, for a room's wall and for the community card's wall.
+#[test]
+fn colour_and_look_changes_keep_every_wall() {
+    let (_net, mut a, mut b, mut c, cid, gid) = trio();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    let cw = format!("{CWALL_PREFIX}{cid}");
+    let duo = |m: &str, h: &str| Duo { main: m.into(), hi: h.into() };
+    for round in 0..2 {
+        if round == 1 {   // after a clear: generation 1 in the document
+            a.c.set_wall(&cid, &gid, None, true).unwrap();
+            a.c.set_wall(&cid, &cid, None, true).unwrap();
+            settle(&mut [&mut a, &mut b, &mut c]);
+        }
+        a.c.wall_draw(&gid, &[(1, 1, 1, 0), (2, 1, 2, 1), (3, 1, 3, 0)]).unwrap();
+        b.c.wall_draw(&cw, &[(5, 5, 2, 0), (6, 5, 4, 1)]).unwrap();
+        settle(&mut [&mut a, &mut b, &mut c]);
+        let (room0, card0) = (rglyphs(&a, &gid), cglyphs(&a, &cid));
+        assert_eq!((room0.len(), card0.len()), (3, 2), "round {round}: drawn");
+        let steps: Vec<Box<dyn Fn(&mut Peer)>> = vec![
+            Box::new(|p| p.c.set_style(&cid, Some(&gid), Some(duo("#2288cc", "#ffee00"))).unwrap()),
+            Box::new(|p| p.c.set_style(&cid, None, Some(duo("#33aa55", "#ffffff"))).unwrap()),
+            Box::new(|p| p.c.set_look(&cid, Some(&gid), Some(look(Some(3), Some(5), Some(55)))).unwrap()),
+            Box::new(|p| p.c.set_look(&cid, None, Some(look(Some(4), None, None))).unwrap()),
+            Box::new(|p| p.c.set_look(&cid, Some(&gid), None).unwrap()),
+            Box::new(|p| p.c.set_style(&cid, Some(&gid), None).unwrap()),
+        ];
+        for (i, step) in steps.iter().enumerate() {
+            step(&mut a);
+            settle(&mut [&mut a, &mut b, &mut c]);
+            for p in [&a, &b, &c] {
+                assert_eq!(rglyphs(p, &gid), room0, "round {round} step {i}: {} lost the room wall", p.name);
+                assert_eq!(cglyphs(p, &cid), card0, "round {round} step {i}: {} lost the card wall", p.name);
+            }
+        }
+    }
+}
