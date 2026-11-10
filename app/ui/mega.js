@@ -398,6 +398,7 @@
   function killList() { if (window.__megaWall) __megaWall.leave(); if (M.list) { M.list.destroy(); M.list = null; } mega.innerHTML = ''; hideTip(); closeRail(); }
   function applyLevel() {
     const chat = M.level === 'chat';
+    if (chat && document.getElementById('mega-paint')) closePaint();   // the colours panel belongs to the cards: opening a room closes it (it had no way out there)
     mega.hidden = chat; rail.hidden = !chat;
     root.classList.toggle('mg-chat', chat); root.classList.toggle('mg-cards', !chat);
     if (!chat) { hideOpts(); closeRail(); }
