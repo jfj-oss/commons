@@ -139,7 +139,7 @@ const talk = async secs => { const end = Date.now() + secs * 1000; let i = 0; wh
 try {
   await P.ev(`JSON.stringify({ level: __mega.level, cards: document.querySelectorAll('.mcard').length })`).then(s => console.log('page at', s));
   await measure('home', SECS);
-  await P.ev(`__megaOpened(${JSON.stringify(main.gid)}); 1`);
+  await P.ev(`__mega.api.toChat(${JSON.stringify(main.cid)}, ${JSON.stringify(main.gid)}); 1`);
   await P.waitFor(`__mega.level === 'chat' && S.gid === ${JSON.stringify(main.gid)} && document.querySelectorAll('#stream .msg').length > 10`).catch(async e => { console.log('state', await P.ev(`JSON.stringify({ level: __mega.level, cid: __mega.cid, gid: S.gid, msgs: document.querySelectorAll('#stream .msg').length, snap: S.snap && S.snap.communities.map(c => [c.id, c.channels.map(x => [x.gid, x.kind, x.joined])]) })`)); throw e; });
   await measure('chat', SECS);
   await measure('chat-talking', SECS, talk);
