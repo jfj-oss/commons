@@ -6,7 +6,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ID=app.commons.chat
 VER=$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' app/src-tauri/tauri.conf.json | head -1)
-if [ -z "${COMMONS_MAC_FULL:-}" ]; then
+# COMMONS_MAC_JOBS=N: the same light settings, but N jobs at normal priority (fast cores), for a Mac on power.
+if [ -n "${COMMONS_MAC_JOBS:-}" ]; then
+  export CARGO_PROFILE_RELEASE_LTO=off CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 CARGO_BUILD_JOBS="$COMMONS_MAC_JOBS"
+  RUN=()
+elif [ -z "${COMMONS_MAC_FULL:-}" ]; then
   export CARGO_PROFILE_RELEASE_LTO=off CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 CARGO_BUILD_JOBS=2
   RUN=(taskpolicy -b nice -n 19)
 else RUN=(); fi

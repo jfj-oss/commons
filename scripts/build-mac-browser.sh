@@ -26,7 +26,11 @@ PY
 fi
 [ -n "$VER" ] && [ "$VER" != null ] || { echo "build-mac-browser: no version" >&2; exit 1; }
 [ -n "$PUB" ] && [ "$PUB" != null ] || { echo "build-mac-browser: no updater public key in $CONF" >&2; exit 1; }
-if [ -z "${COMMONS_MAC_FULL:-}" ]; then
+# COMMONS_MAC_JOBS=N: the same light settings, but N jobs at normal priority (fast cores), for a Mac on power.
+if [ -n "${COMMONS_MAC_JOBS:-}" ]; then
+  export CARGO_PROFILE_RELEASE_LTO=off CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 CARGO_BUILD_JOBS="$COMMONS_MAC_JOBS"
+  RUN=()
+elif [ -z "${COMMONS_MAC_FULL:-}" ]; then
   export CARGO_PROFILE_RELEASE_LTO=off CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 CARGO_BUILD_JOBS=2
   RUN=(taskpolicy -b nice -n 19)
 else RUN=(); fi
