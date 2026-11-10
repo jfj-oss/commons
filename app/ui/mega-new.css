@@ -14,7 +14,7 @@
 .mnh { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .mnc { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px var(--m-name); letter-spacing: var(--m-small); opacity: .7; }
 .mnr { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 17px/1.15 var(--m-name); letter-spacing: var(--m-small); }
-.mnp { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 15px/1.25 var(--m-msg); letter-spacing: calc(var(--m-small) * .5); opacity: .88; }
+.mnp { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 15px/1.3 var(--m-chat); letter-spacing: 0; opacity: .88; }
 .mnp b { font: 600 13px var(--m-ui); letter-spacing: var(--m-small); }
 .mnn { display: flex; align-items: center; gap: 8px; }
 .mnn b { font: 400 24px/1 var(--m-sharp); letter-spacing: -.02em; }
