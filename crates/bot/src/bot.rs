@@ -197,11 +197,12 @@ fn wall_info_of(c: &Client, gid: &str) -> Option<WallInfo> {
     Some(WallInfo { gen: v.gen, locked: v.locked, marks: v.cells.iter().filter(|(_, g, _, _)| *g != 0).map(|(p, ..)| *p as u32).collect() })
 }
 
+/// Where Oracle may announce his new picture: only each community's "general" room (owner's choice), never every room.
 fn joined_rooms_of(c: &Client) -> Vec<String> {
     let mut rooms = Vec::new();
     for co in c.st.communities.values().filter(|x| !x.removed) {
         for ch in c.channels_of(&co.id) {
-            if ch.joined { rooms.push(ch.gid.clone()); }
+            if ch.joined && ch.name.trim_start_matches('#').eq_ignore_ascii_case("general") { rooms.push(ch.gid.clone()); }
         }
     }
     rooms
