@@ -812,9 +812,13 @@ pub struct Look {
     /// @mention is still answered. Only ever stored as `true`: unset means "as the room's own `@Oracle quiet` / `chime in` words say".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oracle_quiet: Option<bool>,
+    /// Rooms only. When on, the Oracle bot may now and then doodle on this room's backdrop wall on its own. Off (unset) by default; only ever
+    /// stored as `true`. A wall the owner locked is still left alone, and so is a room where Oracle stays quiet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oracle_draw: Option<bool>,
 }
 impl Look {
-    pub fn is_empty(&self) -> bool { self.card.is_none() && self.chat.is_none() && self.dim.is_none() && self.oracle_quiet.is_none() }
+    pub fn is_empty(&self) -> bool { self.card.is_none() && self.chat.is_none() && self.dim.is_none() && self.oracle_quiet.is_none() && self.oracle_draw.is_none() }
     pub fn valid(&self) -> bool {
         !self.is_empty() && self.card.is_none_or(|n| n <= MAX_LOOK_PATTERN) && self.chat.is_none_or(|n| n <= MAX_LOOK_PATTERN) && self.dim.is_none_or(|n| n <= MAX_LOOK_DIM)
     }

@@ -789,7 +789,7 @@
       <p class="mtag" id="mp-warn" role="status"></p><div class="mp-end"><button class="mchip" id="mp-reset" type="button">reset</button></div></div>`;
     document.body.append(e); PT.open = true;
     let w = 0, hsv = [0, 0, 0], target = start, timer = 0, ltimer = 0, tt = 0;
-    const quietHold = new Map();
+    const quietHold = new Map(), drawHold = new Map();
     const looksBox = $('#mp-looks', e), idOf = t => (t.kind === 'community' ? t.cid : t.gid);
     const sv = $('#mp-sv', e), hue = $('#mp-hue', e), hx = $('#mp-hex', e);
     const cur = () => (SHOWN.get(target.id) || themeOf(target)).slice();
@@ -808,10 +808,12 @@
       const lk = lookOf(target.cid, idOf(target)), text = target.kind === 'text', t = cur();
       const tiles = (k, sel) => ['', ...FX.map((_, i) => i)].map(n => `<button type="button" class="mp-t" data-k="${k}" data-n="${n}" aria-pressed="${n === '' ? patOf(sel) == null : n === patOf(sel)}" aria-label="${n === '' ? 'automatic' : FXNAMES[n]}" style="background-image:${fxThumb(n === '' ? target.fxAuto : n, t[0], t[1])}"><i>${n === '' ? 'auto' : FXNAMES[n]}</i></button>`).join('');
       const d = dimOf(lk), qh = quietHold.get(idOf(target)), quiet = qh && qh.until > Date.now() ? qh.on : !!(lookStored(target.cid, idOf(target)) || {}).oracle_quiet;
+      const dh = drawHold.get(idOf(target)), draws = dh && dh.until > Date.now() ? dh.on : !!(lookStored(target.cid, idOf(target)) || {}).oracle_draw;
       looksBox.innerHTML = `<p class="mp-lab" id="mp-l1">card animation</p><div class="mp-fx" role="group" aria-labelledby="mp-l1">${tiles('card', lk.card)}</div>`
         + (text ? `<p class="mp-lab" id="mp-l2">chat animation</p><div class="mp-fx" role="group" aria-labelledby="mp-l2">${tiles('chat', lk.chat)}</div>
           <label class="mp-dim"><span class="mp-lab">backdrop</span><input id="mp-dim" type="range" min="0" max="${DIM_MAX}" step="5" value="${d}" aria-label="Backdrop strength behind the chat"><output id="mp-dimv" for="mp-dim">${d === 0 ? 'off' : d + '%'}</output></label>
-          <button type="button" id="mp-oracle" class="mp-oracle" aria-pressed="${quiet ? 'true' : 'false'}">${quiet ? 'oracle stays quiet here' : 'oracle can join in here'}</button>` : '');
+          <button type="button" id="mp-oracle" class="mp-oracle" aria-pressed="${quiet ? 'true' : 'false'}">${quiet ? 'oracle stays quiet here' : 'oracle can join in here'}</button>
+          <button type="button" id="mp-odraw" class="mp-oracle" aria-pressed="${draws ? 'true' : 'false'}">${draws ? 'oracle doodles on the backdrop' : 'no oracle doodles'}</button>` : '');
     };
     const tint = () => { clearTimeout(tt); tt = setTimeout(() => { const t = cur(); $$('.mp-t', e).forEach(b => { b.style.backgroundImage = fxThumb(b.dataset.n === '' ? target.fxAuto : +b.dataset.n, t[0], t[1]); }); }, 120); };
     // a look is changed here at once, and sent only when committed (the same one-request-at-a-time queue as the colours)
@@ -841,6 +843,14 @@
     hx.oninput = () => { let v = hx.value.trim(); if (v && v[0] !== '#') v = '#' + v; if (isHex(v)) { v = v.toLowerCase(); hsv = toHsv(v); edit(w, v); later(); } };
     hx.onblur = show;
     looksBox.addEventListener('click', async ev => {
+      const d = ev.target.closest && ev.target.closest('#mp-odraw');
+      if (d && !d.disabled && target.kind === 'text') {   // Oracle's random backdrop doodles, per room, off unless the owner turns them on
+        const on = d.getAttribute('aria-pressed') !== 'true', t = target; d.disabled = true;
+        drawHold.set(t.gid, { on, until: Date.now() + 15000 });
+        try { await rpc('set_oracle_draw', { cid: t.cid, room: t.gid, on }); d.setAttribute('aria-pressed', on ? 'true' : 'false'); d.textContent = on ? 'oracle doodles on the backdrop' : 'no oracle doodles'; }
+        catch (er) { drawHold.delete(t.gid); toast('Could not change that: ' + er.message); }
+        d.disabled = false; return;
+      }
       const b = ev.target.closest && ev.target.closest('#mp-oracle'); if (!b || b.disabled || target.kind !== 'text') return;
       const on = b.getAttribute('aria-pressed') !== 'true', t = target; b.disabled = true;
       quietHold.set(t.gid, { on, until: Date.now() + 15000 });

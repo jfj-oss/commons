@@ -13,7 +13,7 @@ fn trio() -> (Net, Peer, Peer, Peer, String, String) {
     let (cid, gen) = community_with(&net, &mut a, &mut [&mut b, &mut c]);
     (net, a, b, c, cid, gen)
 }
-fn look(card: Option<u8>, chat: Option<u8>, dim: Option<u16>) -> Look { Look { card, chat, dim, oracle_quiet: None } }
+fn look(card: Option<u8>, chat: Option<u8>, dim: Option<u16>) -> Look { Look { card, chat, dim, oracle_quiet: None, oracle_draw: None } }
 fn looks_of(p: &Peer, cid: &str) -> std::collections::BTreeMap<String, Look> { p.c.st.communities[cid].style.as_ref().map(|s| s.looks.clone()).unwrap_or_default() }
 fn cglyphs(p: &Peer, cid: &str) -> Vec<(u16, u8)> { p.c.wall_view(&format!("{CWALL_PREFIX}{cid}")).cells.into_iter().filter(|c| c.1 != 0).map(|c| (c.0, c.1)).collect() }
 fn rglyphs(p: &Peer, gid: &str) -> Vec<(u16, u8)> { p.c.wall_view(gid).cells.into_iter().filter(|c| c.1 != 0).map(|c| (c.0, c.1)).collect() }
