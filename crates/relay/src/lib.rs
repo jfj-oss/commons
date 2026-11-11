@@ -6,7 +6,7 @@ pub mod front;
 pub mod live;
 use axum::{
     body::{to_bytes, Body},
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{HeaderMap, Method, Request, Response, StatusCode},
     Router,
 };
@@ -83,6 +83,10 @@ pub struct Limits {
     /// lookup is refused, hits included, or a guesser could just keep going.
     pub pwinvite_lookups_per_id_per_window: u32,
     pub pwinvite_misses_per_window: u32,
+    /// Misses one caller (by address, or by the address a reverse proxy in front reports) may make per window before that caller
+    /// alone is refused. The whole-relay budget above stays as the backstop against many addresses, and is sized so that one
+    /// caller cannot spend it for everyone. A filed copy that collides counts as a miss for its caller too (M5).
+    pub pwinvite_misses_per_client: u32,
     /// Longest a sealed copy may stay, whatever its owner asks.
     pub pwinvite_max_ttl_secs: u64,
     /// The live channel's in-memory buffer (see `live.rs`). Nothing in it is stored.
@@ -126,7 +130,8 @@ impl Default for Limits {
             max_pwinvites_total: 2000,
             pwinvite_puts_per_window: 20,
             pwinvite_lookups_per_id_per_window: 8,
-            pwinvite_misses_per_window: 40,
+            pwinvite_misses_per_window: 400,
+            pwinvite_misses_per_client: 12,
             pwinvite_max_ttl_secs: 30 * 86400,
             live: live::LiveLimits::default(),
         }
@@ -389,7 +394,7 @@ pub async fn start_with(bind: SocketAddr, data_dir: PathBuf, limits: Limits) -> 
     let addr = listener.local_addr()?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     let join = tokio::spawn(async move {
-        let _ = axum::serve(listener, app).with_graceful_shutdown(async { let _ = rx.await; }).await;
+        let _ = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(async { let _ = rx.await; }).await;
     });
     Ok(RelayHandle { addr, shutdown: Some(tx), join: Some(join), stop })
 }
@@ -625,10 +630,27 @@ fn add_presence(
     if !m.is_empty() { state.insert(gid.to_string(), m); }
 }
 
-async fn handle(State(st): State<Arc<RelayState>>, req: Request<Body>) -> Resp {
+/// Who is calling, for the budgets that must not be spent by one caller for everyone: the peer address, or, when the peer is a reverse
+/// proxy on the same machine or network (Caddy, tailscale serve), the address it reports in the last `X-Forwarded-For` entry. The
+/// header is never believed from a public peer, which could write anything into it.
+pub fn client_key(peer: std::net::IpAddr, headers: &HeaderMap) -> String {
+    let local = match peer {
+        std::net::IpAddr::V4(a) => a.is_loopback() || a.is_private() || a.is_link_local(),
+        std::net::IpAddr::V6(a) => a.is_loopback() || (a.segments()[0] & 0xfe00) == 0xfc00 || (a.segments()[0] & 0xffc0) == 0xfe80,
+    };
+    if local {
+        if let Some(x) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            if let Some(ip) = x.rsplit(',').next().map(str::trim).filter(|s| !s.is_empty()).and_then(|s| s.trim_matches(['[', ']']).parse::<std::net::IpAddr>().ok()) { return ip.to_string(); }
+        }
+    }
+    peer.to_string()
+}
+
+async fn handle(State(st): State<Arc<RelayState>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request<Body>) -> Resp {
     let (parts, body) = req.into_parts();
     let path = parts.uri.path().to_string();
     let m = parts.method.clone();
+    let client = client_key(peer.ip(), &parts.headers);
     if m == Method::GET { if let Some(dir) = &st.limits.site_dir { if let Some(r) = site(dir, &path, st.limits.min_app_version.as_deref()).await { return r; } } }
     let limit = body_limit(&m, &path);
     // A slot for a big body goes only to a registered, unrevoked device (the full signature can only be checked once
@@ -677,7 +699,7 @@ async fn handle(State(st): State<Arc<RelayState>>, req: Request<Body>) -> Resp {
     // Everything else is short: run it on a blocking thread so the sqlite mutex never blocks the runtime.
     tokio::task::spawn_blocking(move || {
         let seg: Vec<&str> = seg.iter().map(String::as_str).collect();
-        route(&st2, &m, m.as_str(), &seg, &headers, &path, &body).unwrap_or_else(|r| r)
+        route(&st2, &m, m.as_str(), &seg, &headers, &path, &body, &client).unwrap_or_else(|r| r)
     }).await.unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR, "panic"))
 }
 
@@ -892,7 +914,8 @@ fn atomically<T>(db: &Connection, f: impl FnOnce() -> Result<T, Resp>) -> Result
     Ok(v)
 }
 
-fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMap, path: &str, body: &[u8]) -> Result<Resp, Resp> {
+#[allow(clippy::too_many_arguments)]
+fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMap, path: &str, body: &[u8], client: &str) -> Result<Resp, Resp> {
     let lim = &st.limits;
     if *m == Method::GET && seg == ["health"] { return Ok(status(StatusCode::OK, "ok")); }
     let db = st.db.lock().unwrap();
@@ -1141,16 +1164,32 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
             let blob = dec(&r.blob, MAX_PWINVITE_BYTES)?;
             if blob.len() < 64 { return Err(status(StatusCode::BAD_REQUEST, "bad")); }
             st.limited(format!("pwput/{}", a.account), lim.pwinvite_puts_per_window, "too many password invites, try again later")?;
+            // Filing is a way of asking "is this id taken?", so it is rationed like a miss for the caller (never for the whole relay).
+            st.limited(format!("pwmiss/{client}"), lim.pwinvite_misses_per_client, "too many attempts, try again in a few minutes")?;
             let now = now_secs() as i64;
             db.execute("DELETE FROM pwinvites WHERE expires < ?1", [now]).map_err(dberr)?;
-            let total: u64 = db.query_row("SELECT COUNT(*) FROM pwinvites", [], |r| r.get(0)).map_err(dberr)?;
-            if total >= lim.max_pwinvites_total { return Err(status(StatusCode::TOO_MANY_REQUESTS, "busy")); }
+            // The same account filing the same password again is told so (it knows its own copies); anyone else's collision is
+            // answered exactly like success and stores nothing, so the route says nothing about other people's passwords.
+            let taken_by: Option<String> = db.query_row("SELECT owner FROM pwinvites WHERE lid=?1", [lid], |r| r.get(0)).optional().map_err(dberr)?;
+            match taken_by {
+                Some(o) if o == a.account => return Err(status(StatusCode::CONFLICT, "taken")),
+                Some(_) => return Ok(status(StatusCode::OK, "ok")),
+                None => {}
+            }
             let mine: u64 = db.query_row("SELECT COUNT(*) FROM pwinvites WHERE owner=?1", [&a.account], |r| r.get(0)).map_err(dberr)?;
             if mine >= lim.max_pwinvites_per_account { return Err(status(StatusCode::TOO_MANY_REQUESTS, "too many password invites waiting")); }
+            let total: u64 = db.query_row("SELECT COUNT(*) FROM pwinvites", [], |r| r.get(0)).map_err(dberr)?;
+            if total >= lim.max_pwinvites_total {
+                // Full: the account holding the most copies gives up its soonest-expiring one, unless the table is spread thin.
+                let heaviest: Option<(String, u64)> = db.query_row("SELECT owner, COUNT(*) c FROM pwinvites WHERE owner<>?1 GROUP BY owner ORDER BY c DESC LIMIT 1", [&a.account], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(dberr)?;
+                match heaviest {
+                    Some((o, n)) if n > 2 && n > mine => { db.execute("DELETE FROM pwinvites WHERE lid = (SELECT lid FROM pwinvites WHERE owner=?1 ORDER BY expires ASC LIMIT 1)", [&o]).map_err(dberr)?; }
+                    _ => return Err(status(StatusCode::TOO_MANY_REQUESTS, "busy")),
+                }
+            }
             let ttl = r.ttl.clamp(60, lim.pwinvite_max_ttl_secs) as i64;
             let fetches = r.fetches.clamp(1, 200) as i64;
-            let n = db.execute("INSERT OR IGNORE INTO pwinvites(lid,blob,owner,expires,fetches_left) VALUES(?1,?2,?3,?4,?5)", params![lid, blob, a.account, now + ttl, fetches]).map_err(dberr)?;
-            if n == 0 { return Err(status(StatusCode::CONFLICT, "taken")); }
+            db.execute("INSERT OR IGNORE INTO pwinvites(lid,blob,owner,expires,fetches_left) VALUES(?1,?2,?3,?4,?5)", params![lid, blob, a.account, now + ttl, fetches]).map_err(dberr)?;
             Ok(status(StatusCode::OK, "ok"))
         }
         (Method::DELETE, ["v1", "pwinvite", lid]) => {
@@ -1163,7 +1202,9 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
             let r: PwLookupReq = parse(body)?;
             let gone = || status(StatusCode::NOT_FOUND, "none");
             if !is_hex(&r.lid, 64) { return Err(gone()); }
-            // Whole-relay budgets: misses are the guessing, so once they are spent nothing is answered, hits included.
+            // Budgets: misses are the guessing. A caller that has spent its own is refused, hits included, and so is everyone once the
+            // whole relay's backstop is spent, so one caller alone cannot lock the others out and many callers cannot guess together.
+            if st.spent(&format!("pwmiss/{client}"), lim.pwinvite_misses_per_client) { return Err(status(StatusCode::TOO_MANY_REQUESTS, "too many attempts, try again in a few minutes")); }
             if st.spent("pwmiss", lim.pwinvite_misses_per_window) { return Err(status(StatusCode::TOO_MANY_REQUESTS, "too many attempts, try again in a few minutes")); }
             st.limited("pwlook/all".into(), lim.pwinvite_misses_per_window.saturating_mul(3), "too many attempts, try again in a few minutes")?;
             st.limited(format!("pwlook/{}", r.lid), lim.pwinvite_lookups_per_id_per_window, "too many attempts, try again in a few minutes")?;
@@ -1182,7 +1223,8 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
                 }
             }
             let Some((blob, left)) = row else {
-                // Only misses spend the guessing budget; a miss past it is refused like every other lookup now is.
+                // Only misses spend the guessing budgets; a miss past them is refused like every other lookup now is.
+                let _ = st.allow(format!("pwmiss/{client}"), lim.pwinvite_misses_per_client);
                 st.limited("pwmiss".into(), lim.pwinvite_misses_per_window, "too many attempts, try again in a few minutes")?;
                 return Err(gone());
             };
