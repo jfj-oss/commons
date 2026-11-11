@@ -100,10 +100,24 @@ impl RoomKeys {
 /// Nonces already accepted, so the same sealed event is never taken twice.
 #[derive(Default)]
 pub struct Seen { m: HashMap<[u8; 12], u64> }
+/// Most nonces remembered. Events older than `LIVE_MAX_AGE` are refused by their time stamp anyway, so only the newest matter.
+pub const SEEN_MAX: usize = 16_384;
 impl Seen {
-    /// True the first time a nonce is offered.
+    /// True the first time a nonce is offered. When the table is full, the oldest entries go first (audit L1: it used to be emptied,
+    /// so a flood of accepted events let the events before it be replayed within their time window).
     pub fn first(&mut self, nonce: [u8; 12], now: u64) -> bool {
-        if self.m.len() > 16_384 { self.m.retain(|_, t| *t + 130 >= now); if self.m.len() > 16_384 { self.m.clear(); } }
+        if self.m.len() >= SEEN_MAX {
+            self.m.retain(|_, t| *t + 130 >= now);
+            if self.m.len() >= SEEN_MAX {
+                let mut times: Vec<u64> = self.m.values().copied().collect();
+                times.sort_unstable();
+                // keep the newest three quarters: everything at or after this time stays
+                let cut = times[times.len() / 4];
+                self.m.retain(|_, t| *t >= cut);
+                // all the same second: nothing older to drop, so make room by evicting arbitrary entries of that second
+                if self.m.len() >= SEEN_MAX { let extra = self.m.len() + 1 - SEEN_MAX; let drop: Vec<[u8; 12]> = self.m.keys().take(extra).copied().collect(); for k in drop { self.m.remove(&k); } }
+            }
+        }
         self.m.insert(nonce, now).is_none()
     }
     pub fn len(&self) -> usize { self.m.len() }
@@ -495,6 +509,25 @@ mod tests {
     }
     fn dev(k: &SigningKey) -> String { hex::encode(k.verifying_key().to_bytes()) }
     fn now() -> u64 { now_secs() }
+
+    /// Audit L1: a full replay table forgets its oldest nonces, so a recent event cannot be replayed by flooding the table.
+    #[test]
+    fn a_full_replay_table_forgets_the_oldest_not_the_newest() {
+        let mut seen = Seen::default();
+        let nonce = |i: u32| { let mut n = [0u8; 12]; n[..4].copy_from_slice(&i.to_be_bytes()); n };
+        let t0 = 1_000_000u64;
+        // recent events, all inside the window, from many senders: more than the table holds
+        for i in 0..(SEEN_MAX as u32 + 2000) { assert!(seen.first(nonce(i), t0 + (i / 100) as u64)); }
+        assert!(seen.len() <= SEEN_MAX);
+        // the newest are still remembered: a replay of any of them is refused
+        for i in (SEEN_MAX as u32 - 1000)..(SEEN_MAX as u32 + 2000) { assert!(!seen.first(nonce(i), t0 + 200), "{i} was forgotten"); }
+        // what was forgotten is the oldest, which the time window refuses anyway (open() checks the time stamp before the nonce)
+        assert!(seen.first(nonce(0), t0 + 200));
+        // a flood within one second does not empty the table either
+        let mut seen = Seen::default();
+        for i in 0..(SEEN_MAX as u32 + 10) { seen.first(nonce(i), t0); }
+        assert!(seen.len() >= SEEN_MAX - 1 && !seen.is_empty());
+    }
 
     #[test]
     fn an_event_round_trips_and_carries_who_sent_it() {

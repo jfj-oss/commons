@@ -546,6 +546,7 @@ impl Client {
 
     fn publish_style(&mut self, cid: &str, mut doc: StyleDoc, label: &str) -> Result<()> {
         doc.ver = self.st.communities.get(cid).and_then(|c| c.style.as_ref()).map_or(0, |s| s.ver) + 1;
+        if doc.ver > (1 << 53) { bail!("the colour settings of this community have reached their version limit and cannot change any more"); }
         doc.ts = now_secs();
         let signed = sign_style(&self.acct_key()?, cid, &doc).map_err(|e| anyhow!(e))?;
         let mut t = self.ctl_ext(cid)?;

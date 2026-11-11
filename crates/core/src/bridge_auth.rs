@@ -144,16 +144,22 @@ pub fn peer_is_same_user(peer: std::net::SocketAddr, local: std::net::SocketAddr
     use std::os::unix::fs::MetadataExt;
     let (std::net::SocketAddr::V4(p), std::net::SocketAddr::V4(l)) = (peer, local) else { return true };
     let Ok(me) = std::fs::metadata("/proc/self").map(|m| m.uid()) else { return true };
-    let Ok(text) = std::fs::read_to_string("/proc/net/tcp") else { return true };
     let key = |a: &std::net::SocketAddrV4| format!("{:08X}:{:04X}", u32::from_le_bytes(a.ip().octets()), a.port());
     let (pk, lk) = (key(&p), key(&l));
-    for line in text.lines().skip(1) {
-        let f: Vec<&str> = line.split_whitespace().collect();
-        if f.len() > 7 && f[1] == pk && f[2] == lk {
-            return f[7].parse::<u32>().map(|u| u == me).unwrap_or(true);
+    // The row can lag a moment behind accept(); a connection with no row after a few looks is not confirmed and is refused
+    // (audit L5: it used to be let through). A kernel without the table at all cannot be checked this way, and the secret
+    // check that follows is the layer that must hold there.
+    for attempt in 0..4 {
+        let Ok(text) = std::fs::read_to_string("/proc/net/tcp") else { return true };
+        for line in text.lines().skip(1) {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() > 7 && f[1] == pk && f[2] == lk {
+                return f[7].parse::<u32>().map(|u| u == me).unwrap_or(false);
+            }
         }
+        if attempt < 3 { std::thread::sleep(std::time::Duration::from_millis(5)); }
     }
-    true
+    false
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -328,5 +334,13 @@ mod tests {
         let (s, peer) = l.accept().unwrap();
         assert!(peer_is_same_user(peer, s.local_addr().unwrap()));
         drop(c);
+    }
+    /// Audit L5: a connection the kernel's table does not show is refused, not let through.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_peer_without_a_row_is_refused() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let fake_peer: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+        assert!(!peer_is_same_user(fake_peer, l.local_addr().unwrap()));
     }
 }

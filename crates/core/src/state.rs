@@ -268,13 +268,17 @@ pub struct Community {
     #[serde(default)]
     pub direct_bad: bool,
 }
+/// How far a style document's version may jump past the one in force and still be adopted. An owner device raises it by one per change.
+pub const MAX_STYLE_STEP: u64 = 1_000_000;
 impl Community {
     /// Take a verified document if it is newer than the one in force: higher version, then later time, then the
     /// signature as the final tie-break, so every device settles on the same one whatever order it saw them in.
     pub fn adopt_style(&mut self, doc: StyleDoc, signed: &SignedStyle) -> bool {
         let newer = match &self.style {
             None => true,
-            Some(cur) => (doc.ver, doc.ts, signed.sig.as_str()) > (cur.ver, cur.ts, self.style_sig.as_str()),
+            // A version far beyond the one in force is a broken or hostile owner device trying to park the counter at its ceiling (audit L3):
+            // a device that already holds a document ignores it; one with nothing yet takes it, so an honest owner is never stuck.
+            Some(cur) => doc.ver <= cur.ver.saturating_add(MAX_STYLE_STEP) && (doc.ver, doc.ts, signed.sig.as_str()) > (cur.ver, cur.ts, self.style_sig.as_str()),
         };
         if newer { self.style = Some(doc); self.style_sig = signed.sig.clone(); self.style_text = signed.doc.clone(); }
         newer
@@ -418,3 +422,24 @@ pub struct ParkedWelcome { pub id: String, pub data: String, pub ts: u64 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Pairing { pub rid: String, pub secret: String, pub public: String }
+
+#[cfg(test)]
+mod style_tests {
+    use super::*;
+    fn doc(ver: u64) -> StyleDoc { StyleDoc { ver, ts: 10, community: None, rooms: Default::default(), locked: Default::default(), wall: Default::default(), looks: Default::default() } }
+    fn signed(sig: &str) -> SignedStyle { SignedStyle { doc: "{}".into(), sig: sig.into() } }
+    /// Audit L3: a device holding a document does not adopt one whose version leaps to the ceiling; a device with none takes what it is given.
+    #[test]
+    fn a_version_that_leaps_to_the_ceiling_is_not_adopted_over_one_in_force() {
+        let mut c = Community::default();
+        assert!(c.adopt_style(doc(3), &signed("a")));
+        assert!(!c.adopt_style(doc(1 << 53), &signed("b")), "the ceiling is not adopted over version 3");
+        assert!(!c.adopt_style(doc(3 + MAX_STYLE_STEP + 1), &signed("b")));
+        assert!(c.adopt_style(doc(3 + MAX_STYLE_STEP), &signed("b")), "a large but plausible step is");
+        assert!(c.adopt_style(doc(3 + MAX_STYLE_STEP + 1), &signed("c")), "and the next one after it");
+        assert!(!c.adopt_style(doc(2), &signed("d")), "older never");
+        let mut fresh = Community::default();
+        assert!(fresh.adopt_style(doc(1 << 53), &signed("z")), "a device with nothing yet takes any valid document");
+        assert_eq!(fresh.held_style().unwrap().sig, "z");
+    }
+}
