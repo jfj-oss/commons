@@ -1096,13 +1096,13 @@ try {
     const C = await open(pageUrl(C_PORT));
     // Carol is new: the invite password, her name and one password for her device are all she types.
     await C.waitFor(`!!document.querySelector('#ipw')`);
-    const cpw = await A.ev(`rpc('create_invite', { cid: ${JSON.stringify(cid)}, uses: 1, password: 'maple-otter-kayak-31' }).then(r => r.password && 'maple-otter-kayak-31')`);
-    need(cpw === 'maple-otter-kayak-31', 'invite: the core did not make a password invite');
+    const cpw = await A.ev(`rpc('create_invite', { cid: ${JSON.stringify(cid)}, uses: 1, password: 'maple-otter-kayak-cobalt-ember-31' }).then(r => r.password && 'maple-otter-kayak-cobalt-ember-31')`);
+    need(cpw === 'maple-otter-kayak-cobalt-ember-31', 'invite: the core did not make a password invite');
     await C.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(500);
     need(await C.ev(`document.documentElement.scrollWidth <= innerWidth + 1`), 'invite: the first screen is wider than a phone');
     await C.shot('mega-invite-first-390');
     await C.send('Emulation.clearDeviceMetricsOverride'); await sleep(400);
-    await type(C, '#ipw', 'Maple Otter  kayak 31'); await type(C, '#nm', 'Carol'); await type(C, '#pp', 'correct horse battery'); await C.shot('mega-invite-first');
+    await type(C, '#ipw', 'Maple Otter  kayak Cobalt EMBER 31'); await type(C, '#nm', 'Carol'); await type(C, '#pp', 'correct horse battery'); await C.shot('mega-invite-first');
     await click(C, '#go');
     await C.waitFor(`!document.querySelector('#app').hidden`, 30000);
     need(!(await C.ev(`!!document.querySelector('.modal')`)), 'invite: the recovery key blocked joining');
