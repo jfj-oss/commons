@@ -107,7 +107,7 @@
       if (my !== seq) return;
       create.disabled = !r.ok;
       hint.className = 'small mi-hint ' + (!r.ok ? 'bad' : r.warn ? 'warn' : 'good');
-      hint.textContent = !r.ok ? 'Too short or too easy to guess. Anyone who guessed it could join. Use the suggestion.' : r.warn ? 'Fine for a few days. A longer password is safer.' : 'Good.';
+      hint.textContent = !r.ok ? 'Too easy to guess: the server could work it out and read the invite. Use the suggestion, or five or more unrelated words.' : r.warn ? 'Fine for a few days. A longer password is safer.' : 'Good.';
     };
     const suggest = async () => { pw.value = (await rpc('suggest_password', {})).password; check(); };
     $('#mi-new', w).onclick = suggest; pw.oninput = check; suggest();

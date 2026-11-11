@@ -159,7 +159,7 @@ try {
   await click(A, '#switcher'); await click(A, '#mk-new'); await type(A, '#n', 'Book club'); await click(A, '.modal .acts button:last-child');
   await A.waitFor(`document.querySelector('.room')`);
   await click(A, '#btn-invite');
-  await A.waitFor(`document.querySelector('#mi-pw') && document.querySelector('#mi-pw').value.split('-').length === 4`);   // a suggestion is already there
+  await A.waitFor(`document.querySelector('#mi-pw') && document.querySelector('#mi-pw').value.split('-').length === 6`);   // a suggestion (five words and a number) is already there
   const pwd = await A.ev(`document.querySelector('#mi-pw').value`); await A.shot('03-invite-form');
   await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(500);
   if (!await A.ev(`document.documentElement.scrollWidth <= innerWidth + 1 && document.querySelector('.mi-modal').getBoundingClientRect().right <= innerWidth + 1`)) throw new Error('invite: the invite screen is wider than a phone');
