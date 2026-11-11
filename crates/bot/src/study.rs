@@ -4,7 +4,7 @@
 //!
 //! How it works, in one paragraph.  The planner makes the schedule (a week before, two days before and the morning of each
 //! piece of graded work, with per-course mutes, all from the syllabus tables, no model).  Every minute this module asks
-//! `GET /api/reminders/due?since=<when it last asked>` with the shared homebase token; the planner answers with the
+//! `GET /api/reminders/due?since=<when it last asked>` with the reminders-only token (a separate file, `study-reminders-token`, that the planner accepts on the two reminder routes and nowhere else); the planner answers with the
 //! reminders whose time has come and that were not posted yet.  The bot posts each one as a plain message in the chosen
 //! room and then tells the planner `POST /api/reminders/sent {ids}`, so the planner, not the bot, remembers what went out:
 //! a bot restart never repeats a reminder, and a planner that was down posts nothing stale (it drops reminders older than
@@ -70,6 +70,11 @@ pub fn sent_body(reminders: &[Reminder]) -> String {
     serde_json::json!({ "ids": reminders.iter().map(|r| r.id.as_str()).collect::<Vec<_>>() }).to_string()
 }
 
+/// The default token file: the reminders-only token, never the shared homebase token.  The planner accepts it for
+/// `GET /api/reminders/due` and `POST /api/reminders/sent` and refuses it everywhere else, so a leak of this one file exposes the
+/// student's deadlines and the "sent" list, nothing more.
+pub const DEFAULT_TOKEN_FILE: &str = ".config/homebase/study-reminders-token";
+
 /// Settings from the environment.  `None` means the feature is off (no room was named), which is the default.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
@@ -82,7 +87,7 @@ pub fn settings(home: &Path, env: impl Fn(&str) -> Option<String>) -> Option<Set
     Some(Settings {
         url: env("MEGATRON_BOT_STUDY_URL").unwrap_or_else(|| DEFAULT_STUDY_URL.into()),
         room,
-        token_file: env("MEGATRON_BOT_STUDY_TOKEN_FILE").map(std::path::PathBuf::from).unwrap_or_else(|| home.join(".config/homebase/token")),
+        token_file: env("MEGATRON_BOT_STUDY_TOKEN_FILE").map(std::path::PathBuf::from).unwrap_or_else(|| home.join(DEFAULT_TOKEN_FILE)),
     })
 }
 
@@ -103,7 +108,7 @@ impl HttpStudy {
         let token = std::fs::read_to_string(token_file).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
         HttpStudy { base: base.trim_end_matches('/').to_string(), token }
     }
-    fn token(&self) -> Result<&str, String> { self.token.as_deref().ok_or_else(|| "the homebase token file is not readable".to_string()) }
+    fn token(&self) -> Result<&str, String> { self.token.as_deref().ok_or_else(|| "the reminders token file is not readable".to_string()) }
 }
 impl StudyApi for HttpStudy {
     fn due(&self, since: &str) -> Result<(String, Vec<Reminder>), String> {
@@ -122,6 +127,9 @@ impl StudyApi for HttpStudy {
 
 /// One poll: ask, post, record.  Gives the planner's `now` to keep as the next `since`.  A reminder is recorded as sent only
 /// after the room took the message; if the post fails the planner still has it and the next poll tries again.
+/// Delivery is therefore AT LEAST ONCE, not exactly once: if the post succeeds and recording it as sent then fails (the planner is
+/// restarting), the next poll offers the same reminders and they are posted a second time.  A double reminder is the price of never
+/// losing one.
 pub fn poll_once(api: &dyn StudyApi, post: &mut dyn FnMut(&str) -> Result<(), String>, since: &str) -> Result<String, String> {
     let (now, due) = api.due(since)?;
     if let Some(text) = message(&due) {
@@ -163,7 +171,8 @@ mod tests {
         let home = Path::new("/home/x");
         assert_eq!(settings(home, |_| None), None);
         let s = settings(home, |k| if k == "MEGATRON_BOT_STUDY_ROOM" { Some("room-1".into()) } else { None }).unwrap();
-        assert_eq!(s, Settings { url: DEFAULT_STUDY_URL.into(), room: "room-1".into(), token_file: home.join(".config/homebase/token") });
+        assert_eq!(s, Settings { url: DEFAULT_STUDY_URL.into(), room: "room-1".into(), token_file: home.join(".config/homebase/study-reminders-token") });
+        assert!(!s.token_file.ends_with("homebase/token"), "the bot must never default to the full homebase token");
     }
 
     struct Fake { answers: std::cell::RefCell<Vec<(String, Vec<Reminder>)>>, sent: std::cell::RefCell<Vec<String>>, since_seen: std::cell::RefCell<Vec<String>> }

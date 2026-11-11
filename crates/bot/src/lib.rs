@@ -5,3 +5,4 @@ pub mod llm;
 pub mod safety;
 pub mod search;
 pub mod studio;
+pub mod study;
