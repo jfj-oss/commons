@@ -1232,6 +1232,22 @@ impl Client {
                         }
                     }
                 }
+            } else if let (Some(held), GroupExt::Control { style, .. }) = (self.st.communities.get(&c.id).and_then(|x| x.held_style()), &mut t) {
+                // An admin that holds a newer owner-signed document than the table shows (a member put an older one back, an older app
+                // dropped the field) carries its exact copy forward, under the same backoff as the owner's repair (audit M1). Only a
+                // document the current owner signed is carried, and never anything this device signed itself. Newcomers this admin
+                // lets in then read the right document at once, whether or not the owner is online.
+                if let Ok(mine) = verify_style(&c.owner, &c.id, &held) {
+                    let in_force = style.as_ref().and_then(|s| verify_style(&c.owner, &c.id, s).ok()).is_some_and(|d| (d.ver, d.ts) >= (mine.ver, mine.ts));
+                    let (last, gap) = self.st.communities.get(&c.id).map(|x| (x.style_repub, x.style_repub_gap)).unwrap_or((0, 0));
+                    if !in_force && now_secs() >= last + gap {
+                        *style = Some(held); changed = true;
+                        if let Some(x) = self.st.communities.get_mut(&c.id) {
+                            x.style_repub_gap = if now_secs() < last + 600 { (gap * 2).clamp(30, 600) } else { 30 };
+                            x.style_repub = now_secs();
+                        }
+                    }
+                }
             }
             if changed { plan.gce = Some(t); descs.push("update table".into()); }
         }

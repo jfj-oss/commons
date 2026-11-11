@@ -108,3 +108,46 @@ fn a_forged_document_in_the_table_is_refused() {
     assert!(notices(&c).iter().any(|n| n.contains("only the owner can change the colours")), "{:?}", notices(&c));
     for p in [&a, &c] { assert_eq!(room_colours(p, &cid, &gen), Some(duo("#333333", "#444444")), "{}", p.name); }
 }
+
+/// Audit M1, as fixed in 0.3.6 without refusing the commit (refusing would split the community between apps that accept it and apps
+/// that do not): the owner is away, a plain member puts the older owner-signed document back, and an admin who holds the newer one
+/// carries its exact copy forward, so a newcomer the admin lets in reads the current document, not the rolled-back one. Everybody
+/// present is told who did it.
+#[test]
+fn a_rolled_back_document_is_carried_forward_by_an_admin_while_the_owner_is_away() {
+    let (net, mut a, mut b, mut c, cid, gen, old) = world();
+    let cur = a.c.st.communities[&cid].style.clone().unwrap();
+    let cur_sig = a.c.st.communities[&cid].style_sig.clone();
+    // Bob commits the table with the OLD owner-signed document put back; the owner's device never ticks from here on.
+    let replay = sign_style(&a.c.debug_account_key(), &cid, &old).unwrap();
+    b.c.debug_plant_style(&cid, Some(replay)).unwrap();
+    settle(&mut [&mut b, &mut c]);
+    assert!(notices(&c).iter().any(|n| n.starts_with("style:") && n.contains("older version")), "carol is told who rolled it back: {:?}", notices(&c));
+    // Carol keeps the newer document and has put the very same signed copy back into the table.
+    assert_eq!(c.c.st.communities[&cid].style_sig, cur_sig);
+    assert_eq!(c.c.st.communities[&cid].style_repub_gap, 30, "a repair happened, with the owner's backoff");
+    // A newcomer let in by the admin reads the table as it stands: the owner's current document, unchanged (same version and signature).
+    let mut d = Peer::new(&net, "dave");
+    let link = c.c.create_invite(&cid, None, 3600).unwrap();
+    d.c.join_with_link(&link).unwrap();
+    settle(&mut [&mut b, &mut c, &mut d]);
+    let ds = d.c.st.communities[&cid].style.clone().expect("dave has a style document");
+    assert_eq!((ds.ver, d.c.st.communities[&cid].style_sig.as_str()), (cur.ver, cur_sig.as_str()), "dave got the owner's current document, not the old one (ver {})", old.ver);
+    assert!(!ds.locked.contains(&gen) && ds.wall.get(&gen) == Some(&2));
+    assert_eq!(room_colours(&d, &cid, &gen), Some(duo("#333333", "#444444")));
+    assert!(d.c.wall_draw(&gen, &[(1, 1, 1, 0)]).is_ok(), "dave can draw on the unlocked wall");
+    // Bob does it again at once: the admin's second repair waits for the gap, like the owner's, so he cannot make admins commit faster.
+    let replay = sign_style(&a.c.debug_account_key(), &cid, &old).unwrap();
+    b.c.debug_plant_style(&cid, Some(replay)).unwrap();
+    settle(&mut [&mut b, &mut c, &mut d]);
+    assert_eq!(c.c.st.communities[&cid].style_repub_gap, 30, "no second repair inside the gap");
+    { let x = c.c.st.communities.get_mut(&cid).unwrap(); x.style_repub -= 40; }
+    settle(&mut [&mut b, &mut c, &mut d]);
+    assert_eq!(c.c.st.communities[&cid].style_repub_gap, 60, "repaired after the gap, and the gap doubled");
+    // When the owner is back, nothing is left to repair: the table already carries the current document.
+    let before = a.c.st.communities[&cid].style.clone().unwrap().ver;
+    settle(&mut [&mut a, &mut b, &mut c, &mut d]);
+    assert_eq!(a.c.st.communities[&cid].style.as_ref().unwrap().ver, before, "the owner did not need to republish");
+    // A plain member's table also keeps the current document (it never adopts an older one).
+    assert_eq!(b.c.st.communities[&cid].style_sig, cur_sig);
+}

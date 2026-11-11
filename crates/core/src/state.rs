@@ -245,6 +245,9 @@ pub struct Community {
     pub style: Option<StyleDoc>,
     #[serde(default)]
     pub style_sig: String,
+    /// The exact text the owner signed, so that an admin can carry the very same document back into a table that lost it.
+    #[serde(default)]
+    pub style_text: String,
     /// When this device (as owner) last put the colours back into the table on its own.
     #[serde(default)]
     pub style_repub: u64,
@@ -265,13 +268,17 @@ pub struct Community {
 impl Community {
     /// Take a verified document if it is newer than the one in force: higher version, then later time, then the
     /// signature as the final tie-break, so every device settles on the same one whatever order it saw them in.
-    pub fn adopt_style(&mut self, doc: StyleDoc, sig: &str) -> bool {
+    pub fn adopt_style(&mut self, doc: StyleDoc, signed: &SignedStyle) -> bool {
         let newer = match &self.style {
             None => true,
-            Some(cur) => (doc.ver, doc.ts, sig) > (cur.ver, cur.ts, self.style_sig.as_str()),
+            Some(cur) => (doc.ver, doc.ts, signed.sig.as_str()) > (cur.ver, cur.ts, self.style_sig.as_str()),
         };
-        if newer { self.style = Some(doc); self.style_sig = sig.to_string(); }
+        if newer { self.style = Some(doc); self.style_sig = signed.sig.clone(); self.style_text = signed.doc.clone(); }
         newer
+    }
+    /// The signed document this device holds, exactly as the owner signed it (None until one was adopted).
+    pub fn held_style(&self) -> Option<SignedStyle> {
+        (self.style.is_some() && !self.style_text.is_empty()).then(|| SignedStyle { doc: self.style_text.clone(), sig: self.style_sig.clone() })
     }
     pub fn role_of(&self, acct: &str) -> Option<Role> {
         if acct == self.owner { Some(Role::Owner) } else if self.admins.iter().any(|a| a == acct) { Some(Role::Admin) } else { Some(Role::Member) }

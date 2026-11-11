@@ -413,6 +413,7 @@ impl Client {
                 let Some(cert) = cert else { self.notice("reject", "commit from a sender with an invalid certificate rejected".to_string()); return };
                 match self.authorize(gid, group, &cert, &sc) {
                     Verdict::Ok => {
+                        if let Some(w) = self.style_warning(gid, group, &cert, &sc) { self.notice("style", w); }
                         let self_removed = sc.self_removed();
                         let added: Vec<String> = sc.add_proposals().filter_map(|a| { let k = a.add_proposal().key_package(); mls::cert_of(k.leaf_node().credential(), k.leaf_node().signature_key().as_slice()).map(|c| c.device) }).collect();
                         match group.merge_staged_commit(&self.prov, *sc) {
@@ -503,7 +504,7 @@ impl Client {
                         let c = self.st.communities.entry(gid.to_string()).or_insert_with(|| Community { id: gid.into(), ..Default::default() });
                         c.name = name; c.owner = owner; c.admins = admins; c.nonce = nonce; c.channels = channels; c.invites = invites; c.banned = banned; c.transfers = transfers;
                         c.founder = founder; c.direct = direct; c.direct_bad = direct_bad;
-                        if let Some(doc) = style.as_ref().and_then(|ss| verify_style(&c.owner, gid, ss).ok().map(|d| (d, ss.sig.clone()))) { c.adopt_style(doc.0, &doc.1); }
+                        if let Some(ss) = style.as_ref() { if let Ok(doc) = verify_style(&c.owner, gid, ss) { c.adopt_style(doc, ss); } }
                         // The removal itself may take our entry out of the table: what we knew before it is what gets withdrawn.
                         if let Some(mine) = consents.iter().find(|x| x.account == me && verify_consent(gid, x).is_ok()) { c.my_consent = Some(mine.clone()); }
                         else if active { c.my_consent = None; }
@@ -573,6 +574,24 @@ impl Client {
             }
         }
         Ok
+    }
+
+    /// A commit by someone other than the owner that takes the owner's signed style document out of the table, or puts an older one
+    /// back (audit M1). It is merged all the same, because versions before 0.3.6 merge it and refusing would split the community;
+    /// this device keeps the newer document it holds, and admins put it back (ops.rs). The owner can see who did it and act.
+    fn style_warning(&self, gid: &str, group: &MlsGroup, sender: &DeviceCert, sc: &StagedCommit) -> Option<String> {
+        if self.st.groups.get(gid)?.kind != Kind::Control { return None; }
+        let (owner, _) = self.roles(gid, group);
+        if sender.account == owner { return None; }
+        let old = mls::group_ext(group.extensions())?;
+        let new = sc.queued_proposals().find_map(|qp| match qp.proposal() { Proposal::GroupContextExtensions(e) => mls::group_ext(e.extensions()), _ => None })?;
+        let (GroupExt::Control { style: st1, .. }, GroupExt::Control { style: st2, .. }) = (&old, &new) else { return None };
+        let od = st1.as_ref().and_then(|s| verify_style(&owner, gid, s).ok())?;
+        let regressed = match st2.as_ref().and_then(|s| verify_style(&owner, gid, s).ok()) {
+            None => true,
+            Some(nd) => (nd.ver, nd.ts) < (od.ver, od.ts),
+        };
+        regressed.then(|| format!("{} put an older version of the owner's colours and wall settings in the table (or none); this device keeps the newer one and the admins put it back", self.display_name(&sender.account)))
     }
 
     // ------------------------------------------------------------------ application envelopes
