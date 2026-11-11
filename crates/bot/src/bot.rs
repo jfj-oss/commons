@@ -7,6 +7,7 @@
 //! The model has exactly two tools — [`crate::search::TOOL_NAME`] (web search) and [`crate::studio::TOOL_NAME`] (make a
 //! picture, song, sound or video in the owner's Studio). `tools()` is the whole list, and `run_tool` is the only
 //! executor: any other name is refused without touching anything.
+use crate::bulletin::{self, Schedule, Theory};
 use crate::gpu::{GpuCheck, Pause};
 use crate::llm::{AskError, Llm, ModelReply, Msg, ToolCall, ToolMode, ToolSpec};
 use crate::safety;
@@ -115,6 +116,14 @@ pub enum JobKind {
     SetChime { on: bool },
     /// "@Oracle allow studio for <name>" where nobody in the room has that name (or more than one does).
     StudioUnknownPerson(String),
+    /// The room's daily Babylon bulletin is due: the bot made this job up itself.
+    Bulletin,
+    /// The owner or an admin switched the daily bulletin on (at `minute` past local midnight) or off.
+    SetBulletin { on: bool, minute: u32 },
+    /// Someone who is neither owner nor admin tried a bulletin phrase.
+    BulletinNotAllowed,
+    /// "@Oracle bulletin at <something that is not a time>".
+    BulletinBadTime,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,6 +167,8 @@ pub trait Chat {
     fn wall_info(&self, _gid: &str) -> Option<WallInfo> { None }
     /// One stroke event on the room's wall: `(x, y, glyph index, colour)`. `Ok(false)` means "not sent, try again shortly".
     fn wall_draw(&mut self, _gid: &str, _cells: &[(u32, u32, u8, u8)]) -> Result<bool, String> { Err("no wall".into()) }
+    /// How many reactions other people have put on one message (every emoji counts; the bot's own never do).
+    fn reaction_count(&self, _gid: &str, _id: &str) -> usize { 0 }
 }
 
 /// What the bot needs to know about a room's wall before and while it draws.
@@ -183,6 +194,12 @@ fn wall_info_of(c: &Client, gid: &str) -> Option<WallInfo> {
     c.st.groups.get(gid)?;
     let v = c.wall_view(gid);
     Some(WallInfo { gen: v.gen, locked: v.locked, marks: v.cells.iter().filter(|(_, g, _, _)| *g != 0).map(|(p, ..)| *p as u32).collect() })
+}
+
+fn reactions_on(c: &Client, gid: &str, id: &str) -> usize {
+    let me = c.my_account();
+    c.st.chans.get(gid).and_then(|l| l.msgs.iter().find(|m| m.id == id && !m.deleted))
+        .map_or(0, |m| m.reactions.values().map(|who| who.iter().filter(|a| **a != me).count()).sum())
 }
 
 fn history_of(c: &Client, gid: &str, limit: usize) -> Vec<Line> {
@@ -236,6 +253,7 @@ impl Chat for Client {
     fn oracle_draws(&self, gid: &str) -> bool { draws_in(self, gid) }
     fn wall_info(&self, gid: &str) -> Option<WallInfo> { wall_info_of(self, gid) }
     fn wall_draw(&mut self, gid: &str, cells: &[(u32, u32, u8, u8)]) -> Result<bool, String> { Client::wall_draw(self, gid, cells).map_err(|e| format!("{e:#}")) }
+    fn reaction_count(&self, gid: &str, id: &str) -> usize { reactions_on(self, gid, id) }
 }
 
 /// A client shared with the background sync thread. Every call is a separate short lock, so a model answering for a
@@ -261,6 +279,7 @@ impl Chat for SharedClient<'_> {
     fn oracle_draws(&self, gid: &str) -> bool { draws_in(&self.lock(), gid) }
     fn wall_info(&self, gid: &str) -> Option<WallInfo> { wall_info_of(&self.lock(), gid) }
     fn wall_draw(&mut self, gid: &str, cells: &[(u32, u32, u8, u8)]) -> Result<bool, String> { Client::wall_draw(&mut self.lock(), gid, cells).map_err(|e| format!("{e:#}")) }
+    fn reaction_count(&self, gid: &str, id: &str) -> usize { reactions_on(&self.lock(), gid, id) }
 }
 
 /// A mention of the bot's name: "@Oracle", anywhere in the text, touching no letters on its ends (so "@Oracle's" counts
@@ -524,6 +543,9 @@ pub struct RoomState {
     pub wall_day: u64,
     #[serde(default)]
     pub wall_count: u32,
+    /// The daily Babylon bulletin, when the owner or an admin switched it on here.
+    #[serde(default)]
+    pub bulletin: Option<Schedule>,
 }
 
 /// One person's Studio use for one day (days are counted in whole UTC days from the epoch).
@@ -627,6 +649,12 @@ pub struct Bot {
     pending: Mutex<HashMap<String, u64>>,
     /// Rooms where a wall drawing is being made right now: one at a time per room.
     wall_busy: Mutex<HashSet<String>>,
+    /// Rooms where a bulletin is being put together right now.
+    bulletin_busy: Mutex<HashSet<String>>,
+    /// Rooms whose bulletin failed or waited (no news, no model, the GPU taken): not tried again before this time.
+    bulletin_retry: Mutex<HashMap<String, u64>>,
+    /// Tests set the clock: `(UTC seconds, local offset in seconds)`. `None` is the real clock and the computer's zone.
+    clock: Mutex<Option<(u64, i32)>>,
 }
 
 impl Bot {
@@ -644,10 +672,41 @@ impl Bot {
         Bot {
             cfg, local, deepseek, search, studio, gpu, store: Mutex::new(Store::load(state_path.as_ref().to_path_buf())),
             rate: Mutex::new(rate), studio_queue, pending: Mutex::new(HashMap::new()), wall_busy: Mutex::new(HashSet::new()),
+            bulletin_busy: Mutex::new(HashSet::new()), bulletin_retry: Mutex::new(HashMap::new()), clock: Mutex::new(None),
         }
     }
 
     pub fn deepseek_on(&self, gid: &str) -> bool { self.store.lock().unwrap_or_else(|p| p.into_inner()).data.rooms.get(gid).is_some_and(|r| r.deepseek) }
+
+    /// Pretend it is `now` (UTC seconds) in a zone `offset_secs` east of UTC. For tests of the daily bulletin only.
+    pub fn set_clock(&self, now: u64, offset_secs: i32) { *self.clock.lock().unwrap_or_else(|p| p.into_inner()) = Some((now, offset_secs)); }
+
+    /// The clock the bulletin keeps: UTC seconds and the local offset (the test clock when one is set).
+    fn clock(&self) -> (u64, i32) {
+        (*self.clock.lock().unwrap_or_else(|p| p.into_inner())).unwrap_or_else(|| (now_secs(), chrono::Local::now().offset().local_minus_utc()))
+    }
+    /// The local day index and the minute of the day, as the bulletin counts them.
+    fn local_now(&self) -> (i64, u32) { let (now, off) = self.clock(); bulletin::local(now, off) }
+
+    /// The room's bulletin schedule, if it has one.
+    pub fn bulletin_schedule(&self, gid: &str) -> Option<Schedule> {
+        self.store.lock().unwrap_or_else(|p| p.into_inner()).data.rooms.get(gid).and_then(|r| r.bulletin.clone())
+    }
+
+    /// Switch the daily bulletin on for a room (`Some(minute)` sets the time, `None` keeps the room's or takes the default) or off.
+    /// What the last bulletin left behind (the day, the theories to count) is kept when only the time changes.
+    pub fn set_bulletin(&self, gid: &str, on: Option<Option<u32>>) {
+        let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+        let room = store.data.rooms.entry(gid.to_string()).or_default();
+        match on {
+            None => room.bulletin = None,
+            Some(minute) => {
+                let s = room.bulletin.get_or_insert_with(Schedule::default);
+                if let Some(m) = minute { s.minute = m % (24 * 60); }
+            }
+        }
+        store.save();
+    }
 
     /// Whether the GPU belongs to a game or Studio right now (and why).
     pub fn gpu_pause(&self) -> Option<Pause> { self.gpu.blocked() }
@@ -740,7 +799,27 @@ impl Bot {
                                 if room.chime_off == on { room.chime_off = !on; dirty = true; }
                                 JobKind::SetChime { on }
                             }
-                            None => JobKind::Answer { deepseek: deepseek_now },
+                            None => match bulletin::command(text, &self.cfg.name) {
+                                // The owner or an admin only: the bulletin posts unasked every day, so a member cannot switch it on.
+                                Some(_) if role < Role::Admin => JobKind::BulletinNotAllowed,
+                                Some(bulletin::Command::BadTime) => JobKind::BulletinBadTime,
+                                Some(bulletin::Command::Off) => {
+                                    let room = store.data.rooms.entry(gid.clone()).or_default();
+                                    if room.bulletin.is_some() { room.bulletin = None; dirty = true; }
+                                    JobKind::SetBulletin { on: false, minute: 0 }
+                                }
+                                Some(bulletin::Command::On { minute }) => {
+                                    let room = store.data.rooms.entry(gid.clone()).or_default();
+                                    let s = room.bulletin.get_or_insert_with(Schedule::default);
+                                    if let Some(m) = minute { s.minute = m % (24 * 60); }
+                                    // A time already past today means the first one comes tomorrow, not the moment it is switched on.
+                                    let (day, now_minute) = self.local_now();
+                                    if now_minute > s.minute && s.last_day < day { s.last_day = day; }
+                                    dirty = true;
+                                    JobKind::SetBulletin { on: true, minute: s.minute }
+                                }
+                                None => JobKind::Answer { deepseek: deepseek_now },
+                            },
                         },
                     },
                 };
@@ -795,6 +874,34 @@ impl Bot {
                     }
                 }
             }
+            // The daily bulletin: at its time, once a day, never where the owner said quiet. A game or Studio on the GPU makes it wait
+            // (it posts late rather than not at all); a wait that outlasts the window ends the day for it, quietly.
+            if let Some(s) = entry.bulletin.as_mut() {
+                let (day, minute) = self.local_now();
+                let (now_clock, _) = self.clock();
+                match bulletin::due(s, day, minute) {
+                    bulletin::Due::NotYet => {}
+                    bulletin::Due::Missed => {
+                        s.last_day = day;
+                        dirty = true;
+                        eprintln!("[bot] the bulletin in {gid} was skipped today: nothing could be posted inside its window");
+                    }
+                    bulletin::Due::Now => {
+                        let mut retry = self.bulletin_retry.lock().unwrap_or_else(|p| p.into_inner());
+                        let waiting = retry.get(&gid).is_some_and(|t| *t > now_clock);
+                        if !quiet && !waiting && !self.bulletin_busy.lock().unwrap_or_else(|p| p.into_inner()).contains(&gid) {
+                            if self.gpu.blocked().is_some() {
+                                // Looked at again in half a minute, not every second: the GPU check probes other programs.
+                                retry.insert(gid.clone(), now_clock + 30);
+                            } else {
+                                self.bulletin_busy.lock().unwrap_or_else(|p| p.into_inner()).insert(gid.clone());
+                                let trigger = log.msgs.last().map(|m| m.id.clone()).unwrap_or_default();
+                                found.push(Job { gid: gid.clone(), trigger, from: String::new(), text: String::new(), kind: JobKind::Bulletin });
+                            }
+                        }
+                    }
+                }
+            }
             jobs.extend(found);
             if max_seq > start { c.mark_read(&gid); let _ = c.save(); }
         }
@@ -808,6 +915,15 @@ impl Bot {
         let (text, deepseek, sources) = match &job.kind {
             JobKind::Chime => return self.chime(c, job),
             JobKind::Wall => { self.draw_on_wall(c, job); return None; }
+            JobKind::Bulletin => return self.bulletin(c, job),
+            JobKind::SetBulletin { on: true, .. } if c.oracle_quiet(&job.gid) => (bulletin::ON_REPLY_QUIET.to_string(), false, vec![]),
+            JobKind::SetBulletin { on: true, minute } => {
+                let tomorrow = self.bulletin_schedule(&job.gid).is_some_and(|s| s.last_day >= self.local_now().0);
+                (bulletin::on_reply(*minute, tomorrow), false, vec![])
+            }
+            JobKind::SetBulletin { on: false, .. } => (bulletin::OFF_REPLY.to_string(), false, vec![]),
+            JobKind::BulletinNotAllowed => (bulletin::NOT_ALLOWED_REPLY.to_string(), false, vec![]),
+            JobKind::BulletinBadTime => (bulletin::BAD_TIME_REPLY.to_string(), false, vec![]),
             JobKind::SetChime { on: true } if c.oracle_quiet(&job.gid) => (
                 "The owner switched mi to quiet inna dis room, so mi nah join in unless yuh talk to mi. Dem a di only one who can switch it back.".to_string(), false, vec![],
             ),
@@ -885,6 +1001,123 @@ impl Bot {
         match c.send(&job.gid, &text, None) {
             Ok(id) => Some(Sent { id, text, deepseek: false }),
             Err(e) => { eprintln!("[bot] could not join in: {e}"); None }
+        }
+    }
+
+    /// The daily Babylon bulletin: count the votes on the last one, find two or three light real stories, have the model tell each
+    /// straight and spin its theory, and post it all as separate messages. Nobody asked, so every failure is silent; a failure that
+    /// may pass (no news found, the model down) is tried again after a gap, inside the day's window.
+    fn bulletin(&self, c: &mut dyn Chat, job: &Job) -> Option<Sent> {
+        struct Done<'a>(&'a Mutex<HashSet<String>>, String);
+        impl Drop for Done<'_> { fn drop(&mut self) { self.0.lock().unwrap_or_else(|p| p.into_inner()).remove(&self.1); } }
+        let gid = job.gid.as_str();
+        let _busy = Done(&self.bulletin_busy, gid.to_string());
+        let retry_later = |why: &str| {
+            eprintln!("[bot] no bulletin in {gid} yet ({why}); trying again later");
+            self.bulletin_retry.lock().unwrap_or_else(|p| p.into_inner()).insert(gid.to_string(), self.clock().0 + bulletin::RETRY_GAP_SECS);
+        };
+        if self.gpu.blocked().is_some() || c.oracle_quiet(gid) { return None; }
+        let (day, minute) = self.local_now();
+        let sched = self.bulletin_schedule(gid)?;
+        if bulletin::due(&sched, day, minute) != bulletin::Due::Now { return None; }
+
+        // The vote on the last bulletin's theories, counted now, before today's go up.
+        let votes: Vec<(Theory, usize)> = sched.theories.iter().map(|t| (t.clone(), c.reaction_count(gid, &t.id))).collect();
+        let had_last = !sched.theories.is_empty();
+        let winners = bulletin::winners(&votes);
+
+        // Real stories: one light item per subject, each from a different site, a few searches at most.
+        let mut items: Vec<bulletin::Item> = Vec::new();
+        let mut hosts: Vec<String> = Vec::new();
+        let mut searches = 0usize;
+        for (subject, query) in bulletin::subjects_for(day) {
+            if items.len() >= bulletin::ITEMS || searches >= bulletin::MAX_SEARCHES { break; }
+            searches += 1;
+            match self.search.search_recent(query) {
+                Ok(results) => {
+                    if let Some(r) = bulletin::pick(&results, &hosts) {
+                        let item = bulletin::Item { subject, result: r.clone() };
+                        hosts.push(item.host());
+                        items.push(item);
+                    }
+                }
+                Err(e) => eprintln!("[bot] bulletin search failed: {e}"),
+            }
+        }
+        if items.len() < bulletin::MIN_ITEMS { retry_later("not enough light news found"); return None; }
+
+        // The model tells each story straight and spins its theory. Every line it writes is read by the hard block and the
+        // subject filter; a number it did not get from the snippet costs it the line (the real title is posted instead).
+        if self.gpu.blocked().is_some() { return None; }
+        let llm = self.local.as_ref();
+        let system = format!("{}\n\n{}", self.system_prompt(llm.tool_mode()), bulletin::RULES);
+        let ask = vec![Msg::User(bulletin::items_text(&items))];
+        let mut pieces: Vec<(usize, String, String)> = Vec::new();
+        for _ in 0..2 {
+            let reply = match llm.complete(&system, &ask, &[]) {
+                Ok(r) => r,
+                Err(e) => { retry_later(&format!("model: {e}")); return None; }
+            };
+            pieces = bulletin::parse_reply(&reply.content, items.len()).into_iter().enumerate()
+                .filter_map(|(i, p)| p.map(|(news, theory)| (i, news, theory)))
+                .filter_map(|(i, news, theory)| {
+                    let source = format!("{} {}", items[i].result.title, items[i].result.snippet);
+                    let news = if bulletin::numbers_from(&news, &source) { news } else { bulletin::cap_title(&items[i].result.title) };
+                    for (what, text) in [("news line", &news), ("theory", &theory)] {
+                        if let Some(why) = safety::reason(text) { eprintln!("[bot] hard block: {why:?}, in a bulletin {what}"); return None; }
+                        if bulletin::is_off_limits(text) { eprintln!("[bot] a bulletin {what} strayed onto a subject it must not touch; dropped"); return None; }
+                    }
+                    Some((i, news, theory))
+                })
+                .collect();
+            if pieces.len() >= bulletin::MIN_ITEMS { break; }
+        }
+        if pieces.len() < bulletin::MIN_ITEMS { retry_later("the model did not deliver enough usable items"); return None; }
+
+        // Today is spent the moment the posting starts, so a crash mid-way can never make a second bulletin.
+        if c.oracle_quiet(gid) || self.gpu.blocked().is_some() { return None; }
+        {
+            let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            let s = store.data.rooms.entry(gid.to_string()).or_default().bulletin.as_mut()?;
+            if s.last_day >= day { return None; }
+            s.last_day = day;
+            s.theories.clear();
+            store.save();
+        }
+        let opener = bulletin::opener(day, had_last, &winners);
+        let first = self.bulletin_send(c, gid, &opener)?;
+        let mut theories = Vec::new();
+        for (k, (i, news, theory)) in pieces.iter().enumerate() {
+            let n = k + 1;
+            self.bulletin_send(c, gid, &bulletin::news_message(n, news, &items[*i].result.url));
+            if let Some(id) = self.bulletin_send(c, gid, &bulletin::theory_message(n, theory)) {
+                theories.push(Theory { id, n, text: theory.clone() });
+            }
+        }
+        {
+            let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(s) = store.data.rooms.entry(gid.to_string()).or_default().bulletin.as_mut() { s.theories = theories; }
+            store.save();
+        }
+        eprintln!("[bot] posted the bulletin in {gid} ({} items)", pieces.len());
+        Some(Sent { id: first, text: opener, deepseek: false })
+    }
+
+    /// One message of a bulletin. It waits for the post limit (up to a minute) rather than dropping half a bulletin, and
+    /// shows the typing hint for a moment first, as a person would.
+    fn bulletin_send(&self, c: &mut dyn Chat, gid: &str, text: &str) -> Option<String> {
+        let paced = self.typing_floor() > 0;
+        let mut tries = 0;
+        while !self.rate.lock().unwrap_or_else(|p| p.into_inner()).allow() {
+            tries += 1;
+            if tries > 12 { eprintln!("[bot] post limit reached ({} a minute); a bulletin line was dropped", self.cfg.max_per_minute); return None; }
+            std::thread::sleep(Duration::from_millis(if paced { 5000 } else { 20 }));
+        }
+        c.typing(gid);
+        if paced { std::thread::sleep(Duration::from_millis((text.chars().count() as u64 * 20).clamp(900, 3000))); }
+        match c.send(gid, text, None) {
+            Ok(id) => Some(id),
+            Err(e) => { eprintln!("[bot] could not post a bulletin line: {e}"); None }
         }
     }
 

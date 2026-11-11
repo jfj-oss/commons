@@ -27,6 +27,9 @@ pub struct SearchResult {
 /// Anything that can answer a search. The bot's tool executor knows nothing else.
 pub trait WebSearch: Send + Sync {
     fn search(&self, query: &str) -> Result<Vec<SearchResult>, String>;
+    /// The same search, preferring pages from the last day when the engine can be asked for that (the daily bulletin wants
+    /// today's news). A backend without the option simply searches.
+    fn search_recent(&self, query: &str) -> Result<Vec<SearchResult>, String> { self.search(query) }
 }
 
 /// The complete tool list offered to a model. Exactly one entry, by construction.
@@ -108,14 +111,15 @@ impl DuckDuckGo {
     }
 }
 
-impl WebSearch for DuckDuckGo {
-    fn search(&self, query: &str) -> Result<Vec<SearchResult>, String> {
+impl DuckDuckGo {
+    /// One request to the HTML endpoint; `extra` is appended to the query string (DuckDuckGo's `df=d` asks for the past day).
+    fn fetch(&self, query: &str, extra: &str) -> Result<Vec<SearchResult>, String> {
         let query: String = query.trim().chars().take(self.max_query_chars).collect();
         if query.is_empty() { return Err("the search query is empty".into()); }
         if !self.limit.lock().unwrap_or_else(|p| p.into_inner()).allow() {
             return Err(format!("the web search limit ({MAX_SEARCHES_PER_MINUTE} a minute) is used up; answer from what you have"));
         }
-        let url = format!("{}/html/?q={}", self.base, url_encode(&query));
+        let url = format!("{}/html/?q={}{extra}", self.base, url_encode(&query));
         let r = ureq::AgentBuilder::new()
             .timeout(self.timeout)
             .build()
@@ -125,6 +129,18 @@ impl WebSearch for DuckDuckGo {
             .map_err(|e| format!("the search engine could not be reached: {e}"))?;
         let html = r.into_string().map_err(|e| format!("the search results could not be read: {e}"))?;
         Ok(parse_results(&html, self.max_results))
+    }
+}
+
+impl WebSearch for DuckDuckGo {
+    fn search(&self, query: &str) -> Result<Vec<SearchResult>, String> { self.fetch(query, "") }
+
+    /// Past-day results first; when that filter gives nothing (the engine may ignore or refuse it), the plain search.
+    fn search_recent(&self, query: &str) -> Result<Vec<SearchResult>, String> {
+        match self.fetch(query, "&df=d") {
+            Ok(results) if !results.is_empty() => Ok(results),
+            _ => self.fetch(query, ""),
+        }
     }
 }
 

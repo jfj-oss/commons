@@ -4,7 +4,8 @@
 //!   megatron-bot run                  serve the rooms it is in (what the systemd user service runs)
 //!
 //! Data lives in ~/.local/share/megatron-bot (override: MEGATRON_BOT_DATA). The account's passphrase is generated on
-//! first use and kept in that folder, readable by its owner only, so the unattended service can unlock it.
+//! first use and kept in that folder, readable by its owner only, so the unattended service can unlock it. The per-room
+//! settings people set in chat (DeepSeek, Studio, quiet, the daily bulletin's time) are in bot-state.json there too.
 use commons_bot::bot::{Bot, Config, Job, JobKind, SharedClient, DEFAULT_NAME};
 use commons_bot::gpu::{GpuGate, Pause};
 use commons_bot::llm::{DeepSeek, Ollama, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DEFAULT_OLLAMA};
@@ -257,7 +258,7 @@ fn serve(client: Client, bot: Arc<Bot>) {
         };
         for job in jobs {
             // Unasked: on its own thread, so a song being made for fun never holds up an answer to a real question.
-            if matches!(job.kind, JobKind::Chime | JobKind::Wall) {
+            if matches!(job.kind, JobKind::Chime | JobKind::Wall | JobKind::Bulletin) {
                 let bot = bot.clone();
                 let shared = shared.clone();
                 std::thread::spawn(move || {
