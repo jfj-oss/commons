@@ -24,14 +24,18 @@ pub const PREAPPROVE_SECS: u64 = 900;
 const REQ_MAX_AGE: u64 = 600;
 /// Chunks handed to the inbox at a time.
 const IN_FLIGHT: usize = 4;
-/// How often a device that has nothing yet asks again.
+/// How often a device that has nothing yet asks again, and for how long it keeps asking.
 const ASK_EVERY: u64 = 300;
+const ASK_FOR: u64 = 86400;
 /// The first bytes of a chunk item in the inbox (MLS messages start with a version number, JSON with a brace).
 pub const MAGIC: &[u8] = b"HIST1";
 const GID_PREFIX: &str = "history:";
 
+/// The request. `community` and `reason` are there for apps before 0.3.6: they read every JSON inbox item as a reply to a join request,
+/// and a well-formed reply about a community they are not joining is dropped in silence, so the request costs them nothing, not even a notice.
 #[derive(Serialize, Deserialize)]
-struct ReqWire { t: String, v: u8, cert: DeviceCert, ts: u64, sig: String }
+struct ReqWire { t: String, v: u8, community: String, reason: String, cert: DeviceCert, ts: u64, sig: String }
+fn req_community(device: &str) -> String { hex::encode(sha256(&[b"commons/history-req/community", device.as_bytes()])) }
 #[derive(Serialize, Deserialize)]
 struct ChunkWire { tid: String, i: u32, n: u32, cert: DeviceCert, blob: String, sig: String }
 #[derive(Serialize, Deserialize)]
@@ -79,12 +83,13 @@ impl Client {
         let cert = self.cert()?;
         let ts = now_secs();
         let sig = hex::encode(self.dev_key()?.sign(&req_msg(&cert.account, &cert.device, ts)).to_bytes());
-        Ok(serde_json::to_vec(&ReqWire { t: "hist-req".into(), v: 1, cert, ts, sig })?)
+        Ok(serde_json::to_vec(&ReqWire { t: "hist-req".into(), v: 1, community: req_community(&cert.device), reason: "hist-req".into(), cert, ts, sig })?)
     }
 
     /// Ask every other unrevoked device of the account (from the directory the rounds keep fresh); now and then again while nothing arrives.
     pub(crate) fn history_ask(&mut self, now: u64) {
         if !self.st.history_wanted || self.st.history_in.is_some() || now < self.st.history_asked + ASK_EVERY { return; }
+        if now > self.st.history_wanted_since + ASK_FOR { self.st.history_wanted = false; return; }
         let me = self.my_account();
         let Some((_, list)) = self.dir_cache.get(&me).cloned() else { self.dir_wanted.insert(me); return };
         let Ok(req) = self.history_request_bytes() else { return };
@@ -315,7 +320,8 @@ impl Client {
     /// For the UI: what is being received here, what is being sent from here, and who is asking.
     pub fn history_status(&self) -> Value {
         let now = now_secs();
-        let (rooms, msgs) = self.history_summary();
+        // the counts walk every room's log, so only when somebody is asking (the UI reads this with every snapshot)
+        let (rooms, msgs) = if self.st.history_requests.is_empty() { (0, 0) } else { self.history_summary() };
         let incoming = match &self.st.history_in {
             Some(h) if !h.dismissed => json!({"state": if h.done > 0 { "done" } else { "receiving" }, "got": h.got.len(), "total": h.n, "msgs": h.msgs, "omitted": h.omitted, "from": h.from}),
             Some(_) => json!({"state": "none"}),

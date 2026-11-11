@@ -54,9 +54,10 @@ Right after the pairing completes (`pairing_apply`), and again if nothing has ar
 posts to every other unrevoked device of its account one small JSON item:
 
 ```
-{"t":"hist-req","v":1,"cert":<its DeviceCert>,"ts":<seconds>,"sig":<hex>}
+{"t":"hist-req","v":1,"community":<sha256 of the device, hex>,"reason":"hist-req","cert":<its DeviceCert>,"ts":<seconds>,"sig":<hex>}
 sig = device key over "commons/history-req/v1" | account | device | ts
 ```
+(`community` and `reason` only make a 0.3.5 app read it as a join reply it can drop in silence; see compatibility.)
 
 The old device accepts a request only if: the cert verifies under the account key and is for this account; the device
 is not revoked; the signature verifies under the cert's device key; the time is within ten minutes. It then shows the
@@ -145,10 +146,10 @@ under Devices." and stays until dismissed.
 
 ## Compatibility with older clients
 
-* **Old device on 0.3.5, new device on 0.3.6.** The request lands in the old app's inbox as a JSON item it does not
-  know; its join-reply parser refuses it and notes "ignored a malformed reply to a join request" once (identical
-  consecutive notices are folded). Nothing else happens; the new device shows the "no other device has answered yet"
-  note. Updating the old device and pressing Send under Devices completes it later (the new device asks again on each
+* **Old device on 0.3.5, new device on 0.3.6.** The request lands in the old app's inbox as a JSON item, which such an
+  app reads as a reply to a join request. It is shaped as a well-formed one (a `community` it is not joining, a
+  `reason`, the cert and a 64-byte signature), so the old app drops it in silence: no notice, no problem indicator.
+  Nothing else happens; the new device shows the "no other device has answered yet" note. Updating the old device and pressing Send under Devices completes it later (the new device asks again on each
   start while it has nothing).
 * **Old device on 0.3.6, new device on 0.3.5.** The old device never sends chunks unprompted, and a 0.3.5 device never
   asks, so nothing is sent and nothing is shown. (Had a chunk reached a 0.3.5 inbox it would be refused as a malformed
