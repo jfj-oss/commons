@@ -398,10 +398,12 @@
   const sq = () => getComputedStyle(root).getPropertyValue('--m-sq');
   function fly(r, m) { const f = document.createElement('div'); f.className = 'mfly'; f.style.cssText = `left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;--m-mesh:${m}`; fxl.append(f); return f; }
   function killList() { if (window.__megaWall) __megaWall.leave(); if (M.list) { M.list.destroy(); M.list = null; } mega.innerHTML = ''; hideTip(); closeRail(); }
+  let snapT = 0;
   function applyLevel() {
     const chat = M.level === 'chat';
     if (chat && document.getElementById('mega-paint')) closePaint();   // the colours panel belongs to the cards: opening a room closes it (it had no way out there)
     mega.hidden = chat; rail.hidden = !chat;
+    root.classList.add('mg-snap'); clearTimeout(snapT); snapT = setTimeout(() => root.classList.remove('mg-snap'), 120);   // see .mg-snap in mega.css
     root.classList.toggle('mg-chat', chat); root.classList.toggle('mg-cards', !chat);
     if (!chat) { hideOpts(); closeRail(); }
     if (window.__placeCallDock) window.__placeCallDock();
