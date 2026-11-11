@@ -149,9 +149,15 @@ fn colours_come_back_after_a_table_rewrite_that_dropped_them() {
     // What an older admin's app does when it renames or adds a room: rewrites the table without the field it does not know.
     b.c.debug_plant_style(&cid, None).unwrap();
     settle(&mut [&mut a, &mut b, &mut c]);
-    // Nobody lost them on screen, and the owner's device put them back in the table.
+    // Nobody lost them on screen, and the table has them back: since 0.3.6 the admin that holds the signed copy puts that very copy
+    // back (same version), or the owner re-signs a higher one, whichever commits first (docs/security-0.3.6.md, M1).
     for p in [&a, &b, &c] { assert_eq!(room_colours(p, &cid, &gen), Some(duo("#111111", "#222222")), "{}", p.name); }
-    assert!(a.c.st.communities[&cid].style.as_ref().unwrap().ver >= 2, "re-signed with a higher version");
+    assert!(a.c.st.communities[&cid].style.as_ref().unwrap().ver >= 1);
+    let mut d = Peer::new(&_net, "dave");
+    let link = a.c.create_invite(&cid, None, 3600).unwrap();
+    d.c.join_with_link(&link).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c, &mut d]);
+    assert_eq!(room_colours(&d, &cid, &gen), Some(duo("#111111", "#222222")), "a newcomer reads them from the table");
 }
 
 // ------------------------------------------------------------------------------------------------ live channel
