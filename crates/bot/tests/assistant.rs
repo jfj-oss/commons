@@ -295,7 +295,7 @@ fn the_deny_list_covers_every_named_place_for_every_tool() {
 #[test]
 fn the_claude_settings_deny_the_same_places_and_sudo_and_run_the_sandbox() {
     let e = env();
-    let s = claude_settings(e.a.deny(), &[]);
+    let s = claude_settings(e.a.deny(), &[], &e.a.cfg.read_dirs);
     let deny: Vec<String> = s["permissions"]["deny"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
     let ssh = format!("//{}/.ssh/**", e.home.to_string_lossy().trim_start_matches('/'));
     assert!(deny.contains(&format!("Read({ssh})")) && deny.contains(&format!("Edit({ssh})")), "{deny:?}");
@@ -353,15 +353,20 @@ fn safe_actions_run_at_once_from_the_allowlist_only() {
         call(tools::OPEN, json!({"target": e.home.join("Documents/note.txt").to_string_lossy()})),
         call(tools::OPEN, json!({"target": "file:///etc/passwd"})),
         call(tools::OPEN, json!({"target": e.home.join("Downloads/run.sh").to_string_lossy()})),
+        call(tools::OPEN, json!({"target": e.home.join("Downloads/page.html").to_string_lossy()})),
+        call(tools::OPEN, json!({"target": e.home.join("Downloads/tool.deb").to_string_lossy()})),
         say("done"),
     ]));
     std::fs::write(e.home.join("Downloads/run.sh"), "echo hi").unwrap();
+    // audit L7: a page (script), an installer: not executable, not on any blocklist by name, and still not opened
+    std::fs::write(e.home.join("Downloads/page.html"), "<script>fetch('https://evil/')</script>").unwrap();
+    std::fs::write(e.home.join("Downloads/tool.deb"), "!<arch>").unwrap();
     std::fs::write(e.home.join("Documents/note.txt"), "hi").unwrap();
     e.owner(llm.clone(), nosearch(), "pause the music, restart rune, open the page").unwrap().join().unwrap();
     assert!(e.chat.find("Approval").is_none());
     let runs = e.sys.runs.lock().unwrap().clone();
     assert!(runs.contains(&"systemctl --user restart rune-server".to_string()), "{runs:?}");
-    assert!(!runs.iter().any(|r| r.contains("sshd") || r.contains("evil") || r.contains("passwd") || r.contains("run.sh")), "{runs:?}");
+    assert!(!runs.iter().any(|r| r.contains("sshd") || r.contains("evil") || r.contains("passwd") || r.contains("run.sh") || r.contains("page.html") || r.contains("tool.deb")), "{runs:?}");
     assert!(runs.iter().any(|r| r.starts_with("xdg-open ") && r.ends_with("Documents/note.txt")), "{runs:?}");
     let runes = e.sys.runes.lock().unwrap().clone();
     assert_eq!(runes.len(), 1);
@@ -740,7 +745,7 @@ fn mega_shell_history_and_cloud_places_are_protected_and_user_settings_that_run_
         assert!(e.deny().is_denied(&h.join(p)), "{p}");
         assert!(e.deny().is_write_denied(&h.join(p)), "{p}");
     }
-    let s = claude_settings(e.deny(), &[]);
+    let s = claude_settings(e.deny(), &[], &[]);
     let deny: Vec<&str> = s["permissions"]["deny"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
     assert!(deny.iter().any(|d| d.starts_with("Read(") && d.contains("app.commons.chat.browser-profile")) && deny.iter().any(|d| d.contains("gcloud")) && deny.iter().any(|d| d.contains("_history")), "{deny:?}");
     for cmd in ["cat ~/.bash_history", "grep x ~/.local/share/fish/fish_history", "ls ~/.local/share/app.commons.chat", "cat ~/.azure/x"] {
@@ -780,4 +785,39 @@ fn claude_gets_no_session_bus_or_display_unless_asked() {
     let run = e.claude_runs();
     let text = format!("{:?}", run[0]["env"]);
     for k in ["DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"] { assert!(!text.contains(k), "{k} reached Claude: {text}"); }
+}
+
+/// Audit M7: reading under ~/projects needed no approval at all. Now the first read in a project folder is asked, and a yes covers
+/// that folder for the rest of the task; Claude's own workspace is never asked about; grep is asked like read (it shows contents).
+#[test]
+fn a_read_in_a_project_folder_is_asked_once_per_task_and_the_workspace_never() {
+    use commons_bot::assistant::claude::{read_scope, ReadScope};
+    let e = env();
+    e.on();
+    let s = claude_settings(e.a.deny(), &[], &e.a.cfg.read_dirs);
+    let ask: Vec<String> = s["permissions"]["ask"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+    let projects = format!("Read(//{}/**)", e.home.join("projects").to_string_lossy().trim_start_matches('/'));
+    assert!(ask.contains(&projects) && ask.contains(&"Grep".to_string()), "{ask:?}");
+    // the scope rule
+    let (rd, ws) = (e.a.cfg.read_dirs.clone(), e.a.cfg.workspace.clone());
+    std::fs::create_dir_all(e.home.join("projects/foo/src")).unwrap();
+    std::fs::write(e.home.join("projects/foo/src/a.rs"), "x").unwrap();
+    std::fs::write(e.home.join("projects/notes.txt"), "x").unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+    assert_eq!(read_scope(&rd, &ws, "Read", &json!({"file_path": e.home.join("projects/foo/src/a.rs")})), ReadScope::Folder(e.home.join("projects/foo")));
+    assert_eq!(read_scope(&rd, &ws, "Grep", &json!({"pattern": "x", "path": e.home.join("projects/foo")})), ReadScope::Folder(e.home.join("projects/foo")));
+    assert_eq!(read_scope(&rd, &ws, "Grep", &json!({"pattern": "x"})), ReadScope::Workspace, "no path: the working folder");
+    assert_eq!(read_scope(&rd, &ws, "Read", &json!({"file_path": ws.join("out.txt")})), ReadScope::Workspace);
+    assert_eq!(read_scope(&rd, &ws, "Read", &json!({"file_path": e.home.join("projects/notes.txt")})), ReadScope::Folder(e.home.join("projects")), "a file right in the read dir grants the read dir's own files");
+    assert_eq!(read_scope(&rd, &ws, "Read", &json!({"file_path": e.home.join("Documents/x.txt")})), ReadScope::Other);
+    assert_eq!(read_scope(&rd, &ws, "Bash", &json!({"command": "cat x"})), ReadScope::Other);
+    // the flow: asked, with the folder named; yes reads it
+    let t = e.owner(quiet_llm(), nosearch(), "do: SCENARIO read ~/projects/foo/src/a.rs").unwrap();
+    let code = e.chat.code_of(0);
+    let msg = e.chat.find("Approval needed").unwrap();
+    assert!(msg.contains("Tool: Read") && msg.contains("read everything under") && msg.contains("projects/foo"), "{msg}");
+    assert_eq!(e.reply(&format!("yes {code}")), Route::Handled);
+    t.join().unwrap();
+    assert_eq!(e.chat.sent().last().unwrap(), "read it");
+    assert!(e.log().contains("Read: ") && e.log().contains("\towner\tok"), "{}", e.log());
 }

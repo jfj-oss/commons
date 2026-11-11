@@ -167,8 +167,12 @@ pub fn mentions_sudo(cmd: &str) -> bool {
 
 /// The Claude Code settings file: deny rules (they beat every allow rule and every approval), no allow rules, and the
 /// sandbox on for shell commands (fails closed when it cannot start).
-pub fn claude_settings(d: &Deny, allowed_domains: &[String]) -> Value {
+pub fn claude_settings(d: &Deny, allowed_domains: &[String], read_dirs: &[PathBuf]) -> Value {
     let abs = |p: &Path| format!("/{}", p.to_string_lossy());
+    // Reading inside the read dirs (`--add-dir`) is not free: the first read in a project folder is asked, and a yes covers that
+    // folder for the rest of the task (claude.rs `read_scope`). Grep shows file contents too, so it is asked the same way.
+    let mut ask: Vec<String> = vec!["Bash".into(), "WebFetch".into(), "WebSearch".into(), "Grep".into()];
+    for r in read_dirs { if !d.is_denied(r) { ask.push(format!("Read({}/**)", abs(r))); } }
     let mut deny: Vec<String> = vec![];
     let mut deny_read_paths: Vec<String> = vec![];
     for p in d.paths() {
@@ -214,7 +218,7 @@ pub fn claude_settings(d: &Deny, allowed_domains: &[String]) -> Value {
     if !allowed_domains.is_empty() { sandbox["network"] = json!({ "allowedDomains": allowed_domains }); }
     json!({
         // "ask" on every shell command, so even the ones Claude Code treats as read-only (ls, cat, df...) come to the room
-        "permissions": { "deny": deny, "ask": ["Bash", "WebFetch", "WebSearch"], "allow": [], "defaultMode": "default" },
+        "permissions": { "deny": deny, "ask": ask, "allow": [], "defaultMode": "default" },
         "sandbox": sandbox,
         "includeCoAuthoredBy": false,
         "enableAllProjectMcpServers": false,

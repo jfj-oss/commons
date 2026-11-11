@@ -200,7 +200,10 @@ impl Safe {
     }
 }
 
-const NEVER_OPEN: &[&str] = &["desktop", "sh", "bash", "zsh", "fish", "py", "pl", "rb", "run", "appimage", "exe", "bat", "cmd", "jar", "service", "timer", "socket", "bin", "so", "scr", "com", "msi"];
+/// The kinds of file `open_target` hands to the desktop: documents, pictures, music and video that a viewer shows and nothing else.
+/// Everything else (a page with script, an installer, a shortcut, a script, an archive...) is refused, whatever its name says it is (audit L7).
+const OPEN_OK: &[&str] = &["txt", "md", "markdown", "rst", "csv", "tsv", "json", "log", "png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "avif",
+    "mp3", "ogg", "oga", "opus", "flac", "wav", "m4a", "aac", "mp4", "m4v", "mkv", "webm", "mov", "pdf"];
 
 pub fn plan_safe(cfg: &AssistConfig, deny: &Deny, name: &str, args: &Value) -> Result<Safe, String> {
     match name {
@@ -232,7 +235,8 @@ pub fn plan_safe(cfg: &AssistConfig, deny: &Deny, name: &str, args: &Value) -> R
             if !md.is_file() { return Err("That is not a file.".into()); }
             use std::os::unix::fs::PermissionsExt;
             let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-            if md.permissions().mode() & 0o111 != 0 || NEVER_OPEN.contains(&ext.as_str()) { return Err("Executable and script files are not opened this way.".into()); }
+            if md.permissions().mode() & 0o111 != 0 { return Err("Executable and script files are not opened this way.".into()); }
+            if !OPEN_OK.contains(&ext.as_str()) { return Err("Only documents, pictures, music and video are opened this way.".into()); }
             Ok(Safe::OpenFile(p))
         }
         _ => Err("not a safe action".into()),

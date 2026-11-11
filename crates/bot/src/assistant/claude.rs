@@ -109,6 +109,31 @@ fn deny_json(msg: &str) -> Value { json!({"behavior": "deny", "message": msg}) }
 
 struct ToolRec { summary: String, tier_name: String }
 
+/// Where a read-only tool call (Read, Grep, Glob) wants to look, against the places Claude may read (audit M7: reads under the read
+/// dirs used to need no approval at all). `Workspace`: its own folder, no question. `Folder(f)`: a project folder (the read dir's
+/// direct child that holds the path, or the read dir itself), asked once per task and then granted for the task. `Other`: not a
+/// read-only call, or outside every read dir, so the ordinary rules apply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadScope { Workspace, Folder(PathBuf), Other }
+pub fn read_scope(read_dirs: &[PathBuf], workspace: &Path, tool: &str, input: &Value) -> ReadScope {
+    if !matches!(tool, "Read" | "Grep" | "Glob") { return ReadScope::Other; }
+    let raw = input["file_path"].as_str().or_else(|| input["path"].as_str()).unwrap_or("");
+    let p = if raw.is_empty() { workspace.to_path_buf() } else if Path::new(raw).is_absolute() { PathBuf::from(raw) } else { workspace.join(raw) };
+    let p = deny::resolve(&p);
+    let ws = deny::resolve(workspace);
+    if p == ws || p.starts_with(&ws) { return ReadScope::Workspace; }
+    for d in read_dirs {
+        let d = deny::resolve(d);
+        if p == d { return ReadScope::Folder(d); }
+        if let Ok(rest) = p.strip_prefix(&d) {
+            let first = rest.components().next().map(|c| d.join(c.as_os_str())).unwrap_or(d.clone());
+            // a file directly in the read dir grants only that read dir's own files, not every project below it
+            return ReadScope::Folder(if p == first && p.is_file() { d } else { first });
+        }
+    }
+    ReadScope::Other
+}
+
 impl Assistant {
     pub(super) fn settings_path(&self) -> PathBuf { self.cfg.data_dir.join("assistant").join("claude-settings.json") }
 
@@ -199,7 +224,7 @@ impl Assistant {
         let mcp_path = run_dir.join(format!("{id}.mcp.json"));
         let settings = self.settings_path();
         let setup = (|| -> std::io::Result<()> {
-            Self::write_private(&settings, &serde_json::to_string_pretty(&claude_settings(&self.deny, &self.cfg.allowed_domains)).unwrap_or_default())?;
+            Self::write_private(&settings, &serde_json::to_string_pretty(&claude_settings(&self.deny, &self.cfg.allowed_domains, &self.cfg.read_dirs)).unwrap_or_default())?;
             Self::write_private(&mcp_path, &json!({"mcpServers": {mcp::SERVER_NAME: {
                 "type": "stdio", "command": self.cfg.self_exe, "args": ["assist-mcp", sock_path], "env": {"MEGATRON_ASSIST_TOKEN": token}
             }}}).to_string())
@@ -261,6 +286,8 @@ impl Assistant {
         self.say(c, gid, Some(trigger), "Started. Claude Code will ask here before each step that needs approval.");
 
         let approved_by: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+        // folders the owner has opened to reading for this task (see `read_scope`); gone when the task ends
+        let read_grants: Arc<Mutex<std::collections::HashSet<PathBuf>>> = Arc::new(Mutex::new(Default::default()));
         let mut tools: HashMap<String, ToolRec> = HashMap::new();
         let (mut final_text, mut final_err, mut session_seen) = (None::<String>, false, None::<String>);
         let mut last_assistant_text = String::new();
@@ -311,7 +338,7 @@ impl Assistant {
                         _ => {}
                     }
                 }
-                Ok(Ev::Approval(req)) => self.handle_approval(c, gid, req, &approved_by),
+                Ok(Ev::Approval(req)) => self.handle_approval(c, gid, req, &approved_by, &read_grants),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
             for code in self.broker.expire(gid, Instant::now()) {
@@ -374,7 +401,7 @@ impl Assistant {
         self.say(c, gid, None, &crate::bot::no_emoji(&text));
     }
 
-    fn handle_approval(&self, c: &mut dyn Chat, gid: &str, req: ApprovalReq, approved_by: &Arc<Mutex<HashMap<String, String>>>) {
+    fn handle_approval(&self, c: &mut dyn Chat, gid: &str, req: ApprovalReq, approved_by: &Arc<Mutex<HashMap<String, String>>>, read_grants: &Arc<Mutex<std::collections::HashSet<PathBuf>>>) {
         let summary = summarize_tool(&req.tool_name, &req.input);
         let note_by = |by: &str| { if !req.tool_use_id.is_empty() { approved_by.lock().unwrap_or_else(|p| p.into_inner()).insert(req.tool_use_id.clone(), by.to_string()); } };
         if let Some(why) = precheck(&self.deny, &req.tool_name, &req.input) {
@@ -383,16 +410,26 @@ impl Assistant {
             let _ = req.reply.send(deny_json(&format!("Blocked: {why}. This is never allowed in this room.")));
             return;
         }
+        // Reading: its own workspace needs no question; a project folder is asked once per task.
+        let scope = read_scope(&self.cfg.read_dirs, &self.cfg.workspace, &req.tool_name, &req.input);
+        let folder = match &scope {
+            ReadScope::Workspace => { note_by("auto"); let _ = req.reply.send(json!({"behavior": "allow", "updatedInput": req.input})); return; }
+            ReadScope::Folder(f) if read_grants.lock().unwrap_or_else(|p| p.into_inner()).contains(f) => { note_by("owner-folder"); let _ = req.reply.send(json!({"behavior": "allow", "updatedInput": req.input})); return; }
+            ReadScope::Folder(f) => Some(f.clone()),
+            ReadScope::Other => None,
+        };
         let can_edit = req.tool_name == "Bash" && req.input["command"].is_string();
         let (code, rx) = self.broker.register(gid, can_edit);
-        let msg = approval_message(&code, &format!("Tool: {}", req.tool_name), &approval_detail(&req.tool_name, &req.input), can_edit, self.broker.timeout(), "");
+        let note = folder.as_ref().map(|f| format!("Yes lets Claude read everything under {} for the rest of this task.", f.display())).unwrap_or_default();
+        let msg = approval_message(&code, &format!("Tool: {}", req.tool_name), &approval_detail(&req.tool_name, &req.input), can_edit, self.broker.timeout(), &note);
         self.say(c, gid, None, &msg);
         let (deny_set, by_map, id, input, wait) = (self.deny.clone(), approved_by.clone(), req.tool_use_id.clone(), req.input.clone(), self.broker.timeout() + Duration::from_secs(15));
+        let grants = read_grants.clone();
         let reply: Sender<Value> = req.reply;
         std::thread::spawn(move || {
             let set = |by: &str| { if !id.is_empty() { by_map.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), by.to_string()); } };
             let out = match rx.recv_timeout(wait) {
-                Ok(Decision::Allow) => { set("owner"); json!({"behavior": "allow", "updatedInput": input}) }
+                Ok(Decision::Allow) => { set("owner"); if let Some(f) = folder { grants.lock().unwrap_or_else(|p| p.into_inner()).insert(f); } json!({"behavior": "allow", "updatedInput": input}) }
                 Ok(Decision::Edit(cmd)) => {
                     let mut new_input = input.clone();
                     new_input["command"] = Value::String(cmd.clone());
