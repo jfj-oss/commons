@@ -17,6 +17,8 @@ pub mod pwinvite;
 mod round;
 pub mod pcaudio;
 pub mod rune;
+pub mod spotify;
+pub mod listen;
 pub mod sync;
 pub mod wall;
 pub mod api;

@@ -621,7 +621,15 @@ impl Client {
                 // A status is only as good as the profile it rode in on: an older one, arriving late, changes nothing.
                 if newer {
                     match listen {
-                        Some(l) => { self.st.listening.insert(acct, Heard { what: l, ts: now_secs() }); }
+                        Some(l) => {
+                            let now = crate::spotify::now_ms();
+                            // The same sample again (a profile re-sent for another reason) is not a new reading of the position.
+                            let rx_ms = match self.st.listening.get(&acct) {
+                                Some(h) if l.spotify.is_some() && h.what.spotify.as_ref().map(|s| (&s.id, s.at_ms, s.paused)) == l.spotify.as_ref().map(|s| (&s.id, s.at_ms, s.paused)) && h.rx_ms > 0 => h.rx_ms,
+                                _ => now,
+                            };
+                            self.st.listening.insert(acct, Heard { what: l, ts: now_secs(), rx_ms });
+                        }
                         None => { self.st.listening.remove(&acct); }
                     }
                 }

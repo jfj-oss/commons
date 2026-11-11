@@ -27,8 +27,10 @@ const runeSong = { status: 'playing', index: 0, queue: [{ track: { title: 'Detec
 const runeSrv = http.createServer((req, res) => {
   const body = req.url === '/api/zones' ? JSON.stringify([{ id: 'pc', name: 'Linux PC speakers', kind: 'pc' }]) : req.url === '/api/player/pc' ? JSON.stringify(runeSong) : null;
   if (!body) { res.writeHead(404); res.end('{}'); return; }
+  if (req.method === 'POST') { let b = ''; req.on('data', d => b += d); req.on('end', () => { try { runePosts.push(JSON.parse(b)); } catch { } res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}'); }); return; }
   res.writeHead(200, { 'content-type': 'application/json' }); res.end(body);
 });
+const runePosts = [];
 await new Promise(r => runeSrv.listen(0, '127.0.0.1', r));
 const runeUrl = `http://127.0.0.1:${runeSrv.address().port}`;
 
@@ -227,6 +229,22 @@ try {
   await B.ev(`(()=>{ if (!S.people) document.querySelector('#btn-people').click(); })()`);
   await B.waitFor(`[...document.querySelectorAll('.person .listen')].some(e=>e.innerText.includes('Detective Arriving on the Scene')&&e.innerText.includes('Sea Power'))`, 20000);
   await A.shot('09-listening-own'); await B.shot('10-listening-people');
+  const nd = (c, w) => { if (!c) throw new Error(w); };
+  // Listen along: a plain song has no Join; a Spotify song does, and joining drives B's own (fake) rune. B's rune address is pointed at the
+  // fake first, so this can never reach a real rune.
+  nd(await B.ev(`!document.querySelector('.person [data-ml="join"]')`), 'listen along: a local song must not offer Join');
+  await B.ev(`rpc('set_listening_sharing', { on: false, rune: ${JSON.stringify(runeUrl)} }).then(() => 1)`);
+  const sp = { id: 'sp:4uLU6hMCjMI75M1A2tKUQC', source: 'spotify', spotifyUri: 'spotify:track:4uLU6hMCjMI75M1A2tKUQC', title: 'Detective Arriving on the Scene', artists: [{ name: 'Sea Power' }] };
+  runeSong.queue = [{ track: sp }]; runeSong.positionMs = 30000; runeSong.updatedAt = Date.now();
+  await B.waitFor(`!!document.querySelector('.person [data-ml="join"]')`, 30000);
+  await B.ev(`document.querySelector('.person [data-ml="join"]').click()`);
+  await B.waitFor(`(()=>{const e=document.querySelector('#ml-strip');return !!e&&!e.hidden&&/Listening along with .* on rune \\(Linux PC speakers\\)/.test(e.innerText)})()`, 15000);
+  await new Promise(r => setTimeout(r, 2500));
+  nd(runePosts.some(c => c.type === 'play' && c.trackIds[0] === 'sp:4uLU6hMCjMI75M1A2tKUQC'), 'listen along: the joiner\'s rune was not told to play the song ' + JSON.stringify(runePosts));
+  await B.shot('10b-listening-along');
+  await B.ev(`document.querySelector('#ml-strip [data-ml="leave"]').click()`);
+  await B.waitFor(`document.querySelector('#ml-strip').hidden`, 5000);
+  runeSong.queue = [{ track: { title: 'Detective Arriving on the Scene', artists: [{ name: 'Sea Power' }] } }]; delete runeSong.positionMs;
   // Playback stops in rune: friends stop seeing it at once, not when the ten-minute TTL runs out.
   runeSong.status = 'stopped'; runeSong.index = -1; runeSong.queue = [];
   await B.waitFor(`![...document.querySelectorAll('.person .listen')].some(e=>e.innerText.includes('Detective'))`, 90000).catch(async () => {

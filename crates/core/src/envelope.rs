@@ -95,12 +95,57 @@ fn is_false(b: &bool) -> bool { !*b }
 /// What someone is listening to in rune. Only two short lines of text: the same whether the track came from
 /// Spotify or from the local library.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
-pub struct NowPlaying { pub title: String, #[serde(default)] pub artist: String }
+pub struct NowPlaying {
+    pub title: String,
+    #[serde(default)] pub artist: String,
+    /// Only for a Spotify song (0.3.7 on): what a friend needs to listen along. Older apps ignore the field (no
+    /// `deny_unknown_fields` anywhere), so they show the title and artist exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spotify: Option<SpotifyPlay>,
+}
+/// Where a shared Spotify song is: the track, the position at one instant of the sharer's clock, and whether it is paused.
+/// A receiver uses the instants only relative to each other (clocks differ); see `spotify::expected_pos`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct SpotifyPlay {
+    /// The 22-character Spotify track id.
+    pub id: String,
+    pub pos_ms: u64,
+    /// The sharer's clock (ms since 1970) when `pos_ms` was true.
+    pub at_ms: u64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub paused: bool,
+}
+impl SpotifyPlay {
+    pub fn valid(&self) -> bool { is_spotify_id(&self.id) && self.pos_ms <= 24 * 3600 * 1000 }
+}
+pub fn is_spotify_id(s: &str) -> bool { s.len() == 22 && s.bytes().all(|c| c.is_ascii_alphanumeric()) }
+/// How far a position may differ from where steady playing would have put it before it counts as a seek.
+pub const SEEK_SLACK_MS: u64 = 2500;
+impl NowPlaying {
+    pub fn text(title: &str, artist: &str) -> NowPlaying { NowPlaying { title: title.into(), artist: artist.into(), spotify: None } }
+    /// Is `self` worth telling friends about, given what they were last told? A new song, a pause or resume, or a seek
+    /// (a position that steady playing since `prev` would not have reached). Plain progress is not news.
+    pub fn is_news_after(&self, prev: &NowPlaying) -> bool {
+        if self.title != prev.title || self.artist != prev.artist { return true; }
+        match (&self.spotify, &prev.spotify) {
+            (None, None) => false,
+            (Some(a), Some(b)) => {
+                if a.id != b.id || a.paused != b.paused { return true; }
+                if a.paused { return a.pos_ms.abs_diff(b.pos_ms) > SEEK_SLACK_MS; }
+                let expect = b.pos_ms as i64 + a.at_ms as i64 - b.at_ms as i64;
+                (a.pos_ms as i64 - expect).unsigned_abs() > SEEK_SLACK_MS
+            }
+            _ => true,
+        }
+    }
+}
 /// How long a shared status lasts without a fresh one, and how often a playing sender renews it. The gap leaves
 /// room for a missed refresh before friends stop believing the last one.
 pub const LISTENING_TTL_SECS: u64 = 600;
 pub const LISTENING_REFRESH_SECS: u64 = 300;
 pub const MAX_LISTEN_LINE: usize = 160;
+/// How long a paused Spotify song stays in the shared status.
+pub const PAUSED_SHOW_SECS: u64 = 120;
 
 /// A file that travels in chunks because it is far too large for one encrypted blob. The key and nonce in the
 /// enclosing `File` are the file's key material; each chunk's key and nonce are derived from them and its index, and
@@ -322,7 +367,7 @@ impl Envelope {
             Ring { id, to, .. } => if !is_id(id) || to.as_deref().is_some_and(|t| !is_key(t)) { return bad("bad ring"); },
             Profile { name, listen, avatar, avatar_cleared, .. } => {
                 if name.is_empty() || !short(name, 64) { return bad("bad profile"); }
-                if let Some(l) = listen { if l.title.is_empty() || !one_line(&l.title, MAX_LISTEN_LINE) || !one_line(&l.artist, MAX_LISTEN_LINE) { return bad("bad listening status"); } }
+                if let Some(l) = listen { if l.title.is_empty() || !one_line(&l.title, MAX_LISTEN_LINE) || !one_line(&l.artist, MAX_LISTEN_LINE) || l.spotify.as_ref().is_some_and(|s| !s.valid()) { return bad("bad listening status"); } }
                 if *avatar_cleared && avatar.is_some() { return bad("bad profile picture change"); }
                 if let Some(a) = avatar { a.validate()?; }
             }

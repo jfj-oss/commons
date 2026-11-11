@@ -21,7 +21,7 @@ fn pair(net: &Net) -> (Peer, Peer, String, String) {
     (a, b, cid, gen)
 }
 
-fn sea_power() -> NowPlaying { NowPlaying { title: "Detective Arriving on the Scene".into(), artist: "Sea Power".into() } }
+fn sea_power() -> NowPlaying { NowPlaying::text("Detective Arriving on the Scene", "Sea Power") }
 
 #[test]
 fn a_shared_status_reaches_a_friend_encrypted() {
@@ -105,7 +105,7 @@ fn sending_is_on_change_only_and_renews_slowly() {
     a.c.update_listening(Some(song.clone())).unwrap();
     assert_eq!(a.c.st.outbox.len(), base + 1, "polling the same song again sends nothing");
 
-    let next = NowPlaying { title: "Waving Flags".into(), artist: "Sea Power".into() };
+    let next = NowPlaying::text("Waving Flags", "Sea Power");
     a.c.update_listening(Some(next.clone())).unwrap();
     assert_eq!(a.c.st.outbox.len(), base + 2, "a new song is a change");
 
@@ -184,4 +184,42 @@ fn rune_reports_the_zone_that_is_actually_playing() {
     let idle = fake_rune(vec![("/api/zones", "[]")]);
     assert_eq!(commons_core::rune::now_playing(&idle).unwrap(), None);
     assert!(commons_core::rune::now_playing("http://127.0.0.1:1").is_err());
+}
+
+#[test]
+fn a_spotify_status_carries_the_position_and_keeps_its_arrival_time() {
+    let net = Net::new();
+    let (mut a, mut b, _cid, _gen) = pair(&net);
+    a.c.set_listening_sharing(true, "http://127.0.0.1:1").unwrap();
+    let t0 = commons_core::spotify::now_ms();
+    let mk = |pos: u64, at: u64, paused: bool| NowPlaying { title: "Song".into(), artist: "Band".into(), spotify: Some(SpotifyPlay { id: "4uLU6hMCjMI75M1A2tKUQC".into(), pos_ms: pos, at_ms: at, paused }) };
+    a.c.update_listening(Some(mk(10_000, t0, false))).unwrap();
+    settle(&mut [&mut a, &mut b]);
+    let got = b.c.listening_of(&a.acct()).unwrap().clone();
+    assert_eq!(got.spotify.as_ref().map(|s| (s.pos_ms, s.paused)), Some((10_000, false)));
+    let (_, rx) = b.c.listening_sample(&a.acct()).unwrap();
+    assert!(rx >= t0, "the arrival time is ours");
+
+    // plain progress is not sent (nothing new reaches bob); a pause and a seek are
+    let sent_before = a.c.st.listening_sent_ts;
+    a.c.update_listening(Some(mk(14_000, t0 + 4_000, false))).unwrap();
+    assert_eq!(a.c.st.listening_sent.as_ref().unwrap().spotify.as_ref().unwrap().pos_ms, 10_000, "progress alone sends nothing");
+    a.c.update_listening(Some(mk(14_500, t0 + 4_500, true))).unwrap();
+    settle(&mut [&mut a, &mut b]);
+    assert!(b.c.listening_of(&a.acct()).unwrap().spotify.as_ref().unwrap().paused, "a pause is sent");
+    a.c.update_listening(Some(mk(300_000, t0 + 9_000, true))).unwrap();
+    settle(&mut [&mut a, &mut b]);
+    assert_eq!(b.c.listening_of(&a.acct()).unwrap().spotify.as_ref().unwrap().pos_ms, 300_000, "a seek while paused is sent");
+    let _ = sent_before;
+
+    // switching to a local file drops the Spotify part
+    a.c.update_listening(Some(NowPlaying::text("Local song", "Someone"))).unwrap();
+    settle(&mut [&mut a, &mut b]);
+    assert_eq!(b.c.listening_of(&a.acct()).unwrap().spotify, None);
+
+    // a paused Spotify song is only reported as the end of a playing one, never as a fresh status
+    a.c.update_listening(None).unwrap();
+    a.c.update_listening(Some(mk(5_000, t0 + 20_000, true))).unwrap();
+    settle(&mut [&mut a, &mut b]);
+    assert_eq!(b.c.listening_of(&a.acct()), None, "a song that was never playing here is not announced as paused");
 }
