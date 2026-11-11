@@ -2439,6 +2439,90 @@ try {
     const box = await P.ev(`(() => { const b = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { l: b.left, r: b.right, w: innerWidth }; })()`);
     if (box.l < -1 || box.r > box.w + 1) throw new Error(`${why} overflows the phone screen: ${JSON.stringify(box)}`);
   }
+  // ---- the phone's gestures (mega-touch.js): swipes between the levels, swipe a row to reply, hold for the menu, two taps for a heart, the picture viewer
+  {
+    await P.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 2 });
+    await P.ev(`__mega.touch.mark(); 1`);
+    need(await P.ev(`document.documentElement.classList.contains('mg-touch')`), 'touch: the phone did not get its gestures (html.mg-touch)');
+    const touch = async (pts, ms = 16) => {   // one finger: start, moves, end
+      await P.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: pts[0][0], y: pts[0][1] }] });
+      for (const [x, y] of pts.slice(1)) { await P.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] }); await sleep(ms); }
+      await P.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    };
+    const line = (x0, x1, y, n = 8) => Array.from({ length: n + 1 }, (_, i) => [x0 + (x1 - x0) * i / n, y]);
+    const rowY = () => P.ev(`(() => { const r = [...document.querySelectorAll('#stream .msg')].at(-1).getBoundingClientRect(); return r.top + r.height / 2; })()`);
+    const lastId = () => P.ev(`[...document.querySelectorAll('#stream .msg')].at(-1).dataset.id`);
+    need(await lvl(P) === 'chat', 'touch: expected to start in a chat, not ' + await lvl(P));
+    // a swipe to the right that starts off the rows (the header) slides the chat out and opens the rooms
+    await touch(line(120, 330, 40)); await sleep(1600);
+    need(await lvl(P) === 'server', 'touch: a swipe to the right in a chat did not open the rooms: ' + await lvl(P));
+    need(await P.ev(`!document.querySelector('#main').style.transform && !document.querySelector('#main').style.willChange`), 'touch: the chat was left transformed after the swipe');
+    await P.shot('11-touch-rooms');
+    // a swipe to the right on the rooms: all communities when there are several, otherwise a rubber band and nothing else
+    const many = await P.ev(`__mega.api.comms().length > 1`);
+    await touch(line(80, 330, 420)); await sleep(1600);
+    need(await lvl(P) === (many ? 'home' : 'server'), `touch: a swipe to the right on the rooms should ${many ? 'open all communities' : 'stay on the rooms'}: ` + await lvl(P));
+    need(await P.ev(`!document.querySelector('.mlist').style.transform`), 'touch: the cards were left transformed after a swipe');
+    if (many) { await touch(line(330, 60, 420)); await sleep(1600); need(await lvl(P) === 'server', 'touch: a swipe to the left on a community card did not open its rooms: ' + await lvl(P)); }
+    // a swipe to the left on the room in focus opens its chat
+    await P.ev(`(() => { const i = __mega.list.items.findIndex(x => x.kind === 'text' && !x.locked); __mega.list.go(i, true); })()`); await sleep(900);
+    const wantGid = await P.ev(`__mega.list.item.gid`);
+    await touch(line(330, 60, 420)); await sleep(1800);
+    need(await lvl(P) === 'chat' && await P.ev(`S.gid`) === wantGid, 'touch: a swipe to the left on a room card did not open it: ' + await lvl(P));
+    // a short swipe to the right on a row replies to that message; up and down on it is the scroll
+    const id = await lastId(); let y = await rowY();
+    await touch(line(200, 200, y).map(([x, yy], i) => [x, yy - i * 10])); await sleep(300);
+    need(await P.ev(`!S.reply`), 'touch: a vertical drag on a row started a reply');
+    y = await rowY(); await touch(line(200, 290, y, 6)); await sleep(500);
+    need(await P.ev(`S.reply && String(S.reply.id)`) === String(id), 'touch: a short swipe on a row did not reply to it');
+    need(await P.ev(`!document.querySelector('#replybar').hidden && !document.querySelector('#stream .msg.mswp')`), 'touch: the reply bar is missing or the row is still held');
+    await P.shot('11-touch-reply');
+    await click(P, '#cancel'); await sleep(200);
+    // a swipe on a row that goes on across the screen is the page's: the rooms open and nothing is replied to
+    y = await rowY(); await touch(line(80, 360, y, 10)); await sleep(1600);
+    need(await lvl(P) === 'server' && await P.ev(`!S.reply`), 'touch: a long swipe on a row should open the rooms, not reply: ' + await lvl(P));
+    await touch(line(330, 60, 420)); await sleep(1800); need(await lvl(P) === 'chat', 'touch: back into the chat');
+    // holding a row opens its menu, and the tap that ends the hold does not open the row's tools
+    y = await rowY();
+    await P.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 200, y }] }); await sleep(700);
+    need(await P.ev(`!!document.querySelector('.mpop.mtouch')`), 'touch: holding a message did not open its menu');
+    await P.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await sleep(300);
+    const menu = await P.ev(`(() => { const p = document.querySelector('.mpop.mtouch'); return p && { e: p.querAll ? 0 : p.querySelectorAll('.mtm-e button').length, acts: [...p.querySelectorAll('[data-k]')].map(b => b.dataset.k), held: !!document.querySelector('#stream .msg.mheld'), open: !!document.querySelector('#stream .msg.open') }; })()`);
+    need(menu && menu.e >= 6 && menu.acts.includes('reply') && menu.acts.includes('copy') && menu.acts.includes('edit') && menu.acts.includes('del') && menu.held && !menu.open, 'touch: the held message\'s menu is wrong: ' + JSON.stringify(menu));
+    await P.shot('11-touch-menu');
+    await P.ev(`document.querySelector('.mpop.mtouch [data-k="reply"]').click()`); await sleep(300);
+    need(await P.ev(`S.reply && String(S.reply.id) === ${JSON.stringify(String(id))} && !document.querySelector('.mpop.mtouch') && !document.querySelector('#stream .msg.mheld')`), 'touch: reply from the menu did not take, or the menu stayed');
+    await click(P, '#cancel'); await sleep(200);
+    // two taps on a row: a heart (and no second click on the row)
+    y = await rowY();
+    for (let i = 0; i < 2; i++) { await P.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 220, y }] }); await sleep(40); await P.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await sleep(110); }
+    await P.waitFor(`!![...document.querySelectorAll('#stream .msg')].at(-1).querySelector('.react[data-e="❤️"].mine')`, 8000);
+    await P.shot('11-touch-heart');
+    // a picture: tap for the viewer, pinch to zoom, pull down to close
+    await P.ev(`(async () => { const c = document.createElement('canvas'); c.width = 120; c.height = 80; const x = c.getContext('2d'); x.fillStyle = '#4af'; x.fillRect(0, 0, 120, 80); x.fillStyle = '#fff'; x.fillRect(20, 20, 80, 40);
+      const d = c.toDataURL('image/png').split(',')[1].replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, ''); await rpc('send_file', { gid: S.gid, name: 'blue.png', mime: 'image/png', data: d, caption: '' }); S.lastMsgs = ''; tick(); })()`);
+    await P.waitFor(`!!document.querySelector('#stream .imgslot img') && document.querySelector('#stream .imgslot img').naturalWidth > 0`, 15000); await sleep(300);
+    await P.ev(`document.querySelector('#stream .imgslot img').click()`); await sleep(400);
+    need(await P.ev(`!!document.querySelector('#mega-view img') && !document.querySelector('.lightbox')`), 'touch: tapping a picture did not open the viewer');
+    const two = (a, b) => ({ touchPoints: [{ x: a[0], y: a[1], id: 1 }, { x: b[0], y: b[1], id: 2 }] });
+    await P.send('Input.dispatchTouchEvent', { type: 'touchStart', ...two([170, 420], [220, 420]) });
+    for (let i = 1; i <= 5; i++) { await P.send('Input.dispatchTouchEvent', { type: 'touchMove', ...two([170 - i * 16, 420], [220 + i * 16, 420]) }); await sleep(16); }
+    await P.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await sleep(400);
+    const zoom = await P.ev(`(() => { const m = new DOMMatrix(getComputedStyle(document.querySelector('#mega-view img')).transform); return { s: m.a, open: !!document.querySelector('#mega-view') }; })()`);
+    need(zoom.open && zoom.s > 2.5 && zoom.s < 5.01, 'touch: the pinch did not zoom the picture: ' + JSON.stringify(zoom));
+    const vdom = await P.ev(`(() => { const v = document.querySelector('#mega-view'), top = document.elementsFromPoint(195, 205).slice(0, 3).map(e => e.tagName + '.' + e.className); return { views: document.querySelectorAll('#mega-view').length, caps: document.querySelectorAll('.mv-cap').length, text: v.innerText.replace(/\\s+/g, ' ').trim(), bg: getComputedStyle(v).backgroundColor, top, html: v.outerHTML.slice(0, 400) }; })()`);
+    console.log('touch viewer:', JSON.stringify(vdom));
+    need(vdom.views === 1 && vdom.caps === 1, 'touch: more than one viewer or caption: ' + JSON.stringify(vdom));
+    await P.shot('11-touch-viewer');
+    await touch(line(195, 195, 300).map(([x, yy], i) => [x, yy + i * 30]), 12); await sleep(500);
+    need(await P.ev(`!!document.querySelector('#mega-view')`), 'touch: a pull down on a zoomed picture should pan, not close');
+    for (let i = 0; i < 2; i++) { await P.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 195, y: 420 }] }); await sleep(40); await P.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await sleep(100); }
+    await sleep(400);
+    need(await P.ev(`(() => { const m = new DOMMatrix(getComputedStyle(document.querySelector('#mega-view img')).transform); return Math.abs(m.a - 1) < .01; })()`), 'touch: two taps did not zoom the picture back out');
+    await touch(line(195, 195, 300).map(([x, yy], i) => [x, yy + i * 30]), 12); await sleep(600);
+    need(await P.ev(`!document.querySelector('#mega-view')`), 'touch: pulling a picture down did not close the viewer');
+    await P.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  }
   // ---- history on a new device (docs/history-transfer.md): alice pairs a second device with "also send my history" on (the default),
   // the rooms' messages land on it sealed through the inbox, the new device shows one note while it fills, the old one says it was sent.
   {

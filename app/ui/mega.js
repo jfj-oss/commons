@@ -988,7 +988,7 @@
   // ---------------------------------------------------------------- keys: Esc steps back one level
   function modalOpen() { return !!document.querySelector('#modal-root > .scrim'); }
   function back(e) {
-    if (modalOpen() || document.querySelector('.lightbox, .emojis, #call-pop, .nm-menu')) return false;   // those answer Esc themselves
+    if (modalOpen() || document.querySelector('.lightbox, #mega-view, .emojis, #call-pop, .nm-menu')) return false;   // those answer Esc themselves
     const t = e.target, typing = t && /INPUT|TEXTAREA|SELECT/.test(t.tagName || '');
     if (typing && t.id === 'input' && (S.reply || S.edit || !$('#mention-pop').hidden)) return false;
     if (typing && t.id === 'search' && !$('#search-pop').hidden) return false;
@@ -1133,6 +1133,7 @@
   function bdLoop(now) {
     const a = BD; if (!a) return; a.raf = requestAnimationFrame(bdLoop);
     if (document.hidden || still() || !a.mask || a.dim === 0 || M.flying) return;   // the backdrop holds still while the cards fly: its draw is the biggest thing on a 4K frame
+    if (scrollAt && touchy()) return;   // a finger is scrolling: the scroll listener below redraws it around the moving words, nothing else does
     if (a.band) { bdBand(a); return; }   // a picture being drawn a few rows per frame
     if (now - a.last < (a.rip.length ? 40 : 100)) return;   // 25 fps while a ripple runs, a steady 10 otherwise: a quiet room still drifts
     const dt = Math.min(.25, (now - a.last) / 1000); a.last = now;
@@ -1222,18 +1223,29 @@
     focusFrame(); bdMask(); BD.last = 0;
   }
   let flushRaf = 0, flushT = 0;
+  const touchy = () => root.classList.contains('mg-touch');
+  let scrollAt = 0, scrollT = 0, bdAt = 0, bdRaf = 0;
+  const backdropNow = () => { if (BD) { if (BD.dim === 0) { if (window.__megaWall) __megaWall.remask(); } else { bdMask(); bdDraw(); } } };
   function dirty(trail) {
     if (!flushRaf) flushRaf = requestAnimationFrame(() => { flushRaf = 0; if (!roomOn()) return; if (M.flying) { M.flyDirty = true; return; }   // mid-flight: one look at the page when it lands
-      focusFrame(); if (BD) { if (BD.dim === 0) { if (window.__megaWall) __megaWall.remask(); } else { bdMask(); bdDraw(); } } });   // drawn in the same frame as the move, so the space around the words keeps up with them
+      if (!(touchy() && scrollAt)) focusFrame();   // a finger is scrolling: the rows wait (below)
+      backdropNow(); });   // drawn in the same frame as the move, so the space around the words keeps up with them
     if (trail !== false) { clearTimeout(flushT); flushT = setTimeout(() => dirty(false), 300); }   // the rows ease into their new size, so look again once they have
   }
   document.addEventListener('selectionchange', () => { if (roomOn() && !atEnd($('#stream'))) dirty(false); });
   document.addEventListener('input', e => { if (e.target && e.target.id === 'input') dirty(); }, true);
   addEventListener('resize', () => dirty());
+  // On a phone (html.mg-touch, mega-touch.js) a finger scroll must not restyle the rows or redraw the backdrop on every frame: WebKit then
+  // re-rasterises the whole screen each frame and the scroll stutters (iPhone WebKit, 2000 messages: 60 ms a frame; 19 ms with neither).
+  // While the scroll runs the reading focus waits, and the backdrop follows the words at about 12 fps; the moment it pauses, one full look,
+  // and the rows ease into the focus band as they always did. A computer's wheel keeps every frame.
   $('#stream').addEventListener('scroll', () => {
-    dirty();
     // something new arrived while reading back: the existing "back to latest" button must be there (app.js hides it under 260px)
     if (S.below > 0 && !S.pinned) $('#jump').hidden = false;
+    if (!touchy()) { dirty(); return; }
+    const now = performance.now(); scrollAt = now;
+    if (now - bdAt >= 80 && !bdRaf) { bdAt = now; bdRaf = requestAnimationFrame(() => { bdRaf = 0; if (roomOn() && !M.flying) backdropNow(); }); }
+    clearTimeout(scrollT); scrollT = setTimeout(() => { scrollAt = 0; dirty(false); }, 90);
   }, { passive: true });
 
   // ---- ascii arrival: a new message resolves out of scrambled glyphs
@@ -1451,7 +1463,9 @@
   M.drawChip = drawChip; M.fx = FX; M.fxNames = FXNAMES;
   M.bdInfo = () => (BD ? { gid: BD.gid, fx: BD.fx, fxAuto: BD.fxAuto, dim: BD.dim, heat: BD.heat, at: H(BD.at.toDataURL()), draws: ST.bdDraws } : null);
   window.__megaTheme = { colours(gid) { const c = comm(M.cid), x = c && roomItems(c).find(i => i.gid === gid && i.kind === 'text'); return x ? [lift(fieldOf(x), 5), lift(hiOf(x), 6)] : null; } };
-  M.api = { faceColor, comms, comm, roomItems, dotOf, hiOf, fieldOf, lift, mix, contrast, bestInk, cardVars, ti, letters, toChat, openRail, themeOf, dirty, DEF };
+  M.api = { faceColor, comms, comm, roomItems, dotOf, hiOf, fieldOf, lift, mix, contrast, bestInk, cardVars, ti, letters, toChat, openRail, themeOf, dirty, DEF,
+    // the levels and the floats, for the touch gestures (mega-touch.js): the same paths a click or Esc takes
+    showHome, showServer, openFromDots, enterCommunity, enterRoom, enterCurrent, modalOpen, popAt, closePops, burst, paintOpen: () => PT.open };
   M.admExit = () => { M.adm = false; showOpts(); drawRail(); };   // mega-admin.js: no longer an admin, so back to the plain options room
   M.prev = PREV; M.cp = CP; M.shown = SHOWN; M.canPaint = canPaint;
   M.callTheme = gid => { const c = comms().find(x => x.channels.some(ch => ch.gid === gid)); return c ? targetOf(c.id, gid) : null; };
