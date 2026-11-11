@@ -41,7 +41,7 @@ fn second_device_by_pairing_code_and_revocation() {
     settle(&mut [&mut alice, &mut bob, &mut bob2]);
     assert!(has_text(&bob, &gen, "hello both of bob's devices") && has_text(&bob2, &gen, "hello both of bob's devices"));
     assert!(has_text(&alice, &gen, "typed on the laptop") && has_text(&bob, &gen, "typed on the laptop"));
-    // honest limit, documented: the new device does not get old history
+    // without a yes on the old device there is no history on the new one (history.rs); bob never pressed Send here
     assert!(!has_text(&bob2, &gen, "history before the second device"));
     assert_eq!(alice.c.epoch_fingerprint(&gen), bob2.c.epoch_fingerprint(&gen));
 

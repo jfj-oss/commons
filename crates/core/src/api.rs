@@ -875,8 +875,15 @@ impl App {
             "approve_pairing" => {
                 let (rid, sealed, chk, (api, k)) = self.with(|c| { let (r, x, chk) = c.pairing_seal(&s(&a, "code")).map_err(e)?; Ok((r, x, chk, c.net_handle().map_err(e)?)) })?;
                 api.rv_put(&k, &rid, "a", &sealed).map_err(e)?;
-                self.with(|c| { c.notice("pair", "pairing data sent; the new device will appear in your device list once it registers"); Ok(json!({"check": chk})) })
+                let send_history = a.get("send_history").and_then(|x| x.as_bool()).unwrap_or(false);
+                self.with(|c| { if send_history { c.history_preapprove(); } c.notice("pair", "pairing data sent; the new device will appear in your device list once it registers"); Ok(json!({"check": chk})) })
             }
+            // History for a new device of this account (history.rs): send this device's rooms to a device that asked, leave the request, or
+            // stop showing the note about a transfer here.
+            "history_send" => self.with(|c| c.history_send(&s(&a, "device")).map_err(e)),
+            "history_decline" => self.with(|c| c.history_decline(&s(&a, "device")).map(|_| json!({})).map_err(e)),
+            "history_dismiss" => self.with(|c| c.history_dismiss().map(|_| json!({})).map_err(e)),
+            "history_status" => self.with(|c| Ok(c.history_status())),
             "recovery_key" => self.with(|c| c.recovery_key_with_passphrase(&s(&a, "passphrase")).map(|k| json!({"key": k})).map_err(e)),
             "search" => self.with(|c| {
                 let r = c.search(&s(&a, "q"));
@@ -1086,7 +1093,7 @@ fn snapshot(c: &Client) -> Value {
     json!({"me": {"account": me, "name": c.st.name, "device": c.my_device(), "recovery_unsaved": c.st.recovery_unsaved}, "relay": c.st.relay, "relay_secret": !c.st.relay_invite.is_empty(), "communities": comms, "direct": direct, "direct_refused": direct_refused, "joining": joining, "refused": refused,
            "typing_enabled": c.st.typing_enabled, "share_listening": c.st.share_listening, "rune_url": c.rune_url(), "listening": listening,
            "outbox": c.st.outbox.len(), "problems": problems, "net": net, "net_detail": c.net.detail, "revoked": c.st.self_revoked,
-           "download_dir": c.download_dir().display().to_string(),
+           "download_dir": c.download_dir().display().to_string(), "history": c.history_status(),
            "mobile": cfg!(any(target_os = "ios", target_os = "android")), "version": c.activity})
 }
 

@@ -274,6 +274,9 @@ impl Client {
         for it in self.st.outbox.iter().filter(|i| i.cipher.is_some()).take(200) {
             r.posts.push((it.id.clone(), it.gid.clone(), unb64(it.cipher.as_ref().unwrap()).unwrap_or_default()));
         }
+        // history for a new device (history.rs): hand the next sealed chunks to the inbox queue; a new device asks its other devices
+        self.history_feed(now);
+        self.history_ask(now);
         r.welcomes = self.st.welcome_out.clone();
         for j in self.st.acl_jobs.iter().filter(|j| now >= j.after) {
             let cid = self.st.groups.get(&j.gid).map(|g| g.community.clone()).unwrap_or_else(|| j.gid.clone());
@@ -414,6 +417,7 @@ impl Client {
         for (id, r) in d.posts { keep_going |= self.item_posted(&id, r); }
         self.more |= keep_going;
         for (id, r) in d.welcomes {
+            if self.st.welcome_out.iter().any(|w| w.id == id && w.gid.starts_with("history:")) { self.history_posted(&id, &r); }
             match r {
                 Ok(()) => { self.st.welcome_out.retain(|w| w.id != id); self.activity += 1; }
                 Err(e) if relay_status(&e) == Some(404) => self.st.welcome_out.retain(|w| w.id != id), // that device is gone

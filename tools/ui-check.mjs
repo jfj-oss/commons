@@ -2439,6 +2439,47 @@ try {
     const box = await P.ev(`(() => { const b = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { l: b.left, r: b.right, w: innerWidth }; })()`);
     if (box.l < -1 || box.r > box.w + 1) throw new Error(`${why} overflows the phone screen: ${JSON.stringify(box)}`);
   }
+  // ---- history on a new device (docs/history-transfer.md): alice pairs a second device with "also send my history" on (the default),
+  // the rooms' messages land on it sealed through the inbox, the new device shows one note while it fills, the old one says it was sent.
+  {
+    const D_PORT = Number(process.env.COMMONS_UI_D_PORT || 7104);
+    run(bin('dev_bridge'), [String(D_PORT), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], { COMMONS_DATA: path.join(out, 'data', 'alice2'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(D_PORT) });
+    await sleep(1500);
+    const D = await open(pageUrl(D_PORT));
+    await D.waitFor(`!!document.querySelector('#l-pair')`, 15000);
+    await click(D, '#l-pair');
+    await D.waitFor(`!!document.querySelector('#pp') && !!document.querySelector('#pp2')`, 8000);
+    await type(D, '#pp', 'laptop pass 1234'); await type(D, '#pp2', 'laptop pass 1234');
+    await click(D, '#go');
+    await D.waitFor(`!!document.querySelector('.small-code')`, 20000);
+    const code = (await textOf(D, '.small-code')).trim();
+    if (!code.startsWith('commons-pair:')) throw new Error('history: no pairing code on the new device: ' + code.slice(0, 40));
+    await D.shot('10-history-pair-code');
+    // alice approves on her device; the history box is on by default
+    await A.ev(`document.querySelector('#btn-devices').click()`);
+    await A.waitFor(`!!document.querySelector('.modal #code')`, 8000);
+    if (!await A.ev(`document.querySelector('#hist-auto').checked`)) throw new Error('history: the "also send my history" box is not on by default');
+    await type(A, '#code', code);
+    await A.waitFor(`/Check code/.test(document.querySelector('#chk').textContent)`, 8000);
+    await A.ev(`[...document.querySelectorAll('.modal .acts button')].find(b => b.textContent.includes('Approve')).click()`);
+    await A.waitFor(`/Approved/.test(document.querySelector('#chk').textContent)`, 15000);
+    await A.shot('10-history-approved');
+    // the new device starts, and the history arrives with a note in the room list
+    await D.waitFor(`!document.querySelector('#app').hidden`, 90000);
+    await D.waitFor(`!!document.querySelector('.hist-note') && /arrived/.test(document.querySelector('.hist-note').textContent)`, 90000);
+    const note = await textOf(D, '.hist-note');
+    if (!/\d+ messages/.test(note)) throw new Error('history: the note does not say how many messages arrived: ' + note);
+    await D.shot('10-history-arrived');
+    const count = p => p.ev(`(async () => { const c = (S.snap.communities || []).find(c => c.name === 'Book club'); if (!c || !c.channels.length) return -1; const m = await rpc('messages', { gid: c.channels[0].gid, limit: 500 }); return m.messages.length; })()`);
+    const have = await count(A);
+    let got = -1; for (let i = 0; i < 40 && got !== have; i++) { got = await count(D); if (got !== have) await sleep(500); }
+    if (!(got > 0 && got === have)) throw new Error(`history: the new device has ${got} messages in the first room, the old one ${have}`);
+    // the old device's screen says it was sent; dismissing the note on the new device clears it
+    await A.waitFor(`/History sent to/.test(document.querySelector('#mb').textContent)`, 20000);
+    await A.shot('10-history-sent'); await click(A, '.modal .acts button');
+    await D.ev(`document.querySelector('.hist-note [data-hist]').click()`);
+    await D.waitFor(`!document.querySelector('.hist-note')`, 8000);
+  }
   console.log('UI check OK; screenshots in', out);
   await dumpTrace();
 } catch (e) { console.error('UI check FAILED:', e.message); try { for (const [n, P] of [['A', A], ['B', B]]) console.error(n, 'toast:', await P.ev(`document.querySelector('#toast')?.innerText`), '| transfers:', await P.ev(`document.querySelector('#transfers')?.innerText`), '| xfer:', await P.ev(`JSON.stringify([[...XFER.keys()], XLIST])`)); } catch { } await dumpTrace(); process.exitCode = 1; }

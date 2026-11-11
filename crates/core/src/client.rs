@@ -64,6 +64,9 @@ pub struct Client {
     pub(crate) direct_rate: BTreeMap<String, std::collections::VecDeque<u64>>,
     pub(crate) direct_joined: std::collections::VecDeque<u64>,
     pub(crate) direct_out: Vec<crate::direct::DirectOut>,
+    /// History for a new device (history.rs): when the inbox said "full", nothing more is handed to it before this; and the chunk size.
+    pub(crate) history_hold_until: u64,
+    pub(crate) history_chunk_bytes: usize,
     /// Every call offer this device saw, as it travelled (test builds only): the link and the sealed secret.
     #[cfg(feature = "test-hooks")]
     pub debug_offers: Vec<(String, Option<String>)>,
@@ -187,7 +190,7 @@ impl Client {
     fn assemble(dir: &Path, vault: Vault, mut st: State, prov: Prov, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
         if !st.typing_default_applied { st.typing_default_applied = true; st.typing_enabled = true; }
         let walls = st.walls.clone();
-        Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), wall_peer_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), live_in: Default::default(), live_next: 0, live: Default::default(), ring_in: Default::default(), ring_next: 0, ring_seen: BTreeMap::new(), ring_rate: BTreeMap::new(), ring_ends: BTreeMap::new(), ring_sent: BTreeMap::new(), direct_seen: BTreeMap::new(), direct_rate: BTreeMap::new(), direct_joined: Default::default(), direct_out: vec![],
+        Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), wall_peer_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), live_in: Default::default(), live_next: 0, live: Default::default(), ring_in: Default::default(), ring_next: 0, ring_seen: BTreeMap::new(), ring_rate: BTreeMap::new(), ring_ends: BTreeMap::new(), ring_sent: BTreeMap::new(), direct_seen: BTreeMap::new(), direct_rate: BTreeMap::new(), direct_joined: Default::default(), direct_out: vec![], history_hold_until: 0, history_chunk_bytes: crate::history::CHUNK_PLAIN,
             #[cfg(feature = "test-hooks")]
             debug_offers: vec![],
             live_out: BTreeMap::new(), live_sent: BTreeMap::new(), live_rate: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new(),
@@ -306,6 +309,10 @@ impl Client {
 
     #[doc(hidden)]
     pub fn debug_release_lock(&mut self) { self.lock = None; }
+    /// Smaller history chunks, so a test gets several of them from a small history (test builds only).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_history_chunk_bytes(&mut self, n: usize) { self.history_chunk_bytes = n; }
 
     pub fn has_identity(&self) -> bool { self.st.cert.is_some() }
     pub fn my_account(&self) -> String { self.st.cert.as_ref().map(|c| c.account.clone()).unwrap_or_default() }
@@ -462,6 +469,10 @@ impl Client {
         if self.st.name.is_empty() { self.st.name = if check_name("name", pl.name.trim()).is_ok() { pl.name.trim().into() } else { "me".into() }; }
         self.st.pairing = None;
         self.st.registered = false;
+        // a device that has just been paired has no history: it asks the account's other devices (history.rs)
+        self.st.history_wanted = true;
+        self.st.history_wanted_since = now_secs();
+        self.st.history_asked = 0;
         self.save()?;
         self.pair_ack = Some((p.rid, self.my_device()));
         self.dir_hot_until = now_secs() + PAIR_HOT_SECS;

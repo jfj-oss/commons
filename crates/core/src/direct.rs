@@ -18,42 +18,20 @@ use crate::client::Client;
 use crate::state::*;
 use anyhow::{anyhow, bail, Result};
 use crate::envelope::*;
-use chacha20poly1305::{aead::{Aead, KeyInit, Payload}, ChaCha20Poly1305, Nonce};
 use commons_proto::{b64, sha256, unb64, unhex32};
-use rand::RngCore;
 use std::collections::BTreeSet;
 
 /// The invite's secret key, sealed so that only `peer`'s account can read it (audit M8). The offer travels in a room other people share:
-/// without this they could sign a join with the secret and an admin device from before `admits` would let them in. An ephemeral X25519
-/// key agrees with the peer's account key (Ed25519, used as X25519 the way libsodium does), and the secret rides under ChaCha20-Poly1305
-/// with the peer's account in the associated data. Layout: ephemeral public key (32) | nonce (12) | ciphertext, base64.
+/// without this they could sign a join with the secret and an admin device from before `admits` would let them in. See `seal.rs`.
 pub fn seal_for(peer: &str, sk_hex: &str) -> Result<String> {
-    let peer_vk = ed25519_dalek::VerifyingKey::from_bytes(&unhex32(peer).map_err(|_| anyhow!("bad account"))?).map_err(|_| anyhow!("bad account key"))?;
-    let peer_x = peer_vk.to_montgomery().to_bytes();
     let secret = unhex32(sk_hex).map_err(|_| anyhow!("bad invite key"))?;
-    let mut eph = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut eph);
-    let eph_pk = x25519_dalek::x25519(eph, x25519_dalek::X25519_BASEPOINT_BYTES);
-    let shared = x25519_dalek::x25519(eph, peer_x);
-    let key = seal_key(&eph_pk, &peer_x, &shared);
-    let mut nonce = [0u8; 12];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
-    let ct = ChaCha20Poly1305::new((&key).into()).encrypt(Nonce::from_slice(&nonce), Payload { msg: &secret, aad: &seal_aad(peer) }).map_err(|_| anyhow!("seal"))?;
-    let mut out = eph_pk.to_vec(); out.extend(nonce); out.extend(ct);
-    Ok(b64(&out))
+    Ok(b64(&crate::seal::seal_to(peer, &seal_aad(peer), &secret)?))
 }
 /// Open a sealed invite secret with this account's key. None when it is not for this account, or damaged.
 pub fn open_sealed(acct_key: &ed25519_dalek::SigningKey, me: &str, blob: &str) -> Option<String> {
-    let bytes = unb64(blob).ok()?;
-    if bytes.len() != 32 + 12 + 32 + 16 { return None; }
-    let eph_pk: [u8; 32] = bytes[..32].try_into().ok()?;
-    let my_x = acct_key.verifying_key().to_montgomery().to_bytes();
-    let shared = x25519_dalek::x25519(acct_key.to_scalar_bytes(), eph_pk);
-    let key = seal_key(&eph_pk, &my_x, &shared);
-    let pt = ChaCha20Poly1305::new((&key).into()).decrypt(Nonce::from_slice(&bytes[32..44]), Payload { msg: &bytes[44..], aad: &seal_aad(me) }).ok()?;
-    Some(hex::encode(pt))
+    let pt = crate::seal::open_with(acct_key, &seal_aad(me), &unb64(blob).ok()?)?;
+    (pt.len() == 32).then(|| hex::encode(pt))
 }
-fn seal_key(eph_pk: &[u8; 32], peer_x: &[u8; 32], shared: &[u8; 32]) -> [u8; 32] { sha256(&[b"commons/direct-seal/v1", eph_pk, peer_x, shared]) }
 fn seal_aad(peer: &str) -> Vec<u8> { sha256(&[b"commons/direct-seal/aad/v1", peer.as_bytes()]).to_vec() }
 
 /// What an older app calls the community: it has no notion of "direct", and must not look like a stray server that means nothing.

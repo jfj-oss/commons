@@ -93,6 +93,25 @@ pub struct State {
     pub direct_joining: BTreeMap<String, u64>,
     #[serde(default)]
     pub direct_refused: BTreeSet<String>,
+    /// History for a new device of this account (history.rs): chunks this device still has to hand to the inbox, requests waiting for
+    /// the person's yes, the yes given with a pairing approval (until when), what this device is receiving, whether it still wants
+    /// history (a freshly paired device) and when it last asked, and what it sent to whom.
+    #[serde(default)]
+    pub history_out: Vec<HistoryOut>,
+    #[serde(default)]
+    pub history_requests: BTreeMap<String, HistoryRequest>,
+    #[serde(default)]
+    pub history_preapproved: u64,
+    #[serde(default)]
+    pub history_in: Option<HistoryIn>,
+    #[serde(default)]
+    pub history_wanted: bool,
+    #[serde(default)]
+    pub history_wanted_since: u64,
+    #[serde(default)]
+    pub history_asked: u64,
+    #[serde(default)]
+    pub history_sent: BTreeMap<String, HistorySent>,
     /// This app has told everyone it takes direct calls (one profile refresh after an update).
     #[serde(default)]
     pub direct_announced: bool,
@@ -422,6 +441,19 @@ pub struct ParkedWelcome { pub id: String, pub data: String, pub ts: u64 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Pairing { pub rid: String, pub secret: String, pub public: String }
+
+/// One sealed history chunk waiting to be handed to the relay's inbox for `device` (`data` is the whole inbox item, base64).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HistoryOut { pub id: String, pub device: String, pub tid: String, pub i: u32, pub n: u32, pub data: String, pub queued: bool }
+/// A new device of this account asked for the history and the person has not answered yet.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HistoryRequest { pub ts: u64, pub cert: DeviceCert }
+/// A transfer this device is receiving (or received).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HistoryIn { pub tid: String, pub from: String, pub n: u32, pub got: BTreeSet<u32>, pub msgs: u64, pub omitted: u64, pub started: u64, pub done: u64, #[serde(default)] pub dismissed: bool }
+/// A transfer this device sent (or is sending).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HistorySent { pub tid: String, pub ts: u64, pub chunks: u32, pub done: u32 }
 
 #[cfg(test)]
 mod style_tests {

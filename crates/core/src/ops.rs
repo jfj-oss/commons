@@ -1505,6 +1505,14 @@ impl Client {
     #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
     pub fn debug_clear_direct_rate(&mut self) { self.direct_rate.clear(); }
+    /// Put any bytes in another device's inbox, as a hostile account could (test builds only).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_post_inbox(&mut self, device: &str, data: &[u8]) -> Result<()> { self.st.welcome_out.push(WelcomeOut { id: rand_hex(16), device: device.into(), data: b64(data), gid: "debug".into() }); self.save() }
+    /// This device's certificate (test builds only).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn cert_public(&self) -> DeviceCert { self.cert().expect("identity") }
     /// Send any envelope as this device, as a hostile member would (test builds only).
     #[cfg(feature = "test-hooks")]
     #[doc(hidden)]

@@ -63,7 +63,9 @@ impl Client {
             if !self.seen_welcomes.insert(w.id.clone()) { self.st.ack_welcomes.push(w.id.clone()); continue; }
             let data = match unb64(&w.data) { Ok(d) => d, Err(_) => { self.st.ack_welcomes.push(w.id.clone()); continue; } };
             if self.st.parked_welcomes.iter().any(|p| p.id == w.id) { self.st.ack_welcomes.push(w.id.clone()); continue; }
-            // MLS messages start with a version number, our JSON with a brace.
+            // MLS messages start with a version number, our JSON with a brace; history chunks for a new device with their own mark.
+            if data.starts_with(crate::history::MAGIC) { self.history_take_chunk(&data[crate::history::MAGIC.len()..]); self.st.ack_welcomes.push(w.id.clone()); continue; }
+            if data.starts_with(br#"{"t":"hist-req""#) { self.history_take_request(&data); self.st.ack_welcomes.push(w.id.clone()); continue; }
             if data.first() == Some(&b'{') { self.handle_join_reply(&data); self.st.ack_welcomes.push(w.id.clone()); continue; }
             match self.handle_welcome(&w.id, &data) {
                 Ok(true) => opened = true,
@@ -780,7 +782,7 @@ impl Client {
     fn orphan(log: &mut ChannelLog, env: Envelope, acct: &str, seq: u64) {
         if log.orphans.len() < 500 { log.orphans.push((env, acct.to_string(), seq)); }
     }
-    fn drain_orphans(log: &mut ChannelLog, id: &str, _gid: &str) {
+    pub(crate) fn drain_orphans(log: &mut ChannelLog, id: &str, _gid: &str) {
         let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut log.orphans).into_iter().partition(|(e, _, _)| match e {
             Envelope::Edit { target, .. } | Envelope::Delete { target } | Envelope::React { target, .. } => target == id, _ => false });
         log.orphans = rest;

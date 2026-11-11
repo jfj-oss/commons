@@ -542,6 +542,7 @@ $('#rooms').addEventListener('click', async e => {
   }
   const x = e.target.closest('[data-join]');
   if (x) { try { await rpc('cancel_join', { id: x.dataset.join }); tick(); } catch (er) { toast(er.message); } return; }
+  if (e.target.closest('[data-hist]')) { try { await rpc('history_dismiss', {}); S.last = ''; tick(); } catch (er) { toast(er.message); } return; }
   const b = e.target.closest('.room');
   if (b) {
     const ch = ((currentCommunity() || {}).channels || []).find(x => x.gid === b.dataset.g);
@@ -657,7 +658,17 @@ function renderRail() {
   if (window.__megaRender) window.__megaRender();
 }
 // Joins live outside any community, so they show whichever community is open. A refusal stays until it is read.
+// History arriving on a new device (docs/history-transfer.md): one note in the room list while it fills, and when it is done.
+const historyNote = sn => {
+  const h = sn.history && sn.history.incoming; if (!h || h.state === 'none') return [];
+  const text = h.state === 'receiving' ? `Your other device is sending this device's message history: ${h.got} of ${h.total} parts.`
+    : h.state === 'done' ? `History from your other device arrived: ${h.msgs} messages.${h.omitted ? ` The oldest ${h.omitted} stayed on the other device.` : ''} <button type="button" class="linkish" data-hist="1">Dismiss</button>`
+    : h.state === 'waiting' ? `No other device has answered yet about your message history. Open mega on a device you already use and press Send under Devices. <button type="button" class="linkish" data-hist="1">Dismiss</button>`
+    : `Asking your other devices for your message history…`;
+  return [{ k: 'hist:' + h.state + ':' + (h.got || 0), h: `<div class="room-note hist-note">${text}</div>` }];
+};
 const joinNotes = sn => [
+  ...historyNote(sn),
   ...sn.refused.map(j => ({ k: 'r' + j.id, h: `<div class="room-note">Could not join “${esc(j.name)}”: ${esc(j.reason)}. <button type="button" class="linkish" data-join="${esc(j.id)}">Dismiss</button></div>` })),
   ...sn.joining.map(j => ({ k: 'j' + j.id, h: `<div class="room-note">Asked to join “${esc(j.name)}”. An admin has to let you in; this can take a while if nobody is online. <button type="button" class="linkish" data-join="${esc(j.id)}">Stop waiting</button></div>` })),
 ];
@@ -1480,13 +1491,22 @@ $('#search-pop').addEventListener('click', e => {
 $('#btn-devices').onclick = async () => {
   const render = async w => {
     const ds = await rpc('devices');
-    $('#mb', w).innerHTML = `<p class="muted small">Every device holds its own keys. A lost device must be revoked: it is then removed from every room and cannot read anything new.</p>` +
+    // History for a new device (docs/history-transfer.md): a device that asks waits here for a yes; what is being sent shows here too.
+    const h = (S.snap && S.snap.history) || { requests: [], sending: [], here: {} };
+    const reqs = h.requests.map(r => `<div class="room-note hist-req" data-hist-dev="${esc(r.device)}">Your new device <b class="mono">${esc(r.device.slice(0, 12))}</b> asks for this device's message history (${h.here.msgs} messages in ${h.here.rooms} rooms). <button type="button" class="btn slim" data-hs="${esc(r.device)}">Send</button> <button type="button" class="btn ghost slim" data-hd="${esc(r.device)}">Not now</button></div>`).join('');
+    const sending = h.sending.map(x => `<div class="muted small hist-sending">${x.done ? `History sent to <b class="mono">${esc(x.device.slice(0, 12))}</b>.` : `Sending history to <b class="mono">${esc(x.device.slice(0, 12))}</b>: ${x.sent} of ${x.total} parts.`}</div>`).join('');
+    $('#mb', w).innerHTML = reqs + sending + `<p class="muted small">Every device holds its own keys. A lost device must be revoked: it is then removed from every room and cannot read anything new.</p>` +
       ds.map(d => `<div class="person device">${icon('devices', 'big')}<div class="nm"><b class="mono">${d.device.slice(0, 12)}</b><span class="small">added ${new Date(d.created * 1000).toLocaleDateString()}${d.this ? ' · this device' : ''}</span></div>${d.revoked ? '<span class="chip">revoked</span>' : (d.this ? '' : `<button class="btn ghost slim" data-r="${d.device}">Revoke</button>`)}</div>`).join('');
     $('#mb', w).querySelectorAll('[data-r]').forEach(b => b.onclick = async () => { try { await rpc('revoke_device', { device: b.dataset.r }); render(w); } catch (e) { toast(e.message); } });
+    $('#mb', w).querySelectorAll('[data-hs]').forEach(b => b.onclick = async () => { try { await rpc('history_send', { device: b.dataset.hs }); S.last = ''; await tick(); render(w); } catch (e) { toast(e.message); } });
+    $('#mb', w).querySelectorAll('[data-hd]').forEach(b => b.onclick = async () => { try { await rpc('history_decline', { device: b.dataset.hd }); S.last = ''; await tick(); render(w); } catch (e) { toast(e.message); } });
   };
   const p = modal('Devices and recovery', `<div id="mb"></div><label for="code">Add a device</label><input type="text" id="code" placeholder="Paste the code shown on the new device (commons-pair:…)" spellcheck="false"><div class="muted small" id="chk"></div>
+    <label class="small hist-auto"><input type="checkbox" id="hist-auto" checked> Also send this device's message history to it</label>
     <label>Recovery key</label><button class="btn ghost slim" id="showkey">Show my recovery key</button><div id="key"></div>`,
-    [{ label: 'Close', primary: false }, { label: 'Approve new device', run: async w => { const r = await rpc('approve_pairing', { code: val(w, 'code') }); $('#chk', w).textContent = 'Approved. The new device will join your rooms within a few seconds. Check code: ' + r.check; return false; } }]);
+    [{ label: 'Close', primary: false }, { label: 'Approve new device', run: async w => { const r = await rpc('approve_pairing', { code: val(w, 'code'), send_history: !!$('#hist-auto', w).checked }); $('#chk', w).textContent = 'Approved. The new device will join your rooms within a few seconds. Check code: ' + r.check; return false; } }]);
+  // requests and progress change while the screen is open
+  const refresh = setInterval(() => { const w = document.querySelector('.modal'); if (!w || !$('#mb', w)) return clearInterval(refresh); if (document.activeElement && document.activeElement.id === 'code') return; render(w); }, 2500);
   setTimeout(() => { const w = document.querySelector('.modal'); if (!w) return; render(w); $('#code', w).oninput = async e => { try { const r = await rpc('pairing_preview', { code: e.target.value }); $('#chk', w).textContent = `Check code ${r.check}. It must match the new device before you approve.`; } catch (er) { $('#chk', w).textContent = ''; } }; $('#showkey', w).onclick = () => { $('#key', w).innerHTML = `<label for="keypp">Your passphrase</label><input type="password" id="keypp" autocomplete="current-password"><button class="btn ghost slim" id="keygo">Show</button><div class="muted small" id="keyerr" role="alert"></div>`; $('#keygo', w).onclick = async () => { try { $('#key', w).innerHTML = `<div class="code key-code">${esc((await rpc('recovery_key', { passphrase: $('#keypp', w).value })).key)}</div>`; } catch (er) { $('#keyerr', w).textContent = 'Wrong passphrase.'; } }; }; }, 30);
   await p;
 };
