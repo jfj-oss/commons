@@ -166,7 +166,7 @@
   const ti = (t, cls = 'mti', tag = 'h2') => `<${tag} class="${cls}" aria-label="${esc(t)}">${letters(String(t))}</${tag}>`;
 
   // ---------------------------------------------------------------- state and data (everything comes from S.snap)
-  const M = { started: false, level: 'home', cid: null, list: null, rail: false, opts: false, adm: false, busy: false, dirty: false, opening: false, sig: '', barSig: '', pal: null, closers: [] };
+  const M = { started: false, level: 'home', cid: null, list: null, rail: false, opts: false, adm: false, busy: false, dirty: false, opening: false, flying: false, flyDirty: false, sig: '', barSig: '', pal: null, closers: [] };
   const mega = document.createElement('div'); mega.id = 'mega'; mega.hidden = true; mega.setAttribute('aria-label', 'mega');
   const fxl = document.createElement('div'); fxl.id = 'mega-fx'; fxl.setAttribute('aria-hidden', 'true');
   const rail = document.createElement('nav'); rail.id = 'mega-rail'; rail.setAttribute('aria-label', 'Rooms'); rail.hidden = true;
@@ -511,6 +511,7 @@
     if (!M.opts) openRoomVia(x.gid);
     drawRail(true); killList(); applyLevel(); showOpts();
     if (calm() || !from.length) { rail.classList.remove('arriving'); return; }
+    M.flying = true;
     $('#main').classList.add('mslide'); setTimeout(() => $('#main').classList.remove('mslide'), 700);
     const runs = from.map(o => {
       const dot = $(`.mitem[data-key="${CSS.escape(o.x.key)}"]`, rail); if (!dot) return Promise.resolve();
@@ -518,7 +519,8 @@
       const d = dot.getBoundingClientRect(), r = o.r, f = fly(r, fieldOf(o.x));
       return f.animate([{ left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px', borderRadius: sq(), backgroundColor: fieldOf(o.x) }, { left: d.left + 'px', top: d.top + 'px', width: d.width + 'px', height: d.height + 'px', borderRadius: d.height > d.width ? '8px' : '50%', backgroundColor: dotOf(o.x) }], { duration: 460, delay: o.x.key === x.key ? 50 : 0, easing: 'cubic-bezier(.76,0,.18,1)', fill: 'forwards' }).finished.then(() => { dot.classList.remove('hold'); dot.style.animation = 'none'; f.remove(); });
     });
-    await Promise.all(runs); rail.classList.remove('arriving');
+    try { await Promise.all(runs); } finally { M.flying = false; if (M.flyDirty) { M.flyDirty = false; landed(); } }   // the backdrop's first picture eases in as the cards land
+    rail.classList.remove('arriving');
   });
   // and the other way: the dots open back out into the cards
   const openFromDots = guard(async () => {
@@ -1077,7 +1079,8 @@
   function bdSize() {
     const a = BD; if (!a) return; const box = a.c.parentElement, w0 = box.clientWidth, h0 = box.clientHeight; if (!w0 || !h0) return;
     const dpr = Math.min(devicePixelRatio || 1, 2), small = w0 < 560; a.cw = small ? 8 : 10; a.chh = small ? 13 : 17; a.fs = Math.round((small ? 11 : 14) * dpr); a.sw = Math.round(a.cw * dpr); a.sh = Math.round(a.chh * dpr);
-    a.cols = Math.ceil(w0 / a.cw); a.rows = Math.ceil(h0 / a.chh); a.c.width = a.cols * a.sw; a.c.height = a.rows * a.sh;
+    a.cols = Math.ceil(w0 / a.cw); a.rows = Math.ceil(h0 / a.chh); const sk = a.cols + 'x' + a.rows + 'x' + a.sw; if (sk === a.sizeKey) return; a.sizeKey = sk; if (!a.fullMs) a.fullMs = a.cols * a.rows / 1000;   // a first guess at the draw time (about 1 ms per 1000 cells), until one has been timed
+    a.c.width = a.cols * a.sw; a.c.height = a.rows * a.sh;
     a.mask = new Uint8Array(a.cols * a.rows); a.col = colFor(a.cols, H(a.gid)); bdColours(a); dirty();
   }
   // every rectangle the words occupy right now (the backdrop and the shared wall both paint around them)
@@ -1111,13 +1114,15 @@
     eachRect(hit);
     if (window.__megaWall) { __megaWall.fillMask(a.mask, a.cols, a.rows, b); __megaWall.remask(); }   // the drawing is an obstacle too, and the drawing avoids the words
   }
-  function bdDraw() {
+  /** Draws rows y0..y1 of the backdrop (all of them by default). */
+  function bdDraw(y0 = 0, y1 = Infinity) {
     const a = BD; if (!a || !a.mask || !a.at) return;
-    const { g, cols, rows, mask, sw, sh } = a; g.clearRect(0, 0, a.c.width, a.c.height);
+    const { g, cols, mask, sw, sh } = a, rows = Math.min(a.rows, y1); y0 = Math.max(0, y0); g.clearRect(0, y0 * sh, a.c.width, (rows - y0) * sh);
     if (a.dim === 0) return;
-    ST.bdDraws++;
+    if (!y0) ST.bdDraws++;
+    a.drawn = true;
     const gate = (.46 - .26 * a.heat) / Math.max(1, lvOf(a)), field = FX[a.fx], rips = a.rip, nr = rips.length;
-    for (let y = 0, i = 0; y < rows; y++) for (let x = 0; x < cols; x++, i++) {
+    for (let y = y0, i = y0 * cols; y < rows; y++) for (let x = 0; x < cols; x++, i++) {
       if (mask[i]) continue;
       let v = field(x, y, a.t, a), lit = 0;
       for (let k = 0; k < nr; k++) { const q = rips[k], d = Math.hypot(x - q.x, (y - q.y) * 1.7) - q.r; if (d * d < q.band * 5) { const e = Math.exp(-d * d / q.band) * q.s; v += e; if (e > lit) lit = e; } }
@@ -1127,13 +1132,23 @@
   }
   function bdLoop(now) {
     const a = BD; if (!a) return; a.raf = requestAnimationFrame(bdLoop);
-    if (document.hidden || still() || !a.mask || a.dim === 0) return;
+    if (document.hidden || still() || !a.mask || a.dim === 0 || M.flying) return;   // the backdrop holds still while the cards fly: its draw is the biggest thing on a 4K frame
+    if (a.band) { bdBand(a); return; }   // a picture being drawn a few rows per frame
     if (now - a.last < (a.rip.length ? 40 : 100)) return;   // 25 fps while a ripple runs, a steady 10 otherwise: a quiet room still drifts
     const dt = Math.min(.25, (now - a.last) / 1000); a.last = now;
     a.heat = Math.max(HEAT_FLOOR, a.heat * Math.pow(.5, dt / 18)); a.t += dt * (.1 + a.heat * 1.5);
     if ((a.nextRip -= dt) <= 0) { a.nextRip = 14 + Math.random() * 14; idleRipple(a); }   // now and then a gentle ring from somewhere in the room
     a.rip.forEach(q => { q.r += q.v * dt; q.s *= Math.pow(q.fade, dt); }); a.rip = a.rip.filter(q => q.s > .04 && q.r < a.cols * 1.3);
-    bdDraw();
+    a.band = { y: 0, n: Math.max(1, Math.min(12, Math.ceil((a.fullMs || 0) / BAND_MS))) }; bdBand(a);
+  }
+  // A big canvas (4K) takes ~50 ms to draw in one go, which is three dropped frames every tenth of a second. It is drawn in bands of rows
+  // instead, a band per frame, each about BAND_MS: the same picture a few frames later, and no frame holds the page for long.
+  const BAND_MS = 10;
+  function bdBand(a) {
+    const rows = Math.ceil(a.rows / a.band.n), y0 = a.band.y, t0 = performance.now();
+    bdDraw(y0, y0 + rows); a.band.y = y0 + rows;
+    a.bandMs = (a.bandMs || 0) + performance.now() - t0;
+    if (a.band.y >= a.rows) { a.fullMs = a.fullMs ? a.fullMs * .5 + a.bandMs * .5 : a.bandMs; a.bandMs = 0; a.band = null; }
   }
   function bdStart(item) {
     bdStop();
@@ -1199,9 +1214,17 @@
     for (const [el, d] of ops) { el.style.transform = d ? `scale(${(1 - .2 * d).toFixed(3)})` : ''; el.style.opacity = d ? (1 - .55 * d).toFixed(3) : ''; if (d) touched.add(el); else touched.delete(el); }
     touched.forEach(e => { if (!seen.has(e)) { e.style.transform = ''; e.style.opacity = ''; touched.delete(e); } });   // scrolled far away: back to normal
   }
+  // The cards have landed: look at the page once (the words' rectangles), then the backdrop paints itself in bands.
+  function landed() {
+    if (!roomOn()) return;
+    if (!BD || BD.dim === 0 || still()) { dirty(false); return; }
+    if (!BD.drawn) fade(BD.c);   // its first picture eases in
+    focusFrame(); bdMask(); BD.last = 0;
+  }
   let flushRaf = 0, flushT = 0;
   function dirty(trail) {
-    if (!flushRaf) flushRaf = requestAnimationFrame(() => { flushRaf = 0; if (!roomOn()) return; focusFrame(); if (BD) { if (BD.dim === 0) { if (window.__megaWall) __megaWall.remask(); } else { bdMask(); bdDraw(); } } });   // drawn in the same frame as the move, so the space around the words keeps up with them
+    if (!flushRaf) flushRaf = requestAnimationFrame(() => { flushRaf = 0; if (!roomOn()) return; if (M.flying) { M.flyDirty = true; return; }   // mid-flight: one look at the page when it lands
+      focusFrame(); if (BD) { if (BD.dim === 0) { if (window.__megaWall) __megaWall.remask(); } else { bdMask(); bdDraw(); } } });   // drawn in the same frame as the move, so the space around the words keeps up with them
     if (trail !== false) { clearTimeout(flushT); flushT = setTimeout(() => dirty(false), 300); }   // the rows ease into their new size, so look again once they have
   }
   document.addEventListener('selectionchange', () => { if (roomOn() && !atEnd($('#stream'))) dirty(false); });

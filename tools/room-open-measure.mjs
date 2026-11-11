@@ -102,11 +102,12 @@ class Cdp {
   static async open(url) { const ws = new WebSocket(url); await new Promise(r => ws.onopen = r); return new Cdp(ws); }
   send(method, params = {}) { return new Promise(res => { const id = ++this.id; this.cb.set(id, res); this.ws.send(JSON.stringify({ id, method, params })); }); }
   async ev(expr) { const r = await this.send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 400)); return r.result.result.value; }
-  async waitFor(expr, ms = 30000) { const t = Date.now(); while (Date.now() - t < ms) { if (await this.ev(expr).catch(() => false)) return; await sleep(200); } throw new Error('timeout waiting for ' + expr); }
+  async waitFor(expr, ms = 30000) { const t = Date.now(); while (Date.now() - t < ms) { if (await this.ev(expr).catch(() => false)) return; await sleep(200); } throw new Error('timeout waiting for ' + expr + ' state: ' + await this.ev(`JSON.stringify({ level: window.__mega && __mega.level, n: document.querySelectorAll('.mcard').length, settled: !!document.querySelector('.mslot.settled'), cur: window.__mega && __mega.list && __mega.list.item && [__mega.list.item.cid, __mega.list.item.gid, __mega.list.item.kind, __mega.list.settled] })`).catch(e => String(e))); }
 }
 const browser = await Cdp.open(ver.webSocketDebuggerUrl);
 const tab = (await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`)).json()).find(t => t.type === 'page');
 const P = await Cdp.open(tab.webSocketDebuggerUrl);
+P.on['Runtime.exceptionThrown'] = p => console.log('PAGE ERROR:', JSON.stringify(p.exceptionDetails).slice(0, 500));
 await P.send('Page.enable'); await P.send('Runtime.enable');
 await P.send('Page.addScriptToEvaluateOnNewDocument', { source: "try { localStorage.setItem('commons.tour', '1'); } catch {}" });
 
@@ -131,13 +132,15 @@ async function toRoomCards(w, h) {
   await sleep(1500);
   // home -> the community: pick the Book club card by scrolling it into focus (keys), then a real click on it
   await P.ev(`(() => { const L = __mega.list; const i = L.items.findIndex(x => x.cid === ${JSON.stringify(main.cid)}); L.go(i, true); return i; })()`).catch(() => { });
-  await sleep(900);
+  await P.waitFor(`!!document.querySelector('.mslot.settled') && __mega.list.settled && __mega.list.item.cid === ${JSON.stringify(main.cid)}`);
+  await sleep(500);
   const c = await centre('.mslot.settled .mcard'); await click(c.x, c.y);
   await P.waitFor(`__mega.level === 'server' && document.querySelectorAll('.mcard').length >= 3 && !!document.querySelector('.mslot.settled')`);
   await sleep(1800);
   // make the text room with the history the focused card
   await P.ev(`(() => { const L = __mega.list; const i = L.items.findIndex(x => x.gid === ${JSON.stringify(main.gid)} && x.kind === 'text'); L.go(i, true); return i; })()`);
-  await sleep(1500);
+  await P.waitFor(`!!document.querySelector('.mslot.settled') && __mega.list.settled && __mega.list.item.gid === ${JSON.stringify(main.gid)}`);
+  await sleep(1200);
   return await P.ev(`JSON.stringify({ cur: __mega.list.item && __mega.list.item.gid, want: ${JSON.stringify(main.gid)}, level: __mega.level })`);
 }
 
