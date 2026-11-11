@@ -275,7 +275,8 @@
     const size = () => { const r = img.getBoundingClientRect(); return { w: r.width / Z.s, h: r.height / Z.s }; };
     const clamp = () => { const { w, h } = size(); Object.assign(Z, T.clampPan(Z.tx, Z.ty, Z.s, w, h, vw(), vh())); };
     const show = (i, from) => {
-      idx = i; img.src = pics[i].src; img.alt = pics[i].alt || ''; $('.mv-n', v).textContent = pics.length > 1 ? `${i + 1} / ${pics.length}` : ''; $('.mv-t', v).textContent = pics[i].alt || '';
+      // the name is the caption (and the dialog's label), not the picture's alt: Chromium painted the alt text over the stage as well
+      idx = i; img.src = pics[i].src; v.setAttribute('aria-label', pics[i].alt ? 'Picture: ' + pics[i].alt : 'Picture'); $('.mv-n', v).textContent = pics.length > 1 ? `${i + 1} / ${pics.length}` : ''; $('.mv-t', v).textContent = pics[i].alt || '';
       Z.s = 1; Z.tx = 0; Z.ty = 0; apply(); v.style.setProperty('--mv-a', '1');
       if (from && !calm()) anim(img, [{ transform: `translateX(${from}px)`, opacity: .4 }, { transform: 'none', opacity: 1 }], 220, 'cubic-bezier(.2, .8, .3, 1)');
       const n = pics[i + 1], p = pics[i - 1]; if (n) new Image().src = n.src; if (p) new Image().src = p.src;
