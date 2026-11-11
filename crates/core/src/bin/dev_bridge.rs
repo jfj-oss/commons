@@ -178,6 +178,12 @@ fn request(s: &mut TcpStream, r: &mut BufReader<TcpStream>, app: &App, ui: &std:
         let nonce = query.split('&').find_map(|kv| kv.strip_prefix("c=")).unwrap_or("");
         return reply(s, 200, "application/json", auth.hello(nonce).to_string().as_bytes(), keep);
     }
+    if method == "GET" && route == "/spotify/callback" {
+        // Spotify sends the browser back here after the login. The page cannot add the secret to a navigation, so the
+        // unguessable `state` of the login this device started is the check (api::spotify_callback).
+        let (code, html) = app.spotify_callback(query);
+        return reply(s, code, "text/html; charset=utf-8", html.as_bytes(), false);
+    }
     if method == "GET" && route == "/mode" {
         let body = serde_json::json!({"secret": !auth.is_open(), "packaged": updatable(ui).is_some(), "launcher_updated": LAUNCHER_REFRESHED.load(Ordering::SeqCst)});
         return reply(s, 200, "application/json", body.to_string().as_bytes(), keep);

@@ -52,6 +52,8 @@ pub struct App {
     me: std::sync::Weak<App>,
     /// Notification rules and hand-over between the page and the background part (notify.rs).
     notify: Arc<crate::notify::Hub>,
+    /// Listening along with a friend's Spotify song (listen.rs).
+    pub(crate) along: crate::listen::Along,
 }
 
 /// A running call asks the core at least every few seconds (call.js: the key poll every 1.5 s, the game-key heartbeat
@@ -60,7 +62,7 @@ pub const CALL_QUIET: Duration = Duration::from_secs(20);
 
 /// How often the core looks at rune while sharing is on. This is not the send rate: a shared status goes out only
 /// when it changes, plus a renewal every `LISTENING_REFRESH_SECS` while it keeps playing.
-const RUNE_POLL_SECS: u64 = 15;
+const RUNE_POLL_SECS: u64 = 4;
 
 /// How long the live poller lets the relay hold a poll for news (the relay caps it at 25 s). A room joined meanwhile is
 /// not in the poll in flight; the ordinary round polls such a room until the next poll covers it (round.rs).
@@ -138,7 +140,7 @@ impl App {
     pub fn with_kdf(dir: PathBuf, default_relay: &str, kdf: KdfParams) -> Arc<App> {
         let notify = Arc::new(crate::notify::Hub::new(Some(dir.clone())));
         Arc::new_cyclic(|me| App {
-            notify, me: me.clone(), call_seen: Mutex::new(None), pw_link: Mutex::new(None), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None),
+            along: Default::default(), notify, me: me.clone(), call_seen: Mutex::new(None), pw_link: Mutex::new(None), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None),
             wake: (Mutex::new(false), Condvar::new()), live_wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), changes: AtomicU64::new(0), windows: Mutex::new(HashMap::new()), files: Mutex::new(vec![]),
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
             bridge: Mutex::new(None),
@@ -185,7 +187,7 @@ impl App {
     }
     /// A panic in one call must not take every later call down with it.
     #[track_caller]
-    fn lock(&self) -> Held<'_> { self.lock_at(std::panic::Location::caller()) }
+    pub(crate) fn lock(&self) -> Held<'_> { self.lock_at(std::panic::Location::caller()) }
     fn lock_at(&self, who: &'static std::panic::Location<'static>) -> Held<'_> {
         let t = Instant::now();
         let g = self.client.lock().unwrap_or_else(|p| p.into_inner());
@@ -279,6 +281,13 @@ impl App {
             let g = match app.client.try_lock() { Ok(g) => g, Err(TryLockError::Poisoned(p)) => p.into_inner(), Err(TryLockError::WouldBlock) => continue };
             if let Some(c) = g.as_ref() { app.notify.tick(c); }
         });
+        // Listening along: its own thread too, because every step is a network call to rune or Spotify.
+        let app = self.clone();
+        std::thread::spawn(move || loop {
+            if *app.stop.lock().unwrap() { break; }
+            app.along_tick();
+            std::thread::sleep(Duration::from_millis(1000));
+        });
         // Its own thread, because asking rune is a network wait that must not hold up the relay loop or the UI.
         let app = self.clone();
         std::thread::spawn(move || {
@@ -329,6 +338,7 @@ impl App {
 
     pub fn call(&self, method: &str, a: Value) -> R {
         if method.starts_with("notify_") { return self.notify.call(method, &a); }
+        if method.starts_with("listen_") || method.starts_with("spotify_") { return self.along_rpc(method, &a); }
         let in_call = matches!(method, "call_state" | "call_token" | "game_mute_wait");
         if in_call { self.saw_call(); }
         let r = self.dispatch(method, a);
@@ -338,7 +348,7 @@ impl App {
     }
 
     #[track_caller]
-    fn with<T>(&self, f: impl FnOnce(&mut Client) -> Result<T, String>) -> Result<T, String> {
+    pub(crate) fn with<T>(&self, f: impl FnOnce(&mut Client) -> Result<T, String>) -> Result<T, String> {
         let mut g = self.lock_at(std::panic::Location::caller());
         match g.as_mut() { Some(c) => f(c), None => Err("locked".into()) }
     }
@@ -850,7 +860,7 @@ impl App {
             "delete_channel" => self.with(|c| c.delete_channel(&s(&a, "cid"), &s(&a, "room")).map(|_| json!({})).map_err(e)),
             "unban" => self.with(|c| c.unban(&s(&a, "cid"), &s(&a, "account")).map(|_| json!({})).map_err(e)),
             "revoke_invite" => self.with(|c| c.revoke_invite(&s(&a, "cid"), &s(&a, "id")).map(|_| json!({})).map_err(e)),
-            "members" => { let cid = s(&a, "cid"); self.read(format!("members/{cid}"), |c| json!(c.members(&cid).into_iter().map(|m| json!({"account": m.account, "name": m.name, "role": m.role.name(), "devices": m.devices, "verified": m.verified, "me": m.is_me, "tag": m.tag, "same_name": m.same_name, "listening": m.listening.map(|l| json!({"title": l.title, "artist": l.artist}))})).collect::<Vec<_>>())) }
+            "members" => { let cid = s(&a, "cid"); self.read(format!("members/{cid}"), |c| json!(c.members(&cid).into_iter().map(|m| json!({"account": m.account, "name": m.name, "role": m.role.name(), "devices": m.devices, "verified": m.verified, "me": m.is_me, "tag": m.tag, "same_name": m.same_name, "listening": m.listening.map(|l| listening_json(&l))})).collect::<Vec<_>>())) }
             "safety" => self.with(|c| {
                 let acct = s(&a, "account");
                 let num = safety_number(&c.my_account(), &acct);
@@ -1089,12 +1099,20 @@ fn snapshot(c: &Client) -> Value {
         "channels": c.channels_of(&d.cid).into_iter().map(|ch| json!({"gid": ch.gid, "name": ch.name, "kind": ch.kind, "joined": ch.joined, "unread": 0})).collect::<Vec<_>>()})).collect();
     let direct_refused: Vec<Value> = c.st.direct_refused.iter().filter(|a| !a.starts_with("c:")).map(|a| json!({"account": a, "name": c.display_name(a)})).collect();
     let net = match c.net.state { NetState::Connecting => "connecting", NetState::Online => "online", NetState::Offline => "offline" };
-    let listening = c.listening_of(&me).map(|l| json!({"title": l.title, "artist": l.artist}));
+    let listening = c.listening_of(&me).map(listening_json);
     json!({"me": {"account": me, "name": c.st.name, "device": c.my_device(), "recovery_unsaved": c.st.recovery_unsaved}, "relay": c.st.relay, "relay_secret": !c.st.relay_invite.is_empty(), "communities": comms, "direct": direct, "direct_refused": direct_refused, "joining": joining, "refused": refused,
            "typing_enabled": c.st.typing_enabled, "share_listening": c.st.share_listening, "rune_url": c.rune_url(), "listening": listening,
            "outbox": c.st.outbox.len(), "problems": problems, "net": net, "net_detail": c.net.detail, "revoked": c.st.self_revoked,
            "download_dir": c.download_dir().display().to_string(), "history": c.history_status(),
            "mobile": cfg!(any(target_os = "ios", target_os = "android")), "version": c.activity})
+}
+
+/// A shared status for the page. A Spotify song also says which one and whether it is paused, so the page can offer to join.
+pub fn listening_json(l: &crate::envelope::NowPlaying) -> Value {
+    match &l.spotify {
+        Some(sp) => json!({"title": l.title, "artist": l.artist, "spotify": {"id": sp.id, "paused": sp.paused, "link": crate::spotify::open_link(&sp.id)}}),
+        None => json!({"title": l.title, "artist": l.artist}),
+    }
 }
 
 /// A web address from a message that may be handed to the system browser: http or https, a host, and only the characters

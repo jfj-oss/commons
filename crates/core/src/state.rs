@@ -43,6 +43,11 @@ pub struct State {
     pub listening_sent: Option<NowPlaying>,
     #[serde(default)]
     pub listening_sent_ts: u64,
+    /// The Spotify app (client id) the person made for mega, and their login on this device. Both stay here.
+    #[serde(default)]
+    pub spotify_client_id: String,
+    #[serde(default)]
+    pub spotify: Option<SpotifyAuth>,
     pub outbox: Vec<OutItem>,
     pub welcome_out: Vec<WelcomeOut>,
     pub acl_jobs: Vec<AclJob>,
@@ -231,7 +236,17 @@ pub struct Profile {
 /// A status someone shared, and the local time it arrived: a sender that goes quiet (playback stops, the app
 /// closes) stops being shown by itself.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct Heard { pub what: NowPlaying, pub ts: u64 }
+pub struct Heard {
+    pub what: NowPlaying, pub ts: u64,
+    /// Local clock (ms) when this exact sample arrived. Listening along extrapolates from it; a re-sent copy of the same
+    /// sample (same `at_ms`) keeps the first arrival time.
+    #[serde(default)] pub rx_ms: u64,
+}
+
+/// This device's Spotify login for listening along. Lives only in the encrypted local state: never in a message, never on
+/// the relay.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct SpotifyAuth { pub access: String, pub refresh: String, pub expires_at: u64 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Notice { pub ts: u64, pub kind: String, pub text: String }

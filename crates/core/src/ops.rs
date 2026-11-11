@@ -1350,14 +1350,29 @@ impl Client {
     /// the background poll calls this every few seconds, so nothing may be sent per poll.
     pub fn update_listening(&mut self, current: Option<NowPlaying>) -> Result<()> {
         if !self.st.share_listening { return Ok(()); }
-        let current = current.filter(|n| !n.title.is_empty());
+        let mut current = current.filter(|n| !n.title.is_empty());
+        // A paused Spotify song is shown only as the end of a song that was playing, and only for a couple of minutes: the
+        // pause is news for someone listening along, not a reason to claim "listening to" for an hour.
+        if let Some(sp) = current.as_ref().and_then(|n| n.spotify.as_ref()).filter(|s| s.paused) {
+            let prev = self.st.listening_sent.as_ref().and_then(|l| l.spotify.as_ref()).filter(|p| p.id == sp.id);
+            let keep = match prev { Some(p) if !p.paused => true, Some(_) => now_secs() < self.st.listening_sent_ts.saturating_add(PAUSED_SHOW_SECS), None => false };
+            if !keep { current = None; }
+        }
         let me = self.my_account();
         match &current {
-            Some(n) => { self.st.listening.insert(me, Heard { what: n.clone(), ts: now_secs() }); }
+            Some(n) => {
+                let rx_ms = crate::spotify::now_ms();
+                self.st.listening.insert(me, Heard { what: n.clone(), ts: now_secs(), rx_ms });
+            }
             None => { self.st.listening.remove(&me); }
         }
-        let changed = current.as_ref() != self.st.listening_sent.as_ref();
-        let renew = current.is_some() && now_secs() >= self.st.listening_sent_ts.saturating_add(LISTENING_REFRESH_SECS);
+        let changed = match (&current, &self.st.listening_sent) {
+            (Some(c), Some(p)) => c.is_news_after(p),
+            (None, None) => false,
+            _ => true,
+        };
+        let paused = current.as_ref().and_then(|n| n.spotify.as_ref()).is_some_and(|s| s.paused);
+        let renew = current.is_some() && !paused && now_secs() >= self.st.listening_sent_ts.saturating_add(LISTENING_REFRESH_SECS);
         if changed || renew { self.send_listening(current); }
         self.save()
     }
@@ -1381,6 +1396,10 @@ impl Client {
     /// What this account is listening to, if it was heard recently enough to still be true.
     pub fn listening_of(&self, acct: &str) -> Option<&NowPlaying> {
         self.st.listening.get(acct).filter(|h| now_secs() < h.ts.saturating_add(LISTENING_TTL_SECS)).map(|h| &h.what)
+    }
+    /// A friend's Spotify report and when it reached this device, if it is recent and names a Spotify song.
+    pub fn listening_sample(&self, acct: &str) -> Option<(NowPlaying, u64)> {
+        self.st.listening.get(acct).filter(|h| now_secs() < h.ts.saturating_add(LISTENING_TTL_SECS)).map(|h| (h.what.clone(), h.rx_ms))
     }
     pub fn typing_now(&self, gid: &str) -> Vec<String> {
         let now = now_secs();
