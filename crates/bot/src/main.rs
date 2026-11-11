@@ -4,7 +4,8 @@
 //!   megatron-bot run                  serve the rooms it is in (what the systemd user service runs)
 //!
 //! Data lives in ~/.local/share/megatron-bot (override: MEGATRON_BOT_DATA). The account's passphrase is generated on
-//! first use and kept in that folder, readable by its owner only, so the unattended service can unlock it.
+//! first use and kept in that folder, readable by its owner only, so the unattended service can unlock it. The per-room
+//! settings people set in chat (DeepSeek, Studio, quiet, the daily bulletin's time) are in bot-state.json there too.
 use commons_bot::assistant::{config::AssistConfig, mcp as assist_mcp, tools::RealSys, Assistant};
 use commons_bot::bot::{AvatarOutcome, Bot, Config, Job, JobKind, SharedClient, DEFAULT_NAME};
 use commons_bot::gpu::{GpuGate, Pause};
@@ -115,7 +116,9 @@ fn usage() -> ! {
         \n  MEGATRON_BOT_WALL_PERCENT (default 3), MEGATRON_BOT_WALL_DAILY (default 2 per room),\
         \n  MEGATRON_BOT_AVATAR_DAILY (1 = a new self-designed profile picture each day, default off), MEGATRON_BOT_AVATAR_HOUR (default 6),\
         \n  MEGATRON_BOT_AVATAR_ANNOUNCE (default 1: one line about it in rooms where he may join in),\
-        \n  MEGATRON_BOT_MAX_PER_MINUTE, MEGATRON_BOT_MAX_REPLY_CHARS,\n  MEGATRON_BOT_OWNER_ACCOUNT (hex id; switches on the assistant room), MEGATRON_BOT_ASSIST=0 (off), MEGATRON_BOT_ASSIST_ROOTS,\n  MEGATRON_BOT_ASSIST_UNITS, MEGATRON_BOT_ASSIST_CLAUDE, MEGATRON_BOT_RUNE_URL, MEGATRON_BOT_ASSIST_DOMAINS");
+        \n  MEGATRON_BOT_MAX_PER_MINUTE, MEGATRON_BOT_MAX_REPLY_CHARS,\n  MEGATRON_BOT_OWNER_ACCOUNT (hex id; switches on the assistant room), MEGATRON_BOT_ASSIST=0 (off), MEGATRON_BOT_ASSIST_ROOTS,\n  MEGATRON_BOT_ASSIST_UNITS, MEGATRON_BOT_ASSIST_CLAUDE, MEGATRON_BOT_RUNE_URL, MEGATRON_BOT_ASSIST_DOMAINS\n\n\
+        In chat (owner or admin): \"@{DEFAULT_NAME} bulletin here\", \"@{DEFAULT_NAME} bulletin at 8pm\" (or 20:00), \"@{DEFAULT_NAME} stop bulletin\": \
+        a daily Babylon bulletin in that room (default 09:00 local), kept in bot-state.json.");
     std::process::exit(2)
 }
 
@@ -205,10 +208,12 @@ fn run() -> Result<(), String> {
     let deepseek = DeepSeek::new(&ds_url, deepseek_key_file(), &ds_model, timeout);
     let search_url = env_string("MEGATRON_BOT_SEARCH_URL").unwrap_or_else(|| DEFAULT_SEARCH_URL.into());
     // MEGATRON_BOT_SEARXNG_URL (e.g. http://127.0.0.1:8092): a local SearXNG instance instead of DuckDuckGo's HTML page.
-    let searcher: Arc<dyn WebSearch> = match env_string("MEGATRON_BOT_SEARXNG_URL") {
+    let engine: Arc<dyn WebSearch> = match env_string("MEGATRON_BOT_SEARXNG_URL") {
         Some(sx) => { eprintln!("[bot] web search: SearXNG at {sx}"); Arc::new(SearXng::new(&sx, SEARCH_TIMEOUT)) }
         None => Arc::new(DuckDuckGo::new(&search_url, SEARCH_TIMEOUT)),
     };
+    // The daily bulletin also reads a fixed list of news feeds (bulletin::FEEDS); chat questions only ever search.
+    let searcher: Arc<dyn WebSearch> = Arc::new(commons_bot::search::WithFeeds::new(engine, SEARCH_TIMEOUT));
     let studio_url = env_string("MEGATRON_BOT_STUDIO_URL").unwrap_or_else(|| DEFAULT_STUDIO_URL.into());
     let studio: Arc<dyn StudioApi> = Arc::new(HttpStudio::new(&studio_url, &studio_token_file()));
     let gate = Arc::new(GpuGate::from_env());
@@ -309,7 +314,7 @@ fn serve(client: Client, bot: Arc<Bot>) {
                 continue;
             }
             // Unasked: on its own thread, so a song being made for fun never holds up an answer to a real question.
-            if matches!(job.kind, JobKind::Chime | JobKind::Wall) {
+            if matches!(job.kind, JobKind::Chime | JobKind::Wall | JobKind::Bulletin) {
                 let bot = bot.clone();
                 let shared = shared.clone();
                 std::thread::spawn(move || {

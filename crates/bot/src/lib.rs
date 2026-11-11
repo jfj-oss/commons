@@ -2,6 +2,7 @@
 pub mod avatar;
 pub mod assistant;
 pub mod bot;
+pub mod bulletin;
 pub mod gpu;
 pub mod llm;
 pub mod safety;

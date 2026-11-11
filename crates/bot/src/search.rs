@@ -27,7 +27,128 @@ pub struct SearchResult {
 /// Anything that can answer a search. The bot's tool executor knows nothing else.
 pub trait WebSearch: Send + Sync {
     fn search(&self, query: &str) -> Result<Vec<SearchResult>, String>;
+    /// The same search, preferring pages from the last day when the engine can be asked for that (the daily bulletin wants
+    /// today's news). A backend without the option simply searches.
+    fn search_recent(&self, query: &str) -> Result<Vec<SearchResult>, String> { self.search(query) }
+    /// The newest items of one of the fixed news feeds in [`crate::bulletin::FEEDS`] (the daily bulletin's first source:
+    /// search engines answer "politics news" with section front pages, a feed gives real articles). Never reachable from a
+    /// model's tool call, and only those fixed addresses: anything else is refused. Backends without feeds say so.
+    fn feed(&self, _url: &str) -> Result<Vec<SearchResult>, String> { Err("no news feeds here".into()) }
 }
+
+/// A search backend plus the bulletin's news feeds, fetched over HTTPS from the fixed list only, with no redirects (a feed
+/// cannot send the bot to another address, local ones included).
+pub struct WithFeeds {
+    inner: std::sync::Arc<dyn WebSearch>,
+    timeout: Duration,
+}
+
+impl WithFeeds {
+    pub fn new(inner: std::sync::Arc<dyn WebSearch>, timeout: Duration) -> WithFeeds { WithFeeds { inner, timeout } }
+}
+
+impl WebSearch for WithFeeds {
+    fn search(&self, query: &str) -> Result<Vec<SearchResult>, String> { self.inner.search(query) }
+    fn search_recent(&self, query: &str) -> Result<Vec<SearchResult>, String> { self.inner.search_recent(query) }
+    fn feed(&self, url: &str) -> Result<Vec<SearchResult>, String> {
+        if !crate::bulletin::FEEDS.iter().any(|(_, urls)| urls.contains(&url)) { return Err("not one of the bulletin's feeds".into()); }
+        let r = ureq::AgentBuilder::new().timeout(self.timeout).redirects(0).build().get(url)
+            .set("User-Agent", "megatron-bot/1 (Oracle news reader)")
+            .call()
+            .map_err(|e| format!("the feed could not be reached: {e}"))?;
+        let mut body = String::new();
+        use std::io::Read;
+        r.into_reader().take(4 * 1024 * 1024).read_to_string(&mut body).map_err(|e| format!("the feed could not be read: {e}"))?;
+        Ok(parse_feed(&body, 30))
+    }
+}
+
+/// The items of an RSS 2.0 (`<item>`) or Atom (`<entry>`) feed, in order, at most `max`: title, link and a plain-text
+/// summary (tags, CDATA and entities taken out). Entries without a title or an http(s) link are skipped.
+pub fn parse_feed(xml: &str, max: usize) -> Vec<SearchResult> {
+    let mut out = Vec::new();
+    for tag in ["item", "entry"] {
+        let mut rest = xml;
+        while let Some(start) = find_open(rest, tag) {
+            let body_from = &rest[start..];
+            let Some(open_end) = body_from.find('>') else { break };
+            let close = format!("</{tag}>");
+            let Some(end) = body_from.find(&close) else { break };
+            let block = &body_from[open_end + 1..end];
+            rest = &body_from[end + close.len()..];
+            let title = feed_text(inner(block, "title").unwrap_or(""));
+            let link = match inner(block, "link") {
+                Some(l) if !feed_text(l).is_empty() => feed_text(l),
+                _ => attr_href(block).unwrap_or_default(),
+            };
+            let summary = inner(block, "description").or_else(|| inner(block, "summary")).or_else(|| inner(block, "content")).unwrap_or("");
+            if title.is_empty() || !(link.starts_with("https://") || link.starts_with("http://")) { continue; }
+            let snippet: String = feed_text(summary).chars().take(400).collect();
+            out.push(SearchResult { title, url: link, snippet });
+            if out.len() >= max { return out; }
+        }
+        if !out.is_empty() { break; }
+    }
+    out
+}
+
+/// Where `<tag>` or `<tag attr…>` opens (not `<tagname>`).
+fn find_open(s: &str, tag: &str) -> Option<usize> {
+    let needle = format!("<{tag}");
+    let mut from = 0;
+    while let Some(i) = s[from..].find(&needle) {
+        let at = from + i;
+        match s[at + needle.len()..].chars().next() {
+            Some('>') | Some(' ') | Some('\n') | Some('\t') | Some('\r') | Some('/') => return Some(at),
+            _ => from = at + needle.len(),
+        }
+    }
+    None
+}
+
+/// The raw contents of the first `<tag>…</tag>` in `block` (an empty-element `<tag/>` gives none).
+fn inner<'a>(block: &'a str, tag: &str) -> Option<&'a str> {
+    let start = find_open(block, tag)?;
+    let after = &block[start..];
+    let open_end = after.find('>')?;
+    if after[..open_end].ends_with('/') { return None; }
+    let close = format!("</{tag}>");
+    let end = after.find(&close)?;
+    (open_end < end).then(|| &after[open_end + 1..end])
+}
+
+/// Atom's `<link href="…">` (the alternate one when several are given).
+fn attr_href(block: &str) -> Option<String> {
+    let mut rest = block;
+    let mut first: Option<String> = None;
+    while let Some(i) = find_open(rest, "link") {
+        let el = &rest[i..];
+        let end = el.find('>')?;
+        let tag = &el[..end];
+        let href = tag.split("href=\"").nth(1).and_then(|h| h.split('"').next()).map(|h| decode_entities(h));
+        if let Some(h) = href {
+            if tag.contains("rel=\"alternate\"") || !tag.contains("rel=") { return Some(h); }
+            first.get_or_insert(h);
+        }
+        rest = &el[end..];
+    }
+    first
+}
+
+/// Plain text: CDATA unwrapped, tags removed, entities decoded, whitespace collapsed.
+fn feed_text(raw: &str) -> String {
+    let s = raw.trim();
+    let s = s.strip_prefix("<![CDATA[").and_then(|x| x.strip_suffix("]]>")).unwrap_or(s);
+    // Entity-escaped HTML inside RSS descriptions ("&lt;p&gt;") is decoded first, then the tags it makes are dropped.
+    let decoded = decode_entities(s);
+    let mut plain = String::with_capacity(decoded.len());
+    let mut in_tag = false;
+    for c in decoded.chars() {
+        match c { '<' => in_tag = true, '>' if in_tag => { in_tag = false; plain.push(' '); } _ if !in_tag => plain.push(c), _ => {} }
+    }
+    one_line(&decode_entities(&plain)).replace(" .", ".").replace(" ,", ",")
+}
+
 
 /// The complete tool list offered to a model. Exactly one entry, by construction.
 pub fn tools() -> Vec<ToolSpec> {
@@ -108,14 +229,15 @@ impl DuckDuckGo {
     }
 }
 
-impl WebSearch for DuckDuckGo {
-    fn search(&self, query: &str) -> Result<Vec<SearchResult>, String> {
+impl DuckDuckGo {
+    /// One request to the HTML endpoint; `extra` is appended to the query string (DuckDuckGo's `df=d` asks for the past day).
+    fn fetch(&self, query: &str, extra: &str) -> Result<Vec<SearchResult>, String> {
         let query: String = query.trim().chars().take(self.max_query_chars).collect();
         if query.is_empty() { return Err("the search query is empty".into()); }
         if !self.limit.lock().unwrap_or_else(|p| p.into_inner()).allow() {
             return Err(format!("the web search limit ({MAX_SEARCHES_PER_MINUTE} a minute) is used up; answer from what you have"));
         }
-        let url = format!("{}/html/?q={}", self.base, url_encode(&query));
+        let url = format!("{}/html/?q={}{extra}", self.base, url_encode(&query));
         let r = ureq::AgentBuilder::new()
             .timeout(self.timeout)
             .build()
@@ -128,6 +250,18 @@ impl WebSearch for DuckDuckGo {
         // DuckDuckGo answers automated clients with a challenge page instead of results: say so, rather than "nothing found".
         if found.is_empty() && html.contains("anomaly") { return Err("the search engine refused the search (it asks for a human check); answer from what you know and say you could not look it up".into()); }
         Ok(found)
+    }
+}
+
+impl WebSearch for DuckDuckGo {
+    fn search(&self, query: &str) -> Result<Vec<SearchResult>, String> { self.fetch(query, "") }
+
+    /// Past-day results first; when that filter gives nothing (the engine may ignore or refuse it), the plain search.
+    fn search_recent(&self, query: &str) -> Result<Vec<SearchResult>, String> {
+        match self.fetch(query, "&df=d") {
+            Ok(results) if !results.is_empty() => Ok(results),
+            _ => self.fetch(query, ""),
+        }
     }
 }
 
@@ -147,20 +281,33 @@ impl SearXng {
     }
 }
 
-impl WebSearch for SearXng {
-    fn search(&self, query: &str) -> Result<Vec<SearchResult>, String> {
+impl SearXng {
+    /// One JSON request; `extra` is appended to the query string (`&time_range=day` asks for the past day).
+    fn fetch(&self, query: &str, extra: &str) -> Result<Vec<SearchResult>, String> {
         let query: String = query.trim().chars().take(self.max_query_chars).collect();
         if query.is_empty() { return Err("the search query is empty".into()); }
         if !self.limit.lock().unwrap_or_else(|p| p.into_inner()).allow() {
             return Err(format!("the web search limit ({MAX_SEARCHES_PER_MINUTE} a minute) is used up; answer from what you have"));
         }
-        let url = format!("{}/search?q={}&format=json&safesearch=1", self.base, url_encode(&query));
+        let url = format!("{}/search?q={}&format=json&safesearch=1{extra}", self.base, url_encode(&query));
         let r = ureq::AgentBuilder::new().timeout(self.timeout).build().get(&url)
             .set("User-Agent", "megatron-bot/1 (Oracle, local SearXNG)")
             .call()
             .map_err(|e| format!("the search engine could not be reached: {e}"))?;
         let body = r.into_string().map_err(|e| format!("the search results could not be read: {e}"))?;
         parse_searxng(&body, self.max_results)
+    }
+}
+
+impl WebSearch for SearXng {
+    fn search(&self, query: &str) -> Result<Vec<SearchResult>, String> { self.fetch(query, "") }
+
+    /// Past-day results first; when that gives nothing, the plain search.
+    fn search_recent(&self, query: &str) -> Result<Vec<SearchResult>, String> {
+        match self.fetch(query, "&time_range=day") {
+            Ok(results) if !results.is_empty() => Ok(results),
+            _ => self.fetch(query, ""),
+        }
     }
 }
 
@@ -367,6 +514,45 @@ fn url_encode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rss_and_atom_feeds_are_read_in_order_and_cleaned() {
+        let rss = r#"<?xml version="1.0"?><rss><channel><title>BBC News</title><link>https://www.bbc.co.uk/news</link>
+            <item><title><![CDATA[Senate passes budget &amp; more]]></title><link>https://www.bbc.co.uk/news/articles/c1abc</link>
+              <description><![CDATA[<p>The vote was <b>close</b>.</p>]]></description></item>
+            <item><title>Escaped HTML</title><link>https://example.com/news/escaped-html</link>
+              <description>&lt;p&gt;Bank fined &amp;#163;5m&lt;/p&gt;</description></item>
+            <item><title></title><link>https://example.com/no-title</link></item>
+            <item><title>Bad link</title><link>javascript:alert(1)</link></item>
+            <itemized>not an item</itemized>
+            </channel></rss>"#;
+        let r = parse_feed(rss, 10);
+        assert_eq!(r.len(), 2, "{r:#?}");
+        assert_eq!(r[0].title, "Senate passes budget & more");
+        assert_eq!(r[0].url, "https://www.bbc.co.uk/news/articles/c1abc");
+        assert_eq!(r[0].snippet, "The vote was close.");
+        assert_eq!(r[1].snippet, "Bank fined £5m");
+        assert_eq!(parse_feed(rss, 1).len(), 1);
+        let atom = r#"<feed xmlns="http://www.w3.org/2005/Atom"><title>Ars</title>
+            <entry><title type="html">Chips &amp; spies</title><link rel="alternate" href="https://arstechnica.com/2026/11/chips-spies/"/>
+              <summary>Short one.</summary></entry></feed>"#;
+        let a = parse_feed(atom, 10);
+        assert_eq!(a.len(), 1);
+        assert_eq!((a[0].title.as_str(), a[0].url.as_str(), a[0].snippet.as_str()), ("Chips & spies", "https://arstechnica.com/2026/11/chips-spies/", "Short one."));
+        assert!(parse_feed("<html>nothing</html>", 10).is_empty());
+    }
+
+    #[test]
+    fn only_the_fixed_feeds_are_ever_fetched() {
+        struct NoSearch;
+        impl WebSearch for NoSearch { fn search(&self, _: &str) -> Result<Vec<SearchResult>, String> { Ok(vec![]) } }
+        let w = WithFeeds::new(std::sync::Arc::new(NoSearch), std::time::Duration::from_millis(50));
+        for url in ["http://127.0.0.1:4575/api/token", "https://evil.example.com/rss", "file:///etc/passwd", ""] {
+            assert_eq!(w.feed(url), Err("not one of the bulletin's feeds".to_string()), "{url}");
+        }
+        // The plain backends have no feeds at all.
+        assert!(NoSearch.feed(crate::bulletin::FEEDS[0].1[0]).is_err());
+    }
+
     #[test]
     fn searxng_json_is_read_in_order_and_cleaned() {
         let body = r#"{"results":[{"title":"BTC price","url":"https://example.com/btc","content":"Live\nprice"},{"title":"","url":"https://x.y"},{"title":"No link","url":"javascript:alert(1)"},{"title":"Second","url":"http://example.org/2","content":"two"}]}"#;
