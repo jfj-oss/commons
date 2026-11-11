@@ -162,6 +162,24 @@ pub const SUBJECTS: [(&str, &str); 8] = [
     ("weird", "weird news odd strange"),
 ];
 
+/// Each subject's news feeds, tried before any search: a search engine answers "politics news" with section front pages, a
+/// feed lists real articles. Public RSS/Atom feeds of large outlets, HTTPS, fixed here (the bot fetches nothing else).
+pub const FEEDS: &[(&str, &[&str])] = &[
+    ("world", &["https://feeds.bbci.co.uk/news/world/rss.xml", "https://www.aljazeera.com/xml/rss/all.xml", "https://www.theguardian.com/world/rss"]),
+    ("politics", &["https://feeds.npr.org/1014/rss.xml", "https://www.theguardian.com/politics/rss", "https://feeds.bbci.co.uk/news/politics/rss.xml"]),
+    ("money", &["https://feeds.bbci.co.uk/news/business/rss.xml", "https://feeds.npr.org/1017/rss.xml", "https://www.theguardian.com/business/rss"]),
+    ("conflict", &["https://www.aljazeera.com/xml/rss/all.xml", "https://www.theguardian.com/world/rss", "https://feeds.bbci.co.uk/news/world/rss.xml"]),
+    ("tech", &["https://feeds.arstechnica.com/arstechnica/index", "https://feeds.bbci.co.uk/news/technology/rss.xml", "https://www.theguardian.com/technology/rss"]),
+    ("crime", &["https://feeds.npr.org/1003/rss.xml", "https://www.theguardian.com/us-news/rss", "https://www.theguardian.com/uk-news/rss"]),
+    ("scandal", &["https://www.theguardian.com/business/rss", "https://feeds.npr.org/1014/rss.xml", "https://www.theguardian.com/us-news/rss"]),
+    ("weird", &["https://rss.upi.com/news/odd_news.rss"]),
+];
+
+/// The feeds for one subject (none for a subject not listed).
+pub fn feeds_for(subject: &str) -> &'static [&'static str] {
+    FEEDS.iter().find(|(s, _)| *s == subject).map_or(&[], |(_, f)| *f)
+}
+
 /// The subjects for a given day, in the order to try them: all of them, starting at a point that moves each day.
 pub fn subjects_for(day: i64) -> Vec<(&'static str, &'static str)> {
     let n = SUBJECTS.len();
@@ -265,8 +283,12 @@ pub fn looks_like_story(url: &str) -> bool {
     let engine = host.contains("duckduckgo") || host.contains("bing.com") || host.contains("google.") || host.contains("yahoo.")
         || host.contains("facebook.") || host.contains("twitter.") || host == "x.com" || host.ends_with(".x.com");
     if host.is_empty() || engine { return false; }
-    let path = path.trim_end_matches('/');
-    path.chars().count() >= 8 && !path.starts_with('?')
+    let path = path.split(['?', '#']).next().unwrap_or("").trim_end_matches('/');
+    // An article's address ends in a slug ("…/senate-passes-budget") or carries a date or an id somewhere ("/2026/11/10/…",
+    // "…/c4g7x2"); a section page is plain words ("/politics", "/sections/politics", "/news/world").
+    let last = path.rsplit('/').next().unwrap_or("");
+    let slug = last.contains('-') || last.contains('_') || path.chars().any(|c| c.is_ascii_digit());
+    path.chars().count() >= 8 && slug
 }
 
 fn host_of(url: &str) -> String {
@@ -561,11 +583,19 @@ mod tests {
         assert!(!looks_like_story("https://www.example.com"));
         assert!(!looks_like_story("https://duckduckgo.com/y.js?ad=1"));
         assert!(!looks_like_story("https://news.google.com/stories/abc"));
+        assert!(!looks_like_story("https://apnews.com/politics"), "a section front page");
+        assert!(!looks_like_story("https://www.npr.org/sections/politics/"));
+        assert!(!looks_like_story("https://www.bloomberg.com/economics"));
+        assert!(looks_like_story("https://www.bbc.com/news/articles/c4g7x2lmn1zo"));
+        assert!(looks_like_story("https://www.theguardian.com/politics/2026/nov/10/budget-vote"));
+        assert!(looks_like_story("https://www.npr.org/2026/11/10/nx-s1-5600000/budget?utm=rss"));
+        for (_, urls) in FEEDS { for u in *urls { assert!(u.starts_with("https://"), "{u}"); } }
+        for (s, _) in SUBJECTS { assert!(!feeds_for(s).is_empty(), "every subject has feeds: {s}"); }
         let r = |t: &str, u: &str, s: &str| SearchResult { title: t.into(), url: u.into(), snippet: s.into() };
         let results = vec![
             r("Front page", "https://a.example.com/", "everything"),
-            r("Two children killed in fire", "https://b.example.com/news/fire", "sad"),
-            r("Senate passes budget", "https://c.example.com/politics/budget", "a close vote"),
+            r("Two children killed in fire", "https://b.example.com/news/children-killed-fire", "sad"),
+            r("Senate passes budget", "https://c.example.com/politics/senate-passes-budget", "a close vote"),
             r("Bank fined over fraud", "https://d.example.com/money/bank-fined", "fine"),
         ];
         assert_eq!(pick(&results, &[]).map(|x| x.title.as_str()), Some("Senate passes budget"), "hard news is taken; the grim story is not");

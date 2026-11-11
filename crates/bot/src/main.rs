@@ -208,10 +208,12 @@ fn run() -> Result<(), String> {
     let deepseek = DeepSeek::new(&ds_url, deepseek_key_file(), &ds_model, timeout);
     let search_url = env_string("MEGATRON_BOT_SEARCH_URL").unwrap_or_else(|| DEFAULT_SEARCH_URL.into());
     // MEGATRON_BOT_SEARXNG_URL (e.g. http://127.0.0.1:8092): a local SearXNG instance instead of DuckDuckGo's HTML page.
-    let searcher: Arc<dyn WebSearch> = match env_string("MEGATRON_BOT_SEARXNG_URL") {
+    let engine: Arc<dyn WebSearch> = match env_string("MEGATRON_BOT_SEARXNG_URL") {
         Some(sx) => { eprintln!("[bot] web search: SearXNG at {sx}"); Arc::new(SearXng::new(&sx, SEARCH_TIMEOUT)) }
         None => Arc::new(DuckDuckGo::new(&search_url, SEARCH_TIMEOUT)),
     };
+    // The daily bulletin also reads a fixed list of news feeds (bulletin::FEEDS); chat questions only ever search.
+    let searcher: Arc<dyn WebSearch> = Arc::new(commons_bot::search::WithFeeds::new(engine, SEARCH_TIMEOUT));
     let studio_url = env_string("MEGATRON_BOT_STUDIO_URL").unwrap_or_else(|| DEFAULT_STUDIO_URL.into());
     let studio: Arc<dyn StudioApi> = Arc::new(HttpStudio::new(&studio_url, &studio_token_file()));
     let gate = Arc::new(GpuGate::from_env());

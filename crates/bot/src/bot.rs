@@ -1149,22 +1149,31 @@ impl Bot {
         let had_last = !sched.theories.is_empty();
         let winners = bulletin::winners(&votes);
 
-        // Real stories: one item per subject (nothing too grim), each from a different site, a few searches at most.
+        // Real stories: one item per subject (nothing too grim), each from a different site. The subject's news feeds first
+        // (real articles); a search, a few at most, only when no feed gave one.
         let mut items: Vec<bulletin::Item> = Vec::new();
         let mut hosts: Vec<String> = Vec::new();
         let mut searches = 0usize;
         for (subject, query) in bulletin::subjects_for(day) {
-            if items.len() >= bulletin::ITEMS || searches >= bulletin::MAX_SEARCHES { break; }
-            searches += 1;
-            match self.search.search_recent(query) {
-                Ok(results) => {
-                    if let Some(r) = bulletin::pick(&results, &hosts) {
-                        let item = bulletin::Item { subject, result: r.clone() };
-                        hosts.push(item.host());
-                        items.push(item);
-                    }
+            if items.len() >= bulletin::ITEMS { break; }
+            let mut found: Option<search::SearchResult> = None;
+            for url in bulletin::feeds_for(subject) {
+                match self.search.feed(url) {
+                    Ok(results) => if let Some(r) = bulletin::pick(&results, &hosts) { found = Some(r.clone()); break; },
+                    Err(e) => eprintln!("[bot] bulletin feed {url}: {e}"),
                 }
-                Err(e) => eprintln!("[bot] bulletin search failed: {e}"),
+            }
+            if found.is_none() && searches < bulletin::MAX_SEARCHES {
+                searches += 1;
+                match self.search.search_recent(query) {
+                    Ok(results) => found = bulletin::pick(&results, &hosts).cloned(),
+                    Err(e) => eprintln!("[bot] bulletin search failed: {e}"),
+                }
+            }
+            if let Some(result) = found {
+                let item = bulletin::Item { subject, result };
+                hosts.push(item.host());
+                items.push(item);
             }
         }
         if items.len() < bulletin::MIN_ITEMS { retry_later("not enough usable news found"); return None; }

@@ -53,7 +53,7 @@ fn ddg_html(results: &[(&str, &str, &str)]) -> String {
 const COMET: (&str, &str, &str) = ("Comet with two tails spotted", "https://science.example.com/2026/11/comet-two-tails", "Astronomers spotted a comet with two tails over the weekend.");
 const ROBOT: (&str, &str, &str) = ("Robot dog learns to climb stairs", "https://tech.example.org/news/robot-dog-stairs", "A university team taught a four-legged robot to climb a spiral staircase.");
 const FINAL: (&str, &str, &str) = ("Local team wins 3-1 in the final", "https://sports.example.net/story/final-3-1", "The home side won the cup final 3-1 on Saturday night, with Sam Okafor scoring twice.");
-const GRIM: (&str, &str, &str) = ("Overdose deaths rise again", "https://news.example.com/2026/11/overdoses", "Officials said overdose deaths rose.");
+const GRIM: (&str, &str, &str) = ("Overdose deaths rise again", "https://news.example.com/2026/11/overdose-deaths-rise", "Officials said overdose deaths rose.");
 const FRONT: (&str, &str, &str) = ("Science news", "https://frontpage.example.com/", "All the news.");
 
 /// Every query gets the same page: three usable stories on three sites, one too grim to joke about and a front page.
@@ -420,7 +420,7 @@ fn filter_bot(dir: &Path, ollama: &FakeHttp, search: Arc<dyn WebSearch>) -> Bot 
 #[test]
 fn grim_news_alone_means_no_bulletin_and_no_model_call() {
     let ollama = scripted_ollama(&[REPLY]);
-    let search = fake_search(&ddg_html(&[GRIM, FRONT, ("Two children killed in fire", "https://local.example.com/2026/11/fire", "Firefighters said two children died.")]));
+    let search = fake_search(&ddg_html(&[GRIM, FRONT, ("Two children killed in fire", "https://local.example.com/2026/11/children-killed-fire", "Firefighters said two children died.")]));
     let dir = tempfile::tempdir().unwrap();
     let bot = filter_bot(dir.path(), &ollama, ddg(&search.url()));
     let mut chat = MemChat::new();
@@ -434,6 +434,37 @@ fn grim_news_alone_means_no_bulletin_and_no_model_call() {
     dead.set_clock(at(DAY, 9, 0), OFFSET);
     assert!(dead.answer(&mut chat, &bulletin_job()).is_none());
     assert!(chat.sent.is_empty());
+}
+
+/// Feeds that list the three usable stories (and a grim one and a front page), and a search that must not be needed.
+struct FeedsOnly { feeds: AtomicUsize, searches: AtomicUsize }
+impl WebSearch for FeedsOnly {
+    fn search(&self, _: &str) -> Result<Vec<commons_bot::search::SearchResult>, String> {
+        self.searches.fetch_add(1, Ordering::SeqCst);
+        Err("no search when the feeds deliver".into())
+    }
+    fn feed(&self, url: &str) -> Result<Vec<commons_bot::search::SearchResult>, String> {
+        assert!(bulletin::FEEDS.iter().any(|(_, u)| u.contains(&url)), "only listed feeds: {url}");
+        self.feeds.fetch_add(1, Ordering::SeqCst);
+        Ok([GRIM, FRONT, COMET, ROBOT, FINAL].iter()
+            .map(|(t, u, s)| commons_bot::search::SearchResult { title: t.to_string(), url: u.to_string(), snippet: s.to_string() })
+            .collect())
+    }
+}
+
+#[test]
+fn the_stories_come_from_the_news_feeds_before_any_search() {
+    let ollama = scripted_ollama(&[REPLY]);
+    let dir = tempfile::tempdir().unwrap();
+    let source = Arc::new(FeedsOnly { feeds: AtomicUsize::new(0), searches: AtomicUsize::new(0) });
+    let bot = filter_bot(dir.path(), &ollama, source.clone());
+    let mut chat = MemChat::new();
+    assert!(bot.answer(&mut chat, &bulletin_job()).is_some());
+    assert_eq!(source.searches.load(Ordering::SeqCst), 0, "the feeds delivered, so no search");
+    assert!(source.feeds.load(Ordering::SeqCst) >= 3);
+    let links: Vec<&str> = [COMET.1, ROBOT.1, FINAL.1].to_vec();
+    assert!(links.iter().all(|l| chat.sent.iter().any(|t| t.contains(l))), "{:#?}", chat.sent);
+    assert!(chat.sent.iter().all(|t| !t.contains(GRIM.1) && !t.contains(FRONT.1)), "the grim story and the front page stay out");
 }
 
 #[test]
