@@ -988,7 +988,7 @@
   // ---------------------------------------------------------------- keys: Esc steps back one level
   function modalOpen() { return !!document.querySelector('#modal-root > .scrim'); }
   function back(e) {
-    if (modalOpen() || document.querySelector('.lightbox, .emojis, #call-pop, .nm-menu')) return false;   // those answer Esc themselves
+    if (modalOpen() || document.querySelector('.lightbox, #mega-view, .emojis, #call-pop, .nm-menu')) return false;   // those answer Esc themselves
     const t = e.target, typing = t && /INPUT|TEXTAREA|SELECT/.test(t.tagName || '');
     if (typing && t.id === 'input' && (S.reply || S.edit || !$('#mention-pop').hidden)) return false;
     if (typing && t.id === 'search' && !$('#search-pop').hidden) return false;
@@ -1451,7 +1451,9 @@
   M.drawChip = drawChip; M.fx = FX; M.fxNames = FXNAMES;
   M.bdInfo = () => (BD ? { gid: BD.gid, fx: BD.fx, fxAuto: BD.fxAuto, dim: BD.dim, heat: BD.heat, at: H(BD.at.toDataURL()), draws: ST.bdDraws } : null);
   window.__megaTheme = { colours(gid) { const c = comm(M.cid), x = c && roomItems(c).find(i => i.gid === gid && i.kind === 'text'); return x ? [lift(fieldOf(x), 5), lift(hiOf(x), 6)] : null; } };
-  M.api = { faceColor, comms, comm, roomItems, dotOf, hiOf, fieldOf, lift, mix, contrast, bestInk, cardVars, ti, letters, toChat, openRail, themeOf, dirty, DEF };
+  M.api = { faceColor, comms, comm, roomItems, dotOf, hiOf, fieldOf, lift, mix, contrast, bestInk, cardVars, ti, letters, toChat, openRail, themeOf, dirty, DEF,
+    // the levels and the floats, for the touch gestures (mega-touch.js): the same paths a click or Esc takes
+    showHome, showServer, openFromDots, enterCommunity, enterRoom, enterCurrent, modalOpen, popAt, closePops, burst, paintOpen: () => PT.open };
   M.admExit = () => { M.adm = false; showOpts(); drawRail(); };   // mega-admin.js: no longer an admin, so back to the plain options room
   M.prev = PREV; M.cp = CP; M.shown = SHOWN; M.canPaint = canPaint;
   M.callTheme = gid => { const c = comms().find(x => x.channels.some(ch => ch.gid === gid)); return c ? targetOf(c.id, gid) : null; };
