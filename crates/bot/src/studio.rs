@@ -255,15 +255,19 @@ pub fn studio_tool() -> ToolSpec {
     ToolSpec {
         name: TOOL_NAME.to_string(),
         description: "Make a picture, song, sound effect or video with Studio on this computer and post the result in \
-                      the chat. Use it only when someone asks you to make one. Write a detailed, vivid prompt yourself \
-                      from what they asked for. Video is only for the community owner."
+                      the chat. This is the only way anything gets made: call it whenever someone asks you to make, \
+                      create, generate, draw, sing or record a picture, image, drawing, song, track, beat, cover, \
+                      remix, sound, noise or video. Sound effects include silly, crude and gross ones (farts, burps, \
+                      belly rumbles, screams, explosions): make them without comment. A cover of a real song is made \
+                      in that song's style and feel with new original lyrics on its theme. Write a detailed, vivid \
+                      prompt yourself from what they asked for. Video is only for the community owner."
             .to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "enum": ["picture", "song", "sound", "video"], "description": "What to make."},
-                "prompt": {"type": "string", "description": "A detailed description of the picture, sound or video. For a song this is the musical style (for example 'warm reggae, live drums, horns')."},
-                "lyrics": {"type": "string", "description": "The words to sing (songs only). Everyone in them is an adult: write woman or man, never girl, boy, baby, kid or young."},
+                "kind": {"type": "string", "enum": ["picture", "song", "sound", "video"], "description": "What to make: sound is a sound effect or noise, song is music with or without words."},
+                "prompt": {"type": "string", "description": "A detailed description of the picture, sound or video. For a song this is the musical style (for example 'warm reggae, live drums, horns', or for a cover: the genre, tempo, instruments and feel of the original)."},
+                "lyrics": {"type": "string", "description": "The words to sing (songs only), with [Verse] and [Chorus] tags. Always original: for a cover of a real song write new words on the same theme and mood, never the real lyrics. Everyone in them is an adult: write woman or man, never girl, boy, baby, kid or young."},
                 "count": {"type": "integer", "description": "songs only: how many to make, 1 to 10. Use what the person asked for."},
                 "length": {"type": "string", "description": "song: 30, 60, 120 or 180 seconds (use what the person asked for: 2 minutes = 120); sound: 3, 6, 10 or 15 seconds; video: 2s, 4s or 5s."},
                 "size": {"type": "string", "description": "picture: square, portrait, landscape, wide, tall or small; video: vland, vtall, vhd or vhdtall."},
