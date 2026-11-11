@@ -12,7 +12,8 @@ openmls_basic_credential = "0.6"
 openmls_traits = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+ed25519-dalek = { version = "2", features = ["rand_core", "hazmat"] }
+x25519-dalek = "2"
 rand = "0.8"
 hex = "0.4"
 base64 = "0.22"

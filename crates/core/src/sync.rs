@@ -600,7 +600,7 @@ impl Client {
         let comm = self.st.groups[gid].community.clone();
         let acct = cert.account.clone();
         match (&kind, env) {
-            (Kind::Control, Envelope::Profile { name, ts, listen, avatar, avatar_cleared, direct }) => {
+            (Kind::Control, Envelope::Profile { name, ts, listen, avatar, avatar_cleared, direct, direct_sealed }) => {
                 let ts = sane_ts(ts);
                 let newer = {
                     let p = self.st.profiles.entry(acct.clone()).or_default();
@@ -608,6 +608,7 @@ impl Client {
                         p.name = name;
                         p.ts = ts;
                         p.direct = direct;
+                        p.direct_sealed = direct_sealed;
                         // An older app sends this same message with neither picture field. That must not wipe a picture
                         // set from a newer one, so only a picture or an explicit removal changes it.
                         if avatar_cleared { p.avatar = None; }
@@ -666,7 +667,7 @@ impl Client {
             }
             (Kind::Channel, Envelope::Live { kind, data, ts }) => self.take_live(gid, &acct, kind, data, ts),
             (Kind::Channel, Envelope::Ring { id, ts, to, end }) => self.take_ring(gid, &acct, id, ts, to, end),
-            (Kind::Channel, Envelope::Direct { id, ts, to, nonce, link }) => self.take_direct(gid, &acct, id, ts, to, nonce, link),
+            (Kind::Channel, Envelope::Direct { id, ts, to, nonce, link, sealed }) => self.take_direct(gid, &acct, id, ts, to, nonce, link, sealed),
             (Kind::Channel, Envelope::Typing) => { self.typing.insert(format!("{gid}|{acct}"), now_secs()); }
             (Kind::Channel, env @ (Envelope::Text { .. } | Envelope::File { .. } | Envelope::Edit { .. } | Envelope::Delete { .. } | Envelope::React { .. })) => {
                 self.apply_chat(gid, seq, cert, env, false);

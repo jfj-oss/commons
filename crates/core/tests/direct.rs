@@ -74,7 +74,7 @@ fn offers_that_are_not_exactly_a_direct_community_are_ignored() {
     let (club, gen) = community_with(&net, &mut alice, &mut [&mut bob, &mut carol]);
     let (a, b, c) = (alice.acct(), bob.acct(), carol.acct());
     let id = |n: u8| format!("{:032x}", n);
-    let offer = |_p: &Peer, n: u8, to: &str, nonce: &str, link: &str, ts: u64| Envelope::Direct { id: id(n), ts, to: to.into(), nonce: nonce.into(), link: link.into() };
+    let offer = |_p: &Peer, n: u8, to: &str, nonce: &str, link: &str, ts: u64| Envelope::Direct { id: id(n), ts, to: to.into(), nonce: nonce.into(), link: link.into(), sealed: None };
     let quiet = |p: &Peer| p.c.st.joining.is_empty() && p.c.direct_list().is_empty();
 
     // 1. an ordinary community's invite: never joined on a call's word
@@ -163,4 +163,61 @@ fn people_who_stop_calls_are_not_called_and_old_apps_are_told_up_front() {
     let err = alice.c.direct_call(&bob.acct()).unwrap_err().to_string();
     assert!(err.contains("older Megatron"), "{err}");
     assert_eq!(alice.c.st.communities.len(), before, "nothing was created");
+}
+
+/// Audit M8: the offer travels in a room others can read. Before 0.3.6 it carried the invite's secret key, so a third member could
+/// sign a join and only the founder's up-to-date admin devices stood in the way. Now the key is sealed to the one person named.
+#[test]
+fn a_third_member_who_reads_the_offer_cannot_use_its_invite() {
+    let net = Net::new();
+    let (mut alice, mut bob, mut carol) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"), Peer::new(&net, "carol"));
+    let (_club, _gen) = community_with(&net, &mut alice, &mut [&mut bob, &mut carol]);
+    settle(&mut [&mut alice, &mut bob, &mut carol]);
+    assert!(alice.c.st.profiles[&bob.acct()].direct_sealed, "bob's profile says his app opens sealed offers");
+    let started = alice.c.direct_call(&bob.acct()).unwrap();
+    settle(&mut [&mut alice, &mut bob, &mut carol]);
+    assert_eq!(bob.c.direct_list().len(), 1, "bob opened the sealed secret and joined: {:?}", notices(&bob));
+    // Carol saw the very same offer. Its link carries a throwaway key, and the sealed secret is not hers to open.
+    let (link, sealed) = carol.c.debug_offers.last().cloned().expect("carol's app saw the offer");
+    assert!(sealed.is_some(), "the secret travelled sealed");
+    let l = InviteLink::decode(&link).unwrap();
+    let real_sk = alice.c.st.communities[&started.cid].invite_sks.values().next().cloned().unwrap();
+    assert_ne!(l.sk, real_sk, "the link in the room does not hold the invite's real key");
+    carol.c.join_with_link(&link).unwrap();
+    settle(&mut [&mut alice, &mut bob, &mut carol]);
+    assert!(carol.c.st.communities.get(&started.cid).is_none_or(|c| c.removed), "carol is not let in");
+    assert!(notices(&alice).iter().any(|n| n.contains("bad invite signature")), "the founder saw a join it could not verify, not one it had to refuse by policy: {:?}", notices(&alice));
+    assert_eq!(alice.c.group_accounts(&started.cid).len(), 2);
+    // A peer whose app predates sealing is still called the old way: the key in the link, nothing sealed.
+    alice.c.st.profiles.get_mut(&carol.acct()).unwrap().direct_sealed = false;
+    let to_carol = alice.c.direct_call(&carol.acct()).unwrap();
+    settle(&mut [&mut alice, &mut bob, &mut carol]);
+    let (link2, sealed2) = bob.c.debug_offers.last().cloned().unwrap();
+    assert!(sealed2.is_none() && InviteLink::decode(&link2).unwrap().community == to_carol.cid, "an open offer, as before 0.3.6");
+    assert_eq!(carol.c.direct_list().len(), 1, "and carol's app (which also knows the old form) joined");
+}
+
+/// Audit M8: a stranger who shares a room cannot fill the receiver's call slots with offers of their own communities.
+#[test]
+fn one_founder_cannot_fill_the_call_slots() {
+    let net = Net::new();
+    let (mut alice, mut bob) = (Peer::new(&net, "alice"), Peer::new(&net, "bob"));
+    let (_club, gen) = community_with(&net, &mut alice, &mut [&mut bob]);
+    settle(&mut [&mut alice, &mut bob]);
+    // Alice founds direct communities for bob again and again (a changed app would), each with a fresh nonce, and offers each.
+    for i in 0..4u8 {
+        let nonce = new_nonce(&alice.acct(), &bob.acct());
+        let cid = alice.c.debug_create_community_nonce("Direct call (open in a newer Megatron)", &nonce, "call", ROOM_VOICE).unwrap();
+        settle(&mut [&mut alice, &mut bob]);
+        let link = alice.c.create_invite(&cid, Some(2), 600).unwrap();
+        let mut l = InviteLink::decode(&link).unwrap();
+        l.secret.clear();
+        let sealed = seal_for(&bob.acct(), &l.sk).unwrap();
+        l.sk = "cd".repeat(32);
+        alice.c.debug_send_envelope(&gen, Envelope::Direct { id: format!("{:032x}", 100 + i as u32), ts: now_secs(), to: bob.acct(), nonce, link: l.encode(), sealed: Some(sealed) }).unwrap();
+        settle(&mut [&mut alice, &mut bob]);
+        // offers from one sender are also rationed per minute: move the clock on
+        bob.c.debug_clear_direct_rate();
+    }
+    assert_eq!(bob.c.direct_list().len(), DIRECT_MAX_PER_FOUNDER, "bob holds at most {} communities founded by one person: {:?}", DIRECT_MAX_PER_FOUNDER, bob.c.direct_list().len());
 }

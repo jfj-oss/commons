@@ -257,7 +257,7 @@ impl Client {
             let avatar_cleared = std::mem::replace(&mut self.st.avatar_removed, false);
             let ts = self.st.profiles.get(&me).map_or_else(now_secs, |p| p.ts.max(now_secs()));
             let ctls: Vec<String> = self.st.groups.values().filter(|g| g.kind == Kind::Control && !g.removed && !g.broken).map(|g| g.gid.clone()).collect();
-            for g in ctls { self.queue_env(&g, Envelope::Profile { name: name.clone(), ts, listen: listen.clone(), avatar: avatar.clone(), avatar_cleared, direct: true }); }
+            for g in ctls { self.queue_env(&g, Envelope::Profile { name: name.clone(), ts, listen: listen.clone(), avatar: avatar.clone(), avatar_cleared, direct: true, direct_sealed: true }); }
         }
         self.flush_live();
         self.reconcile();

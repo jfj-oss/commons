@@ -1370,7 +1370,7 @@ impl Client {
         let ts = now_secs();
         // the picture rides along too, so a status refresh never looks like "no picture" to a device that missed one
         let avatar = self.st.profiles.get(&self.my_account()).and_then(|p| p.avatar.clone());
-        for gid in &ctls { self.queue_env(gid, Envelope::Profile { name: name.clone(), ts, listen: value.clone(), avatar: avatar.clone(), avatar_cleared: false, direct: true }); }
+        for gid in &ctls { self.queue_env(gid, Envelope::Profile { name: name.clone(), ts, listen: value.clone(), avatar: avatar.clone(), avatar_cleared: false, direct: true, direct_sealed: true }); }
         if ctls.is_empty() { return false; }
         self.st.listening_sent = value;
         self.st.listening_sent_ts = ts;
@@ -1496,6 +1496,14 @@ impl Client {
         plan.gce = Some(t);
         self.run_commit(cid, plan).map(|_| ())
     }
+    /// Found a community under a nonce of the caller's choosing, as a changed app could (test builds only).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_create_community_nonce(&mut self, name: &str, nonce: &str, room: &str, room_kind: &str) -> Result<String> { self.create_community_with(name, nonce.to_string(), room, room_kind) }
+    /// Forget the per-sender offer rate, as a minute passing would (test builds only).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_clear_direct_rate(&mut self) { self.direct_rate.clear(); }
     /// Send any envelope as this device, as a hostile member would (test builds only).
     #[cfg(feature = "test-hooks")]
     #[doc(hidden)]

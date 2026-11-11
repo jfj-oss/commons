@@ -204,7 +204,12 @@ pub enum Envelope {
     /// `direct.rs`). `nonce` is the community's nonce, so the receiver can check the marker before it joins anything; `link` is
     /// an invite link to that community. Like `Ring` it is for now, not history: never stored or shown, never retried, and an
     /// older app has no such kind, parses it as `Unknown` and notes "newer version" once; nothing else happens.
-    Direct { id: String, ts: u64, to: String, nonce: String, link: String },
+    /// `sealed` (0.3.6 on) is the invite's secret key sealed to `to`'s account key (`direct::seal_for`); the `link` then carries a
+    /// throwaway key in its place, so nobody else in the room can sign a join with it. An older receiver does not know the field and
+    /// cannot use the link; the caller only seals for a peer whose profile says it can open it (`direct_sealed`).
+    Direct { id: String, ts: u64, to: String, nonce: String, link: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sealed: Option<String> },
     /// A person's profile refresh. Extra fields ride on it rather than new kinds: an older Megatron parses this as the
     /// `Profile` it already knows and serde ignores the rest, so nothing new ever reaches an old app's `Unknown` notice.
     /// `listen` is the shared "listening to" status (`None` = nothing to share); `avatar`/`avatar_cleared` the picture.
@@ -221,6 +226,9 @@ pub enum Envelope {
         /// This app can take part in one-to-one calls. Absent from older apps, which is how a caller can tell.
         #[serde(default, skip_serializing_if = "is_false")]
         direct: bool,
+        /// This app can open a call offer whose invite secret is sealed to it (0.3.6 on). Absent from older apps.
+        #[serde(default, skip_serializing_if = "is_false")]
+        direct_sealed: bool,
     },
     /// "I am leaving" (the leaver cannot remove itself in MLS; an admin commits the removal).
     Leave,
@@ -307,7 +315,10 @@ impl Envelope {
             }
             Typing | Leave | Unknown => {}
             Live { kind, data, .. } => if !valid_live_kind(kind) || data.len() > MAX_LIVE { return bad("bad live event"); },
-            Direct { id, to, nonce, link, .. } => if !is_id(id) || !is_key(to) || !is_id(nonce) || link.len() > 3000 || InviteLink::decode(link).is_err() { return bad("bad direct call"); },
+            Direct { id, to, nonce, link, sealed, .. } => {
+                if !is_id(id) || !is_key(to) || !is_id(nonce) || link.len() > 3000 || InviteLink::decode(link).is_err() { return bad("bad direct call"); }
+                if sealed.as_ref().is_some_and(|s| s.len() > 256 || commons_proto::unb64(s).is_err()) { return bad("bad direct call"); }
+            }
             Ring { id, to, .. } => if !is_id(id) || to.as_deref().is_some_and(|t| !is_key(t)) { return bad("bad ring"); },
             Profile { name, listen, avatar, avatar_cleared, .. } => {
                 if name.is_empty() || !short(name, 64) { return bad("bad profile"); }
@@ -677,7 +688,7 @@ mod compat_tests {
         let removed = br#"{"t":"Profile","name":"Ana","ts":6,"avatar_cleared":true}"#;
         assert_eq!(serde_json::from_slice::<OldEnvelope>(removed).unwrap(), OldEnvelope::Profile { name: "Ana".into(), ts: 6 });
         // With no picture, the bytes are exactly what 0.2.x sends and expects.
-        let plain = Envelope::Profile { name: "Ana".into(), ts: 5, listen: None, avatar: None, avatar_cleared: false, direct: false };
+        let plain = Envelope::Profile { name: "Ana".into(), ts: 5, listen: None, avatar: None, avatar_cleared: false, direct: false, direct_sealed: false };
         // (listen is always written, as null when there is none: 0.2.x ignores it, and null clears a shown status)
         assert_eq!(plain.to_bytes(), br#"{"t":"Profile","name":"Ana","ts":5,"listen":null}"#);
     }

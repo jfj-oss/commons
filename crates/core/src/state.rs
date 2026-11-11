@@ -201,6 +201,9 @@ pub struct Profile {
     /// Their app can take part in one-to-one calls (their newest profile said so). False for older apps.
     #[serde(default)]
     pub direct: bool,
+    /// Their app opens call offers whose invite secret is sealed to them (0.3.6 on).
+    #[serde(default)]
+    pub direct_sealed: bool,
     /// Where this account's picture is, if it has one. One picture per account, as there is one name per account.
     #[serde(default)]
     pub avatar: Option<AvatarRef>,
