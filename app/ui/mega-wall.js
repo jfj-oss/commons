@@ -70,7 +70,7 @@
     if (key === W.sizeKey) return; W.sizeKey = key;
     c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); schedule();
   }
-  function schedule() { if (!W.raf) W.raf = requestAnimationFrame(() => { W.raf = 0; paint(); }); }
+  function schedule() { if (!W.raf) W.raf = requestAnimationFrame(function tick() { W.raf = 0; if (window.__mega && __mega.flying) { W.raf = requestAnimationFrame(tick); return; } paint(); }); }   // not while the cards fly: the drawing lands with the chat
   function marksOf(key) {   // what to show: the core's wall with my not-yet-confirmed cells on top
     const m = new Map(entry(key).cells);
     if (key === W.gid) for (const [p, v] of W.pend) { if (v[0] === 0) m.delete(p); else m.set(p, v); }

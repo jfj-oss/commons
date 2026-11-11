@@ -332,6 +332,7 @@ html.mega { --m-deckw: 0px; --m-deckh: 0px; }
 @media (min-width: 761px) {
   html.mega.deck-open { --m-deckw: min(270px, 24vw); }
   html.mega #app { transition: padding-left .5s var(--m-spring); }
+  html.mega.mg-snap #app { transition: none; }   /* cards <-> chat moves the page's left edge at once: easing it re-lays-out the whole chat on every frame of the flight (only the deck's slide eases) */
   html.mega #mega-rail { left: var(--m-deckw); transition: left .5s var(--m-spring), width .5s var(--m-spring), background .3s; }
   html.mega #mega { left: var(--m-deckw); transition: left .5s var(--m-spring); }
   html.mega #mega-opts { left: calc(var(--m-railw) + var(--m-deckw)); transition: left .5s var(--m-spring); }
