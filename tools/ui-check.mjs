@@ -2459,6 +2459,7 @@ try {
     await A.ev(`document.querySelector('#btn-devices').click()`);
     await A.waitFor(`!!document.querySelector('.modal #code')`, 8000);
     if (!await A.ev(`document.querySelector('#hist-auto').checked`)) throw new Error('history: the "also send my history" box is not on by default');
+    await sleep(600);   // the screen wires its fields a moment after it opens
     await type(A, '#code', code);
     await A.waitFor(`/Check code/.test(document.querySelector('#chk').textContent)`, 8000);
     await A.ev(`[...document.querySelectorAll('.modal .acts button')].find(b => b.textContent.includes('Approve')).click()`);
