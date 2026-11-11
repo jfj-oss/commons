@@ -2341,7 +2341,7 @@ try {
   // The uploader's transfer bar hides before its next message refresh lands; wait for the row here too.
   await A.waitFor(`!!(${row(picName)})`, 30000);
   await A.ev(`(${row(picName)}).querySelector('[data-a=del]').click()`);
-  await B.waitFor(`(() => { const m = document.querySelector('.msg[data-id="' + ${JSON.stringify(picId)} + '"]'); return !!m && m.classList.contains('deleted'); })()`, 30000);
+  await B.waitFor(`(() => { const m = document.querySelector('.msg[data-id="' + ${JSON.stringify(picId)} + '"]'); return !m; })()`, 30000);   // a deleted message leaves no row at all (a19ff5d)
 
   // Old apps must see ordinary File messages, never an unknown kind.
   for (const P of [A, B]) {
