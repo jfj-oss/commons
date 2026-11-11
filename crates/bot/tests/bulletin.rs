@@ -52,12 +52,12 @@ fn ddg_html(results: &[(&str, &str, &str)]) -> String {
 
 const COMET: (&str, &str, &str) = ("Comet with two tails spotted", "https://science.example.com/2026/11/comet-two-tails", "Astronomers spotted a comet with two tails over the weekend.");
 const ROBOT: (&str, &str, &str) = ("Robot dog learns to climb stairs", "https://tech.example.org/news/robot-dog-stairs", "A university team taught a four-legged robot to climb a spiral staircase.");
-const FINAL: (&str, &str, &str) = ("Local team wins 3-1 in the final", "https://sports.example.net/story/final-3-1", "The home side won the cup final 3-1 on Saturday night.");
-const HEAVY: (&str, &str, &str) = ("Three dead after highway crash", "https://news.example.com/2026/11/highway-crash", "Police said three people died.");
+const FINAL: (&str, &str, &str) = ("Local team wins 3-1 in the final", "https://sports.example.net/story/final-3-1", "The home side won the cup final 3-1 on Saturday night, with Sam Okafor scoring twice.");
+const GRIM: (&str, &str, &str) = ("Overdose deaths rise again", "https://news.example.com/2026/11/overdoses", "Officials said overdose deaths rose.");
 const FRONT: (&str, &str, &str) = ("Science news", "https://frontpage.example.com/", "All the news.");
 
-/// Every query gets the same page: three light stories on three sites, a heavy one and a front page.
-fn good_search() -> FakeHttp { fake_search(&ddg_html(&[HEAVY, FRONT, COMET, ROBOT, FINAL])) }
+/// Every query gets the same page: three usable stories on three sites, one too grim to joke about and a front page.
+fn good_search() -> FakeHttp { fake_search(&ddg_html(&[GRIM, FRONT, COMET, ROBOT, FINAL])) }
 
 const REPLY: &str = "NEWS 1: Astronomers spot a comet wid two tail over di weekend, Jah know.\n\
     THEORY 1: Two tail mean two Babylon antenna. Dem a beam di weather script straight into yuh fridge.\n\
@@ -418,9 +418,9 @@ fn filter_bot(dir: &Path, ollama: &FakeHttp, search: Arc<dyn WebSearch>) -> Bot 
 }
 
 #[test]
-fn heavy_news_alone_means_no_bulletin_and_no_model_call() {
+fn grim_news_alone_means_no_bulletin_and_no_model_call() {
     let ollama = scripted_ollama(&[REPLY]);
-    let search = fake_search(&ddg_html(&[HEAVY, FRONT, ("Senate votes on the budget", "https://politics.example.com/2026/11/senate-budget", "The vote was close.")]));
+    let search = fake_search(&ddg_html(&[GRIM, FRONT, ("Two children killed in fire", "https://local.example.com/2026/11/fire", "Firefighters said two children died.")]));
     let dir = tempfile::tempdir().unwrap();
     let bot = filter_bot(dir.path(), &ollama, ddg(&search.url()));
     let mut chat = MemChat::new();
@@ -461,11 +461,11 @@ fn the_hard_block_the_subject_rule_and_the_numbers_rule_read_every_line_the_mode
     assert_eq!(ollama.hits("/api/chat"), 1, "two usable items were enough; no second try");
     assert_eq!(bot.bulletin_schedule("room").unwrap().theories.len(), 2);
 
-    // Theories that drift onto real politics or medicine are dropped too; with one item left, the model is asked once more and
-    // then the bulletin is not posted at all today.
-    let reply = "NEWS 1: A comet wid two tail.\nTHEORY 1: Di president a lizard.\n\
+    // Theories that deny the event, drift onto medicine or name a real person from the story are dropped too; with fewer than
+    // two items left, the model is asked once more and then the bulletin is not posted at all today.
+    let reply = "NEWS 1: A comet wid two tail.\nTHEORY 1: Dat comet a hoax, it neva happen.\n\
         NEWS 2: A robot dog a climb stairs.\nTHEORY 2: Dem hide di vaccine inna di robot.\n\
-        NEWS 3: Di home side win 3-1.\nTHEORY 3: Fridge magnets.";
+        NEWS 3: Di home side win 3-1.\nTHEORY 3: Okafor a Babylon agent wid fridge magnets.";
     let ollama = scripted_ollama(&[reply]);
     let dir = tempfile::tempdir().unwrap();
     let bot = filter_bot(dir.path(), &ollama, ddg(&search.url()));
@@ -512,4 +512,37 @@ fn votes_are_counted_from_the_stored_theories() {
     let sent = bot.answer(&mut chat, &bulletin_job()).unwrap();
     assert!(sent.text.contains("Theory #3 wid 5 reactions") && sent.text.contains("fridge magnets"), "{}", sent.text);
     assert_eq!(bot.bulletin_schedule("room").unwrap().theories.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), vec!["m10", "m12", "m14"]);
+}
+
+/// A sample against the real local model, by hand only: `ORACLE_BULLETIN_ITEMS=<json file> cargo test ... -- --ignored --nocapture`.
+/// The file holds `[{"title","url","snippet"}, ...]` real items (the search engine stands in for nothing here: the items are
+/// served from the file as a results page, so the model, the filters and the posting are the production path).
+#[test]
+#[ignore]
+fn live_sample_against_the_local_model() {
+    let Ok(path) = std::env::var("ORACLE_BULLETIN_ITEMS") else { eprintln!("ORACLE_BULLETIN_ITEMS not set; nothing to do"); return };
+    let items: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let owned: Vec<(String, String, String)> = items.iter().map(|i| (i["title"].as_str().unwrap_or("").to_string(), i["url"].as_str().unwrap_or("").to_string(), i["snippet"].as_str().unwrap_or("").to_string())).collect();
+    let rows: Vec<(&str, &str, &str)> = owned.iter().map(|(t, u, s)| (t.as_str(), u.as_str(), s.as_str())).collect();
+    let search = fake_search(&ddg_html(&rows));
+    let model = std::env::var("MEGATRON_BOT_MODEL").ok();
+    let dir = tempfile::tempdir().unwrap();
+    let key = dir.path().join("deepseek-key");
+    std::fs::write(&key, "unused\n").unwrap();
+    let bot = Bot::new(
+        quick(),
+        Box::new(Ollama::new("http://127.0.0.1:11434", model.as_deref(), Duration::from_secs(300))),
+        Box::new(DeepSeek::new("http://127.0.0.1:1", key, "deepseek-chat", Duration::from_secs(5))),
+        ddg(&search.url()),
+        Arc::new(DeadStudio),
+        Arc::new(NoGpu),
+        dir.path().join("state.json"),
+    );
+    bot.set_bulletin("room", Some(Some(DEFAULT_MINUTE)));
+    bot.set_clock(at(DAY, 9, 0), OFFSET);
+    let mut chat = MemChat::new();
+    let posted = bot.answer(&mut chat, &bulletin_job());
+    println!("\n===== SAMPLE BULLETIN (posted: {}) =====", posted.is_some());
+    for (i, t) in chat.sent.iter().enumerate() { println!("--- message {} ---\n{t}", i + 1); }
+    println!("===== END =====");
 }

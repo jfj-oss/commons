@@ -1,6 +1,6 @@
 //! Oracle's daily rumour: the "Babylon bulletin".
 //!
-//! Once a day, at a time the room's owner or an admin chose, the bot posts two or three real, light news items found
+//! Once a day, at a time the room's owner or an admin chose, the bot posts two or three real, mostly hard news items found
 //! by web search (each told straight, with its real link) and, as its own numbered message, the invented conspiracy
 //! behind each one, so people can vote for the dumbest theory with reactions. The next bulletin opens by naming the
 //! winner. Everything here is the pure part: the chat phrases, the clock arithmetic, the news filter, the model's
@@ -147,18 +147,19 @@ pub fn due(s: &Schedule, day: i64, minute: u32) -> Due {
     if minute > s.minute.saturating_add(LATE_WINDOW_MINUTES) { Due::Missed } else { Due::Now }
 }
 
-// ------------------------------------------------------------------ what counts as light news
+// ------------------------------------------------------------------ which news it takes
 
-/// The searches, one light subject each; a bulletin takes [`ITEMS`] of them in turn, by day, so the mix changes.
+/// The searches, one subject each; a bulletin takes [`ITEMS`] of them in turn, by day, so the mix changes. Mostly hard
+/// news (the owner asked for heavier news, 2026-11-10), with one odd-news slot so the rotation is not all grim.
 pub const SUBJECTS: [(&str, &str); 8] = [
-    ("science", "science discovery news"),
-    ("space", "space astronomy news"),
-    ("tech", "technology gadget news"),
+    ("world", "world news today"),
+    ("politics", "politics government news today"),
+    ("money", "economy banks markets news"),
+    ("conflict", "war conflict news"),
+    ("tech", "big tech surveillance AI news"),
+    ("crime", "crime investigation news"),
+    ("scandal", "corruption scandal investigation news"),
     ("weird", "weird news odd strange"),
-    ("sports", "sports results last night"),
-    ("culture", "music film culture news"),
-    ("animals", "animal wildlife news"),
-    ("history", "archaeology discovery news"),
 ];
 
 /// The subjects for a given day, in the order to try them: all of them, starting at a point that moves each day.
@@ -168,31 +169,22 @@ pub fn subjects_for(day: i64) -> Vec<(&'static str, &'static str)> {
     (0..n).map(|i| SUBJECTS[(start + i) % n]).collect()
 }
 
-// Whole words that mark a story the bulletin stays away from (tragedies, crime, war, politics, health). Matched as
-// whole lowercase words so "war" does not catch "warm".
-const HEAVY_WORDS: &[&str] = &[
-    "war", "wars", "warfare", "army", "navy", "troops", "military", "missile", "missiles", "bomb", "bombs", "bombing", "nuclear",
-    "gun", "guns", "weapon", "weapons", "terror", "terrorist", "terrorism", "hostage", "hostages", "genocide", "invasion", "ceasefire",
-    "dies", "died", "dead", "death", "deaths", "killed", "kills", "killing", "murder", "murdered", "shooting", "shot", "stabbed", "stabbing",
-    "crash", "crashed", "crashes", "victim", "victims", "assault", "assaulted", "rape", "raped", "abuse", "abused", "suicide", "overdose",
-    "arrested", "arrest", "police", "court", "trial", "sentenced", "prison", "jail", "lawsuit", "sued", "fraud", "scam", "hacked", "breach",
-    "election", "elections", "ballot", "vote", "votes", "voters", "senate", "congress", "parliament", "president", "minister", "governor",
-    "mayor", "campaign", "tariff", "tariffs", "sanctions", "protest", "protests", "riot", "riots", "abortion", "immigration", "deported",
-    "vaccine", "vaccines", "covid", "cancer", "disease", "outbreak", "virus", "hospital", "pandemic", "epidemic",
-];
-// Beginnings of words that are heavy whatever ends them.
-const HEAVY_STEMS: &[&str] = &[
-    "tragic", "tragedy", "disaster", "earthquake", "hurricane", "wildfire", "flood", "famine", "refugee", "funeral",
-    "racis", "ethnic", "religio", "christian", "muslim", "islam", "jewish", "hindu", "diagnos", "patient", "medic", "pharma",
-];
-// The subjects the model's own lines may never drift onto (the persona rules, checked): real politics, real medicine, real
-// religion or ethnicity, real war. Violence slang stays allowed here ("mi dead", "Babylon police") because Patois leans on it.
+// Stories too grim to hang a joke on at all: suicide, overdoses, sexual violence, and harm to children. Hard news otherwise
+// passes (politics, war, crime, money, disasters). Matched as whole lowercase words so "rape" does not catch "grape".
+const GRIM_WORDS: &[&str] = &["suicide", "suicides", "overdose", "overdoses", "rape", "raped", "rapist", "sexual", "sexually", "trafficked", "trafficking"];
+const GRIM_STEMS: &[&str] = &["molest", "paedo", "pedo", "pedophil", "paedophil", "groom"];
+const CHILD_WORDS: &[&str] = &["child", "children", "kid", "kids", "baby", "babies", "toddler", "infant", "schoolchildren", "student", "students", "pupils", "teen", "teens", "teenager", "teenagers", "boy", "girl", "boys", "girls"];
+const HARM_WORDS: &[&str] = &["dead", "died", "dies", "death", "deaths", "killed", "killing", "murder", "murdered", "shooting", "shot", "stabbed", "abuse", "abused", "injured", "missing", "kidnapped"];
+// What a theory may never touch, even on hard news: medicine and vaccines, religion and ethnicity, the Holocaust and
+// genocide, and the claim that a vote was rigged (a real misinformation genre, absurd framing or not). Checked on the
+// model's theory only: the straight news line may report any of it.
 const OFF_LIMITS_WORDS: &[&str] = &[
-    "election", "elections", "ballot", "senate", "congress", "parliament", "president", "minister", "governor", "mayor",
-    "vaccine", "vaccines", "vaccinated", "covid", "cancer", "disease", "pandemic", "epidemic", "abortion", "immigration",
-    "war", "genocide", "terrorist", "terrorists", "nazi", "nazis", "hitler",
+    "vaccine", "vaccines", "vaccinated", "vax", "covid", "cancer", "disease", "pandemic", "epidemic", "abortion",
+    "genocide", "holocaust", "nazi", "nazis", "hitler", "election", "elections", "ballot", "ballots", "rigged",
 ];
 const OFF_LIMITS_STEMS: &[&str] = &["racis", "ethnic", "religio", "christian", "muslim", "islam", "jewish", "jews", "hindu", "medic", "pharma", "diagnos"];
+// A theory may spin a wild plot behind real events, but may never say real deaths, attacks or disasters did not happen.
+const DENIAL_PHRASES: &[&str] = &["hoax", "staged", "faked", "false flag", "crisis actor", "never happened", "didn't happen", "did not happen", "nuh happen", "neva happen"];
 
 fn words_of(text: &str) -> impl Iterator<Item = String> + '_ {
     text.to_lowercase().split(|c: char| !c.is_alphanumeric() && c != '\'')
@@ -201,14 +193,55 @@ fn words_of(text: &str) -> impl Iterator<Item = String> + '_ {
         .collect::<Vec<_>>().into_iter()
 }
 
-/// Whether this text is about one of the subjects the bulletin never touches.
-pub fn is_heavy(text: &str) -> bool {
-    words_of(text).any(|w| HEAVY_WORDS.contains(&w.as_str()) || HEAVY_STEMS.iter().any(|s| w.starts_with(s)))
+/// Whether this story is too grim to put a conspiracy theory on: suicide, overdoses, sexual violence, harm to children.
+pub fn is_grim(text: &str) -> bool {
+    let words: Vec<String> = words_of(text).collect();
+    let has = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
+    words.iter().any(|w| GRIM_WORDS.contains(&w.as_str()) || GRIM_STEMS.iter().any(|s| w.starts_with(s)))
+        || (has(CHILD_WORDS) && has(HARM_WORDS))
 }
 
-/// Whether a line the model wrote strays onto a subject the persona must never joke about.
+/// Whether a theory the model wrote strays onto a subject the persona must never joke about, or denies that a real event
+/// happened.
 pub fn is_off_limits(text: &str) -> bool {
+    let low = text.to_lowercase();
     words_of(text).any(|w| OFF_LIMITS_WORDS.contains(&w.as_str()) || OFF_LIMITS_STEMS.iter().any(|s| w.starts_with(s)))
+        || DENIAL_PHRASES.iter().any(|p| low.contains(p))
+}
+
+/// The real names a story carries, found in runs of two or more capitalised words in its title and snippet ("President
+/// Jane Doe Signs Bill", "Acme Holdings"): every adjacent pair of a run, and every word of a run long enough to stand for a
+/// name on its own ("Musk"; "Doe" is too short to guess at). Title-case headlines make this over-cautious, which only ever
+/// costs an item. A theory may blame Babylon, the system or the lizard men, never a named real person or company.
+pub fn names_in(source: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut run: Vec<&str> = Vec::new();
+    let flush = |run: &mut Vec<&str>, out: &mut Vec<String>| {
+        if run.len() >= 2 {
+            for pair in run.windows(2) { out.push(pair.join(" ")); }
+            for w in run.iter() { if w.chars().count() >= 4 { out.push(w.to_string()); } }
+        }
+        run.clear();
+    };
+    for raw in source.split_whitespace() {
+        let word = raw.trim_matches(|c: char| !c.is_alphanumeric()).strip_suffix("'s").unwrap_or_else(|| raw.trim_matches(|c: char| !c.is_alphanumeric()));
+        let capital = word.chars().next().is_some_and(|c| c.is_uppercase()) && word.chars().count() >= 2
+            && word.chars().skip(1).any(|c| c.is_lowercase());
+        if capital { run.push(word); } else { flush(&mut run, &mut out); }
+        // A run ends at punctuation too ("Paris, France" is two places, not one name).
+        if raw.ends_with([',', '.', ':', ';', '?', '!']) { flush(&mut run, &mut out); }
+    }
+    flush(&mut run, &mut out);
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Whether a theory names a real person or company from its story (see [`names_in`]); whole words, case as written.
+pub fn names_someone(theory: &str, source: &str) -> bool {
+    let words: Vec<&str> = theory.split(|c: char| !c.is_alphanumeric() && c != '\'').filter(|w| !w.is_empty()).collect();
+    let joined = format!(" {} ", words.join(" "));
+    names_in(source).iter().any(|n| joined.contains(&format!(" {n} ")))
 }
 
 /// Whether every number in `line` also stands in `source`: the model may not add a figure, a score or a date the snippet
@@ -241,12 +274,13 @@ fn host_of(url: &str) -> String {
         .split('/').next().unwrap_or("").trim_start_matches("www.").to_lowercase()
 }
 
-/// From one search's results, the first that is a light story on a site not yet used. `None` when there is none.
+/// From one search's results, the first story that is not too grim (see [`is_grim`]) on a site not yet used. `None` when
+/// there is none.
 pub fn pick<'a>(results: &'a [SearchResult], used_hosts: &[String]) -> Option<&'a SearchResult> {
     results.iter().find(|r| {
         !r.title.trim().is_empty()
             && looks_like_story(&r.url)
-            && !is_heavy(&format!("{} {}", r.title, r.snippet))
+            && !is_grim(&format!("{} {}", r.title, r.snippet))
             && !used_hosts.contains(&host_of(&r.url))
     })
 }
@@ -267,10 +301,12 @@ pub const RULES: &str = "This is your daily Babylon bulletin, posted unasked. Be
     quoted. For EACH item write exactly two lines and nothing else:\n\
     NEWS <number>: one sentence, in your Patois voice, that tells the real story straight, from that item's title and \
     snippet only. Say only what the snippet says: never add a number, a date, a score, a name or a result that is not in it. No links.\n\
-    THEORY <number>: your absurd, invented conspiracy behind it, one or two short sentences: Babylon, lizard men, pigeons, \
-    the fridge, the moon projector and such. The theory is never about the real people, companies, teams or groups in the \
-    story, and never names a real person. Nothing about medicine, vaccines, elections, religion or ethnicity. Make the \
-    theories different from each other.\n\
+    THEORY <number>: your absurd, invented conspiracy behind it, one or two short sentences. This is hard news (politics, \
+    war, crime, money, power), so go after the faceless machine behind it: Babylon system, di banks, di shadow government, \
+    lizard men, di moon projector, pigeons and such. Never name or blame a real person, company or group from the story; \
+    never mock the people who were hurt; never say a real death, attack or disaster was faked, staged or never happened; \
+    never say a vote was rigged. Nothing about medicine, vaccines, religion or ethnicity. Make the theories different \
+    from each other.\n\
     No greeting, no numbering apart from those labels, no markdown, no emoji.";
 
 /// The quoted news for the model, numbered to match the labels it writes back.
@@ -471,19 +507,50 @@ mod tests {
     }
 
     #[test]
-    fn heavy_news_is_kept_out_and_light_news_let_in() {
-        assert!(is_heavy("Three dead after highway crash"));
-        assert!(is_heavy("Senate votes on the bill"));
-        assert!(is_heavy("New vaccine trial begins"));
-        assert!(is_heavy("Earthquake hits the coast"));
-        assert!(is_heavy("Ex-president's campaign"));
-        assert!(!is_heavy("A warm welcome for the warthogs: zoo opens new enclosure"));
-        assert!(!is_heavy("Astronomers spot a comet with two tails"));
-        assert!(!is_heavy("Local team wins 3-1 in the final"));
-        assert!(!is_heavy("Warner Bros announces a sequel"));
-        assert!(is_off_limits("Di president a lizard, zimmi"));
-        assert!(is_off_limits("Dem put it inna di vaccine"));
+    fn hard_news_is_taken_and_only_the_grimmest_kept_out() {
+        // Hard news passes: politics, war, crime, money, disasters.
+        assert!(!is_grim("Senate votes on the bill"));
+        assert!(!is_grim("Three dead after highway crash"));
+        assert!(!is_grim("Missile strikes hit the port as talks stall"));
+        assert!(!is_grim("Bank fined over fraud scheme"));
+        assert!(!is_grim("Earthquake hits the coast"));
+        assert!(!is_grim("Grape harvest falls"));
+        // Too grim to joke about: suicide, overdoses, sexual violence, harm to children.
+        assert!(is_grim("Suicide rates climb among veterans"));
+        assert!(is_grim("Overdose deaths rise again"));
+        assert!(is_grim("Man charged with rape"));
+        assert!(is_grim("Two children killed in fire"));
+        assert!(is_grim("Teen shot outside school"));
+        assert!(!is_grim("Children's book wins prize"));
+        // The theory's own rules: roles and institutions are fair game, the forbidden subjects and denial are not.
+        assert!(!is_off_limits("Di president a lizard, zimmi"));
+        assert!(!is_off_limits("Di war a run pon fridge magnets fi di banks"));
         assert!(!is_off_limits("Mi dead, Babylon police a watch di fridge"));
+        assert!(is_off_limits("Dem put it inna di vaccine"));
+        assert!(is_off_limits("Di election rigged by pigeons"));
+        assert!(is_off_limits("Di whole ting staged by Babylon"));
+        assert!(is_off_limits("A false flag, bredda"));
+        assert!(is_off_limits("Dat attack neva happen"));
+        assert!(!is_off_limits("Di moon a fake, zimmi"));
+    }
+
+    #[test]
+    fn a_theory_may_not_name_the_real_people_or_companies_in_its_story() {
+        let src = "President Jane Doe Signs Budget Bill. The deal with Acme Holdings was approved, officials said, and Elon Musk's firm objected.";
+        assert!(names_someone("Jane Doe a lizard, mi tell yuh", src));
+        assert!(names_someone("Musk a work fi di moon projector", src));
+        assert!(names_someone("Acme Holdings a front fi pigeons", src));
+        assert!(names_someone("Is Elon Musk dem send", src));
+        assert!(!names_someone("Di president a lizard and di banks dem a front", src));
+        assert!(!names_someone("Babylon system cook up di budget inna di fridge", src));
+        // Places stay separate words, and a single capitalised word on its own is not taken as a name.
+        let place = "Officials in Paris, France said the summit ended.";
+        assert!(!names_someone("Paris a Babylon outpost", place));
+        assert!(names_in("Officials said nothing.").is_empty());
+    }
+
+    #[test]
+    fn numbers_must_come_from_the_story() {
         assert!(numbers_from("Di team win 3-1 inna di final", "Local team wins 3-1 in the final"));
         assert!(numbers_from("A comet wid two tail", "Comet with two tails spotted"));
         assert!(!numbers_from("Dem find 400 new comet", "Astronomers find new comets"));
@@ -497,12 +564,12 @@ mod tests {
         let r = |t: &str, u: &str, s: &str| SearchResult { title: t.into(), url: u.into(), snippet: s.into() };
         let results = vec![
             r("Front page", "https://a.example.com/", "everything"),
-            r("Crash kills two", "https://b.example.com/news/crash-kills-two", "sad"),
-            r("Comet spotted", "https://c.example.com/science/comet-spotted", "a comet"),
-            r("Another comet", "https://d.example.com/science/another", "fine"),
+            r("Two children killed in fire", "https://b.example.com/news/fire", "sad"),
+            r("Senate passes budget", "https://c.example.com/politics/budget", "a close vote"),
+            r("Bank fined over fraud", "https://d.example.com/money/bank-fined", "fine"),
         ];
-        assert_eq!(pick(&results, &[]).map(|x| x.title.as_str()), Some("Comet spotted"));
-        assert_eq!(pick(&results, &["c.example.com".to_string()]).map(|x| x.title.as_str()), Some("Another comet"));
+        assert_eq!(pick(&results, &[]).map(|x| x.title.as_str()), Some("Senate passes budget"), "hard news is taken; the grim story is not");
+        assert_eq!(pick(&results, &["c.example.com".to_string()]).map(|x| x.title.as_str()), Some("Bank fined over fraud"));
         assert_eq!(subjects_for(0).len(), SUBJECTS.len());
         assert_ne!(subjects_for(0)[0], subjects_for(1)[0], "the mix moves from day to day");
     }

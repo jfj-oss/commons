@@ -727,10 +727,10 @@ impl Client {
                 log.msgs.push(Msg { id: id.clone(), sender: cert.account.clone(), device: cert.device.clone(), ts, seq, body: MsgBody::Text(text), reply, edited: false, deleted: false, reactions: Default::default(), status: if local { "sending".into() } else { status.into() } });
                 Self::drain_orphans(log, &id, gid);
             }
-            Envelope::File { id, name, mime, size, blob, key, nonce, caption, reply, ts, large } => {
+            Envelope::File { id, name, mime, size, blob, key, nonce, caption, reply, ts, large, voice } => {
                 let ts = sane_ts(ts);
                 if let Some(m) = log.msgs.iter_mut().find(|m| m.id == id) { if local { return; } if m.sender == cert.account { m.seq = seq; m.status = "sent".into(); } return; }
-                log.msgs.push(Msg { id: id.clone(), sender: cert.account.clone(), device: cert.device.clone(), ts, seq, body: MsgBody::File { name, mime, size, blob, key, nonce, caption, large }, reply, edited: false, deleted: false, reactions: Default::default(), status: if local { "sending".into() } else { status.into() } });
+                log.msgs.push(Msg { id: id.clone(), sender: cert.account.clone(), device: cert.device.clone(), ts, seq, body: MsgBody::File { name, mime, size, blob, key, nonce, caption, large, voice }, reply, edited: false, deleted: false, reactions: Default::default(), status: if local { "sending".into() } else { status.into() } });
                 Self::drain_orphans(log, &id, gid);
             }
             Envelope::Edit { ref target, ref text, .. } => {

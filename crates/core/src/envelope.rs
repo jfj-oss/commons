@@ -139,6 +139,23 @@ impl LargeFile {
     }
 }
 
+/// What a voice message adds to its file: its length and a rough waveform (up to 64 peaks, one byte each, as hex).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct Voice {
+    pub ms: u32,
+    #[serde(default)]
+    pub peaks: String,
+}
+pub const MAX_VOICE_MS: u32 = 10 * 60 * 1000;
+pub const MAX_VOICE_PEAKS: usize = 64;
+impl Voice {
+    pub fn validate(&self) -> Result<(), ParseError> {
+        if self.ms == 0 || self.ms > MAX_VOICE_MS { return bad("bad voice length"); }
+        if self.peaks.len() > MAX_VOICE_PEAKS * 2 || self.peaks.len() % 2 != 0 || hex::decode(&self.peaks).is_err() { return bad("bad voice waveform"); }
+        Ok(())
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "t")]
 pub enum Envelope {
@@ -156,6 +173,11 @@ pub enum Envelope {
         /// download the bytes. `size` above then says `min(real size, MAX_BLOB_BYTES)` so that old validation passes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         large: Option<LargeFile>,
+        /// A voice message: the file is a short audio clip, and this is what the player needs before it has any
+        /// bytes (length and a picture of the sound). Optional and ignored by older apps, which show the clip as
+        /// an ordinary audio attachment.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        voice: Option<Voice>,
     },
     Typing,
     /// Best-effort live data for a room (cursors, pointers, anything small and short-lived). Never history: not stored,
@@ -276,11 +298,12 @@ impl Envelope {
                 let emojiish = emoji.chars().all(|c| !c.is_ascii() || c.is_ascii_digit() || c == '#' || c == '*') && emoji.chars().any(|c| !c.is_ascii());
                 if !is_id(target) || emoji.is_empty() || emoji.chars().count() > 16 || !short(emoji, 32) || !emojiish { return bad("bad reaction"); }
             }
-            File { id, name, mime, size, blob, key, nonce, caption, reply, large, .. } => {
+            File { id, name, mime, size, blob, key, nonce, caption, reply, large, voice, .. } => {
                 if !is_id(id) || !is_id(blob) || !short(name, 255) || !valid_mime(mime) || *size > commons_proto::MAX_BLOB_BYTES as u64 || caption.len() > MAX_TEXT { return bad("bad file"); }
                 if key.len() != 64 || nonce.len() != 24 || hex::decode(key).is_err() || hex::decode(nonce).is_err() { return bad("bad file key"); }
                 if reply.as_deref().is_some_and(|r| !is_id(r)) { return bad("bad reply"); }
                 if let Some(l) = large { l.validate(*size)?; }
+                if let Some(v) = voice { if large.is_some() || !mime.starts_with("audio/") { return bad("bad voice message"); } v.validate()?; }
             }
             Typing | Leave | Unknown => {}
             Live { kind, data, .. } => if !valid_live_kind(kind) || data.len() > MAX_LIVE { return bad("bad live event"); },
@@ -706,6 +729,37 @@ mod compat_tests {
     }
 
     #[test]
+    fn a_voice_message_is_an_audio_file_to_an_older_app() {
+        let env = Envelope::File {
+            id: "00112233445566778899aabbccddeeff".into(), name: "Voice message.webm".into(), mime: "audio/webm".into(), size: 900,
+            blob: "ffeeddccbbaa99887766554433221100".into(), key: "00".repeat(32), nonce: "11".repeat(12), caption: String::new(), reply: None, ts: 5,
+            large: None, voice: Some(Voice { ms: 2100, peaks: "0a1b2c".into() }),
+        };
+        let bytes = env.to_bytes();
+        assert_eq!(Envelope::parse(&bytes).unwrap(), env);
+        #[derive(Deserialize, Debug)]
+        #[serde(tag = "t")]
+        enum OldEnvelope {
+            File { name: String, mime: String, ts: u64 },
+            #[serde(other)]
+            Unknown,
+        }
+        match serde_json::from_slice::<OldEnvelope>(&bytes).unwrap() {
+            OldEnvelope::File { mime, .. } => assert_eq!(mime, "audio/webm"),
+            OldEnvelope::Unknown => panic!("a voice message must read as a file"),
+        }
+        let bad = |f: &dyn Fn(&mut Voice), mime: &str| {
+            let mut e = env.clone();
+            if let Envelope::File { voice: Some(ref mut v), mime: ref mut m, .. } = e { f(v); *m = mime.into(); }
+            assert!(Envelope::parse(&serde_json::to_vec(&e).unwrap()).is_err());
+        };
+        bad(&|v| v.ms = 0, "audio/webm");
+        bad(&|v| v.peaks = "zz".into(), "audio/webm");
+        bad(&|v| v.peaks = "00".repeat(65), "audio/webm");
+        bad(&|_| {}, "image/png");
+    }
+
+    #[test]
     fn an_older_app_reads_a_large_file_as_an_ordinary_file() {
         let size = 28u64 << 30;
         let chunk_size = commons_proto::LARGE_CHUNK_BYTES;
@@ -713,7 +767,7 @@ mod compat_tests {
         let env = Envelope::File {
             id: "00112233445566778899aabbccddeeff".into(), name: "movie.mkv".into(), mime: "video/x-matroska".into(),
             size: size.min(commons_proto::MAX_BLOB_BYTES as u64), blob: "ffeeddccbbaa99887766554433221100".into(),
-            key: "00".repeat(32), nonce: "11".repeat(12), caption: String::new(), reply: None, ts: 5, large: Some(large.clone()),
+            key: "00".repeat(32), nonce: "11".repeat(12), caption: String::new(), reply: None, ts: 5, large: Some(large.clone()), voice: None,
         };
         let bytes = env.to_bytes();
         assert_eq!(Envelope::parse(&bytes).unwrap(), env);
@@ -737,7 +791,7 @@ mod compat_tests {
         }
 
         // A small file is byte-for-byte what this version always sent: no empty extra field.
-        let plain = Envelope::File { id: "00112233445566778899aabbccddeeff".into(), name: "a.txt".into(), mime: "text/plain".into(), size: 3, blob: "ffeeddccbbaa99887766554433221100".into(), key: "00".repeat(32), nonce: "11".repeat(12), caption: String::new(), reply: None, ts: 5, large: None };
+        let plain = Envelope::File { id: "00112233445566778899aabbccddeeff".into(), name: "a.txt".into(), mime: "text/plain".into(), size: 3, blob: "ffeeddccbbaa99887766554433221100".into(), key: "00".repeat(32), nonce: "11".repeat(12), caption: String::new(), reply: None, ts: 5, large: None, voice: None };
         assert!(!String::from_utf8(plain.to_bytes()).unwrap().contains("large"));
 
         // A mismatched outer size, chunk count or hash is refused by this version.
@@ -816,11 +870,15 @@ pub struct Look {
     /// stored as `true`. A wall the owner locked is still left alone, and so is a room where Oracle stays quiet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oracle_draw: Option<bool>,
+    /// Rooms only. The backdrop's own two colours (wash and ASCII) behind the chat. Unset: the backdrop uses the room's card colours. An app that
+    /// does not know this field ignores it and keeps using the card colours, so the document stays valid and readable for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back: Option<Duo>,
 }
 impl Look {
-    pub fn is_empty(&self) -> bool { self.card.is_none() && self.chat.is_none() && self.dim.is_none() && self.oracle_quiet.is_none() && self.oracle_draw.is_none() }
+    pub fn is_empty(&self) -> bool { self.card.is_none() && self.chat.is_none() && self.dim.is_none() && self.oracle_quiet.is_none() && self.oracle_draw.is_none() && self.back.is_none() }
     pub fn valid(&self) -> bool {
-        !self.is_empty() && self.card.is_none_or(|n| n <= MAX_LOOK_PATTERN) && self.chat.is_none_or(|n| n <= MAX_LOOK_PATTERN) && self.dim.is_none_or(|n| n <= MAX_LOOK_DIM)
+        !self.is_empty() && self.back.as_ref().is_none_or(|d| d.valid()) && self.card.is_none_or(|n| n <= MAX_LOOK_PATTERN) && self.chat.is_none_or(|n| n <= MAX_LOOK_PATTERN) && self.dim.is_none_or(|n| n <= MAX_LOOK_DIM)
     }
 }
 

@@ -49,6 +49,38 @@ fn updatable(ui: &std::path::Path) -> Option<(PathBuf, &'static str)> {
     Some((install.to_path_buf(), public_key()?))
 }
 
+/// Where the launcher keeps its runtime files (pid, log, the open ticket): MEGATRON_NOTE_DIR, which for a macOS bundle is the
+/// data folder (Contents/Resources is sealed), otherwise the install folder.
+fn state_dir(ui: &std::path::Path, port: u16) -> Option<PathBuf> {
+    if let Some(d) = std::env::var_os("MEGATRON_NOTE_DIR") { return Some(PathBuf::from(d)); }
+    let install = ui.parent()?;
+    // A launcher that does not set it (an older one) must not make us write into a sealed .app bundle.
+    if install.ends_with("Contents/Resources") { return Some(data_dir(port)); }
+    Some(install.to_path_buf())
+}
+
+/// The program that opens mega's window, for a click on a notification when no window is open. Only an installed copy has one.
+fn launcher_path(ui: &std::path::Path) -> Option<PathBuf> {
+    let install = ui.parent()?;
+    let c = if cfg!(windows) { install.join("launcher.exe") } else if install.ends_with("Contents/Resources") { install.parent()?.join("MacOS/launcher") } else { install.join("megatron") };
+    c.is_file().then_some(c)
+}
+
+fn data_dir(port: u16) -> PathBuf {
+    PathBuf::from(std::env::var("COMMONS_DATA").unwrap_or_else(|_| format!("./dev-data-{port}")))
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// Appends a line to the launcher's log (the data folder for a macOS bundle), and to stderr (bridge.log).
+fn launcher_log(ui: &std::path::Path, port: u16, msg: &str) {
+    eprintln!("{msg}");
+    if let Some(dir) = state_dir(ui, port) {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("launcher.log")) {
+            let _ = writeln!(f, "bridge: {msg}");
+        }
+    }
+}
+
 /// Checks, verifies and installs, or says why not. The caller restarts when `restarting` is true.
 fn update_install(app: &App, install: &std::path::Path, key: &str) -> serde_json::Value {
     use commons_core::browser_update::{clear_note, run_now, version, Outcome};
@@ -139,6 +171,7 @@ fn request(s: &mut TcpStream, r: &mut BufReader<TcpStream>, app: &App, ui: &std:
     }
     // Only /rpc carries a body. Anything else with one is answered and the connection closed, so a body is never read as the next request.
     let keep = keep && (len == 0 || (method == "POST" && url == "/rpc"));
+    // (/session reads its small body and closes the connection.)
     let (route, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
     if method == "GET" && route == "/hello" {
         // The launcher's challenge: only a bridge that knows the secret can answer with the right proof.
@@ -149,8 +182,34 @@ fn request(s: &mut TcpStream, r: &mut BufReader<TcpStream>, app: &App, ui: &std:
         let body = serde_json::json!({"secret": !auth.is_open(), "packaged": updatable(ui).is_some(), "launcher_updated": LAUNCHER_REFRESHED.load(Ordering::SeqCst)});
         return reply(s, 200, "application/json", body.to_string().as_bytes(), keep);
     }
-    let protected = route == "/rpc" || route == "/update-note" || route == "/update-check" || route == "/update-install";
+    if method == "POST" && route == "/session" {
+        // A tab in the everyday browser arrives with a one-time ticket (/#t=...) instead of the secret, so the secret is never in
+        // that browser's history. The ticket is spent by this call; the answer carries the secret.
+        let Some(secret) = auth.secret() else { return reply(s, 200, "application/json", br#"{"open":true}"#, false) };
+        if len > 512 { return reply(s, 400, "text/plain", b"too large", false); }
+        let mut body = vec![0u8; len];
+        if r.read_exact(&mut body).is_err() { return reply(s, 400, "text/plain", b"bad body", false); }
+        let ticket = String::from_utf8_lossy(&body).trim().to_string();
+        let ok = state_dir(ui, port).is_some_and(|d| bridge_auth::take_ticket(&d, port, &ticket));
+        if !ok { return reply(s, 403, "text/plain", b"bad ticket", false); }
+        return reply(s, 200, "application/json", serde_json::json!({"secret": secret}).to_string().as_bytes(), false);
+    }
+    let protected = route == "/open-as" ||
+        route == "/rpc" || route == "/update-note" || route == "/update-check" || route == "/update-install";
     if protected && !auth.allows(presented.as_deref()) { return reply(s, 403, "text/plain", b"bad secret", false); }
+    if route == "/open-as" {
+        // The launcher's per-device choice: show the page in a window of its own, or as a tab in the everyday browser.
+        // Only an installed copy has a launcher to honour it. The value is written to the data folder (`open-as`).
+        if updatable(ui).is_none() { return reply(s, 200, "application/json", br#"{"packaged":false}"#, keep); }
+        let data = data_dir(port);
+        if method == "POST" {
+            let Some(v) = query.split('&').find_map(|kv| kv.strip_prefix("v=")).and_then(bridge_auth::OpenAs::parse) else { return reply(s, 400, "text/plain", b"bad value", keep) };
+            if let Err(e) = bridge_auth::write_open_as(&data, v) { return reply(s, 200, "application/json", serde_json::json!({"packaged": true, "error": e.to_string()}).to_string().as_bytes(), keep); }
+        }
+        let env = std::env::var("MEGATRON_OPEN").ok();
+        let body = serde_json::json!({"packaged": true, "open_as": bridge_auth::open_as(&data, None).word(), "forced": env.as_deref().and_then(bridge_auth::OpenAs::parse).map(|v| v.word())});
+        return reply(s, 200, "application/json", body.to_string().as_bytes(), keep);
+    }
     if method == "GET" && url == "/update-note" {
         // What the launcher's update check left for the page (packaging/linux-browser/megatron). Read once, then gone.
         let note = ui.parent().and_then(commons_core::browser_update::take_note);
@@ -234,8 +293,32 @@ fn main() {
     let relay = std::env::var("COMMONS_RELAY").unwrap_or_else(|_| "http://127.0.0.1:8787".into());
     let kdf = if std::env::var("COMMONS_FAST_KDF").is_ok() { commons_core::vault::KdfParams::TEST } else { commons_core::vault::KdfParams::STRONG };
     let auth = Auth::from_env();
+    // macOS: an update brings the new launcher program inside ui/ (browser_update::MAC_LAUNCHER_CARRIER); it replaces
+    // Contents/MacOS/launcher here, before the port is bound, so a launcher that is waiting for this bridge does not
+    // sign the bundle at the same time.
+    #[cfg(target_os = "macos")]
+    if let (Some(install), Some(state)) = (ui.parent(), state_dir(&ui, port)) {
+        use commons_core::browser_update::{refresh_mac_launcher, resign_bundle, LauncherSwap};
+        match refresh_mac_launcher(install, &state, &|| resign_bundle(install)) {
+            LauncherSwap::Replaced => { LAUNCHER_REFRESHED.store(true, Ordering::SeqCst); launcher_log(&ui, port, "replaced the older launcher with the current one and signed the app again"); }
+            LauncherSwap::Same => launcher_log(&ui, port, "the launcher is already current; signed the app again"),
+            LauncherSwap::Failed(e) => launcher_log(&ui, port, &format!("could not replace the launcher: {e}")),
+            LauncherSwap::Skipped | LauncherSwap::Nothing => {}
+        }
+    }
     let app = App::with_kdf(data.into(), &relay, kdf);
     app.start_background();
+    // Notifications while no window is open (notify.rs). An installed copy shows them through the system. A bridge run from a
+    // source tree stays quiet unless MEGATRON_NATIVE_NOTIFY=1, so tests never put notes on a real screen; COMMONS_NOTIFY_LOG=<file>
+    // writes each note as a line of JSON to that file instead (the checks use it).
+    {
+        let hub = app.notify_hub();
+        if let Some(f) = std::env::var_os("COMMONS_NOTIFY_LOG") {
+            hub.set_sink(Arc::new(commons_core::notify::FileSink::new(PathBuf::from(f))));
+        } else if updatable(&ui).is_some() || std::env::var_os("MEGATRON_NATIVE_NOTIFY").is_some() {
+            hub.set_sink(Arc::new(commons_core::notify::NativeSink::new(&hub, launcher_path(&ui), "app.commons.chat.browser")));
+        }
+    }
     // After an Update on Windows the previous bridge may still be leaving, so give it a moment to free the port.
     let mut bound = TcpListener::bind(("127.0.0.1", port));
     for _ in 0..50 {

@@ -64,6 +64,10 @@ html.mega .seal svg { display: none; }
 html.mega .seal i { font: 400 calc(var(--s) * .56)/1 var(--m-sharp); font-style: normal; color: #101116; letter-spacing: 0; text-transform: uppercase; }
 html.mega .seal.tiny i { font-family: var(--m-sharp); font-weight: 400; font-size: 11px; }
 html.mega .seal img.av-img, html.mega .seal img.av-img.round { border-radius: inherit; }
+/* A picture covers its seal exactly: the coloured tile behind it used to show as an uneven rim at the corners, because the tile
+   had squircle corners and the picture plain round ones. The tile goes, and the picture takes the tile's own corner shape. */
+html.mega .seal:has(> img.av-img) { background: none; }
+@supports (corner-shape: squircle) { html.mega .seal img.av-img { corner-shape: squircle; } }
 @supports (color: oklch(from red l c h)) {
   html.mega .seal { background: oklch(from var(--wax) .8 .13 h); }
   html.mega .crest { background: oklch(from var(--wax, #8a8fa8) .8 .13 h); }

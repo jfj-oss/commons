@@ -30,7 +30,7 @@ use commons_proto::*;
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
 use openmls_traits::OpenMlsProvider;
 use rand::RngCore;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 pub const LABEL: &str = "commons-live-v1";
 const DOM: &[u8] = b"commons/live/v1\0";
@@ -204,6 +204,8 @@ pub struct LiveChan {
     /// The rooms the last poll asked about, and when that list last changed.
     polled_rooms: Vec<String>,
     rooms_changed: u64,
+    /// The rooms of the poll the app's poller thread is waiting on now: a room not in it is polled by the ordinary round.
+    pub(crate) polling: BTreeSet<String>,
     /// Test builds only: behave like a version from before the channel (send through the log, never poll).
     pub legacy: bool,
     /// What the channel did, for tests and the debug view.
@@ -244,6 +246,8 @@ fn is_gone(e: &anyhow::Error) -> bool { relay_status(e) == Some(404) }
 
 impl LivePlan {
     pub fn wants_poll(&self) -> bool { self.poll.is_some() }
+    /// The rooms the poll asks about.
+    pub fn rooms(&self) -> Vec<String> { self.poll.as_ref().map(|p| p.cursors.keys().cloned().collect()).unwrap_or_default() }
     /// The set of rooms changed lately: a poll already in flight would not cover a new room, so keep polls short for a while.
     pub fn quick(&self) -> bool { self.quick }
     /// The network part. `wait_ms` is how long the relay may hold the poll for news.
@@ -282,6 +286,8 @@ impl Client {
     pub fn live_support(&self) -> Support { self.live.support }
     pub fn live_stats(&self) -> LiveStats { self.live.stats.clone() }
     pub fn set_live_background(&mut self, on: bool) { self.live.background = on; }
+    /// The app's poller says which rooms its request in flight covers (none between requests, or when it has no plan).
+    pub fn set_live_polling(&mut self, rooms: Vec<String>) { self.live.polling = rooms.into_iter().collect(); }
     #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
     pub fn debug_live_legacy(&mut self, on: bool) { self.live.legacy = on; }
@@ -408,7 +414,10 @@ impl Client {
             if r.boot != self.live.boot { self.live.boot = r.boot.clone(); self.live.cursors.clear(); }
             for (gid, g) in r.groups {
                 if !self.st.groups.get(&gid).is_some_and(|s| s.kind == Kind::Channel && !s.removed) { continue; }
-                self.live.cursors.insert(gid.clone(), g.next);
+                // Two polls can be out at once (the poller's long one and a round's short one for a new room): the older
+                // answer must not move a room back, or its events would come twice (and be dropped as replays).
+                let at = self.live.cursors.entry(gid.clone()).or_insert(0);
+                *at = (*at).max(g.next);
                 for it in g.events {
                     if let Ok(b) = unb64(&it.data) { work.push(Held::Raw { gid: gid.clone(), from: it.from, blob: b, at: now }); }
                 }

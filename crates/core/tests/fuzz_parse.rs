@@ -24,7 +24,7 @@ fn parsers_never_panic() {
     let id = "0123456789abcdef0123456789abcdef".to_string();
     let seeds: Vec<Vec<u8>> = vec![
         Envelope::Text { id: id.clone(), text: "hi".into(), reply: Some(id.clone()), ts: 1 }.to_bytes(),
-        Envelope::File { id: id.clone(), name: "a".into(), mime: "a/b".into(), size: 3, blob: id.clone(), key: "00".repeat(32), nonce: "00".repeat(12), caption: "".into(), reply: None, ts: 1, large: None }.to_bytes(),
+        Envelope::File { id: id.clone(), name: "a".into(), mime: "a/b".into(), size: 3, blob: id.clone(), key: "00".repeat(32), nonce: "00".repeat(12), caption: "".into(), reply: None, ts: 1, large: None, voice: None }.to_bytes(),
         Envelope::React { target: id.clone(), emoji: "👍".into(), on: true }.to_bytes(),
         Envelope::Revoked { account: "a".repeat(64), device: "b".repeat(64), sig: "c".repeat(128) }.to_bytes(),
         GroupExt::Channel { community: "abcdef0123".into(), name: "x".into(), owner: "a".repeat(64), nonce: id.clone(), admins: vec![AdminGrant { account: "b".repeat(64), sig: "c".repeat(128) }], transfers: vec![] }.to_bytes(),

@@ -26,6 +26,8 @@
     }
     // mentions first, then the rest, each newest first (the snapshot has no "last activity"; it comes from the line fetched below)
     out.sort((a, b) => (b.at > 0) - (a.at > 0) || b.ts - a.ts);
+    // a room that has been read forgets its line: the next unread message there can have the same counts (1 unread, 0 mentions) as the last one did
+    const live = new Set(out.map(r => r.gid)); for (const g of [...NEWS.keys()]) if (!live.has(g)) NEWS.delete(g);
     return out;
   }
   // the newest line of each unread room, for its row: asked for only when a room's counts changed, one request at a time
@@ -37,11 +39,13 @@
         if (p && p.sig === sig) continue;
         let n;
         try {
-          const m = await rpc('messages', { gid: r.gid, limit: Math.min(80, r.n + 12) });
+          // only what changed since the last look (app.js); the window grows in steps so the core can keep answering with differences
+          const limit = Math.min(80, Math.max(20, Math.ceil((r.n + 12) / 20) * 20));
+          const h = await fetchMessages({ gid: r.gid, limit }, p && p.h), m = h.m;
           const list = m.messages.filter(x => !x.deleted && x.kind !== 'notice' && x.kind !== 'member'), last = list[list.length - 1];
           const hit = r.at ? [...list].reverse().find(x => !x.mine && (mentionsMe(x.text) || repliesToMe(x, m.messages))) : null, pick = hit || last;
-          n = { sig, who: pick ? pick.name : '', text: pick ? plain(pick.text || (pick.file ? pick.file.name : '')) : '', ts: last ? last.ts || 0 : 0 };
-        } catch { n = { sig, who: '', text: '', ts: 0 }; }
+          n = { sig, who: pick ? pick.name : '', text: pick ? plain(pick.text || (pick.file ? pick.file.name : '')) : '', ts: last ? last.ts || 0 : 0, h };
+        } catch { n = { sig, who: '', text: '', ts: 0, h: p && p.h }; }
         if (!p || p.who !== n.who || p.text !== n.text || p.ts !== n.ts) changed = true;
         NEWS.set(r.gid, n);
         if (changed && window.__megaRender) window.__megaRender();

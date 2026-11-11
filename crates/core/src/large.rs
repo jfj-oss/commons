@@ -219,7 +219,7 @@ impl Client {
         let env = Envelope::File {
             id: rand_hex(16), name: s.name.clone(), mime: s.mime.clone(), size: s.size.min(MAX_BLOB_BYTES as u64),
             blob: s.blob.clone(), key: s.key.clone(), nonce: s.nonce.clone(), caption: s.caption.clone(), reply: None, ts: now_secs(),
-            large: Some(LargeFile { size: s.size, chunks: s.chunks, chunk_size: s.chunk_size, sha256: sha, expires: s.expires }),
+            large: Some(LargeFile { size: s.size, chunks: s.chunks, chunk_size: s.chunk_size, sha256: sha, expires: s.expires }), voice: None,
         };
         env.validate().map_err(|e| anyhow!("{e}"))?;
         let msg_id = match &env { Envelope::File { id, .. } => id.clone(), _ => unreachable!() };

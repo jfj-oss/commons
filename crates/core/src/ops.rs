@@ -498,10 +498,10 @@ impl Client {
     /// backdrop strength. `None` for `look` (or one with no part set) puts everything back to automatic. Nothing is published when nothing changes.
     pub fn set_look(&mut self, cid: &str, room: Option<&str>, look: Option<Look>) -> Result<()> {
         if self.my_role(cid) != Role::Owner { bail!("only the owner can change the look"); }
-        let look = look.map(|mut l| { l.oracle_quiet = l.oracle_quiet.filter(|q| *q); l.oracle_draw = l.oracle_draw.filter(|q| *q); l }).filter(|l| !l.is_empty());
-        if look.as_ref().is_some_and(|l| !l.valid()) { bail!("a look has patterns 0 to {MAX_LOOK_PATTERN} and a strength of 0 to {MAX_LOOK_DIM} percent"); }
+        let look = look.map(|mut l| { l.oracle_quiet = l.oracle_quiet.filter(|q| *q); l.oracle_draw = l.oracle_draw.filter(|q| *q); l.back = l.back.map(|d| d.lower()); l }).filter(|l| !l.is_empty());
+        if look.as_ref().is_some_and(|l| !l.valid()) { bail!("a look has patterns 0 to {MAX_LOOK_PATTERN}, a strength of 0 to {MAX_LOOK_DIM} percent and backdrop colours like #rrggbb"); }
         if let Some(r) = room { if !self.has_room(cid, r) { bail!("unknown room"); } }
-        if room.is_none() && look.as_ref().is_some_and(|l| l.chat.is_some() || l.dim.is_some() || l.oracle_quiet.is_some() || l.oracle_draw.is_some()) { bail!("the community card has a card pattern only"); }
+        if room.is_none() && look.as_ref().is_some_and(|l| l.chat.is_some() || l.dim.is_some() || l.oracle_quiet.is_some() || l.oracle_draw.is_some() || l.back.is_some()) { bail!("the community card has a card pattern only"); }
         let mut doc = self.style_base(cid)?;
         let key = room.unwrap_or(cid).to_string();
         let cur = self.st.communities.get(cid).and_then(|c| c.style.as_ref()).and_then(|d| d.looks.get(&key)).cloned();
@@ -616,6 +616,9 @@ impl Client {
     }
     /// Everything about a file message that can go wrong before any bytes move. Encrypts the file (no network).
     pub fn file_prepare(&self, gid: &str, name: &str, mime: &str, data: &[u8], caption: &str) -> Result<OutFile> {
+        self.file_prepare_voice(gid, name, mime, data, caption, None)
+    }
+    pub fn file_prepare_voice(&self, gid: &str, name: &str, mime: &str, data: &[u8], caption: &str, voice: Option<crate::envelope::Voice>) -> Result<OutFile> {
         self.check_chan(gid)?;
         if data.len() > MAX_BLOB_BYTES - 64 { bail!("file is larger than the {} MB limit", MAX_BLOB_BYTES / 1024 / 1024); }
         if caption.len() > MAX_TEXT { bail!("the caption is longer than {MAX_TEXT} bytes"); }
@@ -624,7 +627,7 @@ impl Client {
         let ct = ChaCha20Poly1305::new((&key).into()).encrypt(Nonce::from_slice(&nonce), data).map_err(|_| anyhow!("encrypt"))?;
         let safe: String = name.chars().filter(|c| !c.is_control()).collect();
         let safe = cut_name(safe.trim(), 200);
-        let env = Envelope::File { id: rand_hex(16), name: if safe.is_empty() { "file".into() } else { safe }, mime: clean_mime(mime), size: data.len() as u64, blob: rand_hex(16), key: hex::encode(key), nonce: hex::encode(nonce), caption: caption.into(), reply: None, ts: now_secs(), large: None };
+        let env = Envelope::File { id: rand_hex(16), name: if safe.is_empty() { "file".into() } else { safe }, mime: clean_mime(mime), size: data.len() as u64, blob: rand_hex(16), key: hex::encode(key), nonce: hex::encode(nonce), caption: caption.into(), reply: None, ts: now_secs(), large: None, voice };
         env.validate().map_err(|e| anyhow!("{e}"))?;
         Ok(OutFile { gid: gid.into(), env, ct })
     }

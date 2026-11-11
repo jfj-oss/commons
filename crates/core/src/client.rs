@@ -105,6 +105,11 @@ pub struct Client {
     /// Another round would do something useful right now: more entries are waiting, or a lookup just came back.
     pub more: bool,
     pub(crate) sync_cap: u64,
+    /// Set when the app runs its own sync poller (api.rs), which waits at the relay for news instead of asking every
+    /// second. The ordinary round then syncs only for groups that poll does not cover (`sync_polling`: the groups of the
+    /// request in flight), so a group joined meanwhile is heard within a round and not when the held poll returns.
+    pub(crate) sync_bg: bool,
+    pub(crate) sync_polling: BTreeSet<String>,
     pub(crate) pair_ack: Option<(String, String)>,
     pub net: NetStatus,
     /// When we last offered our consent to a community whose table has none from us.
@@ -181,7 +186,7 @@ impl Client {
         let walls = st.walls.clone();
         Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), wall_peer_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), live_in: Default::default(), live_next: 0, live: Default::default(), ring_in: Default::default(), ring_next: 0, ring_seen: BTreeMap::new(), ring_rate: BTreeMap::new(), ring_ends: BTreeMap::new(), ring_sent: BTreeMap::new(), direct_seen: BTreeMap::new(), direct_rate: BTreeMap::new(), direct_joined: Default::default(), direct_out: vec![], live_out: BTreeMap::new(), live_sent: BTreeMap::new(), live_rate: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new(),
             lock: Some(lock), dir_ttl_secs: 30, acl_check_secs: 60, dir_cache: HashMap::new(), dir_wanted: BTreeSet::new(), dir_hot_until: 0, kp_cache: HashMap::new(), kp_wanted: BTreeMap::new(), kp_refill: false, seen_welcomes: HashSet::new(), last_parked_try: 0,
-            more: false, sync_cap: SYNC_MAX_BYTES, pair_ack: None, net: NetStatus::default(), consent_offered: HashMap::new() }
+            more: false, sync_cap: SYNC_MAX_BYTES, sync_bg: false, sync_polling: BTreeSet::new(), pair_ack: None, net: NetStatus::default(), consent_offered: HashMap::new() }
     }
     fn blank(dir: &Path, vault: Vault, relay: &str, name: &str, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
         let mut st = State::default();

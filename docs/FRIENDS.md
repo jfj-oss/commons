@@ -109,6 +109,8 @@ Type and press **Enter**; **Shift+Enter** makes a new line. The paper clip attac
 
 You see messages from the moment you joined. What was said before stays with the people who were there; that is how the encryption works, not a fault.
 
+**Notifications (Windows, Mac and Linux).** Your own computer tells you about new messages, even after you close the window, as long as mega keeps running in the background (it does, until you quit it or restart the computer). Nothing goes through a server for this. By default a notification says who wrote and in which room, not what; **options** (or Settings) can show the text, send only **@mentions and replies**, or turn them off. To mute one room, right-click its dot or card (hold it on a touch screen): an hour, eight hours, until you unmute, or mentions only. Do Not Disturb on your computer is respected.
+
 ### Voice rooms
 
 Voice rooms have their own cards, below the text rooms, with the people in the call on them. Press **join** on the card (or click the voice dot while in a chat) to join its call. Nothing else joins a call: scrolling past or resting on a card never does.

@@ -28,13 +28,18 @@ pub struct Faults {
     pub skewed_clock: bool,
     /// the relay is one from before the live channel: its paths answer 404
     pub no_live: bool,
+    /// how many sync requests and live polls went out (whatever came of them)
+    pub syncs: u32,
+    pub live_polls: u32,
 }
 
 pub struct FlakyTransport { inner: HttpTransport, pub faults: Arc<Mutex<Faults>> }
 impl Transport for FlakyTransport {
     fn request(&self, key: Option<&SigningKey>, method: &str, path: &str, body: &[u8], timeout: Duration) -> Result<HttpResp> {
         {
-            let f = self.faults.lock().unwrap();
+            let mut f = self.faults.lock().unwrap();
+            if path == "/v1/sync" { f.syncs += 1; }
+            if path == "/v1/live/poll" { f.live_polls += 1; }
             if f.offline { anyhow::bail!("network: simulated offline"); }
             if f.no_live && (path.ends_with("/live") || path == "/v1/live/poll") { return Ok(HttpResp { status: 404, body: b"not found".to_vec() }); }
             if f.skewed_clock && key.is_some() { return Ok(HttpResp { status: 401, body: format!("clock skew: relay time is {}", now_secs() + 3000).into_bytes() }); }
