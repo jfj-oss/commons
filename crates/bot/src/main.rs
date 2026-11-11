@@ -104,7 +104,7 @@ fn open_client(dir: &Path) -> Result<Client, String> {
 }
 
 fn usage() -> ! {
-    eprintln!("megatron-bot: a local-model member for Megatron\n\n  megatron-bot join <invite-link>   create the bot's account and join a community\
+    eprintln!("megatron-bot: a local-model member for Megatron\n\n  megatron-bot join <invite-link or invite password>   join a community (a link also creates the bot's account)\
         \n  megatron-bot run                  answer mentions in every room it is in (the systemd service runs this)\n\n\
         Environment: MEGATRON_BOT_DATA, MEGATRON_BOT_NAME (default {DEFAULT_NAME}), MEGATRON_BOT_MODEL,\
         \n  MEGATRON_BOT_OLLAMA_URL (default {DEFAULT_OLLAMA}), MEGATRON_BOT_DEEPSEEK_URL, MEGATRON_BOT_DEEPSEEK_MODEL,\
@@ -125,7 +125,7 @@ fn usage() -> ! {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(String::as_str) {
-        Some("join") => match args.get(1) { Some(link) => join(link), None => { eprintln!("Which invite link? Usage: megatron-bot join <invite-link>"); std::process::exit(2) } },
+        Some("join") => match args.get(1) { Some(link) => join(link), None => { eprintln!("Which invite? Usage: megatron-bot join <invite-link or invite password>"); std::process::exit(2) } },
         Some("run") => run(),
         // started by Claude Code itself as its permission-prompt server; never typed by hand
         Some("assist-mcp") => {
@@ -139,9 +139,24 @@ fn main() {
     if let Err(e) = r { eprintln!("megatron-bot: {e}"); std::process::exit(1); }
 }
 
-fn join(link: &str) -> Result<(), String> {
+fn join(link_or_password: &str) -> Result<(), String> {
     let dir = data_dir();
     let cfg = config();
+    // An invite password ("amber-fox-teal-…") instead of a link: the bot's own relay holds the sealed link for it.
+    let looked_up;
+    let link = match InviteLink::decode(link_or_password) {
+        Ok(_) => link_or_password,
+        Err(link_err) => {
+            if !Client::exists(&dir) {
+                return Err(format!("That is not a Megatron community invite link ({link_err}). An invite password works only once the bot has an account; join with a link first."));
+            }
+            let relay = open_client(&dir)?.st.relay.clone();
+            let api = Api { t: HttpTransport::new(&relay).into_arc() };
+            println!("Looking up the invite password on {relay}…");
+            looked_up = commons_core::pwinvite::lookup(&api, &relay, link_or_password, KdfParams::STRONG).map_err(|e| format!("{e:#}"))?;
+            looked_up.as_str()
+        }
+    };
     let inv = InviteLink::decode(link).map_err(|e| format!("That is not a Megatron community invite link ({e})."))?;
     let exists = Client::exists(&dir);
     let pass = passphrase(&dir, !exists)?.ok_or_else(|| format!("{} has no usable passphrase file; the account there cannot be unlocked", dir.join("passphrase").display()))?;
