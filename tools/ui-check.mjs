@@ -1763,6 +1763,7 @@ try {
       await A.ev(`(() => { const s = document.querySelector('#stream'); s.scrollTop = s.scrollHeight; })()`); await sleep(500);
       s = await lrState(); need(s.gap <= 4 && s.lastVisible, `lastread ${label}: scrolling down does not reach the newest: ` + JSON.stringify(s));
       await A.waitFor(`S.snap.communities.flatMap(c => c.channels).filter(x => x.gid === ${JSON.stringify(roomX)}).every(x => !x.unread)`, 20000);
+      await openA(roomY); await readAll(roomY); await A.waitFor(`!document.querySelector('#stream .newline')`, 8000);   // leave no first-unread line behind for the checks after this one
       if (w) { await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(900); }
     }
   }
