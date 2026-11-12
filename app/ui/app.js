@@ -862,7 +862,8 @@ function renderStream() {
   if (S.jumpTo) { const el = $(`.msg[data-id="${CSS.escape(S.jumpTo)}"]`, st); S.jumpTo = null; if (el) flashTo(el); }
   else if (S.first) {
     const nl = $('.newline', st);
-    if (nl && nl.offsetTop > st.clientHeight * .4) st.scrollTop = nl.offsetTop - st.clientHeight * .3; else st.scrollTop = st.scrollHeight;
+    const place = () => { const n = $('.newline', st); if (n && n.offsetTop > st.clientHeight * .4) st.scrollTop = n.offsetTop - st.clientHeight * .3; else st.scrollTop = st.scrollHeight; };
+    place(); holdPlace(st, place);
     st.classList.remove('swap'); void st.offsetWidth; st.classList.add('swap');
   }
   else if (near) st.scrollTop = st.scrollHeight;
@@ -870,6 +871,18 @@ function renderStream() {
   if (S.keep != null) { st.scrollTop = st.scrollHeight - S.keep; S.keep = null; }
   S.first = false; S.painted = Date.now(); st.setAttribute('aria-busy', false); onScroll();
   fillAvatars();
+}
+// A room just opened is placed (at the newest message, or at the first unread), but the rows keep growing for a moment:
+// pictures get their size, fonts and avatars arrive, the open animation settles. Put it back in place on every frame until
+// the reader touches the room or about two seconds pass, so a late change in height never leaves it short of the place.
+let holdT = 0;
+function holdPlace(st, place) {
+  cancelAnimationFrame(holdT);
+  const t0 = performance.now(), gid = S.gid; let done = false;
+  const stop = () => { done = true; for (const ev of ['wheel', 'touchstart', 'pointerdown', 'keydown']) st.removeEventListener(ev, stop, true); };
+  for (const ev of ['wheel', 'touchstart', 'pointerdown', 'keydown']) st.addEventListener(ev, stop, { capture: true, passive: true });
+  const step = () => { if (done || gid !== S.gid || S.jumpTo || performance.now() - t0 > 2000) { stop(); return; } place(); holdT = requestAnimationFrame(step); };
+  holdT = requestAnimationFrame(step);
 }
 function flashTo(el) {
   el.scrollIntoView({ block: 'center', behavior: calm() ? 'auto' : 'smooth' });

@@ -1725,6 +1725,48 @@ try {
   if (process.env.COMMONS_UI_STOP_AFTER === 'mega5') { console.log('UI check stopped after mega phase 5 (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
 
   }
+  // ---- opening a room lands at the last read message: the newest when all is read, else the first unread in view ----
+  if (!process.env.COMMONS_UI_SKIP_LASTREAD) {
+    const cid = await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`), cidj = JSON.stringify(cid);
+    const rooms = await A.ev(`S.snap.communities.find(c => c.id === ${cidj}).channels.filter(x => x.kind !== 'voice').map(x => x.gid)`);
+    const roomX = textGid, roomY = rooms.find(r => r !== textGid);
+    need(!!roomY, 'lastread: the club needs a second text room');
+    const sendBx = (gid, t) => B.ev(`rpc('send_text', { gid: ${JSON.stringify(gid)}, text: ${JSON.stringify(t)}, reply: null }).then(() => 1)`);
+    const lrState = () => A.ev(`(() => { const s = document.querySelector('#stream'), r = s.getBoundingClientRect(), msgs = [...s.querySelectorAll('.msg')], last = msgs[msgs.length - 1], nl = s.querySelector('.newline'); const vis = e => { if (!e) return null; const b = e.getBoundingClientRect(); return b.bottom > r.top + 1 && b.top < r.bottom - 1; }; return { gid: S.gid, first: S.first, gap: Math.round(s.scrollHeight - s.scrollTop - s.clientHeight), max: s.scrollHeight - s.clientHeight, n: msgs.length, lastVisible: vis(last), nl: !!nl, nlVisible: vis(nl), nlTop: nl ? Math.round(nl.getBoundingClientRect().top - r.top) : null, h: Math.round(r.height) }; })()`);
+    const settle = async () => { let prev = ''; for (let i = 0; i < 40; i++) { await sleep(250); const st = JSON.stringify(await lrState()); if (st === prev && !JSON.parse(st).first) { await sleep(500); return lrState(); } prev = st; } return lrState(); };
+    const readAll = async (gid) => { await A.waitFor(`S.gid === ${JSON.stringify(gid)} && !S.first`, 20000); await A.waitFor(`S.snap.communities.every(c => c.channels.filter(x => x.gid === ${JSON.stringify(gid)}).every(x => !x.unread))`, 20000); };
+    const openA = async gid => { await A.send('Page.bringToFront'); await A.ev(`openRoom(${JSON.stringify(gid)}); 1`); };
+    // enough lines in both rooms that each is taller than the screen
+    for (let i = 0; i < 40; i++) { await sendBx(roomX, 'lastread X ' + i + ' ' + 'word '.repeat(i % 7 * 3)); if (i % 8 === 0) await sendBx(roomY, 'lastread Y ' + i); }
+    await sleep(1500);
+    for (const [label, w, h] of [['desktop', 0, 0], ['phone', 390, 844]]) {
+      if (w) { await A.send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 2, mobile: true }); await sleep(900); }
+      await openA(roomX); await readAll(roomX);
+      let s = await settle(); need(s.n > 15, `lastread ${label}: the room is too short to test: ` + JSON.stringify(s));
+      await openA(roomY); await readAll(roomY); await settle();
+      await openA(roomX); s = await settle();
+      need(s.gap <= 4 && s.lastVisible, `lastread ${label}: back in a fully read room it is not at the newest message: ` + JSON.stringify(s));
+      // and once more, quickly, with no wait between the switches
+      await openA(roomY); await sleep(150); await openA(roomX); s = await settle();
+      need(s.gap <= 4 && s.lastVisible, `lastread ${label}: after a quick switch it is not at the newest message: ` + JSON.stringify(s));
+      // unread: the room is away, bob writes 25 lines, alice opens it: the first unread is in view, with its marker, and the end is reachable
+      await openA(roomY); await readAll(roomY); await settle();
+      for (let i = 0; i < 25; i++) await sendBx(roomX, `lastread ${label} new ${i} ` + 'more '.repeat(i % 5 * 2));
+      await A.waitFor(`S.snap.communities.flatMap(c => c.channels).some(x => x.gid === ${JSON.stringify(roomX)} && x.unread >= 25)`, 40000);
+      await A.ev(`document.visibilityState; 1`);
+      await openA(roomX); await A.waitFor(`S.gid === ${JSON.stringify(roomX)} && !S.first`, 20000);
+      let u = null; for (let i = 0; i < 20; i++) { await sleep(150); u = await lrState(); if (u.nl) break; }
+      need(u.nl && u.nlVisible, `lastread ${label}: the first unread message is not in view: ` + JSON.stringify(u));
+      need(!u.lastVisible || u.n < 4, `lastread ${label}: a room with 25 unread should not open at the very bottom: ` + JSON.stringify(u));
+      await A.shot(`lastread-${label}-unread`);
+      await sleep(2300);   // the room keeps its place for about two seconds unless the reader touches it
+      await A.ev(`(() => { const s = document.querySelector('#stream'); s.scrollTop = s.scrollHeight; })()`); await sleep(500);
+      s = await lrState(); need(s.gap <= 4 && s.lastVisible, `lastread ${label}: scrolling down does not reach the newest: ` + JSON.stringify(s));
+      await A.waitFor(`S.snap.communities.flatMap(c => c.channels).filter(x => x.gid === ${JSON.stringify(roomX)}).every(x => !x.unread)`, 20000);
+      if (w) { await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(900); }
+    }
+  }
+  if (process.env.COMMONS_UI_STOP_AFTER === 'lastread') { console.log('UI check stopped after the last-read check (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
   // ---- mega phase 6: the "what's new" card, unread marks on the dots, and chat density per room ----
   {
     const cid = await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`), cidj = JSON.stringify(cid);
