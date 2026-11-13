@@ -62,6 +62,9 @@ try {
   const cid = (await A.rpc('create_community', { name: 'Listen along' })).id;
   const gid = (await A.rpc('create_channel', { cid, name: 'music' })).id;
   for (const c of [O, N]) await joinAll(c, cid, (await A.rpc('create_invite', { cid, uses: 1 })).link);
+  // sharing is on by default in the new app (it finds no rune here until it is given an address); the 0.3.5 app's is off as it always was
+  const shares = await Promise.all([A, N, O].map(async c => (await c.rpc('snapshot')).share_listening));
+  check(shares[0] === true && shares[1] === true && shares[2] === false, 'new apps share "listening to" by default, the 0.3.5 app does not', shares);
   await N.rpc('set_listening_sharing', { on: false, rune: 'http://127.0.0.1:18972' });
   await A.rpc('set_listening_sharing', { on: true, rune: 'http://127.0.0.1:18971' });
 

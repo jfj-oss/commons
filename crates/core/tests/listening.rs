@@ -119,8 +119,9 @@ fn sending_is_on_change_only_and_renews_slowly() {
     a.c.update_listening(None).unwrap();
     assert_eq!(a.c.st.outbox.len(), base + 4, "staying stopped sends nothing");
 
-    // Off by default: nothing is looked at, and nothing is sent.
+    // Turned off: nothing is looked at, and nothing is sent.
     let mut c = Peer::new(&net, "carol");
+    c.c.set_listening_sharing(false, "").unwrap();
     let quiet = c.c.st.outbox.len();
     c.c.update_listening(Some(sea_power())).unwrap();
     assert_eq!(c.c.st.outbox.len(), quiet);
@@ -222,4 +223,35 @@ fn a_spotify_status_carries_the_position_and_keeps_its_arrival_time() {
     a.c.update_listening(Some(mk(5_000, t0 + 20_000, true))).unwrap();
     settle(&mut [&mut a, &mut b]);
     assert_eq!(b.c.listening_of(&a.acct()), None, "a song that was never playing here is not announced as paused");
+}
+
+/// Sharing is on unless the person turned it off: for a new account, and once for an account from before that default which
+/// never chose. A choice, either way, is kept.
+#[test]
+fn sharing_is_on_by_default_and_a_choice_is_kept() {
+    let net = Net::new();
+    let mut a = Peer::new(&net, "alice");
+    assert!(a.c.st.share_listening && !a.c.st.share_listening_chosen, "on for a new account, and not as a choice");
+    // an account from before the default: stored off, never chosen, never had the default applied
+    a.c.st.share_listening = false;
+    a.c.st.share_listening_default_applied = false;
+    a.c.save().unwrap();
+    a.reopen(&net);
+    assert!(a.c.st.share_listening, "switched on once for an account that never chose");
+    // saving Settings without touching the switch is not a choice
+    a.c.set_listening_sharing(true, "").unwrap();
+    assert!(!a.c.st.share_listening_chosen);
+    // an explicit off stays off, across restarts, and even if the default were ever applied again
+    a.c.set_listening_sharing(false, "").unwrap();
+    assert!(a.c.st.share_listening_chosen);
+    a.reopen(&net);
+    assert!(!a.c.st.share_listening);
+    a.c.st.share_listening_default_applied = false;
+    a.c.save().unwrap();
+    a.reopen(&net);
+    assert!(!a.c.st.share_listening, "a choice is never overridden by the default");
+    // and an explicit on is a choice too
+    a.c.set_listening_sharing(true, "").unwrap();
+    a.reopen(&net);
+    assert!(a.c.st.share_listening && a.c.st.share_listening_chosen);
 }

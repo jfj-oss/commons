@@ -193,6 +193,9 @@ impl Client {
     }
     fn assemble(dir: &Path, vault: Vault, mut st: State, prov: Prov, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
         if !st.typing_default_applied { st.typing_default_applied = true; st.typing_enabled = true; }
+        // The same for sharing "listening to": on for a new account and, once, for an account from before this default that never
+        // changed the switch. An account that chose (on or off) keeps its choice.
+        if !st.share_listening_default_applied { st.share_listening_default_applied = true; if !st.share_listening_chosen { st.share_listening = true; } }
         let walls = st.walls.clone();
         Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), wall_peer_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), read_sent_at: BTreeMap::new(), live_in: Default::default(), live_next: 0, live: Default::default(), ring_in: Default::default(), ring_next: 0, ring_seen: BTreeMap::new(), ring_rate: BTreeMap::new(), ring_ends: BTreeMap::new(), ring_sent: BTreeMap::new(), direct_seen: BTreeMap::new(), direct_rate: BTreeMap::new(), direct_joined: Default::default(), direct_out: vec![], history_hold_until: 0, history_chunk_bytes: crate::history::CHUNK_PLAIN,
             #[cfg(feature = "test-hooks")]

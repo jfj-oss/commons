@@ -1328,14 +1328,15 @@ impl Client {
 
     // ------------------------------------------------------------------ what rune is playing
     /// Where rune answers on this device (the default until the person changes it).
-    pub fn rune_url(&self) -> String { if self.st.rune_url.is_empty() { crate::rune::DEFAULT_URL.into() } else { self.st.rune_url.clone() } }
+    pub fn rune_url(&self) -> String { if self.st.rune_url.is_empty() { crate::rune::default_url() } else { self.st.rune_url.clone() } }
 
     /// Turn sharing on or off. Turning it off tells friends at once, so nothing lingers for the TTL.
     pub fn set_listening_sharing(&mut self, on: bool, url: &str) -> Result<()> {
-        let url = if url.trim().is_empty() { crate::rune::DEFAULT_URL.to_string() } else { crate::rune::clean_url(url).map_err(|e| anyhow!(e))? };
+        let url = if url.trim().is_empty() { crate::rune::default_url() } else { crate::rune::clean_url(url).map_err(|e| anyhow!(e))? };
         self.st.rune_url = url;
         if self.st.share_listening == on { return self.save(); }
         self.st.share_listening = on;
+        self.st.share_listening_chosen = true;   // the person's own choice from here on: no default changes it
         if !on {
             self.st.listening.remove(&self.my_account());
             if self.st.listening_sent.is_some() { self.send_listening(None); }

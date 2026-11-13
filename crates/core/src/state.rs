@@ -32,9 +32,16 @@ pub struct State {
     /// What each account said it is listening to, when we heard it. Expires by itself (see `NowPlaying`'s TTL).
     #[serde(default)]
     pub listening: BTreeMap<String, Heard>,
-    /// Share what rune plays with the people in our communities. Off unless the person turns it on.
+    /// Share what rune plays with the people in our communities. On unless the person turns it off (see the two flags below).
     #[serde(default)]
     pub share_listening: bool,
+    /// The person changed the switch themselves, so it stays as they left it.
+    #[serde(default)]
+    pub share_listening_chosen: bool,
+    /// Sharing has been switched on once for this account as the default (a new account, or one from before the default that
+    /// never chose). After that only the person changes it.
+    #[serde(default)]
+    pub share_listening_default_applied: bool,
     /// Where rune answers. Empty means the default.
     #[serde(default)]
     pub rune_url: String,

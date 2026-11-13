@@ -52,7 +52,7 @@ const startRelay = () => run(bin('commons-relay'), ['--bind', `127.0.0.1:${RELAY
 let relayProc = startRelay();
 for (const [n, port] of [['alice', A_PORT], ['bob', B_PORT]]) {
   // COMMONS_NOTIFY_LOG: what the background part would have shown as a system notification goes to a file, never to a screen.
-  const env = { COMMONS_DATA: path.join(out, 'data', n), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(port), COMMONS_NOTIFY_LOG: path.join(out, `notify-${n}.log`) };
+  const env = { COMMONS_DATA: path.join(out, 'data', n), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(port), COMMONS_NOTIFY_LOG: path.join(out, `notify-${n}.log`), COMMONS_RUNE: 'http://127.0.0.1:1' };   // COMMONS_RUNE: sharing is on by default, and a test must never ask the real rune on 4545
   if (n === 'bob') Object.assign(env, { PATH: fakeBin + ':' + process.env.PATH, COMMONS_XDG_MARKER: xdgMarker, COMMONS_PICKED: path.join(out, 'downloads-bob') });
   run(bin('dev_bridge'), [String(port), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], env);
 }
@@ -220,30 +220,62 @@ try {
   await A.waitFor(`document.querySelector('#set-update').textContent==='Update to 9.9.9'&&!!document.querySelector('#upd [data-u=install]')&&!document.querySelector('#upd').hidden`);
   await click(A, '.modal .acts button'); await sleep(300); await A.shot('08b-update-bar');
   await A.ev(`(()=>{window.fetch=window.__realFetch;window.__commonsBrowserUpdate.offer=null;const b=document.querySelector('#upd');b.hidden=true;b.innerHTML='';})()`);
-  // "Listening to" from rune: one switch in Settings, the account strip, and under the name in the People drawer.
+  // "Listening to" from rune: on for everyone until they turn it off, one switch in Settings, the account strip, and under the name in the People drawer.
+  for (const [n, P] of [['alice', A], ['bob', B]]) if (!await P.ev(`S.snap.share_listening === true`)) throw new Error(`listening: sharing should be on for a new account (${n})`);
   await click(A, '#btn-settings'); await A.waitFor(`document.querySelector('#lstr')`);
+  if (!await A.ev(`document.querySelector('#lstr').checked`)) throw new Error('listening: the Settings switch should be on already');
   await type(A, '#rune', runeUrl);
-  await A.ev(`(()=>{document.querySelector('#lstr').checked=true;})()`);
   await click(A, '.modal .acts button:last-child');
   await A.waitFor(`(()=>{const e=document.querySelector('#me-listen');return !!e&&!e.hidden&&e.innerText.includes('Detective Arriving on the Scene')&&e.innerText.includes('Sea Power')})()`, 20000);
   await B.ev(`(()=>{ if (!S.people) document.querySelector('#btn-people').click(); })()`);
   await B.waitFor(`[...document.querySelectorAll('.person .listen')].some(e=>e.innerText.includes('Detective Arriving on the Scene')&&e.innerText.includes('Sea Power'))`, 20000);
   await A.shot('09-listening-own'); await B.shot('10-listening-people');
   const nd = (c, w) => { if (!c) throw new Error(w); };
-  // Listen along: a plain song has no Join; a Spotify song does, and joining drives B's own (fake) rune. B's rune address is pointed at the
-  // fake first, so this can never reach a real rune.
-  nd(await B.ev(`!document.querySelector('.person [data-ml="join"]')`), 'listen along: a local song must not offer Join');
+  // Listen along: one small note under the picture of a friend whose Spotify song can be joined. A plain song has none. A click joins on
+  // B's own (fake) rune, picked without asking; the note is then filled, and a second click leaves. B's rune address is pointed at the fake
+  // first, so this can never reach a real rune. Nothing else of it is on the page: no button in the row, no menu of players, no strip.
+  const note = () => B.ev(`(() => { const b = document.querySelector('#people .person .pseal .ml-note'); if (!b) return null; const k = b.getBoundingClientRect(), a = b.closest('.pseal').querySelector('.seal').getBoundingClientRect(), row = b.closest('.person').getBoundingClientRect(), nx = b.closest('.person').nextElementSibling, nr = nx ? nx.getBoundingClientRect() : null; return { on: b.classList.contains('on'), pressed: b.getAttribute('aria-pressed'), title: b.title, label: b.getAttribute('aria-label'), k: [k.left, k.top, k.right, k.bottom].map(Math.round), av: [a.left, a.top, a.right, a.bottom].map(Math.round), row: [row.left, row.top, row.right, row.bottom].map(Math.round), next: nr ? Math.round(nr.top) : null, n: document.querySelectorAll('#people .ml-note').length, old: document.querySelectorAll('#ml-strip, #ml-menu, .ml-btn, .ml-link, [data-ml="join"], [data-ml="leave"]').length, w: innerWidth, sw: document.documentElement.scrollWidth }; })()`);
+  nd(await note() === null, 'listen along: a local song must not offer the note');
   await B.ev(`rpc('set_listening_sharing', { on: false, rune: ${JSON.stringify(runeUrl)} }).then(() => 1)`);
   const sp = { id: 'sp:4uLU6hMCjMI75M1A2tKUQC', source: 'spotify', spotifyUri: 'spotify:track:4uLU6hMCjMI75M1A2tKUQC', title: 'Detective Arriving on the Scene', artists: [{ name: 'Sea Power' }] };
   runeSong.queue = [{ track: sp }]; runeSong.positionMs = 30000; runeSong.updatedAt = Date.now();
-  await B.waitFor(`!!document.querySelector('.person [data-ml="join"]')`, 30000);
-  await B.ev(`document.querySelector('.person [data-ml="join"]').click()`);
-  await B.waitFor(`(()=>{const e=document.querySelector('#ml-strip');return !!e&&!e.hidden&&/Listening along with .* on rune \\(Linux PC speakers\\)/.test(e.innerText)})()`, 15000);
+  await B.waitFor(`!!document.querySelector('#people .person .pseal .ml-note')`, 30000);
+  let nt = await note();
+  nd(nt.n === 1 && !nt.on && nt.pressed === 'false' && nt.title === 'Sea Power – Detective Arriving on the Scene' && nt.label === 'Listen along with Alice: Sea Power – Detective Arriving on the Scene', 'listen along: the note is not as it should be: ' + JSON.stringify(nt));
+  nd(nt.k[1] >= nt.av[3] - 1 && nt.k[1] - nt.av[3] <= 8 && Math.abs((nt.k[0] + nt.k[2]) / 2 - (nt.av[0] + nt.av[2]) / 2) <= 3 && nt.k[3] <= nt.row[3] + 1 && (nt.next === null || nt.k[3] <= nt.next + 1) && (nt.k[2] - nt.k[0]) <= 24, 'listen along: the note is not a small mark under the picture: ' + JSON.stringify(nt));
+  nd(nt.old === 0 && !/Listen along|Open in Spotify/.test(await B.ev(`document.querySelector('#people').innerText`)), 'listen along: the old button, menu or strip is still on the page: ' + JSON.stringify(nt));
+  await B.send('Page.bringToFront'); await B.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: (nt.k[0] + nt.k[2]) / 2, y: (nt.k[1] + nt.k[3]) / 2 }); await sleep(300);
+  await B.shot('10b-listen-note');
+  await B.ev(`document.querySelector('#people .ml-note').click()`);
+  await B.waitFor(`(()=>{const b=document.querySelector('#people .ml-note');const s=__megaListen.state();return !!b&&b.classList.contains('on')&&b.getAttribute('aria-pressed')==='true'&&s.state==='on'&&s.target==='rune (Linux PC speakers)'})()`, 15000).catch(async e => { throw new Error('listen along: a click on the note did not join on rune: ' + await B.ev(`JSON.stringify([__megaListen.state(), document.querySelector('#toast').innerText])`)); });
   await new Promise(r => setTimeout(r, 2500));
   nd(runePosts.some(c => c.type === 'play' && c.trackIds[0] === 'sp:4uLU6hMCjMI75M1A2tKUQC'), 'listen along: the joiner\'s rune was not told to play the song ' + JSON.stringify(runePosts));
-  await B.shot('10b-listening-along');
-  await B.ev(`document.querySelector('#ml-strip [data-ml="leave"]').click()`);
-  await B.waitFor(`document.querySelector('#ml-strip').hidden`, 5000);
+  nt = await note();
+  nd(nt.on && nt.label === 'Stop listening along with Alice: Sea Power – Detective Arriving on the Scene' && nt.old === 0, 'listen along: while listening along the note is not filled, or something else appeared: ' + JSON.stringify(nt));
+  await B.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 600, y: 400 }); await sleep(200);
+  await B.shot('10c-listening-along');
+  // the phone's width: the same note in the same list, inside the screen, and a tap is a click
+  await B.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(900);
+  await B.ev(`(()=>{ if (!S.people) document.querySelector('#btn-people').click(); })()`); await sleep(600);
+  nt = await note();
+  nd(nt && nt.on && nt.k[0] >= 0 && nt.k[2] <= nt.w && nt.k[1] >= nt.av[3] - 1 && nt.sw <= nt.w + 1, 'listen along: at a phone\'s width the note is not under the picture, inside the screen: ' + JSON.stringify(nt));
+  await B.shot('10d-listening-along-390');
+  await B.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 2 });
+  await B.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: (nt.k[0] + nt.k[2]) / 2, y: (nt.k[1] + nt.k[3]) / 2 }] }); await sleep(40); await B.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await B.waitFor(`(()=>{const b=document.querySelector('#people .ml-note');return !!b&&!b.classList.contains('on')&&__megaListen.state().state==='off'})()`, 8000).catch(() => { throw new Error('listen along: a tap on the filled note did not leave'); });
+  await B.shot('10e-listen-note-390');
+  await B.send('Emulation.setTouchEmulationEnabled', { enabled: false }); await B.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }); await sleep(900);
+  await B.ev(`(()=>{ if (!S.people) document.querySelector('#btn-people').click(); })()`); await sleep(400);
+  nd(await B.ev(`rpc('listen_status').then(s => s.state === 'off')`), 'listen along: leaving did not reach the core');
+  // no rune that answers and no Spotify login: one short notice says why, and nothing is left on
+  await B.ev(`rpc('set_listening_sharing', { on: false, rune: 'http://127.0.0.1:1' }).then(() => 1)`);
+  await B.ev(`document.querySelector('#people .ml-note').click()`);
+  await B.waitFor(`/^Could not listen along: rune is not answering and Spotify is not (set up|logged in)/.test(document.querySelector('#toast').innerText) && !document.querySelector('#toast').hidden`, 8000).catch(async () => { throw new Error('listen along: with no player there was no notice saying why: ' + await B.ev(`document.querySelector('#toast').innerText`)); });
+  await sleep(600);
+  nt = await note();
+  nd(nt && !nt.on && nt.old === 0 && await B.ev(`rpc('listen_status').then(s => s.state === 'off')`), 'listen along: a join that could not play left something on: ' + JSON.stringify(nt));
+  await B.ev(`rpc('set_listening_sharing', { on: false, rune: ${JSON.stringify(runeUrl)} }).then(() => 1)`);
+  if (process.env.COMMONS_UI_STOP_AFTER === 'listen') { console.log('UI check stopped after the listen-along check (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
   runeSong.queue = [{ track: { title: 'Detective Arriving on the Scene', artists: [{ name: 'Sea Power' }] } }]; delete runeSong.positionMs;
   // Playback stops in rune: friends stop seeing it at once, not when the ten-minute TTL runs out.
   runeSong.status = 'stopped'; runeSong.index = -1; runeSong.queue = [];
@@ -1115,7 +1147,7 @@ try {
     need(await col(A) === '#12ab34' && await col(B) === '#12ab34', 'colours: the colour did not hold');
     // a client that joins later gets the colours out of the table
     const C_PORT = Number(process.env.COMMONS_UI_C_PORT || 7103);
-    run(bin('dev_bridge'), [String(C_PORT), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], { COMMONS_DATA: path.join(out, 'data', 'carol'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(C_PORT) });
+    run(bin('dev_bridge'), [String(C_PORT), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], { COMMONS_DATA: path.join(out, 'data', 'carol'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(C_PORT), COMMONS_RUNE: 'http://127.0.0.1:1' });
     await sleep(1500);
     const C = await open(pageUrl(C_PORT));
     // Carol is new: the invite password, her name and one password for her device are all she types.
@@ -2718,7 +2750,7 @@ try {
   // the rooms' messages land on it sealed through the inbox, the new device shows one note while it fills, the old one says it was sent.
   {
     const D_PORT = Number(process.env.COMMONS_UI_D_PORT || 7104);
-    run(bin('dev_bridge'), [String(D_PORT), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], { COMMONS_DATA: path.join(out, 'data', 'alice2'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(D_PORT) });
+    run(bin('dev_bridge'), [String(D_PORT), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], { COMMONS_DATA: path.join(out, 'data', 'alice2'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(D_PORT), COMMONS_RUNE: 'http://127.0.0.1:1' });
     await sleep(1500);
     const D = await open(pageUrl(D_PORT));
     await D.waitFor(`!!document.querySelector('#l-pair')`, 15000);

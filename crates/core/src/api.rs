@@ -63,6 +63,9 @@ pub const CALL_QUIET: Duration = Duration::from_secs(20);
 /// How often the core looks at rune while sharing is on. This is not the send rate: a shared status goes out only
 /// when it changes, plus a renewal every `LISTENING_REFRESH_SECS` while it keeps playing.
 const RUNE_POLL_SECS: u64 = 4;
+/// After this many looks in a row with no rune answering, it is asked only every `RUNE_ABSENT_SECS`.
+const RUNE_MISSES: u32 = 3;
+const RUNE_ABSENT_SECS: u64 = 30;
 
 /// How long the live poller lets the relay hold a poll for news (the relay caps it at 25 s). A room joined meanwhile is
 /// not in the poll in flight; the ordinary round polls such a room until the next poll covers it (round.rs).
@@ -291,13 +294,19 @@ impl App {
         // Its own thread, because asking rune is a network wait that must not hold up the relay loop or the UI.
         let app = self.clone();
         std::thread::spawn(move || {
-            let mut due = 0u64;
+            // Sharing is on for everyone who did not turn it off, and most people have no rune: after a few looks in a row that
+            // nothing answered, look only now and then.
+            let (mut due, mut missed, mut asked) = (0u64, 0u32, String::new());
             loop {
                 if *app.stop.lock().unwrap() { break; }
-                let on = app.rune_settings().is_some_and(|(on, _)| on);
-                if !on { due = 0; std::thread::sleep(Duration::from_millis(500)); continue; }
+                let (on, url) = app.rune_settings().unwrap_or_default();
+                if !on { due = 0; missed = 0; std::thread::sleep(Duration::from_millis(500)); continue; }
+                if url != asked { asked = url; due = 0; missed = 0; }   // a new address is asked at once
                 let now = commons_proto::now_secs();
-                if now >= due { due = now + RUNE_POLL_SECS; app.poll_rune(); }
+                if now >= due {
+                    missed = if app.poll_rune() { 0 } else { missed.saturating_add(1) };
+                    due = now + if missed >= RUNE_MISSES { RUNE_ABSENT_SECS } else { RUNE_POLL_SECS };
+                }
                 std::thread::sleep(Duration::from_millis(500));
             }
         });
@@ -323,16 +332,17 @@ impl App {
 
     /// One look at rune. A failure leaves the last known status alone: rune may just be busy, and the receivers'
     /// TTL ends a status whose sender has really gone quiet.
-    fn poll_rune(&self) {
-        let Some((on, url)) = self.rune_settings() else { return };
-        if !on { return; }
+    /// Whether rune answered.
+    fn poll_rune(&self) -> bool {
+        let Some((on, url)) = self.rune_settings() else { return false };
+        if !on { return false; }
         let got = crate::rune::now_playing(&url);
         let mut g = self.lock();
-        let Some(c) = g.as_mut() else { return };
-        if !c.st.share_listening { return; } // turned off while we were asking
+        let Some(c) = g.as_mut() else { return false };
+        if !c.st.share_listening { return false; } // turned off while we were asking
         match got {
-            Ok(now) => { let _ = c.update_listening(now); }
-            Err(e) => log::info!("rune at {url}: {e}"),
+            Ok(now) => { let _ = c.update_listening(now); true }
+            Err(e) => { log::debug!("rune at {url}: {e}"); false }
         }
     }
 
