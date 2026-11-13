@@ -1133,8 +1133,12 @@
     }
   }
   function bdLoop(now) {
-    const a = BD; if (!a) return; a.raf = requestAnimationFrame(bdLoop);
-    if (document.hidden || still() || !a.mask || a.dim === 0 || M.flying) return;   // the backdrop holds still while the cards fly: its draw is the biggest thing on a 4K frame
+    const a = BD; if (!a) return;
+    // Nobody is looking (hidden, or another window has focus) or it is held still: no more frames until bdWake. A picture
+    // half way through its bands is finished first.
+    if (!a.band && (document.hidden || !document.hasFocus() || still())) { a.raf = 0; return; }
+    a.raf = requestAnimationFrame(bdLoop);
+    if (!a.mask || a.dim === 0 || M.flying) return;   // the backdrop holds still while the cards fly: its draw is the biggest thing on a 4K frame
     if (scrollAt && touchy()) return;   // a finger is scrolling: the scroll listener below redraws it around the moving words, nothing else does
     if (a.band) { bdBand(a); return; }   // a picture being drawn a few rows per frame
     if (now - a.last < (a.rip.length ? 40 : 100)) return;   // 25 fps while a ripple runs, a steady 10 otherwise: a quiet room still drifts
@@ -1160,6 +1164,8 @@
     a.ro = new ResizeObserver(() => { clearTimeout(a.rz); a.rz = setTimeout(() => { if (BD === a) { bdSize(); focusFrame(); } }, 120); }); a.ro.observe(mainEl);
     bdSize(); if (!still()) a.raf = requestAnimationFrame(bdLoop);
   }
+  const bdWake = () => { const a = BD; if (a && !a.raf && !document.hidden && document.hasFocus() && !still()) a.raf = requestAnimationFrame(bdLoop); };
+  window.addEventListener('focus', bdWake); document.addEventListener('visibilitychange', bdWake); window.addEventListener('mega-fx', bdWake);
   function bdStop() {
     const a = BD; if (!a) return; BD = null; HEAT.set(a.gid, a.heat);
     cancelAnimationFrame(a.raf); clearTimeout(a.rz); a.ro.disconnect(); a.c.remove();

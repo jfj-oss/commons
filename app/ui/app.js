@@ -368,6 +368,26 @@ document.addEventListener('click', e => { if (e.target.closest('#cp')) copy($('.
 
 // ---- something new came in: the count in the window title, and a soft chime (Settings: all, mentions only, or off) ----
 const soundPref = () => pref.get('sound') || 'all';
+// Battery saver: holds the moving backgrounds still and drops the glass blur (html.fx-lite, the look Linux's WebKitGTK
+// always has) and the small endless animations (html.fx-saver). "auto", the default, turns it on while the device runs
+// on battery, which the core reads once a minute; a desktop never reports a battery, so there it stays off.
+const saverPref = () => pref.get('saver') || 'auto';
+const SAVER = { battery: false, ownLite: false, nativeLite: /Linux/.test(navigator.userAgent) && !/Android|Chrome|Firefox/.test(navigator.userAgent) };
+function applySaver() {
+  const root = document.documentElement, p = saverPref();
+  const on = p === 'on' || (p === 'auto' && SAVER.battery);
+  if (on === root.classList.contains('fx-saver')) return;
+  root.classList.toggle('fx-saver', on);
+  if (on && !root.classList.contains('fx-lite')) { root.classList.add('fx-lite'); SAVER.ownLite = true; }
+  if (!on && SAVER.ownLite && !SAVER.nativeLite) root.classList.remove('fx-lite');
+  if (!on) SAVER.ownLite = false;
+  window.dispatchEvent(new Event('mega-fx'));
+}
+async function powerTick() {
+  if (saverPref() === 'auto') { const r = await rpc('power_status').catch(() => null); SAVER.battery = !!(r && r.battery); }
+  applySaver();
+}
+applySaver(); powerTick(); setInterval(powerTick, 60000);
 let chimeCtx = null, chimeAt = 0;
 // Browsers only allow sound after the person has touched the page, so the audio is set up on the first click or key.
 const unlockAudio = () => { try { chimeCtx = chimeCtx || new (window.AudioContext || window.webkitAudioContext)(); if (chimeCtx.state === 'suspended') chimeCtx.resume().catch(() => { }); } catch { } };
@@ -1611,6 +1631,8 @@ $('#btn-settings').onclick = () => {
   <label>Chat font</label>${seg('cf', [['', 'Bellefair'], ['raster', 'Raster']], pref.get('chatFont') || '')}<p class="muted small">For messages and the message box on this device. Names and menus keep their font.</p>` : ''}
   <h3 class="set-h">Sound</h3>
   <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when mega is in the background or the message is in another room. A room you mute is silent here too.</p>
+  <h3 class="set-h">Battery</h3>
+  <label>Battery saver</label>${mobileApp() ? seg('sav', [['auto', 'Off'], ['on', 'On']], saverPref() === 'on' ? 'on' : 'auto') : seg('sav', [['auto', 'On battery'], ['on', 'Always'], ['off', 'Off']], saverPref())}<p class="muted small">Holds the moving backgrounds still and turns off the glass blur and small animations, so mega uses less power. This device only.</p>
   ${window.__megaNotify ? __megaNotify.settingsHTML() : ''}
   <h3 class="set-h">Advanced</h3>
   <label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints — the relay can see that a message-sized packet was sent at that moment</span></label>
@@ -1631,7 +1653,7 @@ $('#btn-settings').onclick = () => {
     const secret = val(w, 'rs').trim();
     if (secret) await rpc('set_relay_invite', { secret });
     if (!mobileApp() && val(w, 'dl-dir').trim() !== (S.snap.download_dir || '')) await rpc('set_download_dir', { dir: val(w, 'dl-dir') });
-    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); if ($('#rrs', w).checked !== (S.snap.read_receipts !== false)) await rpc('set_read_receipts', { on: $('#rrs', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('wavePalette', val(w, 'wave-pal')); pref.set('theme', val(w, 'th')); if (document.documentElement.classList.contains('mega')) pref.set('chatFont', val(w, 'cf')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); if (window.__megaNotify) await __megaNotify.save(w); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh();
+    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); if ($('#rrs', w).checked !== (S.snap.read_receipts !== false)) await rpc('set_read_receipts', { on: $('#rrs', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('wavePalette', val(w, 'wave-pal')); pref.set('theme', val(w, 'th')); if (document.documentElement.classList.contains('mega')) pref.set('chatFont', val(w, 'cf')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); pref.set('saver', val(w, 'sav') === 'auto' ? '' : val(w, 'sav')); powerTick(); if (window.__megaNotify) await __megaNotify.save(w); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh();
   } }]);
   fillAvatars();
   if (window.__megaListen) __megaListen.fillSettings($('#modal-root'));

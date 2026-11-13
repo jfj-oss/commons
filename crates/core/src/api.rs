@@ -348,6 +348,8 @@ impl App {
 
     pub fn call(&self, method: &str, a: Value) -> R {
         if method.starts_with("notify_") { return self.notify.call(method, &a); }
+        // Read-only and cheap: answered before the client lock, and it does not wake the background rounds.
+        if method == "power_status" { return Ok(json!({"battery": crate::power::on_battery()})); }
         if method.starts_with("listen_") || method.starts_with("spotify_") { return self.along_rpc(method, &a); }
         let in_call = matches!(method, "call_state" | "call_token" | "game_mute_wait");
         if in_call { self.saw_call(); }

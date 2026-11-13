@@ -99,7 +99,7 @@
       const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d');
       x.drawImage(nimg, 0, 0); const d = x.getImageData(0, 0, 64, 64).data;
       noise = new Float32Array(64 * 64); for (let i = 0; i < noise.length; i++) noise[i] = (d[i * 4] + 0.5) / 256;
-      size(); frame(performance.now()); if (!still) loop();
+      size(); frame(performance.now()); if (!still()) loop();
     };
     nimg.src = 'fresco/bluenoise64.png';
 
@@ -155,7 +155,7 @@
       if (wallOn()) wall(t);
     }
     function wall(t) {
-      if (LITE && wallDone) return;
+      if ((LITE || root.classList.contains('fx-lite')) && wallDone) return;
       wallDone = true;
       // the wall: only crests, only outside the column and below the header; most dots are skipped early
       terms(M.x0, M.y0, M.W, M.H, U, t, M.C1, M.C2, M.R1, M.R2);
@@ -174,12 +174,14 @@
       }
       wx.putImageData(M.img, 0, 0);
     }
-    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // one still frame under reduced motion or mega's battery saver (html.fx-saver, set in app.js; 'mega-fx' restarts this)
+    const calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const still = () => calm || root.classList.contains('fx-saver');
     let wallDone = false;           // LITE: the wall is drawn once until the next resize
     let last = 0, raf = 0;
     function loop() { if (!alive) return; raf = requestAnimationFrame(ms => { if (ms - last >= 1000 / FPS && (railOn() || wallOn())) { last = ms; frame(ms); } loop(); }); }
     // paused while the window is hidden or another app has focus: nobody is watching it then
-    const onVis = () => { cancelAnimationFrame(raf); if (!document.hidden && document.hasFocus() && !still && noise) loop(); };
+    const onVis = () => { cancelAnimationFrame(raf); if (!document.hidden && document.hasFocus() && !still() && noise) loop(); };
     document.addEventListener('visibilitychange', onVis); window.addEventListener('focus', onVis); window.addEventListener('blur', onVis);
     const ro = new ResizeObserver(() => { size(); wallDone = false; frame(performance.now()); }); ro.observe(rail); ro.observe(main);
     stop = () => { alive = false; cancelAnimationFrame(raf); document.removeEventListener('visibilitychange', onVis); window.removeEventListener('focus', onVis); window.removeEventListener('blur', onVis); ro.disconnect(); io.disconnect(); rc.remove(); wc.remove(); stop = null; };
@@ -189,6 +191,7 @@
     sync();
     sysDark.addEventListener('change', sync);
     new MutationObserver(sync).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+    window.addEventListener('mega-fx', sync);
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();
