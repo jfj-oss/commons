@@ -225,6 +225,12 @@ pub enum Envelope {
         voice: Option<Voice>,
     },
     Typing,
+    /// A read receipt: "I have read this room up to the message `upto`" (a message id, never a position in someone's list). One more
+    /// encrypted message in the room, so the relay learns what it learns from a typing hint (that a small message was sent then)
+    /// and nothing about what was read. Sent only while the sender's "Send read receipts" is on, only when the room was looked at,
+    /// and only forward (receipts.rs). An app from before 0.3.8 has no such kind: it parses it as `Unknown`, notes "newer version"
+    /// in its log and goes on.
+    Read { upto: String },
     /// Best-effort live data for a room (cursors, pointers, anything small and short-lived). Never history: not stored,
     /// not shown, not counted, not retried. `kind` is a short lowercase token, `data` is up to `MAX_LIVE` bytes of text the
     /// sender chose (nothing here is trusted), and `ts` lets a receiver drop what arrives long after it was meant.
@@ -359,6 +365,7 @@ impl Envelope {
                 if let Some(v) = voice { if large.is_some() || !mime.starts_with("audio/") { return bad("bad voice message"); } v.validate()?; }
             }
             Typing | Leave | Unknown => {}
+            Read { upto } => if !is_id(upto) { return bad("bad read receipt"); },
             Live { kind, data, .. } => if !valid_live_kind(kind) || data.len() > MAX_LIVE { return bad("bad live event"); },
             Direct { id, to, nonce, link, sealed, .. } => {
                 if !is_id(id) || !is_key(to) || !is_id(nonce) || link.len() > 3000 || InviteLink::decode(link).is_err() { return bad("bad direct call"); }

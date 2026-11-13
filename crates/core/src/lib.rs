@@ -13,6 +13,7 @@ pub mod transport;
 pub mod vault;
 pub mod live;
 pub mod ops;
+pub mod receipts;
 pub mod pwinvite;
 mod round;
 pub mod pcaudio;

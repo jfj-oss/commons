@@ -66,6 +66,10 @@ pub struct State {
     pub avatar_removed: bool,
     pub lr_published: bool,
     pub typing_enabled: bool,
+    /// "Send read receipts" was turned off: this app sends none and shows nobody else's. On unless the person turns it off, so
+    /// the stored flag is the "off" (an account from before the switch reads as on).
+    #[serde(default)]
+    pub read_receipts_off: bool,
     /// Set once typing hints have been switched on for this account. Older versions stored off for everyone, so one switch-on
     /// is applied when such an account first opens; after that, turning them off in the options room sticks.
     #[serde(default)]
@@ -425,6 +429,14 @@ pub struct ChannelLog {
     pub msgs: Vec<Msg>,
     pub orphans: Vec<(Envelope, String, u64)>,
     pub read_upto: usize,
+    /// Read receipts (receipts.rs): for each other account, the id of the newest message it said it has read here.
+    #[serde(default)]
+    pub read_by: BTreeMap<String, String>,
+    /// Our own receipts: the message id last sent, and one waiting for the pause between two receipts to pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_sent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_want: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

@@ -571,7 +571,7 @@ impl Client {
                         else if avatar.is_some() { p.avatar = avatar.clone(); }
                     }
                 }
-                Envelope::Leave | Envelope::Revoked { .. } => {}
+                Envelope::Leave | Envelope::Revoked { .. } | Envelope::Read { .. } => {}
                 _ => self.apply_chat(gid, 0, &cert, env.clone(), true),
             }
         }

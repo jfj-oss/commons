@@ -110,6 +110,8 @@ One state file: magic, Argon2id parameters, salt, nonce, XChaCha20-Poly1305 ciph
 
 Typing indicators are on by default for new accounts (an account that turned them off keeps that). When on, they are ordinary padded application messages with no special tag, which leaks only that "a message-sized packet was sent now", something the relay sees about every message anyway.
 
+Read receipts work the same way and are on unless a person turns them off. A device that has a room in view (the window in front, the cards not showing) posts `Read { upto }` to the room, where `upto` is the id of the newest delivered message from somebody else: one more padded application message, so the relay learns "a message-sized packet was sent now" and nothing about what was read or by how far. A receipt is sent only when it moves forward and at most once per room every three seconds (one that comes sooner waits, and only the newest one waiting goes). Each device keeps, per room and account, the newest message that account said it has read, saved with the history, and only ever moves it forward; a receipt for a message the device does not hold never replaces one it does. The page shows a ✓✓ beside the time of that message with the names beside it. A person who turns "Send read receipts" off sends none and is shown nobody's (the second half is the app's own manners: a modified app could still read what others send to the room). A bot marks rooms read without sending anything and keeps the switch off. An app from before 0.3.8 parses `Read` as an unknown kind, writes "newer version" in its activity log and goes on.
+
 ## 7. The hard parts (what hurt in Matrix) and what is done about them
 
 ### 7.1 Never a silent undecryptable message

@@ -655,6 +655,7 @@
       ${window.__megaNotify ? __megaNotify.optsHTML() : ''}
       <section><h3>on the cards</h3><label class="check"><input type="checkbox" id="pres" ${window.__megaPres && !__megaPres.on ? '' : 'checked'}><span>Show where I am on the cards — friends who share a community see a small dot in your colour on the card you are looking at; the relay sees only that a small packet was sent</span></label></section>
       <section><h3>typing hints</h3><label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints — the relay can see that a message-sized packet was sent at that moment</span></label></section>
+      <section><h3>read receipts</h3><label class="check"><input type="checkbox" id="rrs" ${S.snap.read_receipts !== false ? 'checked' : ''}><span>Send read receipts — the people in a room see how far you have read (a small ✓✓ beside a message's time), and you see how far they have. Turn it off and you send none and see none; the relay can see that a message-sized packet was sent at that moment</span></label></section>
       ${mobileApp() ? '' : `<section><h3>large files</h3><label for="dl-dir">Large-file downloads folder</label><input type="text" id="dl-dir" value="${esc(S.snap.download_dir || '')}" spellcheck="false"><p>Written here as they arrive, one verified piece at a time. Leave empty for your usual Downloads folder. Each download still asks where to save it.</p></section>`}
     </div>`;
   }
@@ -678,6 +679,7 @@
       if (e.target.id === 'ntf-text' && window.__megaNotify) __megaNotify.set({ show_text: e.target.checked });
       else if (e.target.id === 'pres') { if (window.__megaPres) __megaPres.set(e.target.checked); }
       else if (e.target.id === 'ty') { await rpc('set_typing_enabled', { on: e.target.checked }); tick(); }
+      else if (e.target.id === 'rrs') { await rpc('set_read_receipts', { on: e.target.checked }); tick(); }
       else if (e.target.id === 'dl-dir') { await rpc('set_download_dir', { dir: e.target.value }); tick(); }
       else if (e.target.id === 'wave-pal') { pref.set('wavePalette', e.target.value); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh(); }
     } catch (er) { toast(er.message); }

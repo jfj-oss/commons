@@ -678,6 +678,7 @@ impl Client {
             (Kind::Channel, Envelope::Live { kind, data, ts }) => self.take_live(gid, &acct, kind, data, ts),
             (Kind::Channel, Envelope::Ring { id, ts, to, end }) => self.take_ring(gid, &acct, id, ts, to, end),
             (Kind::Channel, Envelope::Direct { id, ts, to, nonce, link, sealed }) => self.take_direct(gid, &acct, id, ts, to, nonce, link, sealed),
+            (Kind::Channel, Envelope::Read { upto }) => self.take_read(gid, &acct, upto),
             (Kind::Channel, Envelope::Typing) => { self.typing.insert(format!("{gid}|{acct}"), now_secs()); }
             (Kind::Channel, env @ (Envelope::Text { .. } | Envelope::File { .. } | Envelope::Edit { .. } | Envelope::Delete { .. } | Envelope::React { .. })) => {
                 self.apply_chat(gid, seq, cert, env, false);
