@@ -101,7 +101,7 @@ When you open a text room, the cards shrink into a column of **dots** on the lef
 
 Along the top: **people** shows who is in the community, **more** has **settings**, **devices and recovery** and the **activity log**. Admins also see **invite** and **new room**.
 
-Two special cards: **options** (sound, typing hints and the downloads folder; only on this device) and, for admins, **server settings**.
+Two special cards: **options** (sound, typing hints, read receipts and the downloads folder; only on this device) and, for admins, **server settings**.
 
 ### Text rooms
 

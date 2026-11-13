@@ -435,7 +435,13 @@ async function tickOnce() {
         S.lastMsgs = h.hash; S.msgs = h.m; renderStream();
       }
       const ch = currentChannel();
-      if (ch && ch.unread > 0 && document.visibilityState === 'visible' && !(window.__megaIdle && window.__megaIdle())) { await rpc('mark_read', { gid }); }   // mega: nothing is read while the cards are showing
+      if (ch && document.visibilityState === 'visible' && !(window.__megaIdle && window.__megaIdle())) {   // mega: nothing is read while the cards are showing
+        // `seen` is for the read receipt: a window that is open behind another one clears its unread count as before, but tells
+        // nobody "read" until the reader is back at it. A phone's page is in front whenever it is visible.
+        const seen = document.hasFocus() || matchMedia('(pointer: coarse)').matches;
+        if (ch.unread > 0) { await rpc('mark_read', { gid, seen }); S.unseen = seen ? null : gid; }
+        else if (seen && S.unseen === gid) { S.unseen = null; await rpc('mark_read', { gid, seen: true }); }
+      }
     }
   } catch (e) { const st = $('#sync-status'); st.textContent = 'Not reachable: ' + e.message; st.className = 'sync bad down'; }
 }
@@ -776,6 +782,17 @@ function openGap(m) {
 }
 // Who this really is, when the name alone cannot say: the same six characters on everyone's screen.
 const nameMarks = x => (x.same_name ? `<span class="tag" title="Someone else here has this name. This is the start of this person's account id.">${esc(x.tag)}</span>` : '') + (x.role === 'owner' || x.role === 'admin' ? `<span class="chip ok">${esc(x.role)}</span>` : '');
+// Read receipts: a small double check after the time of the newest message somebody else has read up to. Its names open beside
+// it when it is pointed at, or tapped (S.rrOpen is the message whose list a tap opened; a re-drawn row keeps it open).
+const RR_SHOW = 4;
+const RR_ICON = '<svg viewBox="0 0 15 10" aria-hidden="true"><path d="M1 5.4 4 8.4 9.6 1.4M7.4 8.4 13.9 1.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+function readMark(x) {
+  const all = x.read_by || []; if (!all.length) return '';
+  const shown = all.slice(0, RR_SHOW), more = all.length - shown.length, open = S.rrOpen === x.id;
+  return `<button type="button" class="rr${open ? ' open' : ''}" data-a="rr" data-id="${esc(x.id)}" title="" aria-expanded="${open}" aria-label="${esc('Read by ' + all.join(', '))}">${RR_ICON}<span class="rr-names" aria-hidden="true">${shown.map(n => `<span>${esc(n)}</span>`).join('')}${more > 0 ? `<span class="rr-more">+${more}</span>` : ''}</span></button>`;
+}
+function closeReadMark() { S.rrOpen = null; for (const b of $$('#stream .rr.open')) { b.classList.remove('open'); b.setAttribute('aria-expanded', 'false'); } }
+document.addEventListener('click', e => { if (S.rrOpen && !(e.target.closest && e.target.closest('.rr'))) closeReadMark(); }, true);
 function msgRow(x, cont, m, byId, admin) {
   const mention = !x.mine && !x.deleted && (mentionsMe(x.text) || !!(x.reply && byId.get(x.reply.id) && byId.get(x.reply.id).mine));
   const person = S.members.find(p => p.account === x.sender);
@@ -805,10 +822,11 @@ function msgRow(x, cont, m, byId, admin) {
   const src = x.reply && byId.get(x.reply.id);
   const quote = x.reply && !(src && src.deleted) ? `<button type="button" class="quote" data-a="goto" data-id="${esc(x.reply.id)}" title="Go to this message">${seal(src ? src.sender : x.reply.name, x.reply.name, 'tiny')}<b>${esc(x.reply.name)}</b><span>${esc(plain(x.reply.text))}</span></button>` : '';
   const state = x.status === 'sending' ? `<span class="state">${icon('clock')}sending…</span>` : '';
+  const rr = readMark(x);
   const acts = x.deleted || x.tmp ? '' : `<div class="actions"><button data-a="reply" data-id="${esc(x.id)}" title="Reply" aria-label="Reply">${icon('reply')}</button><button data-a="react" data-id="${esc(x.id)}" title="React" aria-label="React">${icon('smile')}</button>${x.mine && x.kind === 'text' ? `<button data-a="edit" data-id="${esc(x.id)}" title="Edit" aria-label="Edit">${icon('pencil')}</button>` : ''}${x.mine || admin ? `<button data-a="del" data-id="${esc(x.id)}" title="Delete" aria-label="Delete">${icon('trash')}</button>` : ''}</div>`;
   const who = cont ? `<div class="who"><span class="sr">${esc(x.name)}</span></div>`
     : `<div class="who"><span class="name">${esc(x.name)}${nameMarks(x)}${person && person.verified ? `<span class="vf" title="Safety number verified">${icon('check')}</span>` : ''}</span>${seal(x.sender, x.name)}</div>`;
-  return `<article class="msg ${cont ? 'cont' : ''} ${x.mine ? 'mine' : ''} ${mention ? 'mention' : ''} ${x.deleted ? 'deleted' : ''} ${x.status === 'sending' ? 'sending' : ''}" style="--wax:${wax(x.sender)}" data-id="${esc(x.id)}">${who}<div class="txt">${quote}${body}${reacts}</div><time class="when" title="${esc(fmtFull(x.ts))}">${fmtTime(x.ts)}${state}</time>${acts}</article>`;
+  return `<article class="msg ${cont ? 'cont' : ''} ${x.mine ? 'mine' : ''} ${mention ? 'mention' : ''} ${x.deleted ? 'deleted' : ''} ${x.status === 'sending' ? 'sending' : ''} ${rr ? 'has-rr' : ''}" style="--wax:${wax(x.sender)}" data-id="${esc(x.id)}">${who}<div class="txt">${quote}${body}${reacts}</div><time class="when" title="${esc(fmtFull(x.ts))}">${fmtTime(x.ts)}${state}${rr}</time>${acts}</article>`;
 }
 function renderStream() {
   const st = $('#stream'), m = S.msgs; if (!m) return;
@@ -862,7 +880,8 @@ function renderStream() {
   if (S.jumpTo) { const el = $(`.msg[data-id="${CSS.escape(S.jumpTo)}"]`, st); S.jumpTo = null; if (el) flashTo(el); }
   else if (S.first) {
     const nl = $('.newline', st);
-    if (nl && nl.offsetTop > st.clientHeight * .4) st.scrollTop = nl.offsetTop - st.clientHeight * .3; else st.scrollTop = st.scrollHeight;
+    const place = () => { const n = $('.newline', st); if (n && n.offsetTop > st.clientHeight * .4) st.scrollTop = n.offsetTop - st.clientHeight * .3; else st.scrollTop = st.scrollHeight; };
+    place(); holdPlace(st, place);
     st.classList.remove('swap'); void st.offsetWidth; st.classList.add('swap');
   }
   else if (near) st.scrollTop = st.scrollHeight;
@@ -870,6 +889,18 @@ function renderStream() {
   if (S.keep != null) { st.scrollTop = st.scrollHeight - S.keep; S.keep = null; }
   S.first = false; S.painted = Date.now(); st.setAttribute('aria-busy', false); onScroll();
   fillAvatars();
+}
+// A room just opened is placed (at the newest message, or at the first unread), but the rows keep growing for a moment:
+// pictures get their size, fonts and avatars arrive, the open animation settles. Put it back in place on every frame until
+// the reader touches the room or about two seconds pass, so a late change in height never leaves it short of the place.
+let holdT = 0;
+function holdPlace(st, place) {
+  cancelAnimationFrame(holdT);
+  const t0 = performance.now(), gid = S.gid; let done = false;
+  const stop = () => { done = true; for (const ev of ['wheel', 'touchstart', 'pointerdown', 'keydown']) st.removeEventListener(ev, stop, true); };
+  for (const ev of ['wheel', 'touchstart', 'pointerdown', 'keydown']) st.addEventListener(ev, stop, { capture: true, passive: true });
+  const step = () => { if (done || gid !== S.gid || S.jumpTo || performance.now() - t0 > 2000) { stop(); return; } place(); holdT = requestAnimationFrame(step); };
+  holdT = requestAnimationFrame(step);
 }
 function flashTo(el) {
   el.scrollIntoView({ block: 'center', behavior: calm() ? 'auto' : 'smooth' });
@@ -919,6 +950,7 @@ $('#stream').addEventListener('click', async e => {
   if (b) {
     e.stopPropagation();
     const a = b.dataset.a, id = b.dataset.id, m = byId(id);
+    if (a === 'rr') { const was = S.rrOpen === id; closeReadMark(); if (!was) { S.rrOpen = id; b.classList.add('open'); b.setAttribute('aria-expanded', 'true'); } return; }
     if (a === 'log') showActivity();
     else if (a === 'older') { const st = $('#stream'); S.keep = st.scrollHeight - st.scrollTop; S.limit += 200; S.lastMsgs = ''; tick(); }
     else if (a === 'invite') $('#btn-invite').click();
@@ -1382,7 +1414,7 @@ async function renderPeople() {
   const iAmOwner = c.role === 'owner', iAmAdmin = iAmOwner || c.role === 'admin';
   const others = ms.filter(m => !m.me), done = others.filter(m => m.verified).length;
   const rank = m => m.role === 'owner' ? 0 : m.role === 'admin' ? 1 : 2;
-  const row = m => `<div class="person"><span class="pseal">${seal(m.account, m.name)}${m.verified ? `<span class="vf-badge" title="Safety number verified">${icon('check')}</span>` : ''}</span><div class="nm"><b><span>${esc(m.name)}</span>${m.me ? '<span class="you">you</span>' : ''}${m.role !== 'member' ? `<span class="chip ok">${m.role}</span>` : ''}</b><span class="small">${m.same_name ? `<span class="tag" title="Someone else here has this name.">${esc(m.tag)}</span> · ` : ''}${m.devices} device${m.devices === 1 ? '' : 's'}${m.me ? '' : m.verified ? ' · <span class="ok">verified</span>' : ' · not verified'}</span>${m.listening ? `<span class="listen" title="${esc(listenLine(m.listening))}">${esc(listenLine(m.listening))}</span>${window.__megaListen ? __megaListen.joinHtml(m) : ''}` : ''}</div><span class="p-acts">${window.__megaDirect ? __megaDirect.rowButton(m) : ''}${window.__megaRing ? __megaRing.rowButton(m) : ''}${m.me ? '' : `<button class="mini" data-a="verify" data-acct="${esc(m.account)}" title="Verify safety number" aria-label="Verify safety number of ${esc(m.name)}">${icon('key')}</button>`}${(iAmOwner && !m.me && m.role !== 'owner') ? `<button class="mini" data-a="role" data-acct="${esc(m.account)}" data-r="${m.role}" title="Change role" aria-label="Change role of ${esc(m.name)}">${icon('star')}</button>` : ''}${(!m.me && m.role !== 'owner' && (iAmOwner || (iAmAdmin && m.role === 'member'))) ? `<button class="mini" data-a="kick" data-acct="${esc(m.account)}" data-n="${esc(m.name)}" title="Remove from community" aria-label="Remove ${esc(m.name)}">${icon('x')}</button>` : ''}</span></div>`;
+  const row = m => `<div class="person"><span class="pseal">${seal(m.account, m.name)}${window.__megaListen ? __megaListen.noteHtml(m) : ''}${m.verified ? `<span class="vf-badge" title="Safety number verified">${icon('check')}</span>` : ''}</span><div class="nm"><b><span>${esc(m.name)}</span>${m.me ? '<span class="you">you</span>' : ''}${m.role !== 'member' ? `<span class="chip ok">${m.role}</span>` : ''}</b><span class="small">${m.same_name ? `<span class="tag" title="Someone else here has this name.">${esc(m.tag)}</span> · ` : ''}${m.devices} device${m.devices === 1 ? '' : 's'}${m.me ? '' : m.verified ? ' · <span class="ok">verified</span>' : ' · not verified'}</span>${m.listening ? `<span class="listen" title="${esc(listenLine(m.listening))}">${esc(listenLine(m.listening))}</span>` : ''}</div><span class="p-acts">${window.__megaDirect ? __megaDirect.rowButton(m) : ''}${window.__megaRing ? __megaRing.rowButton(m) : ''}${m.me ? '' : `<button class="mini" data-a="verify" data-acct="${esc(m.account)}" title="Verify safety number" aria-label="Verify safety number of ${esc(m.name)}">${icon('key')}</button>`}${(iAmOwner && !m.me && m.role !== 'owner') ? `<button class="mini" data-a="role" data-acct="${esc(m.account)}" data-r="${m.role}" title="Change role" aria-label="Change role of ${esc(m.name)}">${icon('star')}</button>` : ''}${(!m.me && m.role !== 'owner' && (iAmOwner || (iAmAdmin && m.role === 'member'))) ? `<button class="mini" data-a="kick" data-acct="${esc(m.account)}" data-n="${esc(m.name)}" title="Remove from community" aria-label="Remove ${esc(m.name)}">${icon('x')}</button>` : ''}</span></div>`;
   el.innerHTML = `<div class="p-head"><h2>People <span class="count">${ms.length}</span></h2><button class="mini" id="people-close" aria-label="Close people" title="Close">${icon('x')}</button></div>
     ${others.length ? `<div class="p-trust"><div class="meter" aria-hidden="true"><i style="width:${others.length ? done / others.length * 100 : 0}%"></i></div><span>${done ? `You have verified ${done} of ${others.length}` : `Nobody verified yet. Compare safety numbers with the ${icon('key', 'inline')}`}</span></div>` : ''}
     <div class="p-list">${[...ms].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)).map(row).join('')}</div>` +
@@ -1582,6 +1614,7 @@ $('#btn-settings').onclick = () => {
   ${window.__megaNotify ? __megaNotify.settingsHTML() : ''}
   <h3 class="set-h">Advanced</h3>
   <label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints — the relay can see that a message-sized packet was sent at that moment</span></label>
+  <label class="check"><input type="checkbox" id="rrs" ${S.snap.read_receipts !== false ? 'checked' : ''}><span>Send read receipts — people in a room see how far you have read, and you see how far they have. Off: you send none and see none. The relay can see that a message-sized packet was sent at that moment</span></label>
   <label class="check"><input type="checkbox" id="lstr" ${S.snap.share_listening ? 'checked' : ''}><span>Share what I'm listening to</span></label>
   <label for="rune">rune address</label><input type="text" id="rune" value="${esc(S.snap.rune_url)}" spellcheck="false"><p class="muted small">Song title and artist go to your communities, end to end encrypted. Nothing else is read or sent.</p>
   <div id="sp-row"></div>
@@ -1598,7 +1631,7 @@ $('#btn-settings').onclick = () => {
     const secret = val(w, 'rs').trim();
     if (secret) await rpc('set_relay_invite', { secret });
     if (!mobileApp() && val(w, 'dl-dir').trim() !== (S.snap.download_dir || '')) await rpc('set_download_dir', { dir: val(w, 'dl-dir') });
-    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('wavePalette', val(w, 'wave-pal')); pref.set('theme', val(w, 'th')); if (document.documentElement.classList.contains('mega')) pref.set('chatFont', val(w, 'cf')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); if (window.__megaNotify) await __megaNotify.save(w); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh();
+    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); if ($('#rrs', w).checked !== (S.snap.read_receipts !== false)) await rpc('set_read_receipts', { on: $('#rrs', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('wavePalette', val(w, 'wave-pal')); pref.set('theme', val(w, 'th')); if (document.documentElement.classList.contains('mega')) pref.set('chatFont', val(w, 'cf')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); if (window.__megaNotify) await __megaNotify.save(w); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh();
   } }]);
   fillAvatars();
   if (window.__megaListen) __megaListen.fillSettings($('#modal-root'));

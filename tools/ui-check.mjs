@@ -52,7 +52,7 @@ const startRelay = () => run(bin('commons-relay'), ['--bind', `127.0.0.1:${RELAY
 let relayProc = startRelay();
 for (const [n, port] of [['alice', A_PORT], ['bob', B_PORT]]) {
   // COMMONS_NOTIFY_LOG: what the background part would have shown as a system notification goes to a file, never to a screen.
-  const env = { COMMONS_DATA: path.join(out, 'data', n), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(port), COMMONS_NOTIFY_LOG: path.join(out, `notify-${n}.log`) };
+  const env = { COMMONS_DATA: path.join(out, 'data', n), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(port), COMMONS_NOTIFY_LOG: path.join(out, `notify-${n}.log`), COMMONS_RUNE: 'http://127.0.0.1:1' };   // COMMONS_RUNE: sharing is on by default, and a test must never ask the real rune on 4545
   if (n === 'bob') Object.assign(env, { PATH: fakeBin + ':' + process.env.PATH, COMMONS_XDG_MARKER: xdgMarker, COMMONS_PICKED: path.join(out, 'downloads-bob') });
   run(bin('dev_bridge'), [String(port), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], env);
 }
@@ -220,30 +220,62 @@ try {
   await A.waitFor(`document.querySelector('#set-update').textContent==='Update to 9.9.9'&&!!document.querySelector('#upd [data-u=install]')&&!document.querySelector('#upd').hidden`);
   await click(A, '.modal .acts button'); await sleep(300); await A.shot('08b-update-bar');
   await A.ev(`(()=>{window.fetch=window.__realFetch;window.__commonsBrowserUpdate.offer=null;const b=document.querySelector('#upd');b.hidden=true;b.innerHTML='';})()`);
-  // "Listening to" from rune: one switch in Settings, the account strip, and under the name in the People drawer.
+  // "Listening to" from rune: on for everyone until they turn it off, one switch in Settings, the account strip, and under the name in the People drawer.
+  for (const [n, P] of [['alice', A], ['bob', B]]) if (!await P.ev(`S.snap.share_listening === true`)) throw new Error(`listening: sharing should be on for a new account (${n})`);
   await click(A, '#btn-settings'); await A.waitFor(`document.querySelector('#lstr')`);
+  if (!await A.ev(`document.querySelector('#lstr').checked`)) throw new Error('listening: the Settings switch should be on already');
   await type(A, '#rune', runeUrl);
-  await A.ev(`(()=>{document.querySelector('#lstr').checked=true;})()`);
   await click(A, '.modal .acts button:last-child');
   await A.waitFor(`(()=>{const e=document.querySelector('#me-listen');return !!e&&!e.hidden&&e.innerText.includes('Detective Arriving on the Scene')&&e.innerText.includes('Sea Power')})()`, 20000);
   await B.ev(`(()=>{ if (!S.people) document.querySelector('#btn-people').click(); })()`);
   await B.waitFor(`[...document.querySelectorAll('.person .listen')].some(e=>e.innerText.includes('Detective Arriving on the Scene')&&e.innerText.includes('Sea Power'))`, 20000);
   await A.shot('09-listening-own'); await B.shot('10-listening-people');
   const nd = (c, w) => { if (!c) throw new Error(w); };
-  // Listen along: a plain song has no Join; a Spotify song does, and joining drives B's own (fake) rune. B's rune address is pointed at the
-  // fake first, so this can never reach a real rune.
-  nd(await B.ev(`!document.querySelector('.person [data-ml="join"]')`), 'listen along: a local song must not offer Join');
+  // Listen along: one small note under the picture of a friend whose Spotify song can be joined. A plain song has none. A click joins on
+  // B's own (fake) rune, picked without asking; the note is then filled, and a second click leaves. B's rune address is pointed at the fake
+  // first, so this can never reach a real rune. Nothing else of it is on the page: no button in the row, no menu of players, no strip.
+  const note = () => B.ev(`(() => { const b = document.querySelector('#people .person .pseal .ml-note'); if (!b) return null; const k = b.getBoundingClientRect(), a = b.closest('.pseal').querySelector('.seal').getBoundingClientRect(), row = b.closest('.person').getBoundingClientRect(), nx = b.closest('.person').nextElementSibling, nr = nx ? nx.getBoundingClientRect() : null; return { on: b.classList.contains('on'), pressed: b.getAttribute('aria-pressed'), title: b.title, label: b.getAttribute('aria-label'), k: [k.left, k.top, k.right, k.bottom].map(Math.round), av: [a.left, a.top, a.right, a.bottom].map(Math.round), row: [row.left, row.top, row.right, row.bottom].map(Math.round), next: nr ? Math.round(nr.top) : null, n: document.querySelectorAll('#people .ml-note').length, old: document.querySelectorAll('#ml-strip, #ml-menu, .ml-btn, .ml-link, [data-ml="join"], [data-ml="leave"]').length, w: innerWidth, sw: document.documentElement.scrollWidth }; })()`);
+  nd(await note() === null, 'listen along: a local song must not offer the note');
   await B.ev(`rpc('set_listening_sharing', { on: false, rune: ${JSON.stringify(runeUrl)} }).then(() => 1)`);
   const sp = { id: 'sp:4uLU6hMCjMI75M1A2tKUQC', source: 'spotify', spotifyUri: 'spotify:track:4uLU6hMCjMI75M1A2tKUQC', title: 'Detective Arriving on the Scene', artists: [{ name: 'Sea Power' }] };
   runeSong.queue = [{ track: sp }]; runeSong.positionMs = 30000; runeSong.updatedAt = Date.now();
-  await B.waitFor(`!!document.querySelector('.person [data-ml="join"]')`, 30000);
-  await B.ev(`document.querySelector('.person [data-ml="join"]').click()`);
-  await B.waitFor(`(()=>{const e=document.querySelector('#ml-strip');return !!e&&!e.hidden&&/Listening along with .* on rune \\(Linux PC speakers\\)/.test(e.innerText)})()`, 15000);
+  await B.waitFor(`!!document.querySelector('#people .person .pseal .ml-note')`, 30000);
+  let nt = await note();
+  nd(nt.n === 1 && !nt.on && nt.pressed === 'false' && nt.title === 'Sea Power – Detective Arriving on the Scene' && nt.label === 'Listen along with Alice: Sea Power – Detective Arriving on the Scene', 'listen along: the note is not as it should be: ' + JSON.stringify(nt));
+  nd(nt.k[1] >= nt.av[3] - 1 && nt.k[1] - nt.av[3] <= 8 && Math.abs((nt.k[0] + nt.k[2]) / 2 - (nt.av[0] + nt.av[2]) / 2) <= 3 && nt.k[3] <= nt.row[3] + 1 && (nt.next === null || nt.k[3] <= nt.next + 1) && (nt.k[2] - nt.k[0]) <= 24, 'listen along: the note is not a small mark under the picture: ' + JSON.stringify(nt));
+  nd(nt.old === 0 && !/Listen along|Open in Spotify/.test(await B.ev(`document.querySelector('#people').innerText`)), 'listen along: the old button, menu or strip is still on the page: ' + JSON.stringify(nt));
+  await B.send('Page.bringToFront'); await B.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: (nt.k[0] + nt.k[2]) / 2, y: (nt.k[1] + nt.k[3]) / 2 }); await sleep(300);
+  await B.shot('10b-listen-note');
+  await B.ev(`document.querySelector('#people .ml-note').click()`);
+  await B.waitFor(`(()=>{const b=document.querySelector('#people .ml-note');const s=__megaListen.state();return !!b&&b.classList.contains('on')&&b.getAttribute('aria-pressed')==='true'&&s.state==='on'&&s.target==='rune (Linux PC speakers)'})()`, 15000).catch(async e => { throw new Error('listen along: a click on the note did not join on rune: ' + await B.ev(`JSON.stringify([__megaListen.state(), document.querySelector('#toast').innerText])`)); });
   await new Promise(r => setTimeout(r, 2500));
   nd(runePosts.some(c => c.type === 'play' && c.trackIds[0] === 'sp:4uLU6hMCjMI75M1A2tKUQC'), 'listen along: the joiner\'s rune was not told to play the song ' + JSON.stringify(runePosts));
-  await B.shot('10b-listening-along');
-  await B.ev(`document.querySelector('#ml-strip [data-ml="leave"]').click()`);
-  await B.waitFor(`document.querySelector('#ml-strip').hidden`, 5000);
+  nt = await note();
+  nd(nt.on && nt.label === 'Stop listening along with Alice: Sea Power – Detective Arriving on the Scene' && nt.old === 0, 'listen along: while listening along the note is not filled, or something else appeared: ' + JSON.stringify(nt));
+  await B.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 600, y: 400 }); await sleep(200);
+  await B.shot('10c-listening-along');
+  // the phone's width: the same note in the same list, inside the screen, and a tap is a click
+  await B.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(900);
+  await B.ev(`(()=>{ if (!S.people) document.querySelector('#btn-people').click(); })()`); await sleep(600);
+  nt = await note();
+  nd(nt && nt.on && nt.k[0] >= 0 && nt.k[2] <= nt.w && nt.k[1] >= nt.av[3] - 1 && nt.sw <= nt.w + 1, 'listen along: at a phone\'s width the note is not under the picture, inside the screen: ' + JSON.stringify(nt));
+  await B.shot('10d-listening-along-390');
+  await B.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 2 });
+  await B.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: (nt.k[0] + nt.k[2]) / 2, y: (nt.k[1] + nt.k[3]) / 2 }] }); await sleep(40); await B.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await B.waitFor(`(()=>{const b=document.querySelector('#people .ml-note');return !!b&&!b.classList.contains('on')&&__megaListen.state().state==='off'})()`, 8000).catch(() => { throw new Error('listen along: a tap on the filled note did not leave'); });
+  await B.shot('10e-listen-note-390');
+  await B.send('Emulation.setTouchEmulationEnabled', { enabled: false }); await B.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }); await sleep(900);
+  await B.ev(`(()=>{ if (!S.people) document.querySelector('#btn-people').click(); })()`); await sleep(400);
+  nd(await B.ev(`rpc('listen_status').then(s => s.state === 'off')`), 'listen along: leaving did not reach the core');
+  // no rune that answers and no Spotify login: one short notice says why, and nothing is left on
+  await B.ev(`rpc('set_listening_sharing', { on: false, rune: 'http://127.0.0.1:1' }).then(() => 1)`);
+  await B.ev(`document.querySelector('#people .ml-note').click()`);
+  await B.waitFor(`/^Could not listen along: rune is not answering and Spotify is not (set up|logged in)/.test(document.querySelector('#toast').innerText) && !document.querySelector('#toast').hidden`, 8000).catch(async () => { throw new Error('listen along: with no player there was no notice saying why: ' + await B.ev(`document.querySelector('#toast').innerText`)); });
+  await sleep(600);
+  nt = await note();
+  nd(nt && !nt.on && nt.old === 0 && await B.ev(`rpc('listen_status').then(s => s.state === 'off')`), 'listen along: a join that could not play left something on: ' + JSON.stringify(nt));
+  await B.ev(`rpc('set_listening_sharing', { on: false, rune: ${JSON.stringify(runeUrl)} }).then(() => 1)`);
+  if (process.env.COMMONS_UI_STOP_AFTER === 'listen') { console.log('UI check stopped after the listen-along check (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
   runeSong.queue = [{ track: { title: 'Detective Arriving on the Scene', artists: [{ name: 'Sea Power' }] } }]; delete runeSong.positionMs;
   // Playback stops in rune: friends stop seeing it at once, not when the ten-minute TTL runs out.
   runeSong.status = 'stopped'; runeSong.index = -1; runeSong.queue = [];
@@ -617,6 +649,12 @@ try {
   await A.waitFor(`S.snap.typing_enabled === false`, 8000).catch(() => { throw new Error('mega: the typing switch in options did not reach the core'); });
   await A.ev(`document.querySelector('#mega-opts #ty').click()`);
   await A.waitFor(`S.snap.typing_enabled === true`, 8000).catch(() => { throw new Error('mega: the typing switch in options did not turn on again'); });
+  // read receipts are on for everyone until they turn them off; the switch reaches the core both ways
+  need(await A.ev(`S.snap.read_receipts === true && document.querySelector('#mega-opts #rrs').checked`), 'read receipts should be on unless turned off');
+  await A.ev(`document.querySelector('#mega-opts #rrs').click()`);
+  await A.waitFor(`S.snap.read_receipts === false`, 8000).catch(() => { throw new Error('mega: the read receipts switch in options did not reach the core'); });
+  await A.ev(`document.querySelector('#mega-opts #rrs').click()`);
+  await A.waitFor(`S.snap.read_receipts === true`, 8000).catch(() => { throw new Error('mega: the read receipts switch in options did not turn on again'); });
   await A.shot('mega-3-options');
   // Esc from chat -> the community's rooms; resting on the voice card never joins, Enter does
   await key(A, 'Escape'); await sleep(900);
@@ -1109,7 +1147,7 @@ try {
     need(await col(A) === '#12ab34' && await col(B) === '#12ab34', 'colours: the colour did not hold');
     // a client that joins later gets the colours out of the table
     const C_PORT = Number(process.env.COMMONS_UI_C_PORT || 7103);
-    run(bin('dev_bridge'), [String(C_PORT), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], { COMMONS_DATA: path.join(out, 'data', 'carol'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(C_PORT) });
+    run(bin('dev_bridge'), [String(C_PORT), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], { COMMONS_DATA: path.join(out, 'data', 'carol'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(C_PORT), COMMONS_RUNE: 'http://127.0.0.1:1' });
     await sleep(1500);
     const C = await open(pageUrl(C_PORT));
     // Carol is new: the invite password, her name and one password for her device are all she types.
@@ -1725,6 +1763,173 @@ try {
   if (process.env.COMMONS_UI_STOP_AFTER === 'mega5') { console.log('UI check stopped after mega phase 5 (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
 
   }
+  // ---- opening a room lands at the last read message: the newest when all is read, else the first unread in view ----
+  if (!process.env.COMMONS_UI_SKIP_LASTREAD) {
+    const cid = await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`), cidj = JSON.stringify(cid);
+    const rooms = await A.ev(`S.snap.communities.find(c => c.id === ${cidj}).channels.filter(x => x.kind !== 'voice').map(x => x.gid)`);
+    const roomX = textGid, roomY = rooms.find(r => r !== textGid);
+    need(!!roomY, 'lastread: the club needs a second text room');
+    const sendBx = (gid, t) => B.ev(`rpc('send_text', { gid: ${JSON.stringify(gid)}, text: ${JSON.stringify(t)}, reply: null }).then(() => 1)`);
+    const lrState = () => A.ev(`(() => { const s = document.querySelector('#stream'), r = s.getBoundingClientRect(), msgs = [...s.querySelectorAll('.msg')], last = msgs[msgs.length - 1], nl = s.querySelector('.newline'); const vis = e => { if (!e) return null; const b = e.getBoundingClientRect(); return b.bottom > r.top + 1 && b.top < r.bottom - 1; }; return { gid: S.gid, first: S.first, gap: Math.round(s.scrollHeight - s.scrollTop - s.clientHeight), max: s.scrollHeight - s.clientHeight, n: msgs.length, lastVisible: vis(last), nl: !!nl, nlVisible: vis(nl), nlTop: nl ? Math.round(nl.getBoundingClientRect().top - r.top) : null, h: Math.round(r.height) }; })()`);
+    const settle = async () => { let prev = ''; for (let i = 0; i < 40; i++) { await sleep(250); const st = JSON.stringify(await lrState()); if (st === prev && !JSON.parse(st).first) { await sleep(500); return lrState(); } prev = st; } return lrState(); };
+    const readAll = async (gid) => { await A.waitFor(`S.gid === ${JSON.stringify(gid)} && !S.first`, 20000); await A.waitFor(`S.snap.communities.every(c => c.channels.filter(x => x.gid === ${JSON.stringify(gid)}).every(x => !x.unread))`, 20000); };
+    const openA = async gid => { await A.send('Page.bringToFront'); await A.ev(`openRoom(${JSON.stringify(gid)}); 1`); };
+    // enough lines in both rooms that each is taller than the screen
+    for (let i = 0; i < 40; i++) { await sendBx(roomX, 'lastread X ' + i + ' ' + 'word '.repeat(i % 7 * 3)); if (i % 8 === 0) await sendBx(roomY, 'lastread Y ' + i); }
+    await sleep(1500);
+    for (const [label, w, h] of [['desktop', 0, 0], ['phone', 390, 844]]) {
+      if (w) { await A.send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 2, mobile: true }); await sleep(900); }
+      await openA(roomX); await readAll(roomX);
+      let s = await settle(); need(s.n > 15, `lastread ${label}: the room is too short to test: ` + JSON.stringify(s));
+      await openA(roomY); await readAll(roomY); await settle();
+      await openA(roomX); s = await settle();
+      need(s.gap <= 4 && s.lastVisible, `lastread ${label}: back in a fully read room it is not at the newest message: ` + JSON.stringify(s));
+      // and once more, quickly, with no wait between the switches
+      await openA(roomY); await sleep(150); await openA(roomX); s = await settle();
+      need(s.gap <= 4 && s.lastVisible, `lastread ${label}: after a quick switch it is not at the newest message: ` + JSON.stringify(s));
+      // unread: the room is away, bob writes 25 lines, alice opens it: the first unread is in view, with its marker, and the end is reachable
+      await openA(roomY); await readAll(roomY); await settle();
+      for (let i = 0; i < 25; i++) await sendBx(roomX, `lastread ${label} new ${i} ` + 'more '.repeat(i % 5 * 2));
+      await A.waitFor(`S.snap.communities.flatMap(c => c.channels).some(x => x.gid === ${JSON.stringify(roomX)} && x.unread >= 25)`, 40000);
+      await A.ev(`document.visibilityState; 1`);
+      await openA(roomX); await A.waitFor(`S.gid === ${JSON.stringify(roomX)} && !S.first`, 20000);
+      let u = null; for (let i = 0; i < 20; i++) { await sleep(150); u = await lrState(); if (u.nl) break; }
+      need(u.nl && u.nlVisible, `lastread ${label}: the first unread message is not in view: ` + JSON.stringify(u));
+      need(!u.lastVisible || u.n < 4, `lastread ${label}: a room with 25 unread should not open at the very bottom: ` + JSON.stringify(u));
+      await A.shot(`lastread-${label}-unread`);
+      await sleep(2300);   // the room keeps its place for about two seconds unless the reader touches it
+      await A.ev(`(() => { const s = document.querySelector('#stream'); s.scrollTop = s.scrollHeight; })()`); await sleep(500);
+      s = await lrState(); need(s.gap <= 4 && s.lastVisible, `lastread ${label}: scrolling down does not reach the newest: ` + JSON.stringify(s));
+      await A.waitFor(`S.snap.communities.flatMap(c => c.channels).filter(x => x.gid === ${JSON.stringify(roomX)}).every(x => !x.unread)`, 20000);
+      await openA(roomY); await readAll(roomY); await A.waitFor(`!document.querySelector('#stream .newline')`, 8000);   // leave no first-unread line behind for the checks after this one
+      if (w) { await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(900); }
+    }
+  }
+  if (process.env.COMMONS_UI_STOP_AFTER === 'lastread') { console.log('UI check stopped after the last-read check (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
+  // ---- read receipts: a ✓✓ beside the time of the newest message the other person has read, their names beside it on hover or tap ----
+  if (!process.env.COMMONS_UI_SKIP_RECEIPTS) {
+    const room = textGid, rj = JSON.stringify(room);
+    const sendP = (P, t) => P.ev(`rpc('send_text', { gid: ${rj}, text: ${JSON.stringify(t)}, reply: null }).then(() => 1)`);
+    // a page counts as looked at only while it has the focus; in this headless browser that is said, not guessed
+    const look = async (P, on) => { await P.send('Emulation.setFocusEmulationEnabled', { enabled: on }); if (on) await P.send('Page.bringToFront'); };
+    const openP = async P => { await P.ev(`openRoom(${rj}); 1`); await P.waitFor(`S.gid === ${rj} && !S.first`, 20000); };
+    // every mark in the stream: the message it is on, whose names, and where it sits against that row's time and words
+    const marks = P => P.ev(`(() => [...document.querySelectorAll('#stream .msg .rr')].map(b => { const row = b.closest('.msg'), w = row.querySelector('.when'), r = document.createRange(); r.selectNodeContents(w.firstChild); const t = r.getBoundingClientRect(), k = b.getBoundingClientRect(), rr = row.getBoundingClientRect(), body = row.querySelector('.body'), bb = body ? body.getBoundingClientRect() : null, st = document.querySelector('#stream').getBoundingClientRect(), n = b.querySelector('.rr-names'), nb = n.getBoundingClientRect(), cs = getComputedStyle(n);
+      return { text: body ? body.innerText : '', cont: row.classList.contains('cont'), label: b.getAttribute('aria-label'), names: [...n.children].map(x => x.innerText), open: cs.display !== 'none', k: [k.left, k.top, k.right, k.bottom].map(Math.round), time: [t.left, t.top, t.right, t.bottom].map(Math.round), timeShown: getComputedStyle(w).opacity !== '0' && cs.display !== 'none' && t.width > 0, row: [rr.left, rr.top, rr.right, rr.bottom].map(Math.round), body: bb ? [bb.left, bb.top, bb.right, bb.bottom].map(Math.round) : null, stream: [st.left, st.right].map(Math.round), list: [nb.left, nb.top, nb.right, nb.bottom].map(Math.round), tops: [...n.children].map(x => Math.round(x.getBoundingClientRect().top)), w: innerWidth, sw: document.documentElement.scrollWidth }; }))()`);
+    const markOn = async (P, text, who, why, ms = 25000) => {
+      const t0 = Date.now(); let m = [];
+      while (Date.now() - t0 < ms) { m = await marks(P); if (m.some(x => x.text.includes(text) && x.label === 'Read by ' + who) && m.filter(x => x.label.includes(who)).length === 1) return m.find(x => x.text.includes(text)); await sleep(250); }
+      throw new Error(`mega: receipts: ${why}: ` + JSON.stringify(m.map(x => [x.text.slice(0, 30), x.label])));
+    };
+    // where the mark is: on the row, after the time (to its right, on its line), small, and inside the stream
+    const placed = (m, why) => need(m.k[0] >= m.time[2] - 1 && m.k[1] >= m.row[1] - 1 && m.k[3] <= m.row[3] + 1 && (m.k[2] - m.k[0]) <= 24 && m.k[0] >= m.stream[0] && m.k[2] <= m.stream[1] + 1
+      && (m.time[3] <= m.time[1] || (m.k[1] < m.time[3] && m.k[3] > m.time[1])) && (m.cont || m.k[0] - m.time[2] <= 12), `receipts: ${why}: the mark is not just to the right of the time: ` + JSON.stringify(m));
+    for (const P of [A, B]) { await P.send('Emulation.clearDeviceMetricsOverride'); await P.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }); await look(P, true); await openP(P); }
+    await sleep(1500);
+    // bob writes, alice (looking at the room) reads: bob sees ✓✓ on that message, and only there
+    await look(B, true);
+    await sendP(B, 'receipt one from bob');
+    let m = await markOn(B, 'receipt one from bob', 'Alice', 'bob does not see that alice read his message');
+    placed(m, 'bob, first message');
+    need(!m.open, 'receipts: the names should be closed until the mark is pointed at: ' + JSON.stringify(m));
+    // the next message: the mark moves to it (after the pause between two receipts) and leaves the old row
+    await sendP(B, 'receipt two from bob');
+    m = await markOn(B, 'receipt two from bob', 'Alice', 'the mark did not move on to the newest message alice read');
+    placed(m, 'bob, second message');
+    // alice writes, bob reads: alice sees bob's ✓✓ on her message; her own reading shows on nobody's screen as her own
+    await sendP(A, 'receipt three from alice');
+    m = await markOn(A, 'receipt three from alice', 'Bob', 'alice does not see that bob read her message');
+    placed(m, 'alice, her own message');
+    need((await marks(A)).every(x => !x.label.includes('Alice')) && (await marks(B)).every(x => !x.label.includes('Bob')), 'receipts: nobody is shown their own place');
+    // a window that is open but not the one being looked at reads nothing out: the unread count clears, no receipt goes
+    // (a headless page behind another one is hidden, not just unfocused, so the focus is taken away by hand)
+    await look(A, true); await A.ev(`document.hasFocus = () => false; 1`);
+    need(await A.ev(`document.hasFocus() === false && document.visibilityState === 'visible'`), 'receipts: the test could not take the focus away from alice');
+    await sendP(B, 'receipt four from bob');
+    await A.waitFor(`S.msgs.messages.some(x => x.text === 'receipt four from bob') && S.snap.communities.flatMap(c => c.channels).filter(x => x.gid === ${rj}).every(x => !x.unread)`, 20000);
+    await sleep(4500);
+    m = await marks(B);
+    need(m.some(x => x.text.includes('receipt two from bob') && x.label === 'Read by Alice') && !m.some(x => x.text.includes('receipt four')), 'receipts: a window in the background said "read": ' + JSON.stringify(m.map(x => [x.text.slice(0, 30), x.label])));
+    await A.ev(`delete document.hasFocus; 1`);
+    need(await A.ev(`document.hasFocus()`), 'receipts: alice did not get the focus back');
+    m = await markOn(B, 'receipt four from bob', 'Alice', 'coming back to the window did not send the receipt');
+    // pointing at the mark opens the names beside it, on the same line, to the right; pointing away closes them
+    await look(A, true);
+    await sendP(A, 'receipt five from alice'); await look(B, true);
+    await look(A, true);
+    m = await markOn(A, 'receipt five from alice', 'Bob', 'alice does not see bob on her newest message');
+    placed(m, 'alice, before the hover');
+    await A.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: (m.k[0] + m.k[2]) / 2, y: (m.k[1] + m.k[3]) / 2 }); await sleep(400);
+    m = (await marks(A)).find(x => x.text.includes('receipt five'));
+    need(m.open && m.names.join() === 'Bob', 'receipts: pointing at the mark does not show the names: ' + JSON.stringify(m));
+    need(m.list[0] >= m.k[2] && Math.abs((m.list[1] + m.list[3]) / 2 - (m.k[1] + m.k[3]) / 2) <= 4 && m.list[2] <= m.w, 'receipts: the names do not open to the right of the mark, on its line: ' + JSON.stringify(m));
+    await A.shot('receipts-1-desktop-names');
+    await A.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 900, y: 40 }); await sleep(300);
+    need(!(await marks(A)).some(x => x.open), 'receipts: the names stay open after the pointer left');
+    await A.shot('receipts-2-desktop');
+    // a long list is cut: the first four names and how many more, still on one line and inside the window
+    const many = `(() => { const x = S.msgs.messages.find(x => x.text === 'receipt five from alice'); x.read_by = ['Bob', 'Carol', 'Dan', 'Erin', 'Frank', 'Grace', 'Heidi']; S.rrOpen = x.id; renderStream(); })()`;
+    await A.ev(many); await sleep(300);
+    m = (await marks(A)).find(x => x.text.includes('receipt five'));
+    need(m.open && m.names.join() === 'Bob,Carol,Dan,Erin,+3' && new Set(m.tops).size === 1 && m.list[2] <= m.w && m.label === 'Read by Bob, Carol, Dan, Erin, Frank, Grace, Heidi', 'receipts: a long list is not cut to four names and a count on one line: ' + JSON.stringify(m));
+    await A.shot('receipts-3-desktop-many');
+    await A.ev(`S.rrOpen = null; S.lastMsgs = ''; tick(); 1`); await sleep(1200);
+    // the phone: the mark is there on a row with its time and on a continued row; a tap opens the names, inside the screen; a tap elsewhere closes them
+    await B.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await B.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 2 }); await sleep(900);
+    await B.ev(`__mega.touch.mark(); 1`);
+    need(await B.ev(`document.documentElement.classList.contains('mg-touch')`), 'receipts: the phone did not get its gestures (html.mg-touch)');
+    await look(B, true);
+    const bottom = async P => { await P.ev(`(() => { const s = document.querySelector('#stream'); s.scrollTop = s.scrollHeight; })()`); await sleep(500); };
+    await bottom(B);
+    m = (await marks(B)).find(x => x.label === 'Read by Alice');
+    need(m && m.text.includes('receipt four') && !m.cont, 'receipts: the phone lost the mark: ' + JSON.stringify(m));
+    placed(m, 'the phone, a row with its time');
+    need(m.k[2] <= m.w && m.sw <= m.w + 1 && m.k[1] >= 0 && m.k[3] <= 844, 'receipts: on the phone the mark is not inside the screen: ' + JSON.stringify(m));
+    const hearts = () => B.ev(`document.querySelectorAll('#stream .react').length`);
+    const tapB = async (x, y) => { await B.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] }); await sleep(40); await B.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await sleep(450); };
+    const h0 = await hearts();
+    await tapB((m.k[0] + m.k[2]) / 2, (m.k[1] + m.k[3]) / 2);
+    m = (await marks(B)).find(x => x.label === 'Read by Alice');
+    need(m.open && m.names.join() === 'Alice', 'receipts: a tap on the mark does not show the names: ' + JSON.stringify(m));
+    need(m.list[0] >= 0 && m.list[2] <= m.w && m.sw <= m.w + 1 && Math.abs((m.list[1] + m.list[3]) / 2 - (m.k[1] + m.k[3]) / 2) <= 4, 'receipts: on the phone the names are not beside the mark, inside the screen: ' + JSON.stringify(m));
+    await B.shot('receipts-4-phone-names');
+    // a tap somewhere else (the words of another message) closes them, and none of this was a double tap
+    const away = await B.ev(`(() => { const s = document.querySelector('#stream').getBoundingClientRect(); const b = [...document.querySelectorAll('#stream .msg:not(.has-rr) .body')].map(x => x.getBoundingClientRect()).filter(r => r.top > s.top + 20 && r.bottom < s.bottom - 20).at(-1); return [b.left + 30, b.top + b.height / 2]; })()`);
+    await tapB(away[0], away[1]);
+    need(!(await marks(B)).some(x => x.open), 'receipts: a tap elsewhere does not close the names');
+    await sleep(500);
+    need(await hearts() === h0, 'receipts: tapping the mark gave a message a heart');
+    need(await B.ev(`S.msgs.messages.some(x => x.text === 'receipt four from bob' && !x.deleted)`), 'receipts: tapping the mark pressed one of the row\'s buttons');
+    // two messages in a row: the second is a continued row, which on a phone has no time; the mark still shows, in the time's place
+    await sendP(B, 'receipt six from bob'); await sendP(B, 'receipt seven from bob'); await look(A, true);
+    m = await markOn(B, 'receipt seven from bob', 'Alice', 'the phone does not get a new receipt');
+    need(m.cont && m.k[0] >= 0 && m.k[2] <= m.w && m.k[1] >= m.row[1] - 1 && m.k[3] <= m.row[3] + 1 && m.k[0] >= m.body[0] && m.sw <= m.w + 1, 'receipts: on the phone the mark of a continued row is not on its row, inside the screen: ' + JSON.stringify(m));
+    await look(B, true); await bottom(B);
+    m = (await marks(B)).find(x => x.label === 'Read by Alice');
+    need(m.k[1] >= 0 && m.k[3] <= 844, 'receipts: the newest mark is not on the phone\'s screen: ' + JSON.stringify(m));
+    await B.shot('receipts-5-phone');
+    await B.send('Emulation.setTouchEmulationEnabled', { enabled: false }); await B.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }); await sleep(900);
+    await B.ev(`__mega.touch.mark(); 1`);
+    // bob turns receipts off: he is shown nobody's, and what he reads from now on is told to nobody
+    await look(B, true);
+    await B.ev(`rpc('set_read_receipts', { on: false }).then(() => tick())`);
+    await B.waitFor(`S.snap.read_receipts === false && !document.querySelector('#stream .rr')`, 15000).catch(() => { throw new Error('mega: receipts: turned off, bob still sees marks'); });
+    const before = (await marks(A)).filter(x => x.label.includes('Bob')).map(x => x.text);
+    await sendP(A, 'receipt nine from alice');
+    await B.waitFor(`S.msgs.messages.some(x => x.text === 'receipt nine from alice') && S.snap.communities.flatMap(c => c.channels).filter(x => x.gid === ${rj}).every(x => !x.unread)`, 20000);
+    await sleep(4500);
+    need(JSON.stringify((await marks(A)).filter(x => x.label.includes('Bob')).map(x => x.text)) === JSON.stringify(before), 'receipts: bob turned them off and alice still saw him read: ' + JSON.stringify(await marks(A)));
+    // and on again: he sees alice's place again, and his next reading is told
+    await B.ev(`rpc('set_read_receipts', { on: true }).then(() => tick())`);
+    await B.waitFor(`S.snap.read_receipts === true && !!document.querySelector('#stream .rr')`, 15000).catch(() => { throw new Error('mega: receipts: turned on again, bob sees no marks'); });
+    await sendP(A, 'receipt ten from alice');
+    await markOn(A, 'receipt ten from alice', 'Bob', 'turned on again, bob\'s reading is not told');
+    // receipts are not messages: nobody got an unread count or a "newer version" note out of them
+    for (const [n, P] of [['alice', A], ['bob', B]]) need(!(await P.ev(`rpc('notices').then(n => n.some(x => x.kind === 'newer'))`)), `receipts: ${n} has a note about a message of an unknown kind`);
+    for (const P of [A, B]) await P.send('Emulation.setFocusEmulationEnabled', { enabled: false });
+    await A.send('Page.bringToFront');
+  }
+  if (process.env.COMMONS_UI_STOP_AFTER === 'receipts') { console.log('UI check stopped after the read receipts check (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
   // ---- mega phase 6: the "what's new" card, unread marks on the dots, and chat density per room ----
   {
     const cid = await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`), cidj = JSON.stringify(cid);
@@ -2545,7 +2750,7 @@ try {
   // the rooms' messages land on it sealed through the inbox, the new device shows one note while it fills, the old one says it was sent.
   {
     const D_PORT = Number(process.env.COMMONS_UI_D_PORT || 7104);
-    run(bin('dev_bridge'), [String(D_PORT), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], { COMMONS_DATA: path.join(out, 'data', 'alice2'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(D_PORT) });
+    run(bin('dev_bridge'), [String(D_PORT), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], { COMMONS_DATA: path.join(out, 'data', 'alice2'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(D_PORT), COMMONS_RUNE: 'http://127.0.0.1:1' });
     await sleep(1500);
     const D = await open(pageUrl(D_PORT));
     await D.waitFor(`!!document.querySelector('#l-pair')`, 15000);

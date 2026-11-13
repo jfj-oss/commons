@@ -61,7 +61,7 @@ impl App {
             }
             "spotify_logout" => { self.with(|c| { c.st.spotify = None; c.save().map_err(|e| e.to_string()) })?; Ok(json!({})) }
             "spotify_login_start" => {
-                if mobile() { return Err("Logging in to Spotify is not offered on a phone; use Open in Spotify.".into()); }
+                if mobile() { return Err("Logging in to Spotify is not offered on a phone.".into()); }
                 let redirect = s("redirect");
                 if !spotify::redirect_ok(&redirect) { return Err("Spotify can only send you back to this app's own address.".into()); }
                 let cid = self.with(|c| Ok(spotify::client_id(&c.st.spotify_client_id)))?;

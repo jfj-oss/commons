@@ -63,6 +63,9 @@ pub const CALL_QUIET: Duration = Duration::from_secs(20);
 /// How often the core looks at rune while sharing is on. This is not the send rate: a shared status goes out only
 /// when it changes, plus a renewal every `LISTENING_REFRESH_SECS` while it keeps playing.
 const RUNE_POLL_SECS: u64 = 4;
+/// After this many looks in a row with no rune answering, it is asked only every `RUNE_ABSENT_SECS`.
+const RUNE_MISSES: u32 = 3;
+const RUNE_ABSENT_SECS: u64 = 30;
 
 /// How long the live poller lets the relay hold a poll for news (the relay caps it at 25 s). A room joined meanwhile is
 /// not in the poll in flight; the ordinary round polls such a room until the next poll covers it (round.rs).
@@ -291,13 +294,19 @@ impl App {
         // Its own thread, because asking rune is a network wait that must not hold up the relay loop or the UI.
         let app = self.clone();
         std::thread::spawn(move || {
-            let mut due = 0u64;
+            // Sharing is on for everyone who did not turn it off, and most people have no rune: after a few looks in a row that
+            // nothing answered, look only now and then.
+            let (mut due, mut missed, mut asked) = (0u64, 0u32, String::new());
             loop {
                 if *app.stop.lock().unwrap() { break; }
-                let on = app.rune_settings().is_some_and(|(on, _)| on);
-                if !on { due = 0; std::thread::sleep(Duration::from_millis(500)); continue; }
+                let (on, url) = app.rune_settings().unwrap_or_default();
+                if !on { due = 0; missed = 0; std::thread::sleep(Duration::from_millis(500)); continue; }
+                if url != asked { asked = url; due = 0; missed = 0; }   // a new address is asked at once
                 let now = commons_proto::now_secs();
-                if now >= due { due = now + RUNE_POLL_SECS; app.poll_rune(); }
+                if now >= due {
+                    missed = if app.poll_rune() { 0 } else { missed.saturating_add(1) };
+                    due = now + if missed >= RUNE_MISSES { RUNE_ABSENT_SECS } else { RUNE_POLL_SECS };
+                }
                 std::thread::sleep(Duration::from_millis(500));
             }
         });
@@ -323,16 +332,17 @@ impl App {
 
     /// One look at rune. A failure leaves the last known status alone: rune may just be busy, and the receivers'
     /// TTL ends a status whose sender has really gone quiet.
-    fn poll_rune(&self) {
-        let Some((on, url)) = self.rune_settings() else { return };
-        if !on { return; }
+    /// Whether rune answered.
+    fn poll_rune(&self) -> bool {
+        let Some((on, url)) = self.rune_settings() else { return false };
+        if !on { return false; }
         let got = crate::rune::now_playing(&url);
         let mut g = self.lock();
-        let Some(c) = g.as_mut() else { return };
-        if !c.st.share_listening { return; } // turned off while we were asking
+        let Some(c) = g.as_mut() else { return false };
+        if !c.st.share_listening { return false; } // turned off while we were asking
         match got {
-            Ok(now) => { let _ = c.update_listening(now); }
-            Err(e) => log::info!("rune at {url}: {e}"),
+            Ok(now) => { let _ = c.update_listening(now); true }
+            Err(e) => { log::debug!("rune at {url}: {e}"); false }
         }
     }
 
@@ -539,7 +549,9 @@ impl App {
                 let v = self.read(key.clone(), |c| messages(c, &gid, limit, &around))?;
                 self.messages_answer(key, v, &a)
             }
-            "mark_read" => self.with(|c| { c.mark_read(&s(&a, "gid")); c.save().map_err(e)?; Ok(json!({})) }),
+            // The page calls this only while the room is in view, so it is also what sends a read receipt (receipts.rs), unless the
+            // page says the reader is not at it just now (`seen: false`: the window is open behind another one).
+            "mark_read" => self.with(|c| { c.mark_read(&s(&a, "gid")); if a["seen"].as_bool() != Some(false) { c.note_read(&s(&a, "gid")); } c.save().map_err(e)?; Ok(json!({})) }),
             "send_text" => self.with(|c| { let r = a.get("reply").and_then(|x| x.as_str()).map(|x| x.to_string()); c.send_text(&s(&a, "gid"), &s(&a, "text"), r).map(|id| json!({"id": id})).map_err(e) }),
             "edit" => self.with(|c| c.edit_message(&s(&a, "gid"), &s(&a, "id"), &s(&a, "text")).map(|_| json!({})).map_err(e)),
             "delete" => self.with(|c| c.delete_message(&s(&a, "gid"), &s(&a, "id")).map(|_| json!({})).map_err(e)),
@@ -914,6 +926,7 @@ impl App {
             // The sign-up secret, typed in once on a device that never got it. Checked with the relay before saving.
             "set_relay_invite" => self.with(|c| c.set_relay_invite(&s(&a, "secret")).map(|_| json!({})).map_err(e)),
             "set_typing_enabled" => self.with(|c| { c.st.typing_enabled = a["on"].as_bool().unwrap_or(false); c.save().map_err(e)?; Ok(json!({})) }),
+            "set_read_receipts" => self.with(|c| { c.set_read_receipts(a["on"].as_bool().unwrap_or(true)); c.save().map_err(e)?; Ok(json!({})) }),
             "notices" => self.read("notices".into(), |c| json!(c.st.notices.iter().rev().take(80).map(|n| json!({"ts": n.ts, "kind": n.kind, "text": n.text})).collect::<Vec<_>>())),
             "call_state" => self.with(|c| {
                 let st = c.call_state(&s(&a, "gid")).map_err(e)?;
@@ -1101,7 +1114,7 @@ fn snapshot(c: &Client) -> Value {
     let net = match c.net.state { NetState::Connecting => "connecting", NetState::Online => "online", NetState::Offline => "offline" };
     let listening = c.listening_of(&me).map(listening_json);
     json!({"me": {"account": me, "name": c.st.name, "device": c.my_device(), "recovery_unsaved": c.st.recovery_unsaved}, "relay": c.st.relay, "relay_secret": !c.st.relay_invite.is_empty(), "communities": comms, "direct": direct, "direct_refused": direct_refused, "joining": joining, "refused": refused,
-           "typing_enabled": c.st.typing_enabled, "share_listening": c.st.share_listening, "rune_url": c.rune_url(), "listening": listening,
+           "typing_enabled": c.st.typing_enabled, "read_receipts": c.read_receipts_on(), "share_listening": c.st.share_listening, "rune_url": c.rune_url(), "listening": listening,
            "outbox": c.st.outbox.len(), "problems": problems, "net": net, "net_detail": c.net.detail, "revoked": c.st.self_revoked,
            "download_dir": c.download_dir().display().to_string(), "history": c.history_status(),
            "mobile": cfg!(any(target_os = "ios", target_os = "android")), "version": c.activity})
@@ -1137,6 +1150,7 @@ fn messages(c: &Client, gid: &str, limit: usize, around: &str) -> Value {
     if !around.is_empty() { if let Some(p) = all.iter().position(|m| m.id == around) { start = start.min(p.saturating_sub(20)); } }
     let find: HashMap<&str, &Msg> = all.iter().map(|m| (m.id.as_str(), *m)).collect();
     let who = c.st.groups.get(gid).map(|g| c.people_of(&g.community)).unwrap_or_default();
+    let read_by = c.read_marks(gid, &all[start..]);
     let out: Vec<Value> = all[start..].iter().map(|m| {
         let (kind, text, file) = match &m.body {
             MsgBody::Text(t) => ("text", t.clone(), Value::Null),
@@ -1155,10 +1169,13 @@ fn messages(c: &Client, gid: &str, limit: usize, around: &str) -> Value {
         };
         let reply = m.reply.as_deref().and_then(|id| find.get(id)).map(|r| json!({"id": r.id, "name": c.display_name(&r.sender), "text": match &r.body { MsgBody::Text(t) if !r.deleted => t.chars().take(120).collect::<String>(), MsgBody::File { name, .. } => format!("[file] {name}"), _ => "(deleted)".into() }}));
         let (role, same_name) = who.get(&m.sender).cloned().unwrap_or((Role::Member, false));
-        json!({"id": m.id, "sender": m.sender, "name": if m.sender.is_empty() { String::new() } else { c.display_name(&m.sender) }, "mine": m.sender == me, "ts": m.ts, "seq": m.seq,
+        let mut row = json!({"id": m.id, "sender": m.sender, "name": if m.sender.is_empty() { String::new() } else { c.display_name(&m.sender) }, "mine": m.sender == me, "ts": m.ts, "seq": m.seq,
                "role": role.name(), "tag": crate::ops::account_tag(&m.sender), "same_name": same_name,
                "status": m.status, "kind": kind, "text": text, "file": file, "reply": reply, "edited": m.edited, "deleted": m.deleted,
-               "reactions": m.reactions.iter().map(|(e, who)| json!({"emoji": e, "count": who.len(), "mine": who.contains(&me), "names": who.iter().map(|w| c.display_name(w)).collect::<Vec<_>>()})).collect::<Vec<_>>()})
+               "reactions": m.reactions.iter().map(|(e, who)| json!({"emoji": e, "count": who.len(), "mine": who.contains(&me), "names": who.iter().map(|w| c.display_name(w)).collect::<Vec<_>>()})).collect::<Vec<_>>()});
+        // Only on the row somebody's reading has reached, so every other row is what it always was.
+        if let Some(names) = read_by.get(m.id.as_str()) { row["read_by"] = json!(names); }
+        row
     }).collect();
     json!({"messages": out, "more": start > 0, "typing": c.typing_now(gid), "status": c.group_status(gid)})
 }

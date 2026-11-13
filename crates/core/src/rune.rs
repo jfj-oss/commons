@@ -8,6 +8,16 @@ use std::io::Read;
 use std::time::Duration;
 
 pub const DEFAULT_URL: &str = "http://127.0.0.1:4545";
+/// Where rune is looked for until the person says otherwise. `COMMONS_RUNE` moves it, so that a test's apps (which share by
+/// default like everyone's) never ask the rune of the person running the test; so does `COMMONS_FAST_KDF`, see below.
+pub fn default_url() -> String {
+    if let Some(u) = std::env::var("COMMONS_RUNE").ok().and_then(|u| clean_url(&u).ok()) { return u; }
+    // Every test bridge runs with COMMONS_FAST_KDF (never set for a person's app): those look where nothing answers.
+    if std::env::var_os("COMMONS_FAST_KDF").is_some() { return NOWHERE_URL.to_string(); }
+    DEFAULT_URL.to_string()
+}
+/// An address no rune answers on (a closed loopback port).
+pub const NOWHERE_URL: &str = "http://127.0.0.1:1";
 const TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_BODY: u64 = 4 << 20;
 

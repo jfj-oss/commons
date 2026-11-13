@@ -208,6 +208,17 @@ fn run() -> Result<(), String> {
         c.st.typing_enabled = true;
         let _ = c.save();
     }
+    // A bot plays no music: it shares no "listening to".
+    if c.st.share_listening {
+        c.st.share_listening = false;
+        c.st.share_listening_chosen = true;
+        let _ = c.save();
+    }
+    // A bot reads everything at once and nobody needs to be told: it sends no read receipts (and is shown none).
+    if c.read_receipts_on() {
+        c.set_read_receipts(false);
+        let _ = c.save();
+    }
 
     let timeout = Duration::from_secs(env_usize("MEGATRON_BOT_LLM_TIMEOUT_SECS", 120).max(5) as u64);
     let ollama_url = env_string("MEGATRON_BOT_OLLAMA_URL").or_else(|| env_string("OLLAMA_URL")).unwrap_or_else(|| DEFAULT_OLLAMA.into());

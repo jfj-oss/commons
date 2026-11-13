@@ -32,9 +32,16 @@ pub struct State {
     /// What each account said it is listening to, when we heard it. Expires by itself (see `NowPlaying`'s TTL).
     #[serde(default)]
     pub listening: BTreeMap<String, Heard>,
-    /// Share what rune plays with the people in our communities. Off unless the person turns it on.
+    /// Share what rune plays with the people in our communities. On unless the person turns it off (see the two flags below).
     #[serde(default)]
     pub share_listening: bool,
+    /// The person changed the switch themselves, so it stays as they left it.
+    #[serde(default)]
+    pub share_listening_chosen: bool,
+    /// Sharing has been switched on once for this account as the default (a new account, or one from before the default that
+    /// never chose). After that only the person changes it.
+    #[serde(default)]
+    pub share_listening_default_applied: bool,
     /// Where rune answers. Empty means the default.
     #[serde(default)]
     pub rune_url: String,
@@ -66,6 +73,10 @@ pub struct State {
     pub avatar_removed: bool,
     pub lr_published: bool,
     pub typing_enabled: bool,
+    /// "Send read receipts" was turned off: this app sends none and shows nobody else's. On unless the person turns it off, so
+    /// the stored flag is the "off" (an account from before the switch reads as on).
+    #[serde(default)]
+    pub read_receipts_off: bool,
     /// Set once typing hints have been switched on for this account. Older versions stored off for everyone, so one switch-on
     /// is applied when such an account first opens; after that, turning them off in the options room sticks.
     #[serde(default)]
@@ -425,6 +436,14 @@ pub struct ChannelLog {
     pub msgs: Vec<Msg>,
     pub orphans: Vec<(Envelope, String, u64)>,
     pub read_upto: usize,
+    /// Read receipts (receipts.rs): for each other account, the id of the newest message it said it has read here.
+    #[serde(default)]
+    pub read_by: BTreeMap<String, String>,
+    /// Our own receipts: the message id last sent, and one waiting for the pause between two receipts to pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_sent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_want: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

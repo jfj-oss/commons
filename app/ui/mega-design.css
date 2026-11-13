@@ -116,3 +116,21 @@ html.mega.mg-room .msg[data-mz] .body .at.self { background: color-mix(in srgb, 
 @container main (max-width: 660px) {
   html.mega .msg > .when, html.mega .sys > .when { font: 400 11px/1.3 var(--m-name); letter-spacing: 0; color: var(--m-mute); }
 }
+
+/* ---- read receipts (style.css has the mark itself): in mega the names open on dark glass, and on a computer, where the time
+   sits beside the name with the row's width free after it, they open to the right ---- */
+html.mega .rr { color: var(--m-mute); }
+html.mega .rr.open, html.mega .rr:focus-visible { color: var(--m-paper); }
+html.mega:not(.mg-touch) .rr:hover { color: var(--m-paper); }
+html.mega .rr-names { background: #1b1922; color: var(--m-paper); border: 1px solid var(--m-line); box-shadow: 0 8px 22px rgb(0 0 0 / .5); font: 400 12px/1.5 var(--m-name); }
+html.mega .rr-names .rr-more { color: var(--m-mute); }
+@container main (min-width: 661px) {
+  html.mega .rr-names { right: auto; left: calc(100% + 4px); }
+  /* a continued row keeps its time in the avatar column; the mark stands just after it, in the gap before the words */
+  html.mega .msg.cont.has-rr > .when { position: relative; justify-self: end; margin-right: 5px; }   /* the time ends where the column does, however long it is */
+  html.mega .msg.cont.has-rr > .when .rr { position: absolute; left: calc(100% + 2px); top: 5px; margin: 0; padding: 2px 0; }
+  html.mega .msg.cont.has-rr > .when .rr svg { width: 12px; height: 8px; }
+}
+@container main (max-width: 660px) {
+  html.mega .msg.cont.has-rr > .when { font-size: 0; }
+}

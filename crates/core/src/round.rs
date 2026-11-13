@@ -260,6 +260,7 @@ impl Client {
             for g in ctls { self.queue_env(&g, Envelope::Profile { name: name.clone(), ts, listen: listen.clone(), avatar: avatar.clone(), avatar_cleared, direct: true, direct_sealed: true }); }
         }
         self.flush_live();
+        self.flush_reads();
         self.reconcile();
         self.direct_tick();
         self.plan_relay_secret();

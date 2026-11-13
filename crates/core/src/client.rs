@@ -48,6 +48,8 @@ pub struct Client {
     /// ids of groups we have fully caught up on since this process started (safe to encrypt)
     pub(crate) synced: BTreeSet<String>,
     pub typing: BTreeMap<String, u64>,
+    /// Per room, when (ms) this device last sent a read receipt. Never saved.
+    pub(crate) read_sent_at: BTreeMap<String, u64>,
     /// Live events received and not yet read by the UI, newest last. Never saved, and capped.
     pub(crate) live_in: std::collections::VecDeque<LiveEvent>,
     pub(crate) live_next: u64,
@@ -96,6 +98,8 @@ pub struct Client {
     /// Exclusive lock on the data folder, held for as long as this client lives.
     lock: Option<std::fs::File>,
     /// How long a looked-up device list stays good, and how often an admin compares the relay's ACL with the group.
+    /// The pause between two read receipts for one room (`receipts::READ_GAP_MS`; a test makes it long and gives the times itself).
+    pub read_gap_ms: u64,
     pub dir_ttl_secs: u64,
     pub acl_check_secs: u64,
     /// Device lists and key packages are fetched between rounds, so that planning a change needs no network.
@@ -189,12 +193,15 @@ impl Client {
     }
     fn assemble(dir: &Path, vault: Vault, mut st: State, prov: Prov, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
         if !st.typing_default_applied { st.typing_default_applied = true; st.typing_enabled = true; }
+        // The same for sharing "listening to": on for a new account and, once, for an account from before this default that never
+        // changed the switch. An account that chose (on or off) keeps its choice.
+        if !st.share_listening_default_applied { st.share_listening_default_applied = true; if !st.share_listening_chosen { st.share_listening = true; } }
         let walls = st.walls.clone();
-        Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), wall_peer_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), live_in: Default::default(), live_next: 0, live: Default::default(), ring_in: Default::default(), ring_next: 0, ring_seen: BTreeMap::new(), ring_rate: BTreeMap::new(), ring_ends: BTreeMap::new(), ring_sent: BTreeMap::new(), direct_seen: BTreeMap::new(), direct_rate: BTreeMap::new(), direct_joined: Default::default(), direct_out: vec![], history_hold_until: 0, history_chunk_bytes: crate::history::CHUNK_PLAIN,
+        Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), wall_peer_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), read_sent_at: BTreeMap::new(), live_in: Default::default(), live_next: 0, live: Default::default(), ring_in: Default::default(), ring_next: 0, ring_seen: BTreeMap::new(), ring_rate: BTreeMap::new(), ring_ends: BTreeMap::new(), ring_sent: BTreeMap::new(), direct_seen: BTreeMap::new(), direct_rate: BTreeMap::new(), direct_joined: Default::default(), direct_out: vec![], history_hold_until: 0, history_chunk_bytes: crate::history::CHUNK_PLAIN,
             #[cfg(feature = "test-hooks")]
             debug_offers: vec![],
             live_out: BTreeMap::new(), live_sent: BTreeMap::new(), live_rate: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new(),
-            lock: Some(lock), dir_ttl_secs: 30, acl_check_secs: 60, dir_cache: HashMap::new(), dir_wanted: BTreeSet::new(), dir_hot_until: 0, kp_cache: HashMap::new(), kp_wanted: BTreeMap::new(), kp_refill: false, seen_welcomes: HashSet::new(), last_parked_try: 0,
+            lock: Some(lock), read_gap_ms: crate::receipts::READ_GAP_MS, dir_ttl_secs: 30, acl_check_secs: 60, dir_cache: HashMap::new(), dir_wanted: BTreeSet::new(), dir_hot_until: 0, kp_cache: HashMap::new(), kp_wanted: BTreeMap::new(), kp_refill: false, seen_welcomes: HashSet::new(), last_parked_try: 0,
             more: false, sync_cap: SYNC_MAX_BYTES, sync_bg: false, sync_polling: BTreeSet::new(), pair_ack: None, net: NetStatus::default(), consent_offered: HashMap::new() }
     }
     fn blank(dir: &Path, vault: Vault, relay: &str, name: &str, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
