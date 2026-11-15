@@ -76,7 +76,7 @@
   /** nothing swipes while a float has the screen, a card is being drawn on, or the dots are open */
   const blocked = () => !M.started || M.busy || M.rail || M.pal || A.paintOpen() || A.modalOpen() || S.people
     || html.classList.contains('mg-drawing') || html.classList.contains('mg-drawing-card') || !!$('.lightbox, #mega-view, .emojis, #call-pop, .nm-menu, .mpop');
-  const NOSWIPE = '#mega-rail, #call-stage, #call-dock, #call-ppl, #people, #mega-paint, .emojis, .menu, #modal-root, #mega-wallhit, #mega-wallhit-card, #mega-wallbar, input, textarea, select, [contenteditable], .vwave, #mic, .mediaslot, video, audio, .mbar, #head .head-actions, .mscrub, #jump, #mega-deckshow';
+  const NOSWIPE = '#mega-rail, #call-stage, #call-dock, #call-ppl, #people, #mega-paint, .emojis, .menu, #modal-root, #mega-wallhit, #mega-wallhit-card, #mega-wallbar, input, textarea, select, [contenteditable], .vwave, #mic, .mediaslot, video, audio, .mbar, #head .head-actions, .mscrub, #jump, #mega-deckshow, #mega-deckgrip';
   /** a touch that another gesture owns: sideways scrollers, touch-action: none, text boxes, the dots, the strips */
   function owned(t) {
     if (!t || !t.closest) return true;

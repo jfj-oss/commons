@@ -181,6 +181,23 @@ try {
       await shotOf('bob', 'K-strip');
       check('K15 on a computer the call controls are a vertical strip on the right and the app makes room', strip.right >= strip.vw - 16 && strip.w <= 72 && strip.h > strip.w * 2 && strip.megaRight <= strip.left + 1 && strip.hit, J(strip));
     }
+    {
+      // The stack's edge drags to make the pictures bigger (a real mouse drag on bob's page); the size is clamped and kept for next time.
+      const b = page('bob');
+      const geo = () => b.ev(`(() => { const r = e => { const q = document.querySelector(e).getBoundingClientRect(); return [Math.round(q.left), Math.round(q.top), Math.round(q.width), Math.round(q.height)]; }; return { win: innerWidth, stage: r('#call-stage'), grip: r('#mega-deckgrip'), tile: r('#call-stage .ctile:not(.local)'), pad: parseFloat(getComputedStyle(document.querySelector('#app')).paddingLeft), kept: localStorage.getItem('mega.deck.w'), wide: document.documentElement.scrollWidth }; })()`);
+      const mouse = (type, x, y, extra = {}) => b.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1, ...extra });
+      const dragTo = async x1 => { const g = await geo(), x0 = g.grip[0] + g.grip[2] / 2, y = 420; await mouse('mouseMoved', x0, y, { buttons: 0 }); await mouse('mousePressed', x0, y); for (let i = 1; i <= 6; i++) { await mouse('mouseMoved', x0 + (x1 - x0) * i / 6, y); await sleep(30); } await mouse('mouseReleased', x1, y); await sleep(300); return geo(); };
+      const was = await tilesOf('bob');
+      const g0 = await geo(), g1 = await dragTo(700), g2 = await dragTo(5000), g3 = await dragTo(5);
+      check('J9 dragging the stack\'s edge makes the shared screen bigger, and the chat moves over', g1.stage[2] > g0.stage[2] + 300 && Math.abs(g1.stage[2] - 700) < 16 && g1.tile[2] > g0.tile[2] + 300 && Math.abs(g1.pad - g0.pad - (g1.stage[2] - g0.stage[2])) < 2 && g1.kept === String(g1.stage[2]) && g1.wide <= g1.win, J({ g0, g1 }));
+      check('J10 the size stops at a maximum that leaves the chat room, and at a minimum', g2.stage[2] === Math.max(200, g2.win - 420) && g3.stage[2] === 200 && g3.tile[2] > 150, J({ g2, g3 }));
+      const gx = g3.grip[0] + g3.grip[2] / 2;
+      for (const n of [1, 2]) { await mouse('mousePressed', gx, 420, { clickCount: n }); await mouse('mouseReleased', gx, 420, { clickCount: n }); }
+      await sleep(300); const g4 = await geo();
+      check('J11 a double-click on the edge puts the size back', g4.stage[2] === g0.stage[2] && g4.kept === null, J(g4));
+      const still = await tilesOf('bob');
+      check('J12 resizing never touched the video elements', still.length > 0 && J(still.map(t => t.id).sort()) === J(was.map(t => t.id).sort()) && still.every(t => t.playing), J(still));
+    }
     await call('alice', `c.stopShare()`);
     const noShare = await until(async () => { const t = await tilesOf('bob'); return t.length === 1 && isCam(t[0]) ? t : null; }, 8000, 'share gone').catch(async () => tilesOf('bob'));
     check('J8 stopping the share removes only the screen tile', noShare.length === 1 && isCam(noShare[0]) && noShare[0].id === back.find(isCam)?.id, J(noShare));
@@ -284,6 +301,9 @@ try {
   check('D8b the camera captures 720p and may send about 2.5 Mbps (it was 360p at 450 kbps)', camOut.w >= 1280 && camOut.h >= 720 && camOut.top >= 2_000_000 && camOut.layers >= 2, J(camOut));
   const shareOut = await page('alice').ev(`(()=>{ const c = window.__commonsCall, p = c.room.localParticipant.getTrackPublication('screen_share'), enc = p.track.sender.getParameters().encodings; return { top: Math.max(...enc.map(e => e.maxBitrate || 0)), layers: enc.length, pref: p.track.sender.getParameters().degradationPreference || null }; })()`);
   check('D8c a screen share may send at least 5 Mbps (it was 2 to 2.5 Mbps)', shareOut.top >= 5_000_000 && shareOut.layers >= 2, J(shareOut));
+  const shareLadder = await page('alice').ev(`(()=>{ const c = window.__commonsCall, p = c.room.localParticipant.getTrackPublication('screen_share'), enc = p.track.sender.getParameters().encodings.map(e => e.maxBitrate || 0).sort((a, b) => a - b); return { enc, under: enc.slice(0, -1).reduce((a, b) => a + b, 0), profiles: Object.fromEntries(Object.entries(c.shareProfiles()).map(([k, v]) => [k, { n: v.layers.length, under: v.layers.reduce((a, l) => a + l.encoding.maxBitrate, 0), keep: v.keep, hint: v.hint }])) }; })()`);
+  // the browser fills simulcast layers from the smallest up: whatever sits under the real picture is taken from the sender's upload first
+  check('D8d a screen share has one cheap fallback under the full picture, not a ladder that starves it', shareLadder.enc.length === 2 && shareLadder.under <= 600_000 && Object.values(shareLadder.profiles).every(p => p.n === 1 && p.under <= 600_000) && shareLadder.profiles.text.keep === 'maintain-resolution' && shareLadder.profiles.text.hint === 'detail', J(shareLadder));
   await call('alice', `c.setCamera(false)`);
   await call('alice', `c.stopShare()`); await call('bob', `c.stopShare()`);
   await sleep(1000);

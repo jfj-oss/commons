@@ -131,7 +131,7 @@ Being rung: a card appears with **join** and **decline**. It rings for 30 second
 
 The camera button in the dock turns your camera on. **Share your screen** opens your browser's own picker: a whole screen, a window or a tab. Everyone's cameras and shares appear as tiles in a stack on the left (across the top on a phone). Drag a tile to reorder the stack for everyone; **hide** hides the stack for you only.
 
-In **Call settings** you can choose the camera quality (**720p, 30 fps** or **1080p, 30 fps**) and what a screen share is tuned for: **Sharp text**, **Smooth motion** or **Fast motion**. People watching pick their own picture quality under each tile (**Quality: auto**, High, Medium, Low) and can go **Fullscreen**. On a Mac, sharing a screen also needs **Screen Recording** allowed for Brave in **System Settings**, **Privacy & Security**.
+In **Call settings** you can choose the camera quality (**720p, 30 fps** or **1080p, 30 fps**) and what a screen share is tuned for: **Sharp text**, **Smooth motion** or **Fast motion**. People watching pick their own picture quality under each tile (**Quality: auto**, High, Medium, Low) and can go **Fullscreen**. To make the cameras and screens bigger, drag the right edge of their column (on a phone, the lower edge of the strip); double-click the edge to put it back. On a Mac, sharing a screen also needs **Screen Recording** allowed for Brave in **System Settings**, **Privacy & Security**.
 
 **Play a video into the call** plays a video file from your computer to everyone, or music, or the sound of another browser tab (**Sound from this computer**, then **A browser tab**; tick **Share tab audio** in the picker). On Linux it can also take the sound of one app that is playing.
 

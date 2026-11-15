@@ -184,7 +184,7 @@ Sharer: one computer. Viewer: another, preferably over the slowest connection pr
 1. **Camera:** press the camera button. In **Call settings**, **Camera quality**: try **720p, 30 fps**, then **1080p, 30 fps**. The
    viewer sees a tile named `<name> · camera`. **Report** sharpness, smoothness and whether the tile re-appeared after the quality change.
 2. **Screen share:** **Share your screen**. The browser's own picker appears (screen, window, tab). Share a window with text, then one
-   with a moving video. In **Call settings**, **Share as**: try all three, **Sharp text (up to 1440p, 15 fps)**, **Smooth motion
+   with a moving video. In **Call settings**, **Share as**: try all three, **Sharp text (up to 1440p, 30 fps)**, **Smooth motion
    (1080p, 30 fps)**, **Fast motion (1080p, 60 fps)**; stop and start the share after each change. **Report** readability of small text
    and smoothness of motion for each.
 3. **Viewer's choice:** under the tile, **Quality: auto**, then **High**, **Medium**, **Low**, then **Fullscreen**. **Report** whether
