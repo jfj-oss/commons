@@ -2,11 +2,11 @@
 use crate::bench;
 use crate::core::Core;
 use crate::look::{self, Duo};
-use crate::model::{Change, Msg, Snapshot, Window as MsgWindow};
+use crate::model::{Change, Channel, Community, Snapshot, Window as MsgWindow};
+use crate::prefs::{ChatFont, Prefs, Saver};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::scroll::Scrollbar;
-use gpui_kit::component::{h_flex, v_flex, Disableable as _, Sizable as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState, TextareaState};
+use gpui_kit::component::{v_flex, Disableable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::{json, Value};
@@ -15,6 +15,10 @@ use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Screen { Starting, Welcome, Locked, Main }
+
+/// Where the window is, once signed in: the community cards, one community's room cards, a room, or settings.
+#[derive(Clone, PartialEq, Debug)]
+pub enum Level { Home, Server(String), Chat, Settings }
 
 pub struct Mega {
     pub core: Arc<Core>,
@@ -31,6 +35,20 @@ pub struct Mega {
     snap_hash: String,
     pub cid: Option<String>,
     pub gid: Option<String>,
+    pub level: Level,
+    pub prefs: Prefs,
+    pub on_battery: bool,
+    pub pres: crate::presence::Presence,
+    /// The cards' clock and the open room's backdrop (ascii.rs).
+    pub clock: f64,
+    pub bd_t: f64,
+    pub heat: f64,
+    pub ripples: Vec<crate::ascii::Ripple>,
+    pub holes: crate::ascii::Holes,
+    next_ripple: f64,
+    last_anim: Instant,
+    pub notify_settings: Value,
+    pub set_name: Entity<InputState>,
     // the open room
     pub win: MsgWindow,
     pub limit: usize,
@@ -39,7 +57,7 @@ pub struct Mega {
     typing_sent: Option<Instant>,
     ticking: bool,
     again: bool,
-    first_frame: bool,
+    pub first_frame_done: bool,
     pub auto: crate::bench::Auto,
     _tasks: Vec<Task<()>>,
     _subs: Vec<Subscription>,
@@ -52,6 +70,7 @@ impl Mega {
         let pass = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Passphrase"));
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("Your name"));
         let relay = cx.new(|cx| InputState::new(window, cx).placeholder("Relay address (https://…)"));
+        let set_name = cx.new(|cx| InputState::new(window, cx).placeholder("Your name"));
         let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 8).submit_on_enter(true).placeholder("Write a message"));
         let mut subs = vec![
             cx.subscribe_in(&composer, window, |this: &mut Self, _, ev: &InputEvent, window, cx| match ev {
@@ -64,9 +83,10 @@ impl Mega {
         ];
         subs.push(cx.observe_window_activation(window, |this, window, cx| this.beat(window, cx)));
         let mut this = Mega {
+            level: Level::Home, prefs: Prefs::load(&core.dir), on_battery: false, pres: Default::default(), clock: 0., bd_t: 0., heat: HEAT_FLOOR, ripples: vec![], holes: Default::default(), next_ripple: 8., last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
-            list: ListState::new(0, ListAlignment::Bottom, px(600.)), composer, typing_sent: None, ticking: false, again: false, first_frame: true,
+            list: ListState::new(0, ListAlignment::Bottom, px(600.)), composer, typing_sent: None, ticking: false, again: false, first_frame_done: false,
             auto: crate::bench::Auto::from_env(), _tasks: vec![], _subs: subs,
         };
         this.look_at_state(window, cx);
@@ -79,7 +99,61 @@ impl Mega {
             cx.background_executor().timer(Duration::from_millis(3000)).await;
             if this.update_in(cx, |this, window, cx| this.beat(window, cx)).is_err() { break; }
         }));
+        this._tasks.push(cx.spawn_in(window, async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_millis(700)).await;
+            if this.update_in(cx, |this, window, cx| this.presence_tick(window, cx)).is_err() { break; }
+        }));
+        // The fields move at 20 frames a second on the cards and 10 behind a chat (25 while a ripple runs), as in mega.js;
+        // not at all with the battery saver on, or while the window is not the active one.
+        this._tasks.push(cx.spawn_in(window, async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_millis(40)).await;
+            if this.update_in(cx, |this, window, cx| this.animate(window, cx)).is_err() { break; }
+        }));
+        this._tasks.push(cx.spawn_in(window, async move |this, cx| loop {
+            if this.update_in(cx, |this, window, cx| this.power_tick(window, cx)).is_err() { break; }
+            cx.background_executor().timer(Duration::from_secs(60)).await;
+        }));
         this
+    }
+
+    /// Battery saver: "auto" (the default) is on while the computer runs on battery, which the core reads.
+    pub fn still(&self) -> bool { self.prefs.saver == Saver::On || (self.prefs.saver == Saver::Auto && self.on_battery) }
+    fn power_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.prefs.saver != Saver::Auto { return; }
+        self.rpc("power_status", json!({}), window, cx, |this, r, _, cx| {
+            let b = r.ok().and_then(|v| v["battery"].as_bool()).unwrap_or(false);
+            if b != this.on_battery { this.on_battery = b; cx.notify(); }
+        });
+    }
+    fn animate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.screen != Screen::Main || self.still() || !window.is_window_active() { self.last_anim = Instant::now(); return; }
+        let dt = self.last_anim.elapsed().as_secs_f64();
+        match self.level {
+            Level::Home | Level::Server(_) => { if dt < 0.05 { return; } self.clock += dt.min(0.1); }
+            Level::Chat => {
+                if dt < if self.ripples.is_empty() { 0.1 } else { 0.04 } { return; }
+                let dt = dt.min(0.25);
+                self.heat = (self.heat * 0.5f64.powf(dt / 18.)).max(HEAT_FLOOR);
+                self.bd_t += dt * (0.1 + self.heat * 1.5);
+                self.next_ripple -= dt;
+                if self.next_ripple <= 0. {   // now and then a gentle ring from somewhere in the room
+                    self.next_ripple = 14. + 14. * nh01(self.bd_t);
+                    self.ripples.push(crate::ascii::Ripple { x: 20. + 60. * nh01(self.bd_t * 3.1), y: 8. + 20. * nh01(self.bd_t * 7.7), r: 0., s: 0.5, v: 26., band: 8., fade: 0.3 });
+                }
+                for q in &mut self.ripples { q.r += q.v * dt; q.s *= q.fade.powf(dt); }
+                self.ripples.retain(|q| q.s > 0.04 && q.r < 220.);
+            }
+            Level::Settings => return,
+        }
+        self.last_anim = Instant::now();
+        cx.notify();
+    }
+    /// Activity in the open room: the backdrop warms up and a ring leaves from where the newest line is.
+    fn stir(&mut self, n: usize) {
+        self.heat = (self.heat + 0.18 * n as f64).min(1.);
+        if self.still() { return; }
+        if self.ripples.len() > 6 { self.ripples.remove(0); }
+        self.ripples.push(crate::ascii::Ripple { x: 14., y: 36., r: 0., s: 0.9, v: 44., band: 4., fade: 0.12 });
     }
 
     /// One call to the core off the UI thread, then `then` back on it.
@@ -136,6 +210,7 @@ impl Mega {
         self.pass.update(cx, |p, cx| p.set_value("", window, cx));
         self.screen = Screen::Main;
         bench::mark("unlocked");
+        self.rpc("notify_get", json!({}), window, cx, |this, r, _, _| { if let Ok(v) = r { this.notify_settings = v; } });
         self.tick(window, cx);
     }
 
@@ -146,18 +221,20 @@ impl Mega {
         self.ticking = true;
         let core = self.core.clone();
         let snap_if = self.snap_hash.clone();
-        let room = self.gid.clone().map(|gid| (gid, self.limit, self.win.hash.clone()));
+        // nothing is read (or marked read) while the cards are showing
+        let room = self.gid.clone().filter(|_| self.level == Level::Chat).map(|gid| (gid, self.limit, self.win.hash.clone()));
         cx.spawn_in(window, async move |this, cx| {
-            let out = cx.background_spawn(async move {
+            let out = core.clone().look(move |app| {
                 // The core answers "same" to the hash of what this window already holds, which is nearly every time.
-                let snap = core.call("snapshot", if snap_if.is_empty() { json!({}) } else { json!({"if": snap_if}) });
+                let snap = app.call("snapshot", if snap_if.is_empty() { json!({}) } else { json!({"if": snap_if}) });
                 let msgs = room.map(|(gid, limit, have)| {
                     let mut a = json!({"gid": gid, "limit": limit, "around": "", "delta": 1});
                     if !have.is_empty() { a["if"] = have.into(); }
-                    (gid, core.call("messages", a))
+                    (gid, app.call("messages", a))
                 });
                 Polled { snap, msgs }
             }).await;
+            let Ok(out) = out else { return };
             let _ = this.update_in(cx, |this, window, cx| {
                 this.ticking = false;
                 this.polled(out, window, cx);
@@ -190,7 +267,7 @@ impl Mega {
                 Ok(Change::InPlace { changed, appended }) => {
                     // a changed row is measured again; new rows are added at the end, and a list that was at the bottom stays there
                     for i in changed { self.list.splice(i..i + 1, 1); if i + 1 < was { self.list.splice(i + 1..i + 2, 1); } }
-                    if appended > 0 { if was > 0 { self.list.splice(was - 1..was, 1); } self.list.splice(was..was, appended); }
+                    if appended > 0 { if was > 0 { self.list.splice(was - 1..was, 1); } self.list.splice(was..was, appended); self.stir(appended); }
                     cx.notify();
                 }
                 Ok(Change::Reset) => {
@@ -207,14 +284,23 @@ impl Mega {
     /// Hook for what follows a new snapshot (automation opens its room here).
     fn after_snapshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(want) = self.auto.open.clone() {
-            let found = self.snap.as_ref().and_then(|s| s.communities.iter().find_map(|c| c.channels.iter().find(|ch| ch.name == want && ch.joined).map(|ch| (c.id.clone(), ch.gid.clone()))));
+            let found = self.snap.as_ref().and_then(|s| s.communities.iter().chain(s.direct.iter()).find_map(|c| c.channels.iter().find(|ch| ch.name == want && ch.joined).map(|ch| (c.id.clone(), ch.gid.clone()))));
             if let Some((cid, gid)) = found { self.auto.open = None; self.open_room(cid, gid, window, cx); }
         }
     }
 
+    /// A room and the community (or one-to-one conversation) it is in.
+    pub fn channel(&self, gid: &str) -> Option<(&Community, &Channel)> {
+        let s = self.snap.as_ref()?;
+        s.communities.iter().chain(s.direct.iter()).find_map(|c| c.channels.iter().find(|ch| ch.gid == gid).map(|ch| (c, ch)))
+    }
+    pub fn room_duo(&self, gid: &str) -> Duo {
+        match self.channel(gid) { Some((c, _)) => Duo::of(gid, c.room_colours.iter().find(|(g, _)| g == gid).map(|(_, d)| d)), None => Duo::of(gid, None) }
+    }
+
     fn mark_read(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(gid) = self.gid.clone() else { return };
-        let unread = self.snap.as_ref().is_some_and(|s| s.communities.iter().flat_map(|c| c.channels.iter()).any(|ch| ch.gid == gid && ch.unread > 0));
+        let Some(gid) = self.gid.clone().filter(|_| self.level == Level::Chat) else { return };
+        let unread = self.channel(&gid).is_some_and(|(_, ch)| ch.unread > 0);
         if !unread { return; }
         // `seen` is for the read receipt: a window behind another clears its count but tells nobody "read" (app.js).
         let seen = window.is_window_active();
@@ -228,7 +314,9 @@ impl Mega {
     }
 
     pub fn open_room(&mut self, cid: String, gid: String, window: &mut Window, cx: &mut Context<Self>) {
-        if self.gid.as_deref() == Some(gid.as_str()) { return; }
+        self.level = Level::Chat;
+        if self.gid.as_deref() == Some(gid.as_str()) { cx.notify(); return; }
+        self.bd_t = (look::h(&gid) % 90) as f64; self.ripples.clear(); self.heat = HEAT_FLOOR;
         self.cid = Some(cid);
         self.gid = Some(gid.clone());
         self.win = MsgWindow { key: gid, ..Default::default() };
@@ -262,7 +350,7 @@ impl Mega {
     }
 
     // ---- drawing ----
-    fn render_sign_in(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn render_sign_in(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let welcome = self.screen == Screen::Welcome;
         v_flex().size_full().items_center().justify_center().gap_3()
             .child(div().font_family(look::F_SHARP).text_size(px(96.)).line_height(px(96.)).child("mega"))
@@ -275,100 +363,40 @@ impl Mega {
             .when_some(self.error.clone(), |d, e| d.child(div().max_w(px(520.)).text_color(rgb(look::DANGER)).child(e)))
             .when(welcome && !self.default_relay.is_empty(), |d| d.child(div().text_sm().text_color(look::mute()).child(format!("Relay: {} (leave the address empty to use it)", self.default_relay))))
     }
-
-    fn render_rooms(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut col = v_flex().id("rooms").w(px(240.)).h_full().flex_none().overflow_y_scroll().border_r_1().border_color(look::line()).p_2().gap_1();
-        let Some(snap) = &self.snap else { return col };
-        for c in snap.communities.iter().filter(|c| !c.removed) {
-            let duo = Duo::of(&c.id, c.colours.as_ref());
-            col = col.child(h_flex().mt_2().px_2().gap_2().items_center()
-                .child(div().size(px(10.)).rounded_full().bg(duo.dot()))
-                .child(div().font_family(look::F_NAME).text_color(look::mute()).child(c.name.clone())));
-            for ch in &c.channels {
-                let (cid, gid, on) = (c.id.clone(), ch.gid.clone(), self.gid.as_deref() == Some(ch.gid.as_str()));
-                let d = Duo::of(&ch.gid, c.room_colours.iter().find(|(g, _)| g == &ch.gid).map(|(_, d)| d));
-                col = col.child(h_flex().id(SharedString::from(format!("room-{}", ch.gid))).px_2().py_1().gap_2().rounded_md().items_center().cursor_pointer()
-                    .when(on, |x| x.bg(hsla(0., 0., 1., 0.08))).hover(|x| x.bg(hsla(0., 0., 1., 0.05)))
-                    .when(!ch.joined, |x| x.opacity(0.5))
-                    .child(div().size(px(8.)).rounded_full().bg(d.dot()))
-                    .child(div().flex_1().overflow_hidden().text_ellipsis().child(format!("{}{}", if ch.kind == "voice" { "~ " } else { "" }, ch.name)))
-                    .when(ch.unread > 0, |x| x.child(div().px_1p5().rounded_full().bg(d.dot()).text_color(rgb(0x0c0d12)).text_xs().child(ch.unread.to_string())))
-                    .on_click(cx.listener(move |this, _, window, cx| this.open_room(cid.clone(), gid.clone(), window, cx))));
-            }
-        }
-        col
-    }
-
-    fn render_msg(&mut self, ix: usize, _window: &mut Window, _cx: &mut Context<Self>) -> AnyElement {
-        let Some(m) = self.win.msgs.get(ix) else { return div().into_any_element() };
-        let prev = ix.checked_sub(1).and_then(|i| self.win.msgs.get(i));
-        row(m, prev)
-    }
-
-    fn render_chat(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = self.gid.as_ref().and_then(|g| self.snap.as_ref()?.communities.iter().flat_map(|c| c.channels.iter()).find(|ch| &ch.gid == g).map(|ch| ch.name.clone()));
-        let Some(title) = title else {
-            return v_flex().flex_1().h_full().items_center().justify_center().text_color(look::mute()).child("Pick a room.").into_any_element();
-        };
-        let typing = match self.win.typing.len() { 0 => String::new(), 1 => format!("{} is writing…", self.win.typing[0]), n => format!("{n} people are writing…") };
-        v_flex().flex_1().h_full().min_w_0()
-            .child(h_flex().flex_none().px_4().pt_3().pb_1().child(div().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).child(title)))
-            .child(div().flex_1().min_h_0().relative()
-                .child(list(self.list.clone(), cx.processor(|this, ix: usize, window, cx| this.render_msg(ix, window, cx))).size_full())
-                .child(div().absolute().top_0().right_0().bottom_0().w(px(12.)).child(Scrollbar::vertical(&self.list))))
-            .child(div().flex_none().h(px(18.)).px_4().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(typing))
-            .child(div().flex_none().mx_3().mb_3().px_1().py_1().rounded_xl().bg(rgb(look::SLIP)).border_1().border_color(look::line())
-                .font_family(look::F_MSG).text_size(px(24.)).line_height(px(26.))
-                .child(Textarea::new(&self.composer).appearance(false).text_size(px(24.)).line_height(px(26.))))
-            .into_any_element()
-    }
 }
 
-fn clock(ts: u64) -> String {
+pub fn clock(ts: u64) -> String {
     use chrono::TimeZone as _;
     chrono::Local.timestamp_opt(ts as i64, 0).single().map(|t| t.format("%H:%M").to_string()).unwrap_or_default()
 }
 
-/// One message. `prev` decides whether the name is shown again (same person within five minutes: no).
-pub fn row(m: &Msg, prev: Option<&Msg>) -> AnyElement {
-    if m.kind == "member" || m.kind == "notice" {
-        return div().px_4().py_1().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(m.text.clone()).into_any_element();
-    }
-    let head = !prev.is_some_and(|p| p.sender == m.sender && p.kind != "member" && p.kind != "notice" && m.ts.saturating_sub(p.ts) < 300);
-    let mut col = v_flex().px_4().pb_1().when(head, |d| d.pt_2());
-    if head {
-        col = col.child(h_flex().gap_2().items_baseline().font_family(look::F_NAME).text_size(px(12.))
-            .child(div().text_color(look::face(&m.name)).child(m.name.clone()))
-            .child(div().text_color(look::mute()).child(clock(m.ts))));
-    }
-    if let Some((who, text)) = &m.reply {
-        col = col.child(div().pl_2().border_l_2().border_color(look::line()).text_color(look::mute()).text_size(px(14.)).child(format!("{who}: {text}")));
-    }
-    let body: AnyElement = if m.deleted { div().text_color(look::mute()).text_size(px(16.)).child("(deleted)").into_any_element() }
-        else if let Some((name, size)) = &m.file { div().text_color(look::mute()).text_size(px(16.)).child(format!("[file] {name} ({} KB){}", size / 1024, if m.text.is_empty() { String::new() } else { format!("  {}", m.text) })).into_any_element() }
-        else { div().font_family(look::F_MSG).text_size(px(24.)).line_height(px(26.)).child(m.text.clone()).into_any_element() };
-    col = col.child(body);
-    let mut foot = h_flex().gap_1().flex_wrap();
-    for r in &m.reactions {
-        foot = foot.child(div().px_1p5().rounded_full().border_1().border_color(if r.mine { look::paper() } else { look::line() }).text_size(px(13.)).child(format!("{} {}", r.emoji, r.count)));
-    }
-    if m.edited { foot = foot.child(div().text_color(look::mute()).text_size(px(11.)).child("edited")); }
-    if m.mine && (m.status == "pending" || m.status == "failed") { foot = foot.child(div().text_color(look::mute()).text_size(px(11.)).child(m.status.clone())); }
-    if !m.read_by.is_empty() { foot = foot.child(div().text_color(look::mute()).text_size(px(11.)).child(format!("read by {}", m.read_by.join(", ")))); }
-    col.child(foot).into_any_element()
-}
+pub const HEAT_FLOOR: f64 = 0.12;
+fn nh01(x: f64) -> f64 { let s = (x * 127.1).sin() * 43758.5453; s - s.floor() }
 
-impl Render for Mega {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if std::mem::take(&mut self.first_frame) { window.on_next_frame(|_, _| bench::mark("first_frame")); }
-        crate::bench::drive(self, window, cx);
-        let base = div().size_full().bg(rgb(look::VOID)).text_color(look::paper()).font_family(look::F_UI).text_size(px(15.));
-        match self.screen {
-            Screen::Starting => base,
-            Screen::Welcome | Screen::Locked => base.child(self.render_sign_in(cx)),
-            Screen::Main => base.child(h_flex().size_full().items_start()
-                .child(self.render_rooms(cx))
-                .child(self.render_chat(cx))),
-        }
+impl Mega {
+    pub fn go(&mut self, level: Level, window: &mut Window, cx: &mut Context<Self>) {
+        if level == Level::Settings { let n = self.snap.as_ref().map(|s| s.me_name.clone()).unwrap_or_default(); self.set_name.update(cx, |i, cx| i.set_value(n, window, cx)); }
+        if level == Level::Chat { self.composer.update(cx, |c, cx| c.focus(window, cx)); }
+        self.level = level;
+        self.focus_card(None);
+        cx.notify();
+    }
+    pub fn lock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.rpc("lock", json!({}), window, cx, |this, _, window, cx| {
+            this.screen = Screen::Locked; this.level = Level::Home; this.snap = None; this.snap_hash.clear(); this.gid = None; this.cid = None; this.win = MsgWindow::default();
+            this.list = ListState::new(0, ListAlignment::Bottom, px(600.));
+            this.pass.update(cx, |p, cx| p.focus(window, cx));
+            window.set_window_title("mega");
+            cx.notify();
+        });
+    }
+    pub fn chat_font(&self) -> (&'static str, f32, f32) { match self.prefs.chat_font { ChatFont::Bellefair => (look::F_BELLEFAIR, 30., 36.), ChatFont::Raster => (look::F_MSG, 24., 26.) } }
+    pub fn set_setting(&mut self, method: &'static str, args: Value, window: &mut Window, cx: &mut Context<Self>) {
+        self.rpc(method, args, window, cx, move |this, r, window, cx| {
+            match r { Ok(v) => { if method.starts_with("notify_") { this.notify_settings = v; } this.error = None; } Err(e) => this.error = Some(e.into()) }
+            this.snap_hash.clear();
+            this.tick(window, cx);
+            cx.notify();
+        });
     }
 }

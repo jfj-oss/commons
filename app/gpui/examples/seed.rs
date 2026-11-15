@@ -1,6 +1,7 @@
 //! Throwaway people and rooms on a LOCAL relay, for trying and measuring mega-gpui without touching a real account.
 //!   seed setup <relay-url> <dir> [long-room-messages]   two accounts (<dir>/alice, <dir>/bob), two communities, a long room
 //!   seed chat  <relay-url> <dir> <room-name> <count> <interval-ms>   bob writes into a room while a window on alice is open
+//!   seed presence <relay-url> <dir> <community-name> [seconds]     bob looks at that community's card, and prints whose presence he sees
 //! The passphrase of both throwaway accounts is PASS below. Never point this at a relay people use.
 use commons_core::api::App;
 use serde_json::{json, Value};
@@ -84,6 +85,32 @@ fn main() {
             }
             wait_for("everything to be sent", 60, || drained(&bob));
             std::thread::sleep(Duration::from_millis(1500));
+            call(&bob, "lock", json!({})); bob.shutdown();
+        }
+        // bob looks at a community's card for a while (the web UI's presence event), and prints whose presence he sees
+        Some("presence") => {
+            let (relay, dir, name) = (&a[2], PathBuf::from(&a[3]), &a[4]);
+            let secs: u64 = a.get(5).and_then(|x| x.parse().ok()).unwrap_or(8);
+            let bob = open(relay, dir.join("bob"), "Bob");
+            wait_for("the community", 30, || call(&bob, "snapshot", json!({}))["communities"].as_array().is_some_and(|l| l.iter().any(|c| c["name"] == name.as_str())));
+            let snap = call(&bob, "snapshot", json!({}));
+            let c = snap["communities"].as_array().unwrap().iter().find(|c| c["name"] == name.as_str()).unwrap().clone();
+            let cid = c["id"].as_str().unwrap().to_string();
+            let mut carriers: Vec<String> = c["channels"].as_array().unwrap().iter().filter(|x| x["kind"] != "voice" && x["joined"] == true).map(|x| x["gid"].as_str().unwrap().to_string()).collect();
+            carriers.sort();
+            std::thread::sleep(Duration::from_secs(2));
+            eprintln!("live channel: {}", call(&bob, "live_chan", json!({})));
+            let mut since = call(&bob, "live_poll", json!({"since": 0}))["head"].as_u64().unwrap_or(0);
+            let sent = call(&bob, "live_send", json!({"gid": carriers[0], "kind": "pres.f", "data": json!({"v": 1, "c": cid, "r": ""}).to_string()}));
+            eprintln!("bob is on the card of {name}: {sent}");
+            let t = Instant::now();
+            while t.elapsed() < Duration::from_secs(secs) {
+                let r = call(&bob, "live_poll", json!({"since": since}));
+                for e in r["events"].as_array().cloned().unwrap_or_default() { since = since.max(e["id"].as_u64().unwrap_or(0)); if e["kind"] == "pres.f" { println!("bob sees: {}", e["data"]); } }
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            let _ = bob.call("live_send", json!({"gid": carriers[0], "kind": "pres.f", "data": json!({"v": 1, "c": cid, "o": 1}).to_string()}));
+            std::thread::sleep(Duration::from_millis(800));
             call(&bob, "lock", json!({})); bob.shutdown();
         }
         _ => { eprintln!("usage: seed setup <relay> <dir> [n] | seed chat <relay> <dir> <room> <count> <interval-ms>"); std::process::exit(2); }

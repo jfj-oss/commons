@@ -4,7 +4,6 @@ use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn now_ms() -> f64 { SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0) }
-pub fn on() -> bool { std::env::var_os("MEGA_BENCH_OUT").is_some() }
 
 pub fn mark(name: &str) { mark_with(name, serde_json::json!({})); }
 pub fn mark_with(name: &str, mut extra: serde_json::Value) {
@@ -37,6 +36,9 @@ pub struct Auto {
     pub open: Option<String>,
     pub room_loaded: bool,
     scroll: usize,
+    /// Seconds to record frame intervals for while the wheel is turned from outside (`MEGA_GPUI_FRAMES`).
+    frames_secs: f64,
+    pub signin_marked: bool,
     state: u8,
     at: Option<std::time::Instant>,
     frames: std::rc::Rc<std::cell::RefCell<Vec<f64>>>,
@@ -44,7 +46,7 @@ pub struct Auto {
 impl Auto {
     pub fn from_env() -> Auto {
         let v = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
-        Auto { pass: v("MEGA_GPUI_PASS"), open: v("MEGA_GPUI_OPEN"), room_loaded: false, scroll: v("MEGA_GPUI_SCROLL").and_then(|x| x.parse().ok()).unwrap_or(0), state: 0, at: None, frames: Default::default() }
+        Auto { pass: v("MEGA_GPUI_PASS"), open: v("MEGA_GPUI_OPEN"), room_loaded: false, scroll: v("MEGA_GPUI_SCROLL").and_then(|x| x.parse().ok()).unwrap_or(0), frames_secs: v("MEGA_GPUI_FRAMES").and_then(|x| x.parse().ok()).unwrap_or(0.), signin_marked: false, state: 0, at: None, frames: Default::default() }
     }
 }
 
@@ -73,8 +75,28 @@ fn scroll_frame(this: WeakEntity<Mega>, n: usize, total: usize, last: std::time:
     window.on_next_frame(move |window, cx| scroll_frame(this, n + 1, total, now, window, cx));
 }
 
+/// Like the page's requestAnimationFrame loop: a frame is asked for every refresh for `frames_secs`, and the intervals kept.
+fn watch_frame(this: WeakEntity<Mega>, start: std::time::Instant, last: std::time::Instant, top: Pixels, window: &mut Window, cx: &mut App) {
+    let now = std::time::Instant::now();
+    let Some(e) = this.upgrade() else { return };
+    let done = e.update(cx, |m, cx| {
+        m.auto.frames.borrow_mut().push(now.duration_since(last).as_secs_f64() * 1000.0);
+        if now.duration_since(start).as_secs_f64() < m.auto.frames_secs { return false; }
+        let f = m.auto.frames.borrow()[1..].to_vec();
+        let moved = m.list.scroll_px_offset_for_scrollbar().y - top;
+        mark_with("frames_done", serde_json::json!({"rows": m.win.msgs.len(), "scrolled_px": f32::from(moved), "summary": summary(&f)}));
+        m.auto.state = 3;
+        cx.notify();
+        true
+    });
+    if done { return; }
+    window.on_next_frame(move |window, cx| watch_frame(this, start, now, top, window, cx));
+    window.refresh();
+}
+
 /// Called from every render; moves the automation along when its moment has come.
 pub fn drive(m: &mut Mega, window: &mut Window, cx: &mut Context<Mega>) {
+    if m.screen == crate::app::Screen::Locked && !std::mem::replace(&mut m.auto.signin_marked, true) { window.on_next_frame(|_, _| mark("signin_painted")); }
     let a = &mut m.auto;
     match a.state {
         0 if a.room_loaded => {
@@ -91,6 +113,13 @@ pub fn drive(m: &mut Mega, window: &mut Window, cx: &mut Context<Mega>) {
                         let (weak, total) = (cx.entity().downgrade(), m.auto.scroll);
                         window.on_next_frame(move |window, cx| scroll_frame(weak, 0, total, std::time::Instant::now(), window, cx));
                         cx.notify();
+                    } else if m.auto.frames_secs > 0. {
+                        m.auto.state = 2;
+                        mark("frames_start");
+                        let (weak, now) = (cx.entity().downgrade(), std::time::Instant::now());
+                        let top = m.list.scroll_px_offset_for_scrollbar().y;
+                        window.on_next_frame(move |window, cx| watch_frame(weak, now, now, top, window, cx));
+                        window.refresh();
                     } else { m.auto.state = 3; cx.notify(); }
                 });
             }).detach();

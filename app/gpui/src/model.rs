@@ -1,4 +1,5 @@
 //! What the core's JSON answers hold, as far as this app draws it.
+#![allow(dead_code)] // the whole answer is kept as the core gives it; not every field is drawn yet
 use serde_json::Value;
 
 fn st(v: &Value, k: &str) -> String { v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string() }

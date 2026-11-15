@@ -5594,6 +5594,7 @@ version = "0.0.1"
 dependencies = [
  "chrono",
  "commons-core",
+ "futures",
  "gpui-kit",
  "serde_json",
  "wayland-client",

@@ -62,7 +62,6 @@ impl Duo {
         Duo { main, hi }
     }
     pub fn field(&self) -> Hsla { rgb(self.main).into() }
-    pub fn high(&self) -> Hsla { rgb(self.hi).into() }
     /// Ink that reads on the field.
     pub fn ink(&self) -> Hsla { if contrast(self.main, 0x0c0d12) >= contrast(self.main, 0xffffff) { rgb(0x0c0d12).into() } else { rgb(0xffffff).into() } }
     /// The dot on the dark rail: the field if it shows on the void, else the highlight brightened until it does.

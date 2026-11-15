@@ -8,6 +8,10 @@ use std::sync::Arc;
 pub struct Core {
     pub app: Arc<App>,
     pub dir: PathBuf,
+    /// The half-second look runs on one thread of its own. A look at a long room builds thousands of small JSON values;
+    /// spread over a pool of threads, each thread's allocator kept its own high-water mark (measured: 745 MB with 5000
+    /// rows open, see SPIKE.md). One thread keeps one.
+    looks: std::sync::Mutex<std::sync::mpsc::Sender<Box<dyn FnOnce(&App) + Send>>>,
 }
 
 /// Where the account lives. `COMMONS_DATA` as in the Tauri app. Without it the spike uses a folder of its own, so it can
@@ -36,7 +40,16 @@ impl Core {
             Some(f) => hub.set_sink(Arc::new(commons_core::notify::FileSink::new(PathBuf::from(f)))),
             None => hub.set_sink(Arc::new(commons_core::notify::NativeSink::new(&hub, None, "app.commons.chat"))),
         }
-        Arc::new(Core { app, dir })
+        let (tx, rx) = std::sync::mpsc::channel::<Box<dyn FnOnce(&App) + Send>>();
+        let worker = app.clone();
+        std::thread::Builder::new().name("mega-look".into()).spawn(move || { while let Ok(job) = rx.recv() { job(&worker); } }).expect("thread");
+        Arc::new(Core { app, dir, looks: std::sync::Mutex::new(tx) })
     }
     pub fn call(&self, method: &str, args: Value) -> Result<Value, String> { self.app.call(method, args) }
+    /// Run `f` on the look thread and hand back what it made.
+    pub fn look<T: Send + 'static>(&self, f: impl FnOnce(&App) -> T + Send + 'static) -> futures::channel::oneshot::Receiver<T> {
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let _ = self.looks.lock().unwrap().send(Box::new(move |app| { let _ = tx.send(f(app)); }));
+        rx
+    }
 }
