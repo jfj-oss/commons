@@ -50,7 +50,8 @@ impl Auto {
     }
 }
 
-const STEP: f32 = 60.;
+/// Pixels per frame for `MEGA_GPUI_SCROLL` (`MEGA_GPUI_SCROLL_STEP`): 41 is what the wheel run moved the web UI, 12,400 px in 5 s.
+fn step() -> f32 { std::env::var("MEGA_GPUI_SCROLL_STEP").ok().and_then(|x| x.parse().ok()).unwrap_or(41.) }
 
 fn scroll_frame(this: WeakEntity<Mega>, n: usize, total: usize, last: std::time::Instant, window: &mut Window, cx: &mut App) {
     let now = std::time::Instant::now();
@@ -59,14 +60,18 @@ fn scroll_frame(this: WeakEntity<Mega>, n: usize, total: usize, last: std::time:
         if n > 0 { m.auto.frames.borrow_mut().push(now.duration_since(last).as_secs_f64() * 1000.0); }
         if n >= total { return true; }
         // up for the first half, back down for the second
-        m.list.scroll_by(px(if n < total / 2 { -STEP } else { STEP }));
+        // A bottom-aligned list that rests at its end reports its end as its top, and `ListState::scroll_by` starts from that
+        // (GPUI's own wheel handler uses the laid-out top instead). So the first step also crosses the viewport once.
+        let first = if n == 0 { m.list.viewport_bounds().size.height } else { px(0.) };
+        m.list.scroll_by(if n < total / 2 { -(px(step()) + first) } else { px(step()) });
+        if std::env::var_os("MEGA_GPUI_SCROLL_TRACE").is_some() && n % 60 == 0 { let t = m.list.logical_scroll_top(); eprintln!("scroll n={n} top item {} +{:?} of {}", t.item_ix, t.offset_in_item, m.list.item_count()); }
         cx.notify();
         false
     });
     if done {
         e.update(cx, |m, cx| {
             let f = m.auto.frames.borrow().clone();
-            mark_with("scroll_done", serde_json::json!({"rows": m.win.msgs.len(), "step_px": STEP, "summary": summary(&f)}));
+            mark_with("scroll_done", serde_json::json!({"rows": m.win.msgs.len(), "step_px": step(), "scrolled_px": step() * (total / 2) as f32, "summary": summary(&f)}));
             m.auto.state = 3; m.auto.at = Some(std::time::Instant::now());
             cx.notify();
         });

@@ -89,7 +89,11 @@ def one(app, what):
     scroll = what.startswith('scroll')
     env = {'MEGA_GPUI_SETTLE_MS': 16000 if scroll else 1000}
     if what in ('long', 'scroll'): env['MEGA_GPUI_LIMIT'] = 5000   # room / scroll200: the 200 newest, as both apps open a room by default
-    if scroll: env['MEGA_GPUI_FRAMES'] = 6
+    if scroll and app == 'tauri': env['MEGA_GPUI_FRAMES'] = 6
+    # KWin's fake wheel events carry no axis source, and GPUI's Wayland client waits for one (a real wheel or touchpad sends it),
+    # so the GPUI list is moved the same distance per frame from inside: 310 frames up at 41 px, which is what the wheel
+    # moved the web UI in its 200-row run, then 310 back down.
+    if scroll and app == 'gpui': env['MEGA_GPUI_SCROLL'] = 620
     t0, pid = launch(app, 'long', env)
     try:
         a = wait_mark('room_open'); b = wait_mark('room_painted', 180); loaded = wait_mark('room_loaded')
@@ -97,6 +101,11 @@ def one(app, what):
         if not scroll:
             time.sleep(10)
             return {**out, **mem(pid), 'cpu_pct_of_one_core': cpu_over(pid, 10)}
+        if app == 'gpui':
+            wait_mark('scroll_start', 60); c0, w0 = cpu(pid), time.time()
+            f = wait_mark('scroll_done', 60)
+            out.update({'scrolled_px': round(f.get('scrolled_px') or 0), 'frames': f['summary'], 'cpu_pct_of_one_core_while_scrolling': round((cpu(pid) - c0) / (time.time() - w0) * 100, 1), **mem(pid)})
+            return out
         hl = dict(os.environ, WAYLAND_DISPLAY='wayland-megatest'); hl.pop('DISPLAY', None)
         fk = f'{D}/target/release/examples/fakekeys'
         subprocess.run([fk, 'move:900,520'], env=hl, check=True)
