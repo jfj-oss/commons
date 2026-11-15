@@ -1,6 +1,8 @@
 'use strict';
 // mega: the camera and screenshare stack. Every camera and screen share in the call you are in sits in one column on the left
 // (a strip across the top on a phone); dragging a tile reorders it for everyone in the call, live.
+// The column's right edge (the strip's lower edge on a phone) drags to make the pictures bigger or smaller. That size is this
+// device's own: it is kept in localStorage and never sent to anyone.
 //
 // The tiles themselves are call-ui.js's (#call-stage > #c-shares > .ctile); this file only lays them out and orders them. The
 // order is visual only (CSS `order`), so no <video> is ever moved in the DOM and no picture flickers.
@@ -229,9 +231,75 @@
     if (!call) { D.holds.clear(); D.stamp = [0, '']; D.hi = 0; D.order = []; D.askedKey = ''; }
   }
 
+  // ------------------------------------------------------------------ the size: drag the edge
+  // Wide: the column is 200px at least and leaves the chat 420px. Phone: the strip is 84px at least, and stops where one picture fills the width (60% of the height at most).
+  // mega.css clamps the same way, so a window made smaller later never leaves the column too wide.
+  const SZ = { w: 'mega.deck.w', h: 'mega.deck.h', drag: null };
+  const phone = () => matchMedia('(max-width: 760px)').matches;
+  const limits = ph => ph ? { min: 84, max: Math.max(84, Math.round(Math.min(innerHeight * .6, innerWidth * .5625 + 14))), def: 104 } : { min: 200, max: Math.max(200, innerWidth - 420), def: Math.round(Math.min(270, innerWidth * .24)) };
+  const sizeGet = k => { try { const v = Number(localStorage.getItem(k)); return v > 0 && v < 20000 ? v : 0; } catch { return 0; } };
+  const sizeNow = ph => { const st = stage(), r = st && st.getBoundingClientRect(); return r && r.width ? Math.round(ph ? r.height : r.width) : limits(ph).def; };
+  /** v: pixels, or 0 for "as it comes". Returns what was really set. */
+  function sizeSet(ph, v, save) {
+    const L = limits(ph), cls = ph ? 'deck-hset' : 'deck-wset', prop = ph ? '--m-deckhset' : '--m-deckset';
+    if (v) { v = Math.round(Math.min(L.max, Math.max(L.min, v))); root.style.setProperty(prop, v + 'px'); root.classList.add(cls); }
+    else { root.style.removeProperty(prop); root.classList.remove(cls); }
+    if (save) { try { if (v) localStorage.setItem(ph ? SZ.h : SZ.w, String(v)); else localStorage.removeItem(ph ? SZ.h : SZ.w); } catch { } }
+    gripSay();
+    return v;
+  }
+  function gripSay() {
+    const g = document.getElementById('mega-deckgrip'); if (!g) return;
+    const ph = phone(), L = limits(ph);
+    g.setAttribute('aria-orientation', ph ? 'horizontal' : 'vertical');
+    g.setAttribute('aria-valuemin', L.min); g.setAttribute('aria-valuemax', L.max); g.setAttribute('aria-valuenow', Math.min(L.max, Math.max(L.min, sizeNow(ph))));
+  }
+  function sizeEnd(ev) {
+    const d = SZ.drag; if (!d || (ev && ev.pointerId !== d.id)) return;
+    SZ.drag = null; cancelAnimationFrame(d.raf);
+    root.classList.remove('deck-sizing');
+    try { d.el.releasePointerCapture(d.id); } catch { }
+    if (d.moved) sizeSet(d.ph, d.v, true);
+  }
+  function grip() {
+    if (document.getElementById('mega-deckgrip')) return;
+    const g = document.createElement('div'); g.id = 'mega-deckgrip'; g.tabIndex = 0;
+    g.setAttribute('role', 'separator'); g.setAttribute('aria-label', 'Size of the cameras and screens'); g.title = 'Drag to resize. Double-click to put it back.';
+    document.body.append(g);
+    g.addEventListener('pointerdown', ev => {
+      if (ev.button > 0 || SZ.drag) return;
+      ev.preventDefault();
+      const ph = phone(), now = sizeNow(ph);
+      SZ.drag = { el: g, id: ev.pointerId, ph, from: ph ? ev.clientY : ev.clientX, start: now, v: now, moved: false, raf: 0 };
+      try { g.setPointerCapture(ev.pointerId); } catch { }
+      root.classList.add('deck-sizing');
+    });
+    g.addEventListener('pointermove', ev => {
+      const d = SZ.drag; if (!d || ev.pointerId !== d.id) return;
+      ev.preventDefault();
+      const v = d.start + (d.ph ? ev.clientY : ev.clientX) - d.from;
+      if (!d.moved && Math.abs(v - d.start) < 3) return;   // a click or a double-click is not a resize
+      d.moved = true; d.v = v;
+      if (!d.raf) d.raf = requestAnimationFrame(() => { d.raf = 0; if (SZ.drag === d) d.v = sizeSet(d.ph, d.v, false); });   // the chat re-flows with it: once a frame at most
+    });
+    g.addEventListener('pointerup', sizeEnd); g.addEventListener('pointercancel', sizeEnd); g.addEventListener('lostpointercapture', sizeEnd);
+    g.addEventListener('touchmove', e => { if (SZ.drag) e.preventDefault(); }, { passive: false });
+    g.addEventListener('dblclick', () => sizeSet(phone(), 0, true));
+    g.addEventListener('keydown', ev => {
+      const ph = phone(), k = ev.key;
+      const step = (ph ? { ArrowDown: 1, ArrowUp: -1 } : { ArrowRight: 1, ArrowLeft: -1 })[k];
+      if (step) { ev.preventDefault(); sizeSet(ph, sizeNow(ph) + step * (ev.shiftKey ? 96 : 24), true); }
+      else if (k === 'Home') { ev.preventDefault(); sizeSet(ph, limits(ph).min, true); }
+      else if (k === 'End') { ev.preventDefault(); sizeSet(ph, limits(ph).max, true); }
+    });
+    for (const ph of [false, true]) { const v = sizeGet(ph ? SZ.h : SZ.w); if (v) { root.style.setProperty(ph ? '--m-deckhset' : '--m-deckset', v + 'px'); root.classList.add(ph ? 'deck-hset' : 'deck-wset'); } }
+    addEventListener('resize', gripSay);
+    gripSay();
+  }
+
   function boot() {
     const h = host(); if (!h) return setTimeout(boot, 400);
-    head();
+    head(); grip();
     h.addEventListener('pointerdown', onDown);
     h.addEventListener('touchmove', e => { if (D.drag && D.drag.active) e.preventDefault(); }, { passive: false });
     new MutationObserver(() => update()).observe(h, { childList: true });
@@ -243,6 +311,7 @@
   window.__megaDeck = {
     order: () => [...D.order], stamp: () => [...D.stamp], holds: () => [...D.holds].map(([s, h]) => [s, h.acct, Date.now() - h.at]),
     tiles: () => tiles().map(sidOf), hidden: () => D.hid, update, onEvent,
+    size: () => ({ phone: phone(), now: sizeNow(phone()), ...limits(phone()) }), setSize: v => sizeSet(phone(), v, true),
   };
   boot();
 })();
