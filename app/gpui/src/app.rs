@@ -41,10 +41,8 @@ pub struct Mega {
     pub pres: crate::presence::Presence,
     /// The cards' clock and the open room's backdrop (ascii.rs).
     pub clock: f64,
-    /// The open room's backdrop (backdrop.rs): the waves of new activity, and its own clock, which only runs while one does.
-    pub waves: Vec<crate::backdrop::Wave>,
-    pub bd_clock: f64,
-    pub bd_cache: crate::backdrop::Shared,
+    /// The open room's backdrop (backdrop.rs): its pattern clock, heat and ripples; frames are asked for only while one of them moves.
+    pub bd: crate::backdrop::Bd,
     pub holes: crate::ascii::Holes,
     /// Messages resolving out of glyphs and reactions flying to their pills (arrive.rs); empty almost always, and then no frames are asked for.
     pub arrivals: crate::arrive::Arrivals,
@@ -77,8 +75,6 @@ pub struct Mega {
     pub fake_dm_unread: usize,
     /// A direct conversation's unread messages when it was opened: the last few rows carry a small star until it is left.
     pub dm_marks: (String, usize),
-    /// A backdrop picture per direct-conversation row on the home screen.
-    pub dm_caches: std::collections::HashMap<String, crate::backdrop::Shared>,
     /// The updater's state and cards (updateui.rs).
     pub upd: crate::updateui::UpdateUi,
     /// The card column of the home and community levels (cards.rs).
@@ -119,8 +115,8 @@ impl Mega {
         let (paint, paint_sub) = crate::paint::PaintUi::new(window, cx);
         subs.push(paint_sub);
         let mut this = Mega {
-            nav, rail: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), dm_caches: Default::default(),
-            level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., waves: vec![], bd_clock: 0., bd_cache: Default::default(), holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
+            nav, rail: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0),
+            level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd: crate::backdrop::Bd::new(""), holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
             list: ListState::new(0, ListAlignment::Bottom, px(600.)), composer, typing_sent: None, ticking: false, again: false, first_frame_done: false,
@@ -174,12 +170,9 @@ impl Mega {
         match self.level {
             Level::Home | Level::Server(_) => { if dt < 0.05 { return; } self.clock += dt.min(0.1); }
             Level::Chat => {
-                // the backdrop moves only while a wave runs (about 15 pictures a second), never otherwise
-                if self.waves.is_empty() || dt < 0.066 { return; }
-                let dt = dt.min(0.25);
-                self.bd_clock += dt;
-                let now = self.bd_clock;
-                self.waves.retain(|w| now - w.t0 < crate::backdrop::LIFE);
+                // the backdrop moves only while a ripple runs (20 pictures a second) or the room cools (10), never otherwise
+                if !self.bd.live() || dt < if self.bd.rips.is_empty() { 0.1 } else { 0.05 } { return; }
+                self.bd.step(dt.min(0.25));
             }
             Level::Settings => return,
         }
@@ -214,12 +207,21 @@ impl Mega {
         }
     }
 
-    /// Activity in the open room: a wave leaves from where the newest line is and the speckle organises into bands around it.
-    pub fn stir(&mut self, n: usize) {
-        if self.still() || self.gid.as_deref().and_then(|g| self.channel(g)).is_some_and(|(c, _)| c.direct) { return; }
-        if self.waves.len() > 3 { self.waves.remove(0); }
-        let strength = (0.7 + 0.1 * n as f64).min(1.);
-        self.waves.push(crate::backdrop::Wave { x: 0.12, y: 0.86, t0: self.bd_clock, s: strength });
+    /// The owner's backdrop strength for a room in percent (the default is 100).
+    pub fn bd_dim(&self, gid: &str) -> u32 {
+        match self.channel(gid).filter(|(c, _)| !c.direct).map(|(c, _)| c.id.clone()) {
+            Some(cid) => self.look_for(&cid, gid).dim.map(|d| d.min(crate::paint::DIM_MAX)).unwrap_or(100),
+            None => 100,
+        }
+    }
+    /// Activity in the open room: a ring leaves the newest line and the room warms (mega.js `ripple` + `bdHeat` on an arrival).
+    pub fn stir(&mut self, _n: usize) {
+        let Some(gid) = self.gid.clone() else { return };
+        if self.still() { return; }
+        let dim = self.bd_dim(&gid);
+        let mine = self.win.msgs.last().is_some_and(|m| m.mine);
+        self.bd.ripple(0.3, 0.84, if mine { 0.5 } else { 0.72 }, false, dim);
+        self.bd.warm(if mine { 0.1 } else { 0.24 }, dim);
     }
 
     /// One call to the core off the UI thread, then `then` back on it.
@@ -403,7 +405,7 @@ impl Mega {
     pub fn open_room(&mut self, cid: String, gid: String, window: &mut Window, cx: &mut Context<Self>) {
         self.level = Level::Chat;
         if self.gid.as_deref() == Some(gid.as_str()) { cx.notify(); return; }
-        self.waves.clear(); self.arrivals.clear(); self.flights.clear();
+        self.bd = crate::backdrop::Bd::new(&gid); self.arrivals.clear(); self.flights.clear();
         let unread = self.channel(&gid).filter(|(c, _)| c.direct).map(|(_, ch)| ch.unread as usize).unwrap_or(0).max(if self.channel(&gid).is_some_and(|(c, _)| c.direct) { self.fake_dm_unread } else { 0 });
         self.dm_marks = (gid.clone(), unread);
         self.cid = Some(cid);

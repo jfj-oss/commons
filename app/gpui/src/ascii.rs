@@ -67,7 +67,7 @@ pub fn auto_fx(name: &str) -> usize { [4, 3, 0, 5, 2][(look::h(name) % 5) as usi
 
 /// A ring that travels outward through the backdrop (mega.js `ripple`): from a new message, or now and then by itself.
 #[derive(Clone, Copy, Debug)]
-pub struct Ripple { pub x: f64, pub y: f64, pub r: f64, pub s: f64, pub v: f64, pub band: f64, pub fade: f64 }
+pub struct Ripple { pub x: f64, pub y: f64, pub r: f64, pub s: f64, pub v: f64, pub band: f64, pub fade: f64, /** x and y are fractions of the field's columns and rows, not cells */ pub frac: bool }
 
 #[derive(Clone)]
 pub struct Field {
@@ -94,6 +94,9 @@ pub struct Field {
     pub emboss: bool,
     /// A drawing on the card (wall.rs): its grid, and the cells that hold a mark. The field's own ASCII leaves those cells alone.
     pub avoid: Option<(crate::wall::Grid, std::rc::Rc<Vec<(u16, u8, u8)>>)>,
+    /// The three tints (soft, mid, bright) when they are not simply the duo mixed 0.3, 0.6, 1 (the room's backdrop, mega.js `bdColours`), and the brighter three under a ripple.
+    pub tints: Option<[Hsla; 3]>,
+    pub lit: Option<[Hsla; 3]>,
 }
 
 /// Boxes the backdrop must leave free, filled in during a frame's layout pass and read when the field is painted after it.
@@ -107,7 +110,7 @@ pub fn hole(h: &Holes) -> impl IntoElement {
 
 impl Field {
     pub fn card(fx: usize, seed: u32, duo: look::Duo, t: f64, small: bool) -> Field {
-        Field { fx, seed, duo, t, cell: if small { (8., 13.) } else { (10., 17.) }, font_px: if small { 11. } else { 14. }, gate: 0.2, hi_t: 0.9, alpha: 1., radius: 0., ripples: vec![], holes: vec![], live_holes: None, emboss: false, avoid: None }
+        Field { fx, seed, duo, t, cell: if small { (8., 13.) } else { (10., 17.) }, font_px: if small { 11. } else { 14. }, gate: 0.2, hi_t: 0.9, alpha: 1., radius: 0., ripples: vec![], holes: vec![], live_holes: None, emboss: false, avoid: None, tints: None, lit: None }
     }
 }
 
@@ -167,7 +170,7 @@ pub fn field(f: Field) -> impl IntoElement {
         if cols == 0 || rows == 0 { return; }
         let col = cols_for(cols, f.seed);
         let tint = |k: f32| -> Hsla { let mut c: Hsla = rgb(look::mix(f.duo.main, f.duo.hi, k)).into(); c.a = f.alpha; c };
-        let tints = [tint(0.3), tint(0.6), tint(1.0)];
+        let tints = f.tints.unwrap_or([tint(0.3), tint(0.6), tint(1.0)]);
         // the glyph sits in the middle of its cell: a monospace advance is 0.6 em, and the baseline about 0.72 of the cell down
         let (ox, oy) = ((cw - f.font_px * 0.6) / 2., ch * 0.72);
         // this frame's words, relative to the field, a cell wider on each side (as mega.js `hit` does)
@@ -191,7 +194,8 @@ pub fn field(f: Field) -> impl IntoElement {
                     let mut v = fx(f.fx, xf, yf, f.t, cols as f64, rows as f64, &col);
                     let mut lit = 0f64;
                     for q in &f.ripples {
-                        let d = (xf - q.x).hypot((yf - q.y) * 1.7) - q.r;
+                        let (qx, qy) = if q.frac { (q.x * cols as f64, q.y * rows as f64) } else { (q.x, q.y) };
+                        let d = (xf - qx).hypot((yf - qy) * 1.7) - q.r;
                         if d * d < q.band * 5. { let e = (-d * d / q.band).exp() * q.s; v += e; lit = lit.max(e); }
                     }
                     if v < f.gate { continue; }
@@ -207,8 +211,9 @@ pub fn field(f: Field) -> impl IntoElement {
                         let _ = window.paint_glyph(point(p.x + px(0.7), p.y + px(0.7)), r.font, g, px(f.font_px), light);
                         continue;
                     }
-                    let mut color = tints[if v < 0.64 { 0 } else if v < f.hi_t { 1 } else { 2 }];
-                    if lit > 0.2 { color.a = (color.a * 1.8).min(1.); }
+                    let k = if v < 0.64 { 0 } else if v < f.hi_t { 1 } else { 2 };
+                    let mut color = tints[k];
+                    if lit > 0.2 { match &f.lit { Some(l) => color = l[k], None => color.a = (color.a * 1.8).min(1.) } }
                     let _ = window.paint_glyph(point(bounds.origin.x + px(px_x + ox), bounds.origin.y + px(px_y + oy)), r.font, g, px(f.font_px), color);
                 }
             }
