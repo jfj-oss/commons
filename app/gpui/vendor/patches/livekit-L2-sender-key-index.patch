@@ -1,0 +1,28 @@
+--- a/src/room/e2ee/manager.rs
++++ b/src/room/e2ee/manager.rs
+@@ -278,6 +278,10 @@
+             options.key_provider.handle.clone(),
+             sender,
+         );
++        // mega patch L2: a sender's cryptor starts on the key index in use, not on 0. Without this a track published
++        // (or republished by a reconnect) while the keys sit at another index sends nothing until someone calls
++        // `set_key_index` on it, and a microphone fed by the device module cannot be held back until then.
++        frame_cryptor.set_key_index(options.key_provider.get_latest_key_index());
+         frame_cryptor.set_enabled(inner.enabled);
+         frame_cryptor
+     }
+--- a/src/room/e2ee/key_provider.rs
++++ b/src/room/e2ee/key_provider.rs
+@@ -130,6 +130,12 @@
+     pub fn get_latest_key_index(&self) -> i32 {
+         self.latest_key_index.load(Ordering::Relaxed)
+     }
++
++    /// mega patch L2: `set_key` moves the latest index to whatever slot it wrote, including a slot that is being
++    /// wiped. This puts it back to the index senders must use.
++    pub fn set_latest_key_index(&self, key_index: i32) {
++        self.latest_key_index.store(key_index, Ordering::Relaxed);
++    }
+ }
+ 
+ #[cfg(test)]

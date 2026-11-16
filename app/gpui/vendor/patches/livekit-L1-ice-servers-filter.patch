@@ -1,0 +1,106 @@
+--- a/src/rtc_engine/mod.rs
++++ b/src/rtc_engine/mod.rs
+@@ -118,9 +118,24 @@
+     Internal(Cow<'static, str>), // Unexpected error, generally we can't recover
+ }
+ 
++/// mega patch L1: rewrites the ICE server list the server sends in its join and reconnect responses before any peer
++/// connection uses it (the TURN credentials only arrive there, so a whole list cannot be supplied up front).
++#[derive(Clone)]
++pub struct IceServersFilter(
++    pub Arc<dyn Fn(Vec<libwebrtc::prelude::IceServer>) -> Vec<libwebrtc::prelude::IceServer> + Send + Sync>,
++);
++
++impl std::fmt::Debug for IceServersFilter {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("IceServersFilter")
++    }
++}
++
+ #[derive(Default, Debug, Clone)]
+ pub struct EngineOptions {
+     pub rtc_config: RtcConfiguration,
++    /// mega patch L1, see [`IceServersFilter`].
++    pub ice_servers_filter: Option<IceServersFilter>,
+     pub signal_options: SignalOptions,
+     pub join_retries: u32,
+     /// Enable single peer connection mode
+--- a/src/rtc_engine/rtc_session.rs
++++ b/src/rtc_engine/rtc_session.rs
+@@ -598,7 +598,11 @@
+         }
+ 
+         let (rtc_emitter, rtc_events) = mpsc::unbounded_channel();
+-        let rtc_config = make_rtc_config_join(join_response.clone(), options.rtc_config.clone());
++        let rtc_config = make_rtc_config_join(
++            join_response.clone(),
++            options.rtc_config.clone(),
++            options.ice_servers_filter.as_ref(),
++        );
+ 
+         let (dc_emitter, dc_events) = mpsc::unbounded_channel();
+ 
+@@ -2398,7 +2402,11 @@
+         log::debug!("received reconnect response: {:?}", reconnect_response);
+ 
+         let rtc_config =
+-            make_rtc_config_reconnect(reconnect_response.clone(), self.options.rtc_config.clone());
++            make_rtc_config_reconnect(
++                reconnect_response.clone(),
++                self.options.rtc_config.clone(),
++                self.options.ice_servers_filter.as_ref(),
++            );
+         self.publisher_pc.peer_connection().set_configuration(rtc_config.clone())?;
+         if let Some(ref sub_pc) = self.subscriber_pc {
+             sub_pc.peer_connection().set_configuration(rtc_config)?;
+@@ -2879,7 +2887,11 @@
+ 
+ macro_rules! make_rtc_config {
+     ($fncname:ident, $proto:ty) => {
+-        fn $fncname(value: $proto, mut config: RtcConfiguration) -> RtcConfiguration {
++        fn $fncname(
++            value: $proto,
++            mut config: RtcConfiguration,
++            filter: Option<&super::IceServersFilter>,
++        ) -> RtcConfiguration {
+             if config.ice_servers.is_empty() {
+                 for ice_server in value.ice_servers.clone() {
+                     config.ice_servers.push(IceServer {
+@@ -2888,6 +2900,10 @@
+                         password: ice_server.credential,
+                     })
+                 }
++                // mega patch L1
++                if let Some(filter) = filter {
++                    config.ice_servers = (filter.0)(std::mem::take(&mut config.ice_servers));
++                }
+             }
+ 
+             if let Some(client_configuration) = value.client_configuration {
+--- a/src/room/mod.rs
++++ b/src/room/mod.rs
+@@ -448,6 +448,8 @@
+     /// for both publishing and subscribing instead of two separate connections.
+     /// Falls back to dual peer connection if the server doesn't support single PC.
+     pub single_peer_connection: bool,
++    /// mega patch L1: see [`crate::rtc_engine::IceServersFilter`].
++    pub ice_servers_filter: Option<crate::rtc_engine::IceServersFilter>,
+     /// Timeout for each individual signal connection attempt
+     pub connect_timeout: Duration,
+     pub data_stream: RoomDataStreamOptions,
+@@ -467,6 +469,7 @@
+             join_retries: 3,
+             sdk_options: RoomSdkOptions::default(),
+             single_peer_connection: true,
++            ice_servers_filter: None,
+             connect_timeout: SIGNAL_CONNECT_TIMEOUT,
+             data_stream: Default::default(),
+         }
+@@ -587,6 +590,7 @@
+                 signal_options,
+                 join_retries: options.join_retries,
+                 single_peer_connection: options.single_peer_connection,
++                ice_servers_filter: options.ice_servers_filter.clone(),
+             },
+             Some(e2ee_manager.clone()),
+         )

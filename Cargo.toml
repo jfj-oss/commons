@@ -9,6 +9,13 @@ edition = "2021"
 license = "MIT"
 publish = false
 
+# The calls SDK with mega's three patches (app/gpui/vendor/refresh.sh rebuilds these from crates.io; CALLS-PLAN.md
+# section 3). Only mega-gpui depends on them.
+[patch.crates-io]
+livekit = { path = "app/gpui/vendor/livekit" }
+libwebrtc = { path = "app/gpui/vendor/libwebrtc" }
+webrtc-sys = { path = "app/gpui/vendor/webrtc-sys" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 8

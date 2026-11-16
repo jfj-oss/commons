@@ -3,6 +3,9 @@
 mod app;
 mod ascii;
 mod bench;
+#[cfg(feature = "calls")]
+#[allow(dead_code)]
+mod calls;
 mod core;
 mod fonts;
 mod model;

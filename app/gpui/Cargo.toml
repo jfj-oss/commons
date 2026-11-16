@@ -5,6 +5,11 @@ edition = "2021"
 publish = false
 description = "mega desktop on GPUI (spike; not part of any release)"
 
+[features]
+default = ["calls"]
+# Calls inside the app. Off, the rest of the app builds without libwebrtc.
+calls = ["dep:livekit", "dep:libwebrtc", "dep:webrtc-sys", "dep:tokio", "dep:base64", "dep:parking_lot", "dep:getrandom"]
+
 [[bin]]
 name = "mega-gpui"
 path = "src/main.rs"
@@ -17,6 +22,22 @@ serde_json = "1"
 gpui-kit = "=0.9.1"
 futures = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Calls (CALLS-PLAN.md). Pinned exactly: an upgrade re-runs tools/gpui-call-interop.mjs first. livekit, libwebrtc and
+# webrtc-sys are crates.io sources with three small patches (app/gpui/vendor, wired in the workspace's [patch.crates-io]);
+# libwebrtc itself is the prebuilt m150 archive webrtc-sys downloads, unchanged. The LiveKit crates are Apache-2.0;
+# libwebrtc is BSD-3-Clause with third-party notices: licenses/libwebrtc-m150-a545de4.md (from that archive) ships with the app.
+livekit = { version = "=0.11.0", features = ["rustls-tls-native-roots", "glib-main-loop"], optional = true }
+libwebrtc = { version = "=0.4.1", optional = true }
+webrtc-sys = { version = "=0.3.54", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "io-std"], optional = true }
+base64 = { version = "0.22", optional = true }
+parking_lot = { version = "0.12", optional = true }
+getrandom = { version = "0.2", optional = true }
+
+# CALLS-PLAN.md step 0: a Rust participant driven by tools/gpui-call-interop.mjs.
+[[example]]
+name = "call_probe"
+required-features = ["calls"]
 
 # examples/fakekeys.rs only: real key, pointer and wheel events for a window inside a private headless KWin (SPIKE.md).
 [target.'cfg(target_os = "linux")'.dev-dependencies]

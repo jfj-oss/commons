@@ -1,0 +1,28 @@
+--- a/src/native/audio_track.rs
++++ b/src/native/audio_track.rs
+@@ -30,4 +30,9 @@
+     pub fn sys_handle(&self) -> SharedPtr<sys_at::ffi::MediaStreamTrack> {
+         audio_to_media(self.sys_handle.clone())
+     }
++
++    /// mega patch W1.
++    pub fn set_volume(&self, volume: f64) {
++        self.sys_handle.set_volume(volume);
++    }
+ }
+--- a/src/audio_track.rs
++++ b/src/audio_track.rs
+@@ -26,6 +26,13 @@
+ 
+ impl RtcAudioTrack {
+     media_stream_track!();
++
++    /// mega patch W1: playout gain of a REMOTE track, 0 to 10 (1 leaves it as it is). It acts on what the device
++    /// module plays, not on what a `NativeAudioStream` on the same track receives. Does nothing for a local track.
++    #[cfg(not(target_arch = "wasm32"))]
++    pub fn set_volume(&self, volume: f64) {
++        self.handle.set_volume(volume);
++    }
+ }
+ 
+ impl Debug for RtcAudioTrack {

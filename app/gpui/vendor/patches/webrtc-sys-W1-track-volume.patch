@@ -1,0 +1,43 @@
+--- a/include/livekit/audio_track.h
++++ b/include/livekit/audio_track.h
+@@ -57,6 +57,10 @@
+   void add_sink(const std::shared_ptr<NativeAudioSink>& sink) const;
+   void remove_sink(const std::shared_ptr<NativeAudioSink>& sink) const;
+ 
++  // mega patch W1: playout gain of a remote track, 0 to 10 (1 is unchanged).
++  // Ignored by local sources.
++  void set_volume(double volume) const;
++
+  private:
+   webrtc::AudioTrackInterface* track() const {
+     return static_cast<webrtc::AudioTrackInterface*>(track_.get());
+--- a/src/audio_track.cpp
++++ b/src/audio_track.cpp
+@@ -72,6 +72,16 @@
+   sinks_.push_back(sink);
+ }
+ 
++void AudioTrack::set_volume(double volume) const {
++  // mega patch W1. RemoteAudioSource hands this to the voice engine, which
++  // scales the track's audio in the playout mix.
++  if (volume < 0.0) volume = 0.0;
++  if (volume > 10.0) volume = 10.0;
++  if (auto* source = track()->GetSource()) {
++    source->SetVolume(volume);
++  }
++}
++
+ void AudioTrack::remove_sink(
+     const std::shared_ptr<NativeAudioSink>& sink) const {
+   webrtc::MutexLock lock(&mutex_);
+--- a/src/audio_track.rs
++++ b/src/audio_track.rs
+@@ -44,6 +44,8 @@
+ 
+         fn add_sink(self: &AudioTrack, sink: &SharedPtr<NativeAudioSink>);
+         fn remove_sink(self: &AudioTrack, sink: &SharedPtr<NativeAudioSink>);
++        /// mega patch W1: playout gain of a remote track, 0 to 10.
++        fn set_volume(self: &AudioTrack, volume: f64);
+         fn new_native_audio_sink(
+             observer: Box<AudioSinkWrapper>,
+             sample_rate: i32,
