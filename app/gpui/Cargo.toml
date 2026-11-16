@@ -8,7 +8,7 @@ description = "mega desktop on GPUI (spike; not part of any release)"
 [features]
 default = ["calls"]
 # Calls inside the app. Off, the rest of the app builds without libwebrtc.
-calls = ["dep:livekit", "dep:libwebrtc", "dep:webrtc-sys", "dep:tokio", "dep:base64", "dep:parking_lot", "dep:getrandom", "dep:image", "dep:smallvec", "dep:serde", "dep:log"]
+calls = ["dep:livekit", "dep:libwebrtc", "dep:webrtc-sys", "dep:tokio", "dep:base64", "dep:parking_lot", "dep:getrandom", "dep:image", "dep:smallvec", "dep:serde", "dep:log", "dep:zbus"]
 
 [[bin]]
 name = "mega-gpui"
@@ -38,6 +38,11 @@ image = { version = "0.25", default-features = false, optional = true }
 smallvec = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 log = { version = "0.4", optional = true }
+
+# Global push-to-talk through the desktop portal (calls/shortcuts.rs). The exact version the workspace already builds
+# (gpui's own D-Bus code uses it), default features, so no other crate in Cargo.lock changes.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "=5.19.0", optional = true }
 
 # CALLS-PLAN.md step 0: a Rust participant driven by tools/gpui-call-interop.mjs.
 [[example]]

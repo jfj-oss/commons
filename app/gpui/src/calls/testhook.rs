@@ -4,7 +4,7 @@
 //!   {"cmd":"join","gid","name"} {"cmd":"leave"} {"cmd":"mute","on"} {"cmd":"deafen","on"} {"cmd":"volume","account","v"}
 //!   {"cmd":"snapshot"} {"cmd":"hear","identity","hz","ms"} {"cmd":"game","muted":true|false|null} {"cmd":"trust_all","on"}
 //!   {"cmd":"devices"} {"cmd":"mic","id"} {"cmd":"out","id"} {"cmd":"processing","echo","noise","gain"}
-//!   {"cmd":"ptt_mode","on"} {"cmd":"ptt","down"} {"cmd":"plout","identity","ms"} {"cmd":"mic_options"}
+//!   {"cmd":"ptt_mode","on"} {"cmd":"ptt","down"} {"cmd":"shortcut","id","down"} {"cmd":"rebind"} {"cmd":"plout","identity","ms"} {"cmd":"mic_options"}
 //!   {"cmd":"core","method","args"} {"cmd":"call_active"} {"cmd":"quit"}
 use super::audio::Processing;
 use super::engine::{CallEngine, Command};
@@ -64,6 +64,11 @@ async fn handle(e: &Arc<CallEngine>, c: &Value, quit: &tokio::sync::mpsc::Unboun
             e.send(Command::SetProcessing(p)); json!({"ok": true})
         }
         "ptt_mode" => { e.send(Command::SetPushToTalk(on)); json!({"ok": true}) }
+        "shortcut" => match super::shortcuts::Shortcut::from_id(&s("id")) {
+            Some(sc) => { e.send(Command::Shortcut { shortcut: sc, down: c["down"].as_bool().unwrap_or(on) }); json!({"ok": true}) }
+            None => json!({"error": "unknown shortcut id"}),
+        },
+        "rebind" => { e.send(Command::RebindShortcuts); json!({"ok": true}) }
         "ptt" => { e.send(Command::PushToTalk(c["down"].as_bool().unwrap_or(on))); json!({"ok": true}) }
         "snapshot" => serde_json::to_value(e.snapshot()).unwrap_or(Value::Null),
         "hear" => e.taps.hear(&s("identity"), c["hz"].as_f64().unwrap_or(500.), c["ms"].as_u64().unwrap_or(1500)).await,

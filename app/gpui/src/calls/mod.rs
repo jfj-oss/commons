@@ -12,3 +12,4 @@ pub mod headless;
 pub mod reconnect;
 pub mod review;
 pub mod testhook;
+pub mod shortcuts;
