@@ -16,7 +16,11 @@
 //!   {"cmd":"members"}                          what the panel and the communities hold
 //!   {"cmd":"click","what"}                     press a panel button: confirm | cancel | create-invite
 //!   {"cmd":"core","method","args"}              a call to the core as this account
+//!   {"cmd":"paint"}  {"cmd":"paint_do","what",...}   the colours panel: open/close it; hex value | mode card/back | well 0/1 | preset n | tile which n | dim n | oracle quiet/draw | reset | same
+//!   {"cmd":"draw","on"}  {"cmd":"tool","brush","col"}  {"cmd":"pen","points":[[x,y],...]}  {"cmd":"wall"}   drawing mode, the brush, a stroke in window pixels, what the wall holds
+//!   {"cmd":"wall_do","what"}                     lock | clear (the owner's buttons; clear asks twice)
 use crate::app::Mega;
+use crate::look;
 use gpui_kit::*;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -111,6 +115,18 @@ impl Mega {
                 "navkey" => { let k = s("key"); { let ev = KeyDownEvent { keystroke: Keystroke { modifiers: Default::default(), key: k.clone(), key_char: None }, is_held: false, prefer_character_input: false }; self.nav_key(&ev, window, cx); } json!({"ok": true}) }
                 "navclick" => { let i = cmd["i"].as_u64().unwrap_or(0) as usize; self.nav_click(i, window, cx); json!({"ok": true}) }
                 "do" => self.ui_do(&cmd, window, cx),
+                "paint" => { self.paint_toggle(window, cx); json!({"open": self.paint.open}) }
+                "paint_do" => self.paint_do(&cmd, window, cx),
+                "draw" => { match cmd["on"].as_bool() { Some(true) => self.wall_on(window, cx), Some(false) => self.wall_off(), None => self.wall_toggle(window, cx) } cx.notify(); json!({"on": self.wall.on, "key": self.wall.key}) }
+                "tool" => { if let Some(b) = cmd["brush"].as_u64() { self.wall.brush = b as u8; } if let Some(c) = cmd["col"].as_u64() { self.wall.col = c as u8; } json!({"ok": true}) }
+                "pen" => {
+                    let pts: Vec<(f32, f32)> = cmd["points"].as_array().map(|l| l.iter().filter_map(|p| Some((p[0].as_f64()? as f32, p[1].as_f64()? as f32))).collect()).unwrap_or_default();
+                    for (i, (x, y)) in pts.iter().enumerate() { self.wall_pen(point(px(*x), px(*y)), i == 0, window, cx); }
+                    self.wall_pen_up();
+                    json!({"ok": true, "pending": self.wall.pend.len()})
+                }
+                "wall" => self.wall_dump(),
+                "wall_do" => { match s("what").as_str() { "lock" => self.wall_lock(window, cx), "clear" => { self.wall_clear(window, cx); self.wall_clear(window, cx); } _ => {} } json!({"ok": true}) }
                 "go" => { let want = s("name"); let cid = self.snap.as_ref().and_then(|sn| sn.communities.iter().find(|c| c.name == want).map(|c| c.id.clone())); match cid { Some(c) => { self.go(crate::app::Level::Server(c), window, cx); json!({"ok": true}) } None => json!({"error": "no such community"}) } }
                 "join_text" => { let v = s("text"); self.mem.join_in.update(cx, |i, cx| i.set_value(v, window, cx)); self.join_submit(window, cx); json!({"ok": true}) }
                 "click" => match s("what").as_str() { "confirm" => { self.run_confirm(window, cx); json!({"ok": true}) } "cancel" => { self.mem.confirm = None; cx.notify(); json!({"ok": true}) } _ => json!({"error": "unknown button"}) },
@@ -119,5 +135,28 @@ impl Mega {
             };
             let _ = tx.send(out);
         }
+    }
+}
+
+impl Mega {
+    /// What the colours panel's controls do, for the test port.
+    fn paint_do(&mut self, cmd: &Value, window: &mut Window, cx: &mut Context<Self>) -> Value {
+        let s = |k: &str| cmd[k].as_str().unwrap_or("").to_string();
+        let n = cmd["n"].as_u64().unwrap_or(0) as usize;
+        match s("what").as_str() {
+            "hex" => { let v = s("value"); self.paint.hex.update(cx, |h, cx| h.set_value(v, window, cx)); self.paint_hex_changed(window, cx); }
+            "mode" => { self.paint.back_mode = s("value") == "back"; self.paint_set_well(self.paint.well, window, cx); }
+            "well" => self.paint_set_well(n, window, cx),
+            "preset" => self.paint_preset(n, window, cx),
+            "tile" => { let which: &'static str = if s("which") == "chat" { "chat" } else { "card" }; self.paint_pattern(which, if cmd["n"].is_null() { None } else { Some(n) }, cx) }
+            "dim" => { let v = cmd["value"].as_u64().unwrap_or(100) as u32; self.paint_set_dim(v, cx); }
+            "oracle" => self.paint_oracle(s("value") == "draw", window, cx),
+            "reset" => self.paint_reset(window, cx),
+            "same" => { self.paint_same(window, cx); }
+            _ => return json!({"error": "unknown paint action"}),
+        }
+        cx.notify();
+        let (m, h) = self.paint_cur();
+        json!({"ok": true, "open": self.paint.open, "cur": [look::hex(m), look::hex(h)], "back": self.paint.back_mode, "well": self.paint.well, "target": self.paint.target.as_ref().map(|t| t.name.clone()), "queue": self.paint_queue_len()})
     }
 }

@@ -84,6 +84,9 @@ pub struct Mega {
     /// The card column of the home and community levels (cards.rs).
     pub nav: crate::cards::NavUi,
     pub rail: crate::rail::RailUi,
+    /// The colours panel (paint.rs) and the shared ASCII wall (wall.rs).
+    pub paint: crate::paint::PaintUi,
+    pub wall: crate::wall::WallUi,
     _tasks: Vec<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -113,8 +116,10 @@ impl Mega {
         let call = crate::callui::CallUi::new(prefs.deck_w, window, cx);
         let upd = crate::updateui::UpdateUi::new(&core.dir);
         let nav = crate::cards::NavUi::new(cx);
+        let (paint, paint_sub) = crate::paint::PaintUi::new(window, cx);
+        subs.push(paint_sub);
         let mut this = Mega {
-            nav, rail: Default::default(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), dm_caches: Default::default(),
+            nav, rail: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), dm_caches: Default::default(),
             level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., waves: vec![], bd_clock: 0., bd_cache: Default::default(), holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
@@ -138,7 +143,7 @@ impl Mega {
         // Rings, what notifications ask of the window, rune in the call bar, the test port: a quarter-second clock.
         this._tasks.push(cx.spawn_in(window, async move |this, cx| loop {
             cx.background_executor().timer(Duration::from_millis(250)).await;
-            if this.update_in(cx, |this, window, cx| { this.ring_tick(window, cx); this.nav_focus_tick(window, cx); this.mem_tick(window, cx); this.rune_tick(window, cx); this.uitest_tick(window, cx); }).is_err() { break; }
+            if this.update_in(cx, |this, window, cx| { this.ring_tick(window, cx); this.nav_focus_tick(window, cx); this.wall_tick(window, cx); this.paint_tick(window, cx); this.mem_tick(window, cx); this.rune_tick(window, cx); this.uitest_tick(window, cx); }).is_err() { break; }
         }));
         // The fields move at 20 frames a second on the cards and 10 behind a chat (25 while a ripple runs), as in mega.js;
         // not at all with the battery saver on, or while the window is not the active one.
@@ -377,7 +382,7 @@ impl Mega {
         s.communities.iter().chain(s.direct.iter()).find_map(|c| c.channels.iter().find(|ch| ch.gid == gid).map(|ch| (c, ch)))
     }
     pub fn room_duo(&self, gid: &str) -> Duo {
-        match self.channel(gid) { Some((c, _)) => Duo::of(gid, c.room_colours.iter().find(|(g, _)| g == gid).map(|(_, d)| d)), None => Duo::of(gid, None) }
+        match self.channel(gid) { Some((c, _)) => self.duo_for(gid, c.room_colours.iter().find(|(g, _)| g == gid).map(|(_, d)| d)), None => Duo::of(gid, None) }
     }
 
     fn mark_read(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -462,6 +467,7 @@ impl Mega {
         if let Level::Server(c) = &level { self.nav.last_home = Some(c.clone()); }
         if matches!(level, Level::Home | Level::Server(_)) { window.focus(&self.nav.focus, cx); }
         self.level = level;
+        if self.level != Level::Chat { self.wall.room_mode = false; if !matches!(self.level, Level::Home | Level::Server(_)) { self.wall_focus(None, Default::default(), vec![]); } }
         self.focus_card(None);
         cx.notify();
     }
