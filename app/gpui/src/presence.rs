@@ -59,7 +59,7 @@ impl Mega {
         if !on_cards { self.pres.cand = None; }
 
         // receiving (only while a card screen is up and the window can be seen, like the page)
-        if on_cards || !self.pres.started {
+        if on_cards || !self.pres.started || self.wall.room_mode {
             let since = self.pres.since;
             self.rpc("live_poll", json!({"since": since}), window, cx, |this, r, window, cx| {
                 let Ok(r) = r else { return };
@@ -67,7 +67,7 @@ impl Mega {
                 // start from "now": events from before this window looked are not interesting
                 if !std::mem::replace(&mut this.pres.started, true) { this.pres.since = this.pres.since.max(head); return; }
                 let events = r["events"].as_array().cloned().unwrap_or_default();
-                for e in &events { if let Some(id) = e["id"].as_u64() { this.pres.since = this.pres.since.max(id); } this.presence_event(e, window, cx); }
+                for e in &events { if let Some(id) = e["id"].as_u64() { this.pres.since = this.pres.since.max(id); } this.wall_event(e); this.presence_event(e, window, cx); }
                 if events.is_empty() && head > this.pres.since { this.pres.since = head; }
             });
         }

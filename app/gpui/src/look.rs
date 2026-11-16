@@ -45,13 +45,13 @@ pub fn apply_theme(cx: &mut App) {
 }
 
 // ---- colours per room (mega.js: DEF, targetOf, dotOf, bestInk) ----
-const DEF: [(u32, u32); 12] = [(0xff5a1f, 0xffe14d), (0x101640, 0x45f0d0), (0xf3c6d8, 0xc2124a), (0x0b3d2e, 0xd8ff3e), (0xe8e4d8, 0x1b33ff), (0x1a1a1a, 0xff2e63),
+pub const DEF: [(u32, u32); 12] = [(0xff5a1f, 0xffe14d), (0x101640, 0x45f0d0), (0xf3c6d8, 0xc2124a), (0x0b3d2e, 0xd8ff3e), (0xe8e4d8, 0x1b33ff), (0x1a1a1a, 0xff2e63),
     (0x6a35ff, 0xffb3f0), (0x00a6a6, 0xfff275), (0xffd23f, 0x5a189a), (0x2d6a4f, 0xffb703), (0xe63946, 0xf1faee), (0x264653, 0xe9c46a)];
 
 /// mega.js `H`: the hash that picks a room's default colours and pattern, so both UIs agree.
 pub fn h(s: &str) -> u32 { s.chars().fold(7u32, |a, c| { let mut b = [0u16; 2]; a.wrapping_mul(31).wrapping_add(c.encode_utf16(&mut b)[0] as u32) }) }
 
-fn parse_hex(s: &str) -> Option<u32> { u32::from_str_radix(s.strip_prefix('#')?, 16).ok() }
+pub fn parse_hex(s: &str) -> Option<u32> { u32::from_str_radix(s.strip_prefix('#')?, 16).ok() }
 
 /// Bold palettes an owner can pick for a room (design idea #6), as (name, colour, highlight).
 pub const PRESETS: [(&str, u32, u32); 3] = [("violet and orange", 0x6a35ff, 0xff8c1a), ("cobalt and white", 0x1b33ff, 0xffffff), ("lavender and green", 0xc9b8ff, 0x1f9d5c)];
@@ -94,3 +94,58 @@ pub fn contrast(a: u32, b: u32) -> f32 { let (x, y) = (lum(a), lum(b)); (x.max(y
 
 /// A person's colour (mega.js `faceColor`): hsl(H(name) % 360, 78%, 74%).
 pub fn face(name: &str) -> Hsla { hsla((h(name) % 360) as f32 / 360., 0.78, 0.74, 1.) }
+
+// ---- the colour picker's maths (mega.js: toHsv, fromHsv, lift, hexes) ----
+/// The eight presets of the colours panel: the first eight of the default pairs (mega.js `PRESETS`).
+pub fn presets() -> [(u32, u32); 8] { let mut o = [(0, 0); 8]; o.copy_from_slice(&DEF[..8]); o }
+/// A `#rrggbb` that parses (what an owner's style may hold).
+pub fn is_hex(s: &str) -> bool { s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit()) }
+/// Hue (0..360), saturation and value (0..1) of a colour.
+pub fn to_hsv(c: u32) -> [f32; 3] {
+    let [r, g, b] = ch(c).map(|v| v / 255.);
+    let mx = r.max(g).max(b); let d = mx - r.min(g).min(b);
+    let mut h = 0.;
+    if d > 0. { h = if mx == r { ((g - b) / d + 6.) % 6. } else if mx == g { (b - r) / d + 2. } else { (r - g) / d + 4. }; }
+    [h * 60., if mx > 0. { d / mx } else { 0. }, mx]
+}
+pub fn from_hsv(h: f32, s: f32, v: f32) -> u32 {
+    let f = |n: f32| { let k = (n + h / 60.) % 6.; (v - v * s * k.min(4. - k).min(1.).max(0.)) * 255. };
+    let q = |x: f32| x.round().clamp(0., 255.) as u32;
+    (q(f(5.)) << 16) | (q(f(3.)) << 8) | q(f(1.))
+}
+/// mega.js `lift`: brighten a colour until it reads at `ratio` on the dark backdrop.
+pub fn lift(c: u32, ratio: f32) -> u32 { let mut c = c; let mut i = 0; while contrast(c, 0x050407) < ratio && i < 12 { c = mix(c, 0xffffff, 0.14); i += 1; } c }
+/// The two inks a drawing on a card uses (mega.js `wallInk`): the card's ink and its highlight (or the other ink where the highlight does not show).
+pub fn wall_ink(d: &Duo) -> [u32; 2] {
+    let ink = if contrast(d.main, 0x0c0d12) >= contrast(d.main, 0xffffff) { 0x0c0d12 } else { 0xffffff };
+    let alt = if ink == 0x0c0d12 { 0xffffff } else { 0x0c0d12 };
+    [ink, if contrast(d.hi, d.main) >= 2.4 { d.hi } else { alt }]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[::core::prelude::v1::test]
+    fn hsv_round_trips() {
+        for c in [0xff5a1f, 0x101640, 0x00a6a6, 0xffffff, 0x000000, 0x6a35ff] {
+            let [h, s, v] = to_hsv(c);
+            let back = from_hsv(h, s, v);
+            for sh in [16, 8, 0] { assert!((((c >> sh) & 255) as i32 - ((back >> sh) & 255) as i32).abs() <= 1, "{c:06x} -> {back:06x}"); }
+        }
+        assert_eq!(from_hsv(0., 1., 1.), 0xff0000);
+        assert_eq!(from_hsv(120., 1., 1.), 0x00ff00);
+    }
+    #[::core::prelude::v1::test]
+    fn wall_ink_reads_on_the_card() {
+        let d = Duo { main: 0x00a6a6, hi: 0xfff275 };
+        assert_eq!(wall_ink(&d), [0x0c0d12, 0xfff275], "yellow shows on teal: the card's own highlight");
+        let d = Duo { main: 0x00a6a6, hi: 0x00b8b8 };
+        let [ink, hi] = wall_ink(&d);
+        assert_eq!(ink, 0x0c0d12);
+        assert_eq!(hi, 0xffffff, "a highlight too close to the card gives way to the other ink");
+        let d = Duo { main: 0x101640, hi: 0x45f0d0 };
+        assert_eq!(wall_ink(&d), [0xffffff, 0x45f0d0]);
+    }
+    #[::core::prelude::v1::test]
+    fn hex_check() { assert!(is_hex("#00a6A6")); assert!(!is_hex("00a6a6")); assert!(!is_hex("#00a6")); assert!(!is_hex("#00a6gg")); }
+}

@@ -37,6 +37,8 @@ pub struct NavItem {
     pub num: u64,
     pub duo: Duo,
     pub fx: usize,
+    /// The pattern the card would have if its owner had chosen none.
+    pub auto: usize,
     pub locked: bool,
     pub voice: bool,
     /// Friends looking at this card right now (presence), and who is in its call.
@@ -83,12 +85,15 @@ pub struct NavUi {
     pub last_frame: Option<Instant>,
     /// Tests: a synthetic scroll (until, pixels per second, direction), turned each frame like a wheel that never stops.
     pub play: Option<(f64, f32, f32)>,
+    /// The card in focus as the colours panel and the draw chip see it, and where the column sits in the window.
+    pub focus_card: Option<crate::paint::Target>,
+    pub origin: Rc<Cell<(f32, f32)>>,
 }
 
 impl NavUi {
     pub fn new(cx: &mut App) -> NavUi {
         NavUi { scroll: Scroll::default(), key: String::new(), n: 0, vh: 0., vp: Rc::new(Cell::new((0., 0.))), offs: vec![], opens: vec![], voices: vec![], told: None, focus: cx.focus_handle(), last_home: None, acc: 0.,
-            previews: HashMap::new(), prev_busy: false, frames: vec![], last_frame: None, play: None }
+            previews: HashMap::new(), prev_busy: false, frames: vec![], last_frame: None, play: None, focus_card: None, origin: Rc::new(Cell::new((0., 0.))) }
     }
 }
 
@@ -100,6 +105,8 @@ pub fn chip(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Statefu
 }
 
 impl Mega {
+    /// The pattern a card shows: the owner's choice if it names one this version knows, else the automatic one (mega.js `patOf`).
+    pub fn look_fx(&self, cid: &str, id: &str, auto: usize) -> usize { self.look_for(cid, id).card.filter(|n| *n < ascii::FX_NAMES.len()).unwrap_or(auto) }
     /// The rooms (or the people) a card names under it: "3 people", "caught up", "waiting for keys"...
     fn community_items(&self) -> Vec<NavItem> {
         let snap = self.snap.clone().unwrap_or_default();
@@ -111,7 +118,7 @@ impl Mega {
             let mut pv: Option<&crate::cards::Prev> = None;
             for x in c.channels.iter().filter(|x| x.kind != "voice" && x.joined) { if let Some(p) = self.nav.previews.get(&x.gid).filter(|p| !p.text.is_empty()) { if pv.is_none_or(|q| p.ts > q.ts) { pv = Some(p); } } }
             let sub = if c.members > 0 { format!("{} {}", c.members, if c.members == 1 { "person" } else { "people" }) } else { format!("{} room{}", c.channels.len(), if c.channels.len() == 1 { "" } else { "s" }) };
-            out.push(NavItem { key: format!("c:{}", c.id), cid: c.id.clone(), room: String::new(), title: c.name.clone(), sub, num: c.unread, duo: Duo::of(&c.id, c.colours.as_ref()), fx: ascii::auto_fx(&c.name),
+            out.push(NavItem { key: format!("c:{}", c.id), cid: c.id.clone(), room: String::new(), title: c.name.clone(), sub, num: c.unread, duo: self.duo_for(&c.id, c.colours.as_ref()), fx: self.look_fx(&c.id, &c.id, ascii::auto_fx(&c.name)), auto: ascii::auto_fx(&c.name),
                 locked: false, voice: false, looking: self.people_on(&c.id, ""), here: here.clone(), hi_t: 0.9 - 0.22 * (c.unread.min(12) as f64 / 12.),
                 preview: pv.map(|p| (p.who.clone(), p.text.clone())),
                 note: voice_ch.filter(|_| !here.is_empty()).map(|x| format!("{} in {}", here.len(), x.name)),
@@ -124,11 +131,11 @@ impl Mega {
             let duo = Duo::of(&d.room, d.room_colours.iter().find(|(g, _)| g == &d.room).map(|(_, x)| x));
             let pv = self.nav.previews.get(&d.room).filter(|p| !p.text.is_empty());
             out.push(NavItem { key: format!("d:{}", d.id), cid: d.id.clone(), room: d.room.clone(), title: d.name.clone(), sub: if on { "direct".into() } else { "waiting for them".into() }, num: unread, duo,
-                fx: ascii::auto_fx(&d.name), locked: !on, voice: false, looking: vec![], here: vec![], hi_t: 0.9 - 0.22 * (unread.min(12) as f64 / 12.), preview: pv.map(|p| (p.who.clone(), p.text.clone())),
+                fx: ascii::auto_fx(&d.name), auto: ascii::auto_fx(&d.name), locked: !on, voice: false, looking: vec![], here: vec![], hi_t: 0.9 - 0.22 * (unread.min(12) as f64 / 12.), preview: pv.map(|p| (p.who.clone(), p.text.clone())),
                 note: None, section: None, open: Open::Room(d.id.clone(), d.room.clone()), news: vec![] });
         }
         // "you": the profile and the device's own options (the page's last card)
-        out.push(NavItem { key: "you".into(), cid: String::new(), room: String::new(), title: "you".into(), sub: "settings".into(), num: 0, duo: Duo { main: 0xd9dce4, hi: 0x2b3bff }, fx: 4, locked: false, voice: false,
+        out.push(NavItem { key: "you".into(), cid: String::new(), room: String::new(), title: "you".into(), sub: "settings".into(), num: 0, duo: Duo { main: 0xd9dce4, hi: 0x2b3bff }, fx: 4, auto: 4, locked: false, voice: false,
             looking: vec![], here: vec![], hi_t: 0.9, preview: None, note: Some("your profile and account".into()), section: None, open: Open::Settings, news: vec![] });
         out
     }
@@ -139,7 +146,7 @@ impl Mega {
         let mut rows: Vec<(u64, NewsRow)> = vec![];
         for c in snap.communities.iter().filter(|c| !c.removed) {
             for ch in c.channels.iter().filter(|x| x.kind != "voice" && x.joined && x.unread > 0) {
-                let duo = Duo::of(&ch.gid, c.room_colours.iter().find(|(g, _)| g == &ch.gid).map(|(_, d)| d));
+                let duo = self.duo_for(&ch.gid, c.room_colours.iter().find(|(g, _)| g == &ch.gid).map(|(_, d)| d));
                 let p = self.nav.previews.get(&ch.gid);
                 rows.push((p.map(|p| p.ts).unwrap_or(0), NewsRow { cid: c.id.clone(), gid: ch.gid.clone(), comm: c.name.clone(), room: ch.name.clone(), n: ch.unread, who: p.map(|p| p.who.clone()).unwrap_or_default(), text: p.map(|p| p.text.clone()).unwrap_or_default(), col: duo.dot() }));
             }
@@ -150,7 +157,7 @@ impl Mega {
         let total: u64 = rows.iter().map(|r| r.n).sum();
         let first = rows[0].clone();
         Some(NavItem { key: "news".into(), cid: String::new(), room: String::new(), title: "what\u{2019}s new".into(), sub: format!("{} unread room{}", rows.len(), if rows.len() == 1 { "" } else { "s" }), num: total,
-            duo: Duo { main: 0xff8a5c, hi: 0xffe45e }, fx: 12, locked: false, voice: false, looking: vec![], here: vec![], hi_t: 0.9 - 0.22 * (total.min(12) as f64 / 12.), preview: None, note: None, section: None,
+            duo: Duo { main: 0xff8a5c, hi: 0xffe45e }, fx: 12, auto: 12, locked: false, voice: false, looking: vec![], here: vec![], hi_t: 0.9 - 0.22 * (total.min(12) as f64 / 12.), preview: None, note: None, section: None,
             open: Open::Room(first.cid, first.gid), news: rows })
     }
 
@@ -161,22 +168,23 @@ impl Mega {
         for (i, ch) in order {
             let voice = ch.kind == "voice";
             let here = self.pres.calls.get(&ch.gid).cloned().unwrap_or_default();
-            let duo = Duo::of(&ch.gid, c.room_colours.iter().find(|(g, _)| g == &ch.gid).map(|(_, d)| d));
-            let fx = if voice { 1 } else { [0, 3, 4, 5, 2][(off + i) % 5] };
+            let duo = self.duo_for(&ch.gid, c.room_colours.iter().find(|(g, _)| g == &ch.gid).map(|(_, d)| d));
+            let auto = if voice { 1 } else { [0, 3, 4, 5, 2][(off + i) % 5] };
+            let fx = self.look_fx(&c.id, &ch.gid, auto);
             let pv = self.nav.previews.get(&ch.gid).filter(|p| !p.text.is_empty());
             let sub = if !ch.joined { "waiting for keys".to_string() } else if !ch.status.is_empty() && ch.status != "ok" { ch.status.clone() } else if voice { "voice".into() } else if ch.unread > 0 { "unread".into() } else { "caught up".into() };
             let num = if voice { here.len() as u64 } else { ch.unread };
             let hi_t = if !ch.joined || (voice && here.is_empty()) { 2. } else if voice { 0.76 } else { 0.9 - 0.22 * (ch.unread.min(12) as f64 / 12.) };
-            out.push(NavItem { key: ch.gid.clone(), cid: c.id.clone(), room: ch.gid.clone(), title: ch.name.clone(), sub, num, duo, fx, locked: !ch.joined, voice,
+            out.push(NavItem { key: ch.gid.clone(), cid: c.id.clone(), room: ch.gid.clone(), title: ch.name.clone(), sub, num, duo, fx, auto, locked: !ch.joined, voice,
                 looking: self.people_on(&c.id, &ch.gid), here: here.clone(), hi_t, preview: if voice { None } else { pv.map(|p| (p.who.clone(), p.text.clone())) },
                 note: if !ch.joined { Some("this device does not have the keys for this room yet".into()) } else if voice && here.is_empty() { Some("nobody here yet".into()) } else { None },
                 section: if voice { Some("voice") } else { None }, open: Open::Room(c.id.clone(), ch.gid.clone()), news: vec![] });
         }
         if crate::members::is_admin(c) {
-            out.push(NavItem { key: format!("adm:{}", c.id), cid: c.id.clone(), room: String::new(), title: "server settings".into(), sub: "owners and admins".into(), num: 0, duo: Duo::of(&format!("adm:{}", c.id), None), fx: 2, locked: false, voice: false,
+            out.push(NavItem { key: format!("adm:{}", c.id), cid: c.id.clone(), room: String::new(), title: "server settings".into(), sub: "owners and admins".into(), num: 0, duo: Duo::of(&format!("adm:{}", c.id), None), fx: 2, auto: 2, locked: false, voice: false,
                 looking: vec![], here: vec![], hi_t: 0.9, preview: None, note: Some("name, rooms, members, invites. Everyone here sees what you change.".into()), section: None, open: Open::Admin(c.id.clone()), news: vec![] });
         }
-        out.push(NavItem { key: format!("opt:{}", c.id), cid: c.id.clone(), room: String::new(), title: "options".into(), sub: "only on this device".into(), num: 0, duo: Duo { main: 0xa9adb8, hi: 0x4a4e5c }, fx: 6, locked: false, voice: false,
+        out.push(NavItem { key: format!("opt:{}", c.id), cid: c.id.clone(), room: String::new(), title: "options".into(), sub: "only on this device".into(), num: 0, duo: Duo { main: 0xa9adb8, hi: 0x4a4e5c }, fx: 6, auto: 6, locked: false, voice: false,
             looking: vec![], here: vec![], hi_t: 0.9, preview: None, note: Some("alerts, sound and look. Nobody else can see these.".into()), section: None, open: Open::Settings, news: vec![] });
         out
     }
@@ -239,12 +247,21 @@ impl Mega {
         self.nav.offs = offs.clone();
         self.nav.opens = items.iter().map(|x| x.open.clone()).collect();
         self.nav.voices = items.iter().map(|x| x.voice && !x.locked).collect();
+        // the card in focus: what the colours panel and the draw chip are about, and the wall under it
+        let fc = items.get(sc.cur).and_then(|it| self.card_target(it));
+        let moved = fc.as_ref().map(|t| &t.id) != self.nav.focus_card.as_ref().map(|t| &t.id);
+        self.nav.focus_card = fc;
+        if moved {
+            cx.spawn_in(window, async move |this, cx| { let _ = this.update_in(cx, |this, window, cx| { this.paint_follow(window, cx); cx.notify(); }); }).detach();
+        }
 
         let (cw, ch) = nav::card_box(vw, vh);
         let slot = nav::slot(vh);
         let mut cards: Vec<AnyElement> = vec![];
         let mut labels: Vec<AnyElement> = vec![];
         let clock = self.clock;
+        let mut wall_spot = crate::wall::Spot::default();
+        let mut wall_visible: Vec<String> = vec![];
         for (i, it) in items.iter().enumerate() {
             let a = nav::dist(sc.offset, offs[i], slot);
             if let Some(sec) = it.section.filter(|_| sections[i]) {
@@ -259,8 +276,13 @@ impl Mega {
             let s = nav::scale(a) * extra;
             let cyy = vh / 2. + (offs[i] - sc.offset);
             let geo = Geo { x: (vw - cw * s) / 2., y: cyy - ch * s / 2., cw, ch, s, op: nav::opacity(a), live: nav::live(a), focus: i == sc.cur, settled: sc.settled == Some(i), grow: if i == sc.focus { sc.grow } else { 0. }, t: clock };
+            if i == sc.cur { let o = self.nav.origin.get(); wall_spot = crate::wall::Spot { x: o.0 + geo.x, y: o.1 + geo.y, w: cw, h: ch, s }; }
+            if let Some(k) = card_wall(it) { wall_visible.push(k); }
             cards.push(self.nav_card(i, it, geo, cx));
         }
+        let focus_wall = items.get(sc.cur).and_then(card_wall);
+        self.wall.room_mode = false;
+        self.wall_focus(focus_wall, wall_spot, wall_visible);
         // the dots down the left edge: one per card, the one in the middle taller (`.mscrub`)
         let n = items.len();
         let dots_h = n as f32 * 7. + (n.max(1) - 1) as f32 * 8. + 13.;
@@ -276,8 +298,8 @@ impl Mega {
             }));
 
         let notes: Vec<AnyElement> = if home { let mut v = self.joining_notes(cx); v.extend(self.update_cards(cx)); v } else { vec![] };
-        let measure = { let vp = self.nav.vp.clone(); let used = (vw, vh);
-            canvas(move |b, window, _| { let nw = (f32::from(b.size.width), f32::from(b.size.height)); if (vp.get().0 - nw.0).abs() > 0.5 || (vp.get().1 - nw.1).abs() > 0.5 { vp.set(nw); if (used.0 - nw.0).abs() > 0.5 || (used.1 - nw.1).abs() > 0.5 { window.request_animation_frame(); } } }, |_, _, _, _| {}).absolute().top_0().left_0().size_full() };
+        let measure = { let vp = self.nav.vp.clone(); let used = (vw, vh); let origin = self.nav.origin.clone();
+            canvas(move |b, window, _| { origin.set((f32::from(b.origin.x), f32::from(b.origin.y))); let nw = (f32::from(b.size.width), f32::from(b.size.height)); if (vp.get().0 - nw.0).abs() > 0.5 || (vp.get().1 - nw.1).abs() > 0.5 { vp.set(nw); if (used.0 - nw.0).abs() > 0.5 || (used.1 - nw.1).abs() > 0.5 { window.request_animation_frame(); } } }, |_, _, _, _| {}).absolute().top_0().left_0().size_full() };
         div().id("cards").relative().size_full().overflow_hidden().track_focus(&self.nav.focus)
             .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, window, cx| this.nav_wheel(ev, window, cx)))
             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| { window.focus(&this.nav.focus, cx); }))
@@ -287,6 +309,9 @@ impl Mega {
             .children(cards)
             .child(dots)
             .child(div().absolute().top_0().left_0().right_0().child(bar))
+            .children(self.wall_hit(cx))
+            .children(self.wall_toolbar(cx))
+            .children(self.paint_panel(cx))
             .when(!notes.is_empty(), |d| d.child(v_flex().absolute().bottom(px(12.)).left(px(16.)).right(px(16.)).gap(px(6.)).items_center().children(notes.into_iter().map(|n| div().w_full().max_w(px(640.)).child(n)))))
             .into_any_element()
     }
@@ -337,12 +362,17 @@ impl Mega {
             let rows_h = it.news.len().min(fit) as f32 * 64. * s;
             holes.push(Bounds::new(point(px(pad - 4.), px(pad + top_px * 2.5)), size(px(inner_w + 8.), px(rows_h + 8.))));
         }
+        let wall_key = card_wall(it);
+        let marks_cells: Rc<Vec<(u16, u8, u8)>> = Rc::new(wall_key.as_ref().map(|k| self.wall.marks_of(k)).unwrap_or_default());
+        let wall_grid = crate::wall::grid_in(g.cw, g.ch, true).scaled(s);
+        let holes_rc = Rc::new(holes.clone());
         let f = if g.live {
             let seed = look::h(&it.key);
             let t = if still || it.hi_t > 1.5 { 11.7 } else { g.t + (seed % 40) as f64 };
             let mut f = Field::card(it.fx, seed, it.duo, t, small);
             f.cell = (cell.0 * s, cell.1 * s); f.font_px = nav::q(fs * s); f.radius = r; f.emboss = still; if still { f.gate = 0.1; }
             f.hi_t = it.hi_t; f.holes = holes;
+            if !marks_cells.is_empty() { f.avoid = Some((wall_grid, marks_cells.clone())); }
             Some(f)
         } else { None };
         let spot = sq::spot();
@@ -397,6 +427,7 @@ impl Mega {
             .when(!num_s.is_empty(), |d| d.child(div().flex_none().font_family(look::F_SHARP).text_size(px(npx)).line_height(px(npx * 0.78)).opacity(0.85).pr(px(npx * 0.08)).child(num_s.clone())));
         let slab = div().absolute().inset_0().overflow_hidden().bg(it.duo.field()).opacity(if it.locked { g.op * 0.55 } else { g.op })
             .when_some(f, |d, f| d.child(div().absolute().inset_0().child(ascii::field(f))))
+            .when(!marks_cells.is_empty(), |d| d.child(crate::wall::marks(crate::wall::Marks { cells: marks_cells.clone(), grid: wall_grid, ink: look::wall_ink(&it.duo), holes: holes_rc.clone() })))
             .child(v_flex().absolute().inset_0().p(px(pad)).gap(px(12. * s)).child(top).child(mid).child(bottom));
         div().id(("card", i)).absolute().left(px(g.x)).top(px(g.y)).w(px(w)).h(px(h)).cursor_pointer()
             .child(slab)
@@ -410,9 +441,10 @@ impl Mega {
 
     // ---- input ----
     fn nav_now(&self) -> f64 { self.epoch.elapsed().as_secs_f64() }
-    pub fn nav_go(&mut self, i: usize) { let now = self.nav_now(); let offs = self.nav.offs.clone(); self.nav.scroll.go(i, &offs, now, false); }
+    pub fn nav_go(&mut self, i: usize) { if self.wall.on { return; } let now = self.nav_now(); let offs = self.nav.offs.clone(); self.nav.scroll.go(i, &offs, now, false); }
     pub fn nav_step(&mut self, d: i32) { let now = self.nav_now(); let offs = self.nav.offs.clone(); self.nav.scroll.step(d, &offs, now); }
     pub fn nav_wheel(&mut self, ev: &ScrollWheelEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.wall.on { cx.stop_propagation(); return; }
         let now = self.nav_now();
         let offs = self.nav.offs.clone();
         match ev.delta {
@@ -429,6 +461,9 @@ impl Mega {
     pub fn nav_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.mem.panel.is_some() { return; }
         let k = ev.keystroke.key.as_str();
+        // drawing: Escape ends it (mega.js), and the column stays where it is
+        if self.wall.on { if k == "escape" { self.wall_off(); cx.stop_propagation(); cx.notify(); } return; }
+        if self.paint.open && k == "escape" { self.paint_close(cx); cx.stop_propagation(); return; }
         let m = &ev.keystroke.modifiers;
         if m.control || m.alt || m.platform { return; }
         let now = self.nav_now(); let offs = self.nav.offs.clone();
@@ -524,6 +559,25 @@ impl Mega {
                 if changed { cx.notify(); }
             });
         }).detach();
+    }
+}
+
+/// The wall a card carries (mega-wall.js `keyOf`): the community card's own, or a room's; nothing for the other cards.
+pub fn card_wall(it: &NavItem) -> Option<String> {
+    if it.key.starts_with("c:") { return Some(crate::wall::cw_key(&it.cid)); }
+    if !it.room.is_empty() && it.key == it.room && !it.locked { return Some(it.room.clone()); }
+    None
+}
+
+impl Mega {
+    /// What the colours panel is about when this card is the focused one.
+    pub fn card_target(&self, it: &NavItem) -> Option<crate::paint::Target> {
+        use crate::paint::{Kind, Target};
+        let (kind, id, gid) = if it.key.starts_with("c:") { (Kind::Community, it.cid.clone(), String::new()) }
+            else if it.key.starts_with("opt:") { (Kind::Options, it.key.clone(), String::new()) }
+            else if !it.room.is_empty() && it.key == it.room { (if it.voice { Kind::Voice } else { Kind::Text }, it.room.clone(), it.room.clone()) }
+            else { return None };
+        Some(Target { id, cid: it.cid.clone(), gid, kind, name: it.title.clone(), fx_auto: it.auto, duo: it.duo })
     }
 }
 

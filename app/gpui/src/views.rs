@@ -31,7 +31,17 @@ impl Mega {
     /// The page's `.mbar`: the mark (or the community's name) at the left, a back chip before it, chips at the right.
     pub(crate) fn top_bar(&mut self, title: String, back: Option<Level>, cx: &mut Context<Self>) -> impl IntoElement {
         let net = self.snap.as_ref().map(|s| s.net.clone()).unwrap_or_default();
-        let extra: Vec<AnyElement> = match self.level.clone() { Level::Server(cid) => self.community_buttons(&cid, cx), Level::Home => self.home_buttons(cx), _ => vec![] };
+        let mut extra: Vec<AnyElement> = vec![];
+        // the colours and draw chips belong to the focused card (the page's `[data-m="paint"]` and `[data-m="draw"]`)
+        if matches!(self.level, Level::Home | Level::Server(_)) {
+            if self.nav.focus_card.as_ref().is_some_and(|t| self.can_paint(t)) {
+                extra.push(chip("b-paint", "colours").on_click(cx.listener(|this, _, window, cx| this.paint_toggle(window, cx))).into_any_element());
+            }
+            if self.wall.key.as_ref().is_some_and(|k| self.wall_drawable(k)) {
+                extra.push(chip("b-draw", if self.wall.on { "drawing" } else { "draw" }).on_click(cx.listener(|this, _, window, cx| this.wall_toggle(window, cx))).into_any_element());
+            }
+        }
+        extra.extend(match self.level.clone() { Level::Server(cid) => self.community_buttons(&cid, cx), Level::Home => self.home_buttons(cx), _ => vec![] });
         h_flex().flex_none().w_full().px(px(16.)).py(px(12.)).gap(px(10.)).items_center()
             .when_some(back, |d, to| d.child(chip("back", "\u{2190} back").on_click(cx.listener(move |this, _, window, cx| this.go(to.clone(), window, cx)))))
             .child(div().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).max_w(px(560.)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
@@ -259,8 +269,11 @@ impl Render for Mega {
         self.holes.borrow_mut().clear();
         let base = div().id("root").size_full().bg(rgb(look::VOID)).text_color(look::paper()).font_family(look::F_UI).text_size(px(15.))
             // dragging the column's edge, and push-to-talk: the key never reaches the composer while that mode is on
-            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| { if this.call.resize.is_some() { if ev.pressed_button.is_none() { this.resize_end(window, cx); } else { this.resize_move(f32::from(ev.position.x), window, cx); } } }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| this.resize_end(window, cx)))
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
+                if this.paint.drag.is_some() { if ev.pressed_button.is_none() { this.paint_drag_end(cx); } else { this.paint_drag_to(ev.position, window, cx); } }
+                if this.wall.pen { if ev.pressed_button.is_none() { this.wall_pen_up(); } else { this.wall_pen(ev.position, false, window, cx); } }
+                if this.call.resize.is_some() { if ev.pressed_button.is_none() { this.resize_end(window, cx); } else { this.resize_move(f32::from(ev.position.x), window, cx); } } }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| { this.paint_drag_end(cx); this.wall_pen_up(); this.resize_end(window, cx) }))
             .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| { this.ptt_key_event(ev.keystroke.key.as_str(), true, cx); }))
             .capture_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| { this.ptt_key_event(ev.keystroke.key.as_str(), false, cx); }));
         match self.screen {

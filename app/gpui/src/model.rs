@@ -20,6 +20,16 @@ pub struct Community {
     pub direct: bool, pub peer: String, pub room: String,
     /// Admins see who is banned and the open invites; `locked` are the rooms (or the community's own card) whose wall the owner froze.
     pub banned: Vec<(String, String)>, pub invites: Vec<Invite>, pub locked: Vec<String>, pub removed_reason: String,
+    /// The owner's looks beyond colours (style document `looks`, by room id or the community's own id): card and chat patterns, backdrop strength, own backdrop colours.
+    pub looks: Vec<(String, Look)>,
+}
+
+/// One room's (or the community card's) look. Every part is optional: a missing part is automatic (mega.js `lookOf`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Look { pub card: Option<usize>, pub chat: Option<usize>, pub dim: Option<u32>, pub back: Option<(String, String)>, pub oracle_quiet: bool, pub oracle_draw: bool }
+
+impl Community {
+    pub fn look_of(&self, id: &str) -> Look { self.looks.iter().find(|(g, _)| g == id).map(|(_, l)| l.clone()).unwrap_or_default() }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -42,6 +52,12 @@ fn duo(v: &Value) -> Option<(String, String)> {
     let ok = |s: &str| s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit());
     (ok(&m) && ok(&h)).then(|| (m.to_lowercase(), h.to_lowercase()))
 }
+fn looks(v: &Value) -> Vec<(String, Look)> {
+    v.as_object().map(|m| m.iter().map(|(g, l)| (g.clone(), Look {
+        card: l["card"].as_u64().map(|n| n as usize), chat: l["chat"].as_u64().map(|n| n as usize), dim: l["dim"].as_u64().map(|n| n as u32),
+        back: duo(&l["back"]), oracle_quiet: bo(l, "oracle_quiet"), oracle_draw: bo(l, "oracle_draw"),
+    })).collect()).unwrap_or_default()
+}
 fn channels(v: &Value) -> Vec<Channel> {
     v["channels"].as_array().map(|l| l.iter().map(|c| Channel { gid: st(c, "gid"), name: st(c, "name"), kind: st(c, "kind"), joined: bo(c, "joined"), unread: un(c, "unread"), status: st(c, "status") }).collect()).unwrap_or_default()
 }
@@ -55,6 +71,7 @@ impl Snapshot {
             invites: c["invites"].as_array().map(|l| l.iter().map(|i| Invite { id: st(i, "id"), expires: i["expires"].as_f64().unwrap_or(0.), uses_left: i["uses_left"].as_u64(), mine: bo(i, "mine"), password: bo(i, "password") }).collect()).unwrap_or_default(),
             locked: c["style"]["locked"].as_array().map(|l| l.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
             removed_reason: st(c, "removed_reason"),
+            looks: looks(&c["style"]["looks"]),
             room_colours: c["style"]["rooms"].as_object().map(|m| m.iter().filter_map(|(g, d)| duo(d).map(|d| (g.clone(), d))).collect()).unwrap_or_default(),
             ..Default::default()
         }).collect()).unwrap_or_default();

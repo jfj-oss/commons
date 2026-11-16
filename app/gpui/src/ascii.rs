@@ -92,6 +92,8 @@ pub struct Field {
     /// Battery saver: the field holds still as a faint tone-on-tone emboss in the card's own colour (a light edge and a dark one)
     /// instead of its two colours.
     pub emboss: bool,
+    /// A drawing on the card (wall.rs): its grid, and the cells that hold a mark. The field's own ASCII leaves those cells alone.
+    pub avoid: Option<(crate::wall::Grid, std::rc::Rc<Vec<(u16, u8, u8)>>)>,
 }
 
 /// Boxes the backdrop must leave free, filled in during a frame's layout pass and read when the field is painted after it.
@@ -105,7 +107,7 @@ pub fn hole(h: &Holes) -> impl IntoElement {
 
 impl Field {
     pub fn card(fx: usize, seed: u32, duo: look::Duo, t: f64, small: bool) -> Field {
-        Field { fx, seed, duo, t, cell: if small { (8., 13.) } else { (10., 17.) }, font_px: if small { 11. } else { 14. }, gate: 0.2, hi_t: 0.9, alpha: 1., radius: 0., ripples: vec![], holes: vec![], live_holes: None, emboss: false }
+        Field { fx, seed, duo, t, cell: if small { (8., 13.) } else { (10., 17.) }, font_px: if small { 11. } else { 14. }, gate: 0.2, hi_t: 0.9, alpha: 1., radius: 0., ripples: vec![], holes: vec![], live_holes: None, emboss: false, avoid: None }
     }
 }
 
@@ -144,6 +146,8 @@ pub fn field(f: Field) -> impl IntoElement {
         if let Some(live) = &f.live_holes {
             holes.extend(live.borrow().iter().filter(|b| b.intersects(&bounds)).map(|b| Bounds::new(point(b.origin.x - bounds.origin.x - px(cw), b.origin.y - bounds.origin.y), size(b.size.width + px(2. * cw), b.size.height))));
         }
+        // where the drawing is: cells of this field that the pattern must leave alone (mega-wall.js `cardMask`)
+        let avoid = f.avoid.as_ref().map(|(g, m)| crate::wall::field_mask(g, m.iter().map(|c| c.0), cw, ch, cols, rows));
         let rad = f.radius;
         // cells outside the squircle's corners are left out (the card's own cut corners then only have to tidy the edge)
         let outside_corner = |x: f32, y: f32| -> bool { rad > 0. && !crate::squircle::contains(x, y, 0., 0., w, h, rad) };
@@ -152,6 +156,7 @@ pub fn field(f: Field) -> impl IntoElement {
                 for x in 0..cols {
                     let (px_x, px_y) = (x as f32 * cw, y as f32 * ch);
                     if outside_corner(px_x + cw / 2., px_y + ch / 2.) { continue; }
+                    if avoid.as_ref().is_some_and(|m| m[y * cols + x]) { continue; }
                     if holes.iter().any(|b| px_x + cw > f32::from(b.origin.x) && px_x < f32::from(b.origin.x + b.size.width) && px_y + ch > f32::from(b.origin.y) && px_y < f32::from(b.origin.y + b.size.height)) { continue; }
                     let (xf, yf) = (x as f64, y as f64);
                     let mut v = fx(f.fx, xf, yf, f.t, cols as f64, rows as f64, &col);

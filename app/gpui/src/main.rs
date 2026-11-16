@@ -31,6 +31,8 @@ mod updateui;
 mod presence;
 mod views;
 mod look;
+mod paint;
+mod wall;
 #[cfg(feature = "calls")]
 mod videobench;
 
