@@ -270,10 +270,10 @@ try {
   const nBefore = lines(mockLog).length;
   await rpc(A.port, 'send_text', { gid: textGid, text: 'hello Nat, are you there?' });
   const note = await soft(until(() => { const l = lines(mockLog); return l.length > nBefore ? JSON.parse(l[l.length - 1]) : null; }, 20000, 'a notification for the message', 300));
-  check('G1 a new message makes a desktop notification through org.freedesktop.Notifications', !note.timeout && note.category === 'im.received' && /Alice/.test(note.body), note);
-  check('G2 it offers inline reply (the mock lists the capability) and Open', !note.timeout && note.actions.includes('inline-reply') && note.actions.includes('default'), note.actions);
-  check('G3 the text stays out of the note unless the person allowed it', !note.timeout && !/are you there/.test(note.body + note.summary), note.body);
-  const f4 = await shot('notify-window'); if (f4 && !note.timeout) spawnSync('python3', [path.join(root, 'tools/lib/notifshot.py'), mockLog, f4, path.join(shots, 'notification-mock.png'), 'on my way']);
+  check('G1 a new message makes a desktop notification through org.freedesktop.Notifications', typeof note.timeout !== 'string' && note.category === 'im.received' && /Alice/.test(note.body), note);
+  check('G2 it offers inline reply (the mock lists the capability) and Open', typeof note.timeout !== 'string' && note.actions.includes('inline-reply') && note.actions.includes('default'), note.actions);
+  check('G3 the text stays out of the note unless the person allowed it', typeof note.timeout !== 'string' && !/are you there/.test(note.body + note.summary), note.body);
+  const f4 = await shot('notify-window'); if (f4 && typeof note.timeout !== 'string') spawnSync('python3', [path.join(root, 'tools/lib/notifshot.py'), mockLog, f4, path.join(shots, 'notification-mock.png'), 'on my way']);
   mockSay(`reply ${note.id} on my way`);
   const gotReply = await soft(until(async () => { const m = await rpc(A.port, 'messages', { gid: textGid, limit: 20, around: '' }); return (m.messages || []).some(x => x.text === 'on my way' && !x.mine) ? true : null; }, 20000, 'the reply reaches the room', 400));
   check('G4 a quick reply typed into the note is sent into that room through the core', gotReply === true);
@@ -283,7 +283,8 @@ try {
   mockSay(`action ${note.id} default`);
   const opened = await soft(until(async () => { const d = await W.dump(); return d.gid === textGid && d.level === 'Chat' ? d : null; }, 10000, 'Open opens the room'));
   check('G5 clicking Open brings the window forward on the room', !opened.timeout, opened.timeout || opened.gid);
-  // modes
+  // modes (the window goes back to the home screen: a room that is open is read at once and never counts as unread)
+  await W.cmd('home'); await sleep(1500);
   await W.cmd('core', { method: 'notify_set', args: { mode: 'off' } });
   const n2 = lines(mockLog).length;
   await rpc(A.port, 'send_text', { gid: textGid, text: 'nobody hears this' });
@@ -301,7 +302,7 @@ try {
   const n3 = lines(mockLog).length;
   await joinWeb(A, rooms.porch, 'porch'); await web(A, `window.__megaRing.ringAll()`);
   const ringNote = await soft(until(() => { const l = lines(mockLog); return l.length > n3 ? l.slice(n3).map(x => JSON.parse(x)).find(x => /calling/.test(x.summary)) : null; }, 15000, 'ring notification', 300));
-  check('G9 a ring while the window is not looked at also notifies, with only Open', !ringNote.timeout && !ringNote.actions.includes('inline-reply'), ringNote);
+  check('G9 a ring while the window is not looked at also notifies, with only Open', typeof ringNote.timeout !== 'string' && !ringNote.actions.includes('inline-reply'), ringNote);
   await web(A, `window.__megaRing.ringAll()`); await leaveWeb(A);
 
   await W.cmd('quit').catch(() => { });
