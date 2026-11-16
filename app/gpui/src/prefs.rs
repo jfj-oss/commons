@@ -9,7 +9,7 @@ pub enum Saver { Auto, On, Off }
 pub enum ChatFont { Bellefair, Raster }
 
 #[derive(Clone, Debug)]
-pub struct Prefs { pub saver: Saver, pub chat_font: ChatFont, pub presence: bool, path: PathBuf }
+pub struct Prefs { pub saver: Saver, pub chat_font: ChatFont, pub presence: bool, /** the cameras-and-screens column's width on this device, 0 = the default */ pub deck_w: f32, path: PathBuf }
 
 impl Prefs {
     pub fn load(dir: &Path) -> Prefs {
@@ -19,6 +19,7 @@ impl Prefs {
             saver: match v["saver"].as_str() { Some("on") => Saver::On, Some("off") => Saver::Off, _ => Saver::Auto },
             chat_font: if v["chat_font"].as_str() == Some("raster") { ChatFont::Raster } else { ChatFont::Bellefair },
             presence: v["presence"].as_bool() != Some(false),
+            deck_w: v["deck_w"].as_f64().filter(|w| *w > 0. && *w < 20000.).unwrap_or(0.) as f32,
             path,
         }
     }
@@ -27,6 +28,7 @@ impl Prefs {
             "saver": match self.saver { Saver::Auto => "auto", Saver::On => "on", Saver::Off => "off" },
             "chat_font": match self.chat_font { ChatFont::Bellefair => "bellefair", ChatFont::Raster => "raster" },
             "presence": self.presence,
+            "deck_w": self.deck_w,
         });
         // the folder exists once there is an account; before that there is nothing worth remembering
         if self.path.parent().is_some_and(|d| d.is_dir()) { let _ = std::fs::write(&self.path, serde_json::to_vec_pretty(&v).unwrap_or_default()); }

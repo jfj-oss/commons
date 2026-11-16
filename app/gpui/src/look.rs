@@ -51,6 +51,10 @@ pub fn h(s: &str) -> u32 { s.chars().fold(7u32, |a, c| { let mut b = [0u16; 2]; 
 
 fn parse_hex(s: &str) -> Option<u32> { u32::from_str_radix(s.strip_prefix('#')?, 16).ok() }
 
+/// Bold palettes an owner can pick for a room (design idea #6), as (name, colour, highlight).
+pub const PRESETS: [(&str, u32, u32); 3] = [("violet and orange", 0x6a35ff, 0xff8c1a), ("cobalt and white", 0x1b33ff, 0xffffff), ("lavender and green", 0xc9b8ff, 0x1f9d5c)];
+pub fn hex(c: u32) -> String { format!("#{c:06x}") }
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Duo { pub main: u32, pub hi: u32 }
 

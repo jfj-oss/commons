@@ -89,6 +89,9 @@ pub struct Field {
     pub holes: Vec<Bounds<Pixels>>,
     /// The same, in window coordinates, gathered while this frame was laid out: the words of a chat (see `hole`).
     pub live_holes: Option<Holes>,
+    /// Battery saver: the field holds still as a faint tone-on-tone emboss in the card's own colour (a light edge and a dark one)
+    /// instead of its two colours.
+    pub emboss: bool,
 }
 
 /// Boxes the backdrop must leave free, filled in during a frame's layout pass and read when the field is painted after it.
@@ -102,7 +105,7 @@ pub fn hole(h: &Holes) -> impl IntoElement {
 
 impl Field {
     pub fn card(fx: usize, seed: u32, duo: look::Duo, t: f64, small: bool) -> Field {
-        Field { fx, seed, duo, t, cell: if small { (8., 13.) } else { (10., 17.) }, font_px: if small { 11. } else { 14. }, gate: 0.2, hi_t: 0.9, alpha: 1., radius: 0., ripples: vec![], holes: vec![], live_holes: None }
+        Field { fx, seed, duo, t, cell: if small { (8., 13.) } else { (10., 17.) }, font_px: if small { 11. } else { 14. }, gate: 0.2, hi_t: 0.9, alpha: 1., radius: 0., ripples: vec![], holes: vec![], live_holes: None, emboss: false }
     }
 }
 
@@ -163,6 +166,17 @@ pub fn field(f: Field) -> impl IntoElement {
                     }
                     if v < f.gate { continue; }
                     let Some(g) = r.glyphs[((v * 10.) as usize).min(9)] else { continue };
+                    if f.emboss {
+                        // tone on tone: the same glyph twice, a hair apart, a little lighter and a little darker than the card
+                        let strength = 0.05 + 0.10 * v as f32;
+                        let mut dark: Hsla = rgb(look::mix(f.duo.main, 0x000000, 0.22 + strength)).into();
+                        let mut light: Hsla = rgb(look::mix(f.duo.main, 0xffffff, 0.10 + strength)).into();
+                        dark.a = 0.5; light.a = 0.5;
+                        let p = point(bounds.origin.x + px(px_x + ox), bounds.origin.y + px(px_y + oy));
+                        let _ = window.paint_glyph(point(p.x - px(0.7), p.y - px(0.7)), r.font, g, px(f.font_px), dark);
+                        let _ = window.paint_glyph(point(p.x + px(0.7), p.y + px(0.7)), r.font, g, px(f.font_px), light);
+                        continue;
+                    }
                     let mut color = tints[if v < 0.64 { 0 } else if v < f.hi_t { 1 } else { 2 }];
                     if lit > 0.2 { color.a = (color.a * 1.8).min(1.); }
                     let _ = window.paint_glyph(point(bounds.origin.x + px(px_x + ox), bounds.origin.y + px(px_y + oy)), r.font, g, px(f.font_px), color);

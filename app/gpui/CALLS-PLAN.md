@@ -57,6 +57,27 @@ Corrections to this plan found on the way:
 - `parec` does not end when the app closes its stream (the sink's monitor goes on, silent), so the engine looks the
   stream up every 2 s.
 
+## Progress (2026-11-16, branch `gpui-ui`): the UI for calls, and four design ideas
+
+The window side of step 3 and step 4, in `src/callui.rs`, `deck.rs`, `video.rs`, `popout.rs`; the looks in `backdrop.rs`, `linen.rs`,
+`ascii.rs` and `views.rs`.
+
+- Call bar (join, leave, faces with a speaking ring, mute, deafen, hold-to-talk), call settings (devices, echo, noise, gain,
+  push-to-talk), a person's menu with a volume slider. Everything is the engine's `Command`s and `Snapshot`; the window keeps no
+  call state of its own. Push-to-talk key is the backtick (the web's default); changing it is not built.
+- Cameras-and-screens column as in 0.3.11 (min 200 px, leaves the chat 420, double-click resets, arrows 16 px / shift 64, width per
+  device in `gpui-prefs.json`), tiles reorder by drag and the order travels on the live channel with the web's `deck.m` / `deck.q`.
+  Pictures are `RenderImage`s through the sprite atlas, as in the render bench. **The engine does not yet hand the UI video
+  frames**: it ignores remote video tracks. `video::Frames::push(track_sid, image)` is the whole contract for whoever adds that;
+  `MEGA_GPUI_FAKE_TILES=<n>` draws synthetic tiles meanwhile.
+- Pop-out windows: the call, one tile, and a small mini window (faces, speaking ring, mute). The mini window is a Floating window:
+  above its parent on Wayland, not above every window (that needs a layer-shell or a compositor rule).
+- Design: room backdrop #1 (speckle, bands from new activity, idle-free), #3 (saver emboss and card linen), #6 (spines, three
+  bold presets for owners), #8 (direct conversations). The core's `snapshot` reports no unread for direct conversations (it writes
+  0), so the star marks stay dark until it does; the `dmunread=N` check step shows them.
+- Checks: `app/gpui/bench/ui-world.mjs` builds a throwaway world (relay, LiveKit, Alice, Bob, Carol, two headless native engines);
+  `MEGA_GPUI_UI_STEPS="join;wait=6000;settings;..."` drives the window without a pointer; `examples/fakekeys` does pointer and keys.
+
 ## Summary
 
 - **Go.** A Rust LiveKit participant and the real `call.js` in headless Chromium were put in one local LiveKit room

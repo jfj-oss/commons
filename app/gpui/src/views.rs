@@ -1,5 +1,5 @@
 //! What is on screen: the community cards, a community's room cards, a room beside its colour dots, and settings.
-use crate::app::{clock, Level, Mega, Screen, HEAT_FLOOR};
+use crate::app::{clock, Level, Mega, Screen};
 use crate::ascii::{self, hole, Field, Holes};
 use crate::look::{self, Duo};
 use crate::model::Msg;
@@ -15,7 +15,7 @@ use serde_json::json;
 
 /// Corner of a card (mega.css --m-sq). The web UI uses a true squircle where the browser has one; elsewhere this radius.
 const SQ: f32 = 46.;
-const RAIL: f32 = 56.;
+const RAIL: f32 = 72.;
 
 /// What a card shows.
 struct Card { key: String, cid: String, room: String, title: String, sub: String, unread: u64, duo: Duo, fx: usize, big: bool, dim: bool, people: Vec<String>, here: Vec<String> }
@@ -38,6 +38,8 @@ impl Mega {
         let title_w = (c.title.chars().count() as f32 * title_px * 0.5 + 24.).min(900.);
         let mut f = Field::card(c.fx, look::h(&c.key), c.duo, if self.still() { 11.7 } else { self.clock + (look::h(&c.key) % 40) as f64 }, !c.big);
         f.radius = SQ;
+        f.emboss = self.still();
+        if f.emboss { f.gate = 0.1; }
         f.hi_t = 0.9 - 0.22 * (c.unread.min(12) as f64 / 12.);
         f.holes = vec![
             Bounds::new(point(px(18.), px(h - 30. - title_lh - 18.)), size(px(title_w), px(title_lh + 44.))),
@@ -49,6 +51,7 @@ impl Mega {
         let more = c.people.len().saturating_sub(shown.len());
         div().id(SharedString::from(format!("card-{key}"))).relative().w_full().h(px(h)).flex_none().rounded(px(SQ)).bg(c.duo.field()).overflow_hidden().cursor_pointer()
             .when(c.dim, |d| d.opacity(0.55))
+            .child(div().absolute().inset_0().child(crate::linen::view(SQ)))
             .child(div().absolute().inset_0().child(ascii::field(f)))
             .child(h_flex().absolute().top(px(14.)).left(px(24.)).right(px(24.)).gap_2().items_center().font_family(look::F_NAME).text_size(px(12.)).text_color(ink)
                 .child(div().child(c.sub.clone()))
@@ -96,11 +99,17 @@ impl Mega {
             col = col.child(div().mt_2().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child("people"));
             for d in &snap.direct {
                 let (cid, room, on) = (d.id.clone(), d.room.clone(), d.channels.iter().any(|ch| ch.gid == d.room && ch.joined));
-                col = col.child(h_flex().id(SharedString::from(format!("dm-{}", d.id))).flex_none().gap_3().px_3().py_2().rounded(px(18.)).bg(rgb(look::SLIP)).border_1().border_color(look::line()).items_center().cursor_pointer()
+                let unread = d.channels.iter().map(|ch| ch.unread).sum::<u64>().max(d.unread).max(self.fake_dm_unread as u64);
+                let duo = Duo::of(&d.room, d.room_colours.iter().find(|(g, _)| g == &d.room).map(|(_, x)| x));
+                let cache = self.dm_caches.entry(d.id.clone()).or_default().clone();
+                let stars: String = std::iter::repeat("✦").take(unread.min(4) as usize).collect::<Vec<_>>().join(" ");
+                col = col.child(h_flex().id(SharedString::from(format!("dm-{}", d.id))).relative().overflow_hidden().flex_none().gap_3().px_3().py_2().rounded(px(18.)).bg(rgb(look::SLIP)).border_1().border_color(look::line()).items_center().cursor_pointer()
                     .when(!on, |x| x.opacity(0.5))
-                    .child(avatar(&d.name))
-                    .child(div().flex_1().font_family(look::F_SHARP).text_size(px(24.)).line_height(px(24.)).child(d.name.clone()))
-                    .child(div().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(if on { "" } else { "waiting for them" }))
+                    .child(div().absolute().inset_0().child(crate::backdrop::view(cache, look::h(&d.room), duo, vec![], 0., true, true, 18.)))
+                    .child(div().relative().child(avatar(&d.name)))
+                    .child(div().relative().flex_1().font_family(look::F_SHARP).text_size(px(24.)).line_height(px(24.)).child(d.name.clone()))
+                    .when(unread > 0, |x| x.child(div().relative().font_family(look::F_NAME).text_size(px(13.)).text_color(look::paper()).child(stars)))
+                    .child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(if on { "" } else { "waiting for them" }))
                     .on_click(cx.listener(move |this, _, window, cx| this.open_room(cid.clone(), room.clone(), window, cx))));
             }
         }
@@ -130,34 +139,59 @@ impl Mega {
         v_flex().size_full().child(self.top_bar(c.name.clone(), Some(Level::Home), cx)).child(grid)
     }
 
-    /// The colour dots beside a chat: home, the community's cards, then one dot per room (the open one is a pill).
+    /// The rail beside a chat: home, the community's cards, then one "spine" per room, like the spines of books on a shelf:
+    /// the room's name set upright in big rounded type on its own colour. The open room's spine is wider and carries a ring.
     fn render_rail(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut col = v_flex().id("rail").w(px(RAIL)).h_full().flex_none().items_center().pt_5().gap_3().bg(rgb(look::VOID));
-        col = col.child(div().id("rail-home").size(px(20.)).rounded(px(6.)).bg(look::paper()).cursor_pointer().on_click(cx.listener(|this, _, window, cx| this.go(Level::Home, window, cx))));
+        let mut col = v_flex().id("rail").w(px(RAIL)).h_full().flex_none().items_center().pt_5().pb_3().gap_3().bg(rgb(look::VOID)).overflow_y_scroll();
+        col = col.child(div().id("rail-home").flex_none().size(px(20.)).rounded(px(6.)).bg(look::paper()).cursor_pointer().on_click(cx.listener(|this, _, window, cx| this.go(Level::Home, window, cx))));
         let Some(c) = self.cid.as_ref().and_then(|cid| self.snap.as_ref()?.community(cid)).cloned() else { return col };
         if !c.direct {
             let (cid, duo) = (c.id.clone(), Duo::of(&c.id, c.colours.as_ref()));
-            col = col.child(div().id("rail-server").size(px(16.)).rounded(px(5.)).bg(duo.dot()).cursor_pointer().on_click(cx.listener(move |this, _, window, cx| this.go(Level::Server(cid.clone()), window, cx))));
+            col = col.child(div().id("rail-server").flex_none().size(px(16.)).rounded(px(5.)).bg(duo.dot()).cursor_pointer().on_click(cx.listener(move |this, _, window, cx| this.go(Level::Server(cid.clone()), window, cx))));
         }
-        col = col.child(div().h(px(18.)));
+        col = col.child(div().flex_none().h(px(6.)));
         for ch in c.channels.iter().filter(|ch| ch.joined) {
             let (cid, gid) = (c.id.clone(), ch.gid.clone());
-            let dot = Duo::of(&ch.gid, c.room_colours.iter().find(|(g, _)| g == &ch.gid).map(|(_, d)| d)).dot();
+            let duo = Duo::of(&ch.gid, c.room_colours.iter().find(|(g, _)| g == &ch.gid).map(|(_, d)| d));
             let on = self.gid.as_deref() == Some(ch.gid.as_str());
-            // unread: a ring in the room's colour around a dark centre; a voice room: a hollow dot
-            let ring = ch.unread > 0 && !on;
-            col = col.child(div().id(SharedString::from(format!("dot-{}", ch.gid))).w(px(14.)).h(px(if on { 38. } else { 14. })).rounded_full().cursor_pointer()
-                .when(!ring && ch.kind != "voice", |d| d.bg(dot))
-                .when(ring || ch.kind == "voice", |d| d.border_color(dot).when(ring, |d| d.border_4()).when(!ring, |d| d.border_2()))
+            let name: Vec<String> = ch.name.chars().take(14).map(|c| c.to_string()).collect();
+            let (w, ink) = (if on { 56. } else { 46. }, duo.ink());
+            let hgt = (name.len() as f32 * 19. + 44.).max(84.);
+            col = col.child(div().id(SharedString::from(format!("dot-{}", ch.gid))).relative().flex_none().w(px(w)).h(px(hgt)).rounded(px(if on { 22. } else { 18. })).bg(duo.field()).cursor_pointer()
+                .border_2().border_color(if on { look::paper() } else { hsla(0., 0., 0., 0.) })
+                .when(!on, |d| d.opacity(0.9))
+                // unread: a dot in the room's highlight colour on the spine's head
+                .child(div().absolute().top(px(8.)).left_0().right_0().flex().justify_center()
+                    .child(div().size(px(10.)).rounded_full().when(ch.unread > 0 && !on, |d| d.bg(rgb(duo.hi)).border_1().border_color(ink)).when(ch.kind == "voice" && !(ch.unread > 0 && !on), |d| d.border_2().border_color(ink))))
+                .child(v_flex().absolute().top(px(26.)).left_0().right_0().items_center().font_family(look::F_MSG).text_size(px(18.)).line_height(px(19.)).text_color(ink)
+                    .children(name.into_iter().map(|c| div().child(c))))
                 .on_click(cx.listener(move |this, _, window, cx| this.open_room(cid.clone(), gid.clone(), window, cx))));
         }
         col
     }
 
+    /// An owner's choice of colours for the open room: three bold presets, and the default back.
+    fn colour_picker(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut row = h_flex().relative().gap_2().items_center().pt_1();
+        if self.colours_open {
+            for (i, (_name, main, hi)) in look::PRESETS.iter().enumerate() {
+                let (m, h) = (*main, *hi);
+                row = row.child(div().id(SharedString::from(format!("preset-{i}"))).size(px(30.)).rounded_full().cursor_pointer().overflow_hidden().border_1().border_color(look::line())
+                    .child(div().size_full().bg(linear_gradient(135., linear_color_stop(rgb(m), 0.5), linear_color_stop(rgb(h), 0.5))))
+                    .on_click(cx.listener(move |this, _, window, cx| this.set_room_colours(Some((m, h)), window, cx))));
+            }
+            row = row.child(div().id("preset-default").px_2().rounded_full().border_1().border_color(look::line()).font_family(look::F_NAME).text_size(px(12.)).cursor_pointer().child("default")
+                .on_click(cx.listener(|this, _, window, cx| this.set_room_colours(None, window, cx))));
+        }
+        row.child(div().id("preset-open").px_2().py_0p5().rounded_full().border_1().border_color(look::line()).font_family(look::F_NAME).text_size(px(12.)).cursor_pointer().child("colours")
+            .on_click(cx.listener(|this, _, _, cx| { this.colours_open = !this.colours_open; cx.notify(); })))
+    }
+
     fn render_msg(&mut self, ix: usize) -> AnyElement {
         let Some(m) = self.win.msgs.get(ix) else { return div().into_any_element() };
         let prev = ix.checked_sub(1).and_then(|i| self.win.msgs.get(i));
-        row(m, prev, self.chat_font(), &self.holes)
+        let star = self.dm_marks.0 == self.gid.clone().unwrap_or_default() && self.dm_marks.1 > 0 && ix + self.dm_marks.1 >= self.win.msgs.len() && !m.mine;
+        row(m, prev, self.chat_font(), &self.holes, star)
     }
 
     fn render_chat(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -165,17 +199,21 @@ impl Mega {
         let found = self.channel(&gid).map(|(c, ch)| (if c.direct { c.name.clone() } else { ch.name.clone() }, if c.direct { "just the two of you".to_string() } else { format!("{} · {} people", c.name, c.members) }));
         let Some((title, sub)) = found else { return v_flex().flex_1().h_full().items_center().justify_center().text_color(look::mute()).child("This room is gone.").into_any_element() };
         let duo = self.room_duo(&gid);
+        let is_dm = self.channel(&gid).is_some_and(|(c, _)| c.direct);
+        let owner = self.channel(&gid).is_some_and(|(c, _)| !c.direct && (c.role == "owner" || c.role == "admin"));
         let typing = match self.win.typing.len() { 0 => String::new(), 1 => format!("{} is writing…", self.win.typing[0]), n => format!("{n} people are writing…") };
         let (font, size, lh) = self.chat_font();
-        // The room's dim backdrop: its pattern in its two colours, warmer after activity, with rings travelling through it.
-        let backdrop = Field { fx: ascii::auto_fx(&title), seed: look::h(&gid), duo, t: self.bd_t, cell: (10., 17.), font_px: 14., gate: 0.46 - 0.26 * self.heat.max(HEAT_FLOOR), hi_t: 0.86, alpha: 0.42, radius: 0.,
-            ripples: if self.still() { vec![] } else { self.ripples.clone() }, holes: vec![], live_holes: Some(self.holes.clone()) };
+        // The room's backdrop: a two-colour speckle that organises into bands around new activity (backdrop.rs).
+        let backdrop = crate::backdrop::view(self.bd_cache.clone(), look::h(&gid), duo, self.waves.clone(), self.bd_clock, self.still(), is_dm, 0.);
         let holes = self.holes.clone();
         v_flex().flex_1().h_full().min_w_0().relative().bg(rgb(0x14111a))
-            .child(div().absolute().inset_0().child(ascii::field(backdrop)))
-            .child(v_flex().flex_none().items_start().px_5().pt_3().pb_1()
-                .child(div().relative().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).child(title.clone()).child(hole(&holes)))
-                .child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(sub).child(hole(&holes))))
+            .child(div().absolute().inset_0().child(backdrop))
+            .child(h_flex().flex_none().items_start().px_5().pt_3().pb_1()
+                .child(v_flex().items_start()
+                    .child(div().relative().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).child(title.clone()).child(hole(&holes)))
+                    .child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(sub).child(hole(&holes))))
+                .child(div().flex_1())
+                .when(owner, |d| d.child(self.colour_picker(cx))))
             .child(div().flex_1().min_h_0().relative()
                 .child(list(self.list.clone(), cx.processor(|this, ix: usize, _, _| this.render_msg(ix))).size_full())
                 .child(div().absolute().top_0().right_0().bottom_0().w(px(12.)).child(Scrollbar::vertical(&self.list))))
@@ -258,7 +296,7 @@ impl Mega {
 }
 
 /// One message. `prev` decides whether the face and name are shown again (same person within five minutes: no).
-pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f32), holes: &Holes) -> AnyElement {
+pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f32), holes: &Holes, star: bool) -> AnyElement {
     if m.kind == "member" || m.kind == "notice" {
         return h_flex().w_full().pl(px(68.)).pr_4().py_1().child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(m.text.clone()).child(hole(holes))).into_any_element();
     }
@@ -286,7 +324,8 @@ pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f3
     if !m.read_by.is_empty() { foot = foot.child(div().text_color(look::mute()).text_size(px(11.)).child(format!("read by {}", m.read_by.join(", ")))); }
     let has_foot = !m.reactions.is_empty() || m.edited || !m.read_by.is_empty() || (m.mine && (m.status == "pending" || m.status == "failed"));
     if has_foot { foot = foot.child(hole(holes)); }
-    h_flex().w_full().items_start().gap_3().px_5().pb_1().when(head, |d| d.pt_3())
+    h_flex().relative().w_full().items_start().gap_3().px_5().pb_1().when(head, |d| d.pt_3())
+        .when(star, |d| d.child(div().absolute().left(px(5.)).top(px(if head { 22. } else { 8. })).text_size(px(13.)).text_color(look::paper()).opacity(0.8).child("✦")))
         .child(if head { avatar(&m.name).mt_1() } else { div().w(px(36.)).flex_none() })
         .child(col.child(foot)).into_any_element()
 }
@@ -296,16 +335,29 @@ impl Render for Mega {
         if !std::mem::replace(&mut self.first_frame_done, true) { window.on_next_frame(|_, _| crate::bench::mark("first_frame")); }
         crate::bench::drive(self, window, cx);
         self.holes.borrow_mut().clear();
-        let base = div().size_full().bg(rgb(look::VOID)).text_color(look::paper()).font_family(look::F_UI).text_size(px(15.));
+        let base = div().id("root").size_full().bg(rgb(look::VOID)).text_color(look::paper()).font_family(look::F_UI).text_size(px(15.))
+            // dragging the column's edge, and push-to-talk: the key never reaches the composer while that mode is on
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| { if this.call.resize.is_some() { if ev.pressed_button.is_none() { this.resize_end(window, cx); } else { this.resize_move(f32::from(ev.position.x), window, cx); } } }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| this.resize_end(window, cx)))
+            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| { this.ptt_key_event(ev.keystroke.key.as_str(), true, cx); }))
+            .capture_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| { this.ptt_key_event(ev.keystroke.key.as_str(), false, cx); }));
         match self.screen {
             Screen::Starting => base,
             Screen::Welcome | Screen::Locked => base.child(self.render_sign_in(cx)),
-            Screen::Main => match self.level.clone() {
-                Level::Home => base.child(self.render_home(cx)),
-                Level::Server(cid) => base.child(self.render_server(&cid, cx)),
-                Level::Chat => base.child(h_flex().size_full().items_start().child(self.render_rail(cx)).child(self.render_chat(cx))),
-                Level::Settings => base.child(self.render_settings(cx)),
-            },
+            Screen::Main => {
+                let body: AnyElement = match self.level.clone() {
+                    Level::Home => self.render_home(cx).into_any_element(),
+                    Level::Server(cid) => self.render_server(&cid, cx).into_any_element(),
+                    Level::Chat => {
+                        let deck = self.deck_column(window, cx);
+                        h_flex().size_full().items_start().child(self.render_rail(cx)).children(deck).child(self.render_chat(cx)).into_any_element()
+                    }
+                    Level::Settings => self.render_settings(cx).into_any_element(),
+                };
+                let bar = self.call_bar(cx);
+                let pop = self.call_popover(cx);
+                base.child(v_flex().size_full().child(div().flex_1().min_h_0().w_full().child(body)).children(bar)).children(pop)
+            }
         }
     }
 }

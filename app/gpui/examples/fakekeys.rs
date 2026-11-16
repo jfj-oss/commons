@@ -23,7 +23,7 @@ fn code(k: &str) -> Option<(u32, bool)> {
     Some(match k {
         "enter" => (28, false), "space" | " " => (57, false), "backspace" => (14, false), "tab" => (15, false), "escape" => (1, false),
         "shift" => (42, false), "ctrl" => (29, false), "alt" => (56, false), "up" => (103, false), "down" => (108, false), "pageup" => (104, false), "pagedown" => (109, false),
-        "end" => (107, false), "home" => (102, false), "-" => (12, false), "." => (52, false), "," => (51, false), "!" => (2, true), "?" => (53, true),
+        "end" => (107, false), "left" => (105, false), "right" => (106, false), "`" => (41, false), "home" => (102, false), "-" => (12, false), "." => (52, false), "," => (51, false), "!" => (2, true), "?" => (53, true),
         _ => {
             let c = k.chars().next()?;
             let lower = c.to_ascii_lowercase();
@@ -35,7 +35,7 @@ fn code(k: &str) -> Option<(u32, bool)> {
 
 fn main() {
     let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
-    assert!(display == "wayland-megatest", "fakekeys only talks to the private test compositor (WAYLAND_DISPLAY=wayland-megatest), not {display:?}");
+    assert!(display == "wayland-megatest" || display == "wayland-uishot", "fakekeys only talks to a private test compositor (WAYLAND_DISPLAY=wayland-megatest or wayland-uishot), not {display:?}");
     let conn = Connection::connect_to_env().expect("compositor");
     let mut q = conn.new_event_queue::<S>();
     let qh = q.handle();
@@ -61,6 +61,11 @@ fn main() {
                 flush(&mut q, &mut s); ms(30);
             }
             "move" => { let (x, y) = arg.split_once(',').unwrap(); f.pointer_motion_absolute(x.parse().unwrap(), y.parse().unwrap()); flush(&mut q, &mut s); ms(30); }
+            "dblclick" => { for _ in 0..2 { f.button(0x110, 1); f.button(0x110, 0); flush(&mut q, &mut s); ms(60); } }
+            "mousedown" => { f.button(0x110, 1); flush(&mut q, &mut s); ms(60); }
+            "mouseup" => { f.button(0x110, 0); flush(&mut q, &mut s); ms(60); }
+            "keydown" => { f.keyboard_key(code(arg).unwrap_or_else(|| panic!("no key {arg}")).0, 1); flush(&mut q, &mut s); ms(30); }
+            "keyup" => { f.keyboard_key(code(arg).unwrap_or_else(|| panic!("no key {arg}")).0, 0); flush(&mut q, &mut s); ms(30); }
             "click" => { f.button(0x110, 1); f.button(0x110, 0); flush(&mut q, &mut s); ms(60); }
             // wheel:<value>x<count>@<interval-ms>: vertical scroll, negative is up
             "wheel" => {

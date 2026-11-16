@@ -41,11 +41,11 @@ pub struct Mega {
     pub pres: crate::presence::Presence,
     /// The cards' clock and the open room's backdrop (ascii.rs).
     pub clock: f64,
-    pub bd_t: f64,
-    pub heat: f64,
-    pub ripples: Vec<crate::ascii::Ripple>,
+    /// The open room's backdrop (backdrop.rs): the waves of new activity, and its own clock, which only runs while one does.
+    pub waves: Vec<crate::backdrop::Wave>,
+    pub bd_clock: f64,
+    pub bd_cache: crate::backdrop::Shared,
     pub holes: crate::ascii::Holes,
-    next_ripple: f64,
     last_anim: Instant,
     pub notify_settings: Value,
     pub set_name: Entity<InputState>,
@@ -59,6 +59,15 @@ pub struct Mega {
     again: bool,
     pub first_frame_done: bool,
     pub auto: crate::bench::Auto,
+    pub call: crate::callui::CallUi,
+    /// The owner's colour presets are showing in the open room's header.
+    pub colours_open: bool,
+    /// Checks only (`dmunread=N` step): pretend this many unread messages in every direct conversation, for the core reports none yet.
+    pub fake_dm_unread: usize,
+    /// A direct conversation's unread messages when it was opened: the last few rows carry a small star until it is left.
+    pub dm_marks: (String, usize),
+    /// A backdrop picture per direct-conversation row on the home screen.
+    pub dm_caches: std::collections::HashMap<String, crate::backdrop::Shared>,
     _tasks: Vec<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -82,8 +91,11 @@ impl Mega {
             cx.subscribe_in(&pass, window, |this: &mut Self, _, ev: &InputEvent, window, cx| { if let InputEvent::PressEnter { .. } = ev { this.submit_sign_in(window, cx); } }),
         ];
         subs.push(cx.observe_window_activation(window, |this, window, cx| this.beat(window, cx)));
+        let prefs = Prefs::load(&core.dir);
+        let call = crate::callui::CallUi::new(prefs.deck_w, window, cx);
         let mut this = Mega {
-            level: Level::Home, prefs: Prefs::load(&core.dir), on_battery: false, pres: Default::default(), clock: 0., bd_t: 0., heat: HEAT_FLOOR, ripples: vec![], holes: Default::default(), next_ripple: 8., last_anim: Instant::now(), notify_settings: Value::Null, set_name,
+            call, colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), dm_caches: Default::default(),
+            level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., waves: vec![], bd_clock: 0., bd_cache: Default::default(), holes: Default::default(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
             list: ListState::new(0, ListAlignment::Bottom, px(600.)), composer, typing_sent: None, ticking: false, again: false, first_frame_done: false,
@@ -101,7 +113,7 @@ impl Mega {
         }));
         this._tasks.push(cx.spawn_in(window, async move |this, cx| loop {
             cx.background_executor().timer(Duration::from_millis(700)).await;
-            if this.update_in(cx, |this, window, cx| this.presence_tick(window, cx)).is_err() { break; }
+            if this.update_in(cx, |this, window, cx| { this.presence_tick(window, cx); this.call_tick(window, cx); }).is_err() { break; }
         }));
         // The fields move at 20 frames a second on the cards and 10 behind a chat (25 while a ripple runs), as in mega.js;
         // not at all with the battery saver on, or while the window is not the active one.
@@ -131,29 +143,24 @@ impl Mega {
         match self.level {
             Level::Home | Level::Server(_) => { if dt < 0.05 { return; } self.clock += dt.min(0.1); }
             Level::Chat => {
-                if dt < if self.ripples.is_empty() { 0.1 } else { 0.04 } { return; }
+                // the backdrop moves only while a wave runs (about 15 pictures a second), never otherwise
+                if self.waves.is_empty() || dt < 0.066 { return; }
                 let dt = dt.min(0.25);
-                self.heat = (self.heat * 0.5f64.powf(dt / 18.)).max(HEAT_FLOOR);
-                self.bd_t += dt * (0.1 + self.heat * 1.5);
-                self.next_ripple -= dt;
-                if self.next_ripple <= 0. {   // now and then a gentle ring from somewhere in the room
-                    self.next_ripple = 14. + 14. * nh01(self.bd_t);
-                    self.ripples.push(crate::ascii::Ripple { x: 20. + 60. * nh01(self.bd_t * 3.1), y: 8. + 20. * nh01(self.bd_t * 7.7), r: 0., s: 0.5, v: 26., band: 8., fade: 0.3 });
-                }
-                for q in &mut self.ripples { q.r += q.v * dt; q.s *= q.fade.powf(dt); }
-                self.ripples.retain(|q| q.s > 0.04 && q.r < 220.);
+                self.bd_clock += dt;
+                let now = self.bd_clock;
+                self.waves.retain(|w| now - w.t0 < crate::backdrop::LIFE);
             }
             Level::Settings => return,
         }
         self.last_anim = Instant::now();
         cx.notify();
     }
-    /// Activity in the open room: the backdrop warms up and a ring leaves from where the newest line is.
-    fn stir(&mut self, n: usize) {
-        self.heat = (self.heat + 0.18 * n as f64).min(1.);
-        if self.still() { return; }
-        if self.ripples.len() > 6 { self.ripples.remove(0); }
-        self.ripples.push(crate::ascii::Ripple { x: 14., y: 36., r: 0., s: 0.9, v: 44., band: 4., fade: 0.12 });
+    /// Activity in the open room: a wave leaves from where the newest line is and the speckle organises into bands around it.
+    pub fn stir(&mut self, n: usize) {
+        if self.still() || self.gid.as_deref().and_then(|g| self.channel(g)).is_some_and(|(c, _)| c.direct) { return; }
+        if self.waves.len() > 3 { self.waves.remove(0); }
+        let strength = (0.7 + 0.1 * n as f64).min(1.);
+        self.waves.push(crate::backdrop::Wave { x: 0.12, y: 0.86, t0: self.bd_clock, s: strength });
     }
 
     /// One call to the core off the UI thread, then `then` back on it.
@@ -212,6 +219,7 @@ impl Mega {
         bench::mark("unlocked");
         self.rpc("notify_get", json!({}), window, cx, |this, r, _, _| { if let Ok(v) = r { this.notify_settings = v; } });
         self.tick(window, cx);
+        self.start_ui_steps(window, cx);
     }
 
     // ---- the look every half second ----
@@ -316,7 +324,9 @@ impl Mega {
     pub fn open_room(&mut self, cid: String, gid: String, window: &mut Window, cx: &mut Context<Self>) {
         self.level = Level::Chat;
         if self.gid.as_deref() == Some(gid.as_str()) { cx.notify(); return; }
-        self.bd_t = (look::h(&gid) % 90) as f64; self.ripples.clear(); self.heat = HEAT_FLOOR;
+        self.waves.clear();
+        let unread = self.channel(&gid).filter(|(c, _)| c.direct).map(|(_, ch)| ch.unread as usize).unwrap_or(0).max(if self.channel(&gid).is_some_and(|(c, _)| c.direct) { self.fake_dm_unread } else { 0 });
+        self.dm_marks = (gid.clone(), unread);
         self.cid = Some(cid);
         self.gid = Some(gid.clone());
         self.win = MsgWindow { key: gid, ..Default::default() };
@@ -370,8 +380,6 @@ pub fn clock(ts: u64) -> String {
     chrono::Local.timestamp_opt(ts as i64, 0).single().map(|t| t.format("%H:%M").to_string()).unwrap_or_default()
 }
 
-pub const HEAT_FLOOR: f64 = 0.12;
-fn nh01(x: f64) -> f64 { let s = (x * 127.1).sin() * 43758.5453; s - s.floor() }
 
 impl Mega {
     pub fn go(&mut self, level: Level, window: &mut Window, cx: &mut Context<Self>) {
@@ -380,6 +388,13 @@ impl Mega {
         self.level = level;
         self.focus_card(None);
         cx.notify();
+    }
+    /// An owner's colour choice for the open room (`None` puts the default back).
+    pub fn set_room_colours(&mut self, duo: Option<(u32, u32)>, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(cid), Some(gid)) = (self.cid.clone(), self.gid.clone()) else { return };
+        let (main, hi) = duo.map(|(m, h)| (look::hex(m), look::hex(h))).unwrap_or_default();
+        self.colours_open = false;
+        self.set_setting("set_style", json!({"cid": cid, "room": gid, "main": main, "hi": hi}), window, cx);
     }
     pub fn lock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.rpc("lock", json!({}), window, cx, |this, _, window, cx| {
