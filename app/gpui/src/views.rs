@@ -296,16 +296,29 @@ impl Render for Mega {
         if !std::mem::replace(&mut self.first_frame_done, true) { window.on_next_frame(|_, _| crate::bench::mark("first_frame")); }
         crate::bench::drive(self, window, cx);
         self.holes.borrow_mut().clear();
-        let base = div().size_full().bg(rgb(look::VOID)).text_color(look::paper()).font_family(look::F_UI).text_size(px(15.));
+        let base = div().id("root").size_full().bg(rgb(look::VOID)).text_color(look::paper()).font_family(look::F_UI).text_size(px(15.))
+            // dragging the column's edge, and push-to-talk: the key never reaches the composer while that mode is on
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| { if this.call.resize.is_some() { this.resize_move(f32::from(ev.position.x), window, cx); } }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| this.resize_end(window, cx)))
+            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| { this.ptt_key_event(ev.keystroke.key.as_str(), true, cx); }))
+            .capture_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| { this.ptt_key_event(ev.keystroke.key.as_str(), false, cx); }));
         match self.screen {
             Screen::Starting => base,
             Screen::Welcome | Screen::Locked => base.child(self.render_sign_in(cx)),
-            Screen::Main => match self.level.clone() {
-                Level::Home => base.child(self.render_home(cx)),
-                Level::Server(cid) => base.child(self.render_server(&cid, cx)),
-                Level::Chat => base.child(h_flex().size_full().items_start().child(self.render_rail(cx)).child(self.render_chat(cx))),
-                Level::Settings => base.child(self.render_settings(cx)),
-            },
+            Screen::Main => {
+                let body: AnyElement = match self.level.clone() {
+                    Level::Home => self.render_home(cx).into_any_element(),
+                    Level::Server(cid) => self.render_server(&cid, cx).into_any_element(),
+                    Level::Chat => {
+                        let deck = self.deck_column(window, cx);
+                        h_flex().size_full().items_start().child(self.render_rail(cx)).children(deck).child(self.render_chat(cx)).into_any_element()
+                    }
+                    Level::Settings => self.render_settings(cx).into_any_element(),
+                };
+                let bar = self.call_bar(cx);
+                let pop = self.call_popover(cx);
+                base.child(v_flex().size_full().child(div().flex_1().min_h_0().w_full().child(body)).children(bar)).children(pop)
+            }
         }
     }
 }

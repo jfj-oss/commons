@@ -59,6 +59,7 @@ pub struct Mega {
     again: bool,
     pub first_frame_done: bool,
     pub auto: crate::bench::Auto,
+    pub call: crate::callui::CallUi,
     _tasks: Vec<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -82,8 +83,11 @@ impl Mega {
             cx.subscribe_in(&pass, window, |this: &mut Self, _, ev: &InputEvent, window, cx| { if let InputEvent::PressEnter { .. } = ev { this.submit_sign_in(window, cx); } }),
         ];
         subs.push(cx.observe_window_activation(window, |this, window, cx| this.beat(window, cx)));
+        let prefs = Prefs::load(&core.dir);
+        let call = crate::callui::CallUi::new(prefs.deck_w, window, cx);
         let mut this = Mega {
-            level: Level::Home, prefs: Prefs::load(&core.dir), on_battery: false, pres: Default::default(), clock: 0., bd_t: 0., heat: HEAT_FLOOR, ripples: vec![], holes: Default::default(), next_ripple: 8., last_anim: Instant::now(), notify_settings: Value::Null, set_name,
+            call,
+            level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd_t: 0., heat: HEAT_FLOOR, ripples: vec![], holes: Default::default(), next_ripple: 8., last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
             list: ListState::new(0, ListAlignment::Bottom, px(600.)), composer, typing_sent: None, ticking: false, again: false, first_frame_done: false,
@@ -101,7 +105,7 @@ impl Mega {
         }));
         this._tasks.push(cx.spawn_in(window, async move |this, cx| loop {
             cx.background_executor().timer(Duration::from_millis(700)).await;
-            if this.update_in(cx, |this, window, cx| this.presence_tick(window, cx)).is_err() { break; }
+            if this.update_in(cx, |this, window, cx| { this.presence_tick(window, cx); this.call_tick(window, cx); }).is_err() { break; }
         }));
         // The fields move at 20 frames a second on the cards and 10 behind a chat (25 while a ripple runs), as in mega.js;
         // not at all with the battery saver on, or while the window is not the active one.

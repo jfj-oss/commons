@@ -7,6 +7,10 @@ mod bench;
 #[allow(dead_code)]
 mod calls;
 mod core;
+mod callui;
+mod deck;
+mod popout;
+mod video;
 mod fonts;
 mod model;
 mod prefs;
