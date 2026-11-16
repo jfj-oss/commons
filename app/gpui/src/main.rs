@@ -13,6 +13,7 @@ mod deck;
 mod popout;
 mod video;
 mod fonts;
+mod linen;
 mod model;
 mod prefs;
 mod presence;

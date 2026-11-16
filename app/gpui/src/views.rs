@@ -15,7 +15,7 @@ use serde_json::json;
 
 /// Corner of a card (mega.css --m-sq). The web UI uses a true squircle where the browser has one; elsewhere this radius.
 const SQ: f32 = 46.;
-const RAIL: f32 = 56.;
+const RAIL: f32 = 72.;
 
 /// What a card shows.
 struct Card { key: String, cid: String, room: String, title: String, sub: String, unread: u64, duo: Duo, fx: usize, big: bool, dim: bool, people: Vec<String>, here: Vec<String> }
@@ -38,6 +38,8 @@ impl Mega {
         let title_w = (c.title.chars().count() as f32 * title_px * 0.5 + 24.).min(900.);
         let mut f = Field::card(c.fx, look::h(&c.key), c.duo, if self.still() { 11.7 } else { self.clock + (look::h(&c.key) % 40) as f64 }, !c.big);
         f.radius = SQ;
+        f.emboss = self.still();
+        if f.emboss { f.gate = 0.1; }
         f.hi_t = 0.9 - 0.22 * (c.unread.min(12) as f64 / 12.);
         f.holes = vec![
             Bounds::new(point(px(18.), px(h - 30. - title_lh - 18.)), size(px(title_w), px(title_lh + 44.))),
@@ -49,6 +51,7 @@ impl Mega {
         let more = c.people.len().saturating_sub(shown.len());
         div().id(SharedString::from(format!("card-{key}"))).relative().w_full().h(px(h)).flex_none().rounded(px(SQ)).bg(c.duo.field()).overflow_hidden().cursor_pointer()
             .when(c.dim, |d| d.opacity(0.55))
+            .child(div().absolute().inset_0().child(crate::linen::view(SQ)))
             .child(div().absolute().inset_0().child(ascii::field(f)))
             .child(h_flex().absolute().top(px(14.)).left(px(24.)).right(px(24.)).gap_2().items_center().font_family(look::F_NAME).text_size(px(12.)).text_color(ink)
                 .child(div().child(c.sub.clone()))
@@ -130,28 +133,52 @@ impl Mega {
         v_flex().size_full().child(self.top_bar(c.name.clone(), Some(Level::Home), cx)).child(grid)
     }
 
-    /// The colour dots beside a chat: home, the community's cards, then one dot per room (the open one is a pill).
+    /// The rail beside a chat: home, the community's cards, then one "spine" per room, like the spines of books on a shelf:
+    /// the room's name set upright in big rounded type on its own colour. The open room's spine is wider and carries a ring.
     fn render_rail(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut col = v_flex().id("rail").w(px(RAIL)).h_full().flex_none().items_center().pt_5().gap_3().bg(rgb(look::VOID));
-        col = col.child(div().id("rail-home").size(px(20.)).rounded(px(6.)).bg(look::paper()).cursor_pointer().on_click(cx.listener(|this, _, window, cx| this.go(Level::Home, window, cx))));
+        let mut col = v_flex().id("rail").w(px(RAIL)).h_full().flex_none().items_center().pt_5().pb_3().gap_3().bg(rgb(look::VOID)).overflow_y_scroll();
+        col = col.child(div().id("rail-home").flex_none().size(px(20.)).rounded(px(6.)).bg(look::paper()).cursor_pointer().on_click(cx.listener(|this, _, window, cx| this.go(Level::Home, window, cx))));
         let Some(c) = self.cid.as_ref().and_then(|cid| self.snap.as_ref()?.community(cid)).cloned() else { return col };
         if !c.direct {
             let (cid, duo) = (c.id.clone(), Duo::of(&c.id, c.colours.as_ref()));
-            col = col.child(div().id("rail-server").size(px(16.)).rounded(px(5.)).bg(duo.dot()).cursor_pointer().on_click(cx.listener(move |this, _, window, cx| this.go(Level::Server(cid.clone()), window, cx))));
+            col = col.child(div().id("rail-server").flex_none().size(px(16.)).rounded(px(5.)).bg(duo.dot()).cursor_pointer().on_click(cx.listener(move |this, _, window, cx| this.go(Level::Server(cid.clone()), window, cx))));
         }
-        col = col.child(div().h(px(18.)));
+        col = col.child(div().flex_none().h(px(6.)));
         for ch in c.channels.iter().filter(|ch| ch.joined) {
             let (cid, gid) = (c.id.clone(), ch.gid.clone());
-            let dot = Duo::of(&ch.gid, c.room_colours.iter().find(|(g, _)| g == &ch.gid).map(|(_, d)| d)).dot();
+            let duo = Duo::of(&ch.gid, c.room_colours.iter().find(|(g, _)| g == &ch.gid).map(|(_, d)| d));
             let on = self.gid.as_deref() == Some(ch.gid.as_str());
-            // unread: a ring in the room's colour around a dark centre; a voice room: a hollow dot
-            let ring = ch.unread > 0 && !on;
-            col = col.child(div().id(SharedString::from(format!("dot-{}", ch.gid))).w(px(14.)).h(px(if on { 38. } else { 14. })).rounded_full().cursor_pointer()
-                .when(!ring && ch.kind != "voice", |d| d.bg(dot))
-                .when(ring || ch.kind == "voice", |d| d.border_color(dot).when(ring, |d| d.border_4()).when(!ring, |d| d.border_2()))
+            let name: Vec<String> = ch.name.chars().take(14).map(|c| c.to_string()).collect();
+            let (w, ink) = (if on { 56. } else { 46. }, duo.ink());
+            let hgt = (name.len() as f32 * 19. + 44.).max(84.);
+            col = col.child(div().id(SharedString::from(format!("dot-{}", ch.gid))).relative().flex_none().w(px(w)).h(px(hgt)).rounded(px(if on { 22. } else { 18. })).bg(duo.field()).cursor_pointer()
+                .border_2().border_color(if on { look::paper() } else { hsla(0., 0., 0., 0.) })
+                .when(!on, |d| d.opacity(0.9))
+                // unread: a dot in the room's highlight colour on the spine's head
+                .child(div().absolute().top(px(8.)).left_0().right_0().flex().justify_center()
+                    .child(div().size(px(10.)).rounded_full().when(ch.unread > 0 && !on, |d| d.bg(rgb(duo.hi)).border_1().border_color(ink)).when(ch.kind == "voice" && !(ch.unread > 0 && !on), |d| d.border_2().border_color(ink))))
+                .child(v_flex().absolute().top(px(26.)).left_0().right_0().items_center().font_family(look::F_MSG).text_size(px(18.)).line_height(px(19.)).text_color(ink)
+                    .children(name.into_iter().map(|c| div().child(c))))
                 .on_click(cx.listener(move |this, _, window, cx| this.open_room(cid.clone(), gid.clone(), window, cx))));
         }
         col
+    }
+
+    /// An owner's choice of colours for the open room: three bold presets, and the default back.
+    fn colour_picker(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut row = h_flex().relative().gap_2().items_center().pt_1();
+        if self.colours_open {
+            for (i, (_name, main, hi)) in look::PRESETS.iter().enumerate() {
+                let (m, h) = (*main, *hi);
+                row = row.child(div().id(SharedString::from(format!("preset-{i}"))).size(px(30.)).rounded_full().cursor_pointer().overflow_hidden().border_1().border_color(look::line())
+                    .child(div().size_full().bg(linear_gradient(135., linear_color_stop(rgb(m), 0.5), linear_color_stop(rgb(h), 0.5))))
+                    .on_click(cx.listener(move |this, _, window, cx| this.set_room_colours(Some((m, h)), window, cx))));
+            }
+            row = row.child(div().id("preset-default").px_2().rounded_full().border_1().border_color(look::line()).font_family(look::F_NAME).text_size(px(12.)).cursor_pointer().child("default")
+                .on_click(cx.listener(|this, _, window, cx| this.set_room_colours(None, window, cx))));
+        }
+        row.child(div().id("preset-open").px_2().py_0p5().rounded_full().border_1().border_color(look::line()).font_family(look::F_NAME).text_size(px(12.)).cursor_pointer().child("colours")
+            .on_click(cx.listener(|this, _, _, cx| { this.colours_open = !this.colours_open; cx.notify(); })))
     }
 
     fn render_msg(&mut self, ix: usize) -> AnyElement {
@@ -165,6 +192,7 @@ impl Mega {
         let found = self.channel(&gid).map(|(c, ch)| (if c.direct { c.name.clone() } else { ch.name.clone() }, if c.direct { "just the two of you".to_string() } else { format!("{} · {} people", c.name, c.members) }));
         let Some((title, sub)) = found else { return v_flex().flex_1().h_full().items_center().justify_center().text_color(look::mute()).child("This room is gone.").into_any_element() };
         let duo = self.room_duo(&gid);
+        let owner = self.channel(&gid).is_some_and(|(c, _)| !c.direct && (c.role == "owner" || c.role == "admin"));
         let typing = match self.win.typing.len() { 0 => String::new(), 1 => format!("{} is writing…", self.win.typing[0]), n => format!("{n} people are writing…") };
         let (font, size, lh) = self.chat_font();
         // The room's backdrop: a two-colour speckle that organises into bands around new activity (backdrop.rs).
@@ -172,9 +200,12 @@ impl Mega {
         let holes = self.holes.clone();
         v_flex().flex_1().h_full().min_w_0().relative().bg(rgb(0x14111a))
             .child(div().absolute().inset_0().child(backdrop))
-            .child(v_flex().flex_none().items_start().px_5().pt_3().pb_1()
-                .child(div().relative().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).child(title.clone()).child(hole(&holes)))
-                .child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(sub).child(hole(&holes))))
+            .child(h_flex().flex_none().items_start().px_5().pt_3().pb_1()
+                .child(v_flex().items_start()
+                    .child(div().relative().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).child(title.clone()).child(hole(&holes)))
+                    .child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(sub).child(hole(&holes))))
+                .child(div().flex_1())
+                .when(owner, |d| d.child(self.colour_picker(cx))))
             .child(div().flex_1().min_h_0().relative()
                 .child(list(self.list.clone(), cx.processor(|this, ix: usize, _, _| this.render_msg(ix))).size_full())
                 .child(div().absolute().top_0().right_0().bottom_0().w(px(12.)).child(Scrollbar::vertical(&self.list))))

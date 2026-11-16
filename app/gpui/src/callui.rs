@@ -478,6 +478,8 @@ impl Mega {
             "pttup" => self.call_cmd(Command::PushToTalk(false)),
             "volume" => { if let Some(a) = self.call.snap.peers.iter().find(|p| !p.me).and_then(|p| p.account.clone()) { self.call_cmd(Command::SetVolume { account: a, volume: v.parse().unwrap_or(1.) }); } }
             "level" => { match v { "home" => self.go(Level::Home, window, cx), "settings" => self.go(Level::Settings, window, cx), _ => {} } }
+            "colours" => { self.colours_open = !self.colours_open; cx.notify(); }
+            "preset" => { let i: usize = v.parse().unwrap_or(99); let d = look::PRESETS.get(i).map(|p| (p.1, p.2)); self.set_room_colours(d, window, cx); }
             "stir" => { self.stir(2); cx.notify(); }
             "dump" => { let s = self.call.snap.clone(); eprintln!("UI-DUMP {}", serde_json::to_string(&json!({"snap": s, "tiles": self.call.tile_ids(), "order": self.call.deck.order, "w": self.deck_width(window), "popped": self.call.popped})).unwrap_or_default()); }
             _ => eprintln!("ui step? {s}"),

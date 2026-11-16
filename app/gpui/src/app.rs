@@ -60,6 +60,8 @@ pub struct Mega {
     pub first_frame_done: bool,
     pub auto: crate::bench::Auto,
     pub call: crate::callui::CallUi,
+    /// The owner's colour presets are showing in the open room's header.
+    pub colours_open: bool,
     _tasks: Vec<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -86,7 +88,7 @@ impl Mega {
         let prefs = Prefs::load(&core.dir);
         let call = crate::callui::CallUi::new(prefs.deck_w, window, cx);
         let mut this = Mega {
-            call,
+            call, colours_open: false,
             level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., waves: vec![], bd_clock: 0., bd_cache: Default::default(), holes: Default::default(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
@@ -378,6 +380,13 @@ impl Mega {
         self.level = level;
         self.focus_card(None);
         cx.notify();
+    }
+    /// An owner's colour choice for the open room (`None` puts the default back).
+    pub fn set_room_colours(&mut self, duo: Option<(u32, u32)>, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(cid), Some(gid)) = (self.cid.clone(), self.gid.clone()) else { return };
+        let (main, hi) = duo.map(|(m, h)| (look::hex(m), look::hex(h))).unwrap_or_default();
+        self.colours_open = false;
+        self.set_setting("set_style", json!({"cid": cid, "room": gid, "main": main, "hi": hi}), window, cx);
     }
     pub fn lock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.rpc("lock", json!({}), window, cx, |this, _, window, cx| {
