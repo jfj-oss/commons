@@ -149,7 +149,7 @@ impl Mega {
     fn card_shell(&self) -> Div {
         v_flex().flex_none().w_full().gap_2().p_4().rounded(px(18.)).bg(rgb(look::SLIP)).border_1().border_color(look::line())
     }
-    fn card_title(t: String) -> Div { div().font_family(look::F_SHARP).text_size(px(24.)).line_height(px(26.)).text_color(look::paper()).child(t) }
+    fn card_title(t: String) -> Div { div().font_family(look::F_NAME).text_size(px(20.)).line_height(px(24.)).text_color(look::paper()).child(t) }
     fn card_text(t: String) -> Div { div().font_family(look::F_UI).text_size(px(14.)).line_height(px(20.)).text_color(look::mute()).child(t) }
 
     /// The cards for Home: a rolled-back notice, what's new, and the update's own state. Nothing while locked.
