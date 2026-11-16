@@ -111,6 +111,35 @@ impl Field {
     }
 }
 
+/// A text box in window coordinates as a box relative to the field, a cell wider on each side (mega.js `hit`: x0 - 1 .. x1 + 1).
+pub fn pad_box(b: &Bounds<Pixels>, origin: Point<Pixels>, cw: f32) -> Bounds<Pixels> {
+    Bounds::new(point(b.origin.x - origin.x - px(cw), b.origin.y - origin.y), size(b.size.width + px(2. * cw), b.size.height))
+}
+
+/// Does the cell at (x, y) of size cw x ch touch the box? Such a cell is cut out of the pattern.
+pub fn cell_in_box(x: f32, y: f32, cw: f32, ch: f32, b: &Bounds<Pixels>) -> bool {
+    x + cw > f32::from(b.origin.x) && x < f32::from(b.origin.x + b.size.width) && y + ch > f32::from(b.origin.y) && y < f32::from(b.origin.y + b.size.height)
+}
+
+#[cfg(test)]
+mod hole_tests {
+    use super::*;
+    #[::core::prelude::v1::test]
+    fn a_text_box_is_cut_out_a_cell_wider_each_side() {
+        // a word at x 100..180, y 50..70 inside a field whose window origin is (20, 10): relative 80..160, 40..60
+        let b = Bounds::new(point(px(100.), px(50.)), size(px(80.), px(20.)));
+        let r = pad_box(&b, point(px(20.), px(10.)), 10.);
+        assert_eq!((f32::from(r.origin.x), f32::from(r.origin.y), f32::from(r.size.width), f32::from(r.size.height)), (70., 40., 100., 20.));
+        let (cw, ch) = (10., 17.);
+        assert!(cell_in_box(70., 34., cw, ch, &r), "the padding column left of the word is cut");
+        assert!(cell_in_box(160., 51., cw, ch, &r), "and the one right of it");
+        assert!(!cell_in_box(50., 40., cw, ch, &r), "two cells left is pattern again");
+        assert!(!cell_in_box(80., 57. + 3., cw, ch, &r), "the row below the box is pattern");
+        assert!(!cell_in_box(80., 23., cw, ch, &r), "and the row above");
+        assert!(cell_in_box(80., 24., cw, ch, &r), "a row that touches the box by a hair is cut");
+    }
+}
+
 struct Ramp { font: FontId, glyphs: Vec<Option<GlyphId>> }
 
 fn ramp(window: &mut Window) -> Ramp {
@@ -144,7 +173,7 @@ pub fn field(f: Field) -> impl IntoElement {
         // this frame's words, relative to the field, a cell wider on each side (as mega.js `hit` does)
         let mut holes = f.holes.clone();
         if let Some(live) = &f.live_holes {
-            holes.extend(live.borrow().iter().filter(|b| b.intersects(&bounds)).map(|b| Bounds::new(point(b.origin.x - bounds.origin.x - px(cw), b.origin.y - bounds.origin.y), size(b.size.width + px(2. * cw), b.size.height))));
+            holes.extend(live.borrow().iter().filter(|b| b.intersects(&bounds)).map(|b| pad_box(b, bounds.origin, cw)));
         }
         // where the drawing is: cells of this field that the pattern must leave alone (mega-wall.js `cardMask`)
         let avoid = f.avoid.as_ref().map(|(g, m)| crate::wall::field_mask(g, m.iter().map(|c| c.0), cw, ch, cols, rows));
@@ -157,7 +186,7 @@ pub fn field(f: Field) -> impl IntoElement {
                     let (px_x, px_y) = (x as f32 * cw, y as f32 * ch);
                     if outside_corner(px_x + cw / 2., px_y + ch / 2.) { continue; }
                     if avoid.as_ref().is_some_and(|m| m[y * cols + x]) { continue; }
-                    if holes.iter().any(|b| px_x + cw > f32::from(b.origin.x) && px_x < f32::from(b.origin.x + b.size.width) && px_y + ch > f32::from(b.origin.y) && px_y < f32::from(b.origin.y + b.size.height)) { continue; }
+                    if holes.iter().any(|b| cell_in_box(px_x, px_y, cw, ch, b)) { continue; }
                     let (xf, yf) = (x as f64, y as f64);
                     let mut v = fx(f.fx, xf, yf, f.t, cols as f64, rows as f64, &col);
                     let mut lit = 0f64;
