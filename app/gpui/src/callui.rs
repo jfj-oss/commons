@@ -239,7 +239,8 @@ impl Mega {
         cx.notify();
     }
     pub fn set_deck_width(&mut self, w: f32, window: &Window, save: bool) {
-        self.call.deck_w = deck::clamp_width(w, f32::from(window.viewport_size().width));
+        // 0 means "the default for this window" (a reset), kept as 0 so the default follows the window's size
+        self.call.deck_w = if w <= 0. { 0. } else { deck::clamp_width(w, f32::from(window.viewport_size().width)) };
         if save { self.prefs.deck_w = self.call.deck_w; self.prefs.save(); }
     }
     pub fn deck_width(&self, window: &Window) -> f32 { deck::clamp_width(self.call.deck_w, f32::from(window.viewport_size().width)) }

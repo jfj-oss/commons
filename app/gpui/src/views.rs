@@ -337,7 +337,7 @@ impl Render for Mega {
         self.holes.borrow_mut().clear();
         let base = div().id("root").size_full().bg(rgb(look::VOID)).text_color(look::paper()).font_family(look::F_UI).text_size(px(15.))
             // dragging the column's edge, and push-to-talk: the key never reaches the composer while that mode is on
-            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| { if this.call.resize.is_some() { this.resize_move(f32::from(ev.position.x), window, cx); } }))
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| { if this.call.resize.is_some() { if ev.pressed_button.is_none() { this.resize_end(window, cx); } else { this.resize_move(f32::from(ev.position.x), window, cx); } } }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| this.resize_end(window, cx)))
             .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| { this.ptt_key_event(ev.keystroke.key.as_str(), true, cx); }))
             .capture_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| { this.ptt_key_event(ev.keystroke.key.as_str(), false, cx); }));
