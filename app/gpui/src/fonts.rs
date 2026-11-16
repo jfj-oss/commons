@@ -26,10 +26,11 @@ fn family_from_full_name(font: &[u8]) -> Option<Vec<u8>> {
 }
 
 pub fn all() -> Vec<Cow<'static, [u8]>> {
-    let raster: [&'static [u8]; 3] = [
+    let raster: [&'static [u8]; 4] = [
         include_bytes!("../../ui/fonts/FKRasterRomanCompactTrial-Rounded.otf"),
         include_bytes!("../../ui/fonts/FKRasterRomanCompactTrial-Sharp.otf"),
         include_bytes!("../../ui/fonts/FKRasterGroteskTrial-Rounded.otf"),
+        include_bytes!("../../ui/fonts/FKRasterRomanCompactTrial-Blended.otf"),
     ];
     let mut v: Vec<Cow<'static, [u8]>> = raster.iter().map(|f| match family_from_full_name(f) { Some(p) => Cow::Owned(p), None => Cow::Borrowed(*f) }).collect();
     // Converted from the web UI's woff2 files (GPUI reads TrueType and OpenType, not woff2); see assets/fonts/README.md.

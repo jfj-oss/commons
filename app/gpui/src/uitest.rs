@@ -103,6 +103,13 @@ impl Mega {
                     json!({"ok": true})
                 }
                 "members" => self.members_dump(),
+                "nav" => self.nav_dump(),
+                "rail" => self.rail_dump(),
+                "navplay" => { let now = self.epoch.elapsed().as_secs_f64(); self.nav.frames.clear(); self.nav.last_frame = None; self.nav.play = Some((now + cmd["secs"].as_f64().unwrap_or(3.), cmd["pps"].as_f64().unwrap_or(2400.) as f32, 1.)); cx.notify(); json!({"ok": true}) }
+                "railopen" => { if cmd["on"].as_bool() == Some(false) { self.rail.hover = false; self.rail_close_now(); } else { self.rail_open(); } cx.notify(); json!({"ok": true}) }
+                "wheel" => { let ev = ScrollWheelEvent { delta: if cmd["lines"].as_f64().is_some() { ScrollDelta::Lines(point(0., -(cmd["lines"].as_f64().unwrap_or(0.) as f32))) } else { ScrollDelta::Pixels(point(px(0.), px(-(cmd["dy"].as_f64().unwrap_or(0.) as f32)))) }, ..Default::default() }; self.nav_wheel(&ev, window, cx); json!({"ok": true}) }
+                "navkey" => { let k = s("key"); { let ev = KeyDownEvent { keystroke: Keystroke { modifiers: Default::default(), key: k.clone(), key_char: None }, is_held: false, prefer_character_input: false }; self.nav_key(&ev, window, cx); } json!({"ok": true}) }
+                "navclick" => { let i = cmd["i"].as_u64().unwrap_or(0) as usize; self.nav_click(i, window, cx); json!({"ok": true}) }
                 "do" => self.ui_do(&cmd, window, cx),
                 "go" => { let want = s("name"); let cid = self.snap.as_ref().and_then(|sn| sn.communities.iter().find(|c| c.name == want).map(|c| c.id.clone())); match cid { Some(c) => { self.go(crate::app::Level::Server(c), window, cx); json!({"ok": true}) } None => json!({"error": "no such community"}) } }
                 "join_text" => { let v = s("text"); self.mem.join_in.update(cx, |i, cx| i.set_value(v, window, cx)); self.join_submit(window, cx); json!({"ok": true}) }

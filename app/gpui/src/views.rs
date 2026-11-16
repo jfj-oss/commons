@@ -2,6 +2,7 @@
 use crate::app::{clock, Level, Mega, Screen};
 use crate::ascii::{self, hole, Field, Holes};
 use crate::look::{self, Duo};
+use crate::cards::chip;
 use crate::model::Msg;
 use crate::prefs::{ChatFont, Saver};
 use crate::squircle as sq;
@@ -16,12 +17,8 @@ use serde_json::json;
 
 /// Corner of a card (mega.css --m-sq is 76 px on the web's big cards, a true squircle, which reads rounder at the same number than a circle does).
 const SQ: f32 = 60.;
-const RAIL: f32 = 72.;
 
-/// What a card shows.
-struct Card { key: String, cid: String, room: String, title: String, sub: String, unread: u64, duo: Duo, fx: usize, big: bool, dim: bool, people: Vec<String>, here: Vec<String> }
-
-fn face_dot(name: &str, size: f32) -> Div {
+pub(crate) fn face_dot(name: &str, size: f32) -> Div {
     div().size(px(size)).flex_none().rounded_full().bg(look::face(name)).border_1().border_color(hsla(0., 0., 0., 0.35))
 }
 fn avatar(name: &str) -> Div {
@@ -31,160 +28,18 @@ fn avatar(name: &str) -> Div {
 }
 
 impl Mega {
-    fn card(&mut self, c: Card, cx: &mut Context<Self>) -> impl IntoElement {
-        let h = if c.big { 220. } else { 150. };
-        let (title_px, title_lh) = if c.big { (72., 66.) } else { (48., 46.) };
-        let ink = c.duo.ink();
-        // the pattern flows around the words: the title and the line under it (their boxes are known from the layout below)
-        let title_w = (c.title.chars().count() as f32 * title_px * 0.5 + 24.).min(900.);
-        let mut f = Field::card(c.fx, look::h(&c.key), c.duo, if self.still() { 11.7 } else { self.clock + (look::h(&c.key) % 40) as f64 }, !c.big);
-        f.radius = SQ;
-        f.emboss = self.still();
-        if f.emboss { f.gate = 0.1; }
-        f.hi_t = 0.9 - 0.22 * (c.unread.min(12) as f64 / 12.);
-        f.holes = vec![
-            Bounds::new(point(px(18.), px(h - 30. - title_lh - 18.)), size(px(title_w), px(title_lh + 44.))),
-            Bounds::new(point(px(18.), px(14.)), size(px(c.sub.chars().count() as f32 * 7.5 + 16.), px(22.))),
-        ];
-        let (cid, room, key) = (c.cid.clone(), c.room.clone(), c.key.clone());
-        let focus = (c.cid.clone(), c.room.clone());
-        let shown: Vec<&String> = c.people.iter().take(crate::presence::SHOW).collect();
-        let more = c.people.len().saturating_sub(shown.len());
-        let spot = sq::spot();
-        let spot2 = spot.clone();
-        // the card is a square slab whose four corners are cut away on top, in the colour of the room around it (squircle.rs):
-        // its weave, its field and its words are all clipped to the squircle that way. A dimmed card dims the slab, not the cuts.
-        div().id(SharedString::from(format!("card-{key}"))).relative().w_full().h(px(h)).flex_none().cursor_pointer()
-            .child(div().absolute().inset_0().overflow_hidden().bg(c.duo.field()).when(c.dim, |d| d.opacity(0.55))
-            .child(div().absolute().inset_0().child(crate::linen::view(0.)))
-            .child(div().absolute().inset_0().child(ascii::field(f)))
-            .child(h_flex().absolute().top(px(14.)).left(px(24.)).right(px(24.)).gap_2().items_center().font_family(look::F_NAME).text_size(px(12.)).text_color(ink)
-                .child(div().child(c.sub.clone()))
-                .child(div().flex_1())
-                // friends looking at this card right now, in their colours
-                .children(shown.iter().map(|n| face_dot(n, 12.)))
-                .when(more > 0, |d| d.child(format!("+{more}"))))
-            .child(h_flex().absolute().bottom(px(20.)).left(px(24.)).right(px(24.)).items_end().gap_3().text_color(ink)
-                .child(v_flex().flex_1().min_w_0()
-                    .when(!c.here.is_empty(), |d| d.child(h_flex().gap_1().mb_1().font_family(look::F_NAME).text_size(px(12.))
-                        .children(c.here.iter().take(5).map(|n| face_dot(n, 14.))).child(format!("{} in the call", c.here.join(", ")))))
-                    .child(div().font_family(look::F_SHARP).text_size(px(title_px)).line_height(px(title_lh)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(c.title.clone())))
-                .when(c.unread > 0, |d| d.child(div().flex_none().font_family(look::F_SHARP).text_size(px(if c.big { 120. } else { 72. })).line_height(px(if c.big { 96. } else { 60. })).opacity(0.85)
-                    .child(if c.unread > 99 { "99+".to_string() } else { c.unread.to_string() })))))
-            .child(sq::front(SQ, Some(rgb(look::VOID).into()), None, Some(spot)))
-            .on_hover(cx.listener(move |this, hovered: &bool, _, _| { if *hovered { this.focus_card(Some(focus.clone())); } else if this.pres.cand.as_ref() == Some(&focus) { this.focus_card(None); } }))
-            .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| { if !sq::clicked(&spot2, ev, SQ) { return; } if room.is_empty() { this.go(Level::Server(cid.clone()), window, cx) } else { this.open_room(cid.clone(), room.clone(), window, cx) } }))
-    }
-
-    fn top_bar(&mut self, title: String, back: Option<Level>, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The page's `.mbar`: the mark (or the community's name) at the left, a back chip before it, chips at the right.
+    pub(crate) fn top_bar(&mut self, title: String, back: Option<Level>, cx: &mut Context<Self>) -> impl IntoElement {
         let net = self.snap.as_ref().map(|s| s.net.clone()).unwrap_or_default();
         let extra: Vec<AnyElement> = match self.level.clone() { Level::Server(cid) => self.community_buttons(&cid, cx), Level::Home => self.home_buttons(cx), _ => vec![] };
-        h_flex().flex_none().w_full().px_6().pt_5().pb_3().gap_3().items_end()
-            .when_some(back, |d, to| d.child(div().id("back").relative().size(px(22.)).mb_2().cursor_pointer().child(sq::back(6., look::paper()))
-                .on_click(cx.listener(move |this, _, window, cx| this.go(to.clone(), window, cx)))))
-            .child(div().font_family(look::F_SHARP).text_size(px(48.)).line_height(px(44.)).child(title))
+        h_flex().flex_none().w_full().px(px(16.)).py(px(12.)).gap(px(10.)).items_center()
+            .when_some(back, |d, to| d.child(chip("back", "\u{2190} back").on_click(cx.listener(move |this, _, window, cx| this.go(to.clone(), window, cx)))))
+            .child(div().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).max_w(px(560.)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
+            .when(net != "online", |d| d.child(div().font_family(look::F_UI).text_size(px(13.)).text_color(rgb(look::DANGER)).child(if net == "connecting" { "connecting…".to_string() } else { "offline".to_string() })))
+            .when(self.still(), |d| d.child(div().font_family(look::F_UI).text_size(px(13.)).text_color(look::mute()).child("battery saver")))
             .child(div().flex_1())
             .children(extra)
-            .when(net != "online", |d| d.child(div().mb_1().font_family(look::F_NAME).text_size(px(12.)).text_color(rgb(look::DANGER)).child(if net == "connecting" { "connecting…".to_string() } else { "offline".to_string() })))
-            .when(self.still(), |d| d.child(div().mb_1().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child("battery saver")))
-            .child(Button::new("settings").ghost().small().label("settings").on_click(cx.listener(|this, _, window, cx| this.go(Level::Settings, window, cx))))
-    }
-
-    fn render_home(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let snap = self.snap.clone().unwrap_or_default();
-        let mut col = v_flex().id("home").flex_1().min_h_0().w_full().overflow_y_scroll().px_6().pb_6().gap_4();
-        for card in self.update_cards(cx) { col = col.child(card); }
-        for n in self.joining_notes(cx) { col = col.child(n); }
-        for c in snap.communities.iter().filter(|c| !c.removed) {
-            let here: Vec<String> = c.channels.iter().filter(|x| x.kind == "voice").filter_map(|x| self.pres.calls.get(&x.gid)).flatten().cloned().collect();
-            let card = Card { key: c.id.clone(), cid: c.id.clone(), room: String::new(), title: c.name.clone(), sub: format!("{} rooms · {} people", c.channels.len(), c.members), unread: c.unread,
-                duo: Duo::of(&c.id, c.colours.as_ref()), fx: ascii::auto_fx(&c.name), big: true, dim: false, people: self.people_on(&c.id, ""), here };
-            col = col.child(self.card(card, cx));
-        }
-        if snap.communities.iter().all(|c| c.removed) {
-            col = col.child(div().py_8().text_color(look::mute()).child("No communities yet. Use \"new community\" above to start one, or \"join\" if someone sent you an invite."));
-        }
-        // people: one-to-one conversations, named after the other person
-        if !snap.direct.is_empty() {
-            col = col.child(div().mt_2().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child("people"));
-            for d in &snap.direct {
-                let (cid, room, on) = (d.id.clone(), d.room.clone(), d.channels.iter().any(|ch| ch.gid == d.room && ch.joined));
-                let unread = d.channels.iter().map(|ch| ch.unread).sum::<u64>().max(d.unread).max(self.fake_dm_unread as u64);
-                let duo = Duo::of(&d.room, d.room_colours.iter().find(|(g, _)| g == &d.room).map(|(_, x)| x));
-                let cache = self.dm_caches.entry(d.id.clone()).or_default().clone();
-                let spot = sq::spot();
-                let stars: String = std::iter::repeat("✦").take(unread.min(4) as usize).collect::<Vec<_>>().join(" ");
-                let mut edge = look::line(); if !on { edge.a *= 0.5; }
-                col = col.child(div().id(SharedString::from(format!("dm-{}", d.id))).relative().flex_none().cursor_pointer()
-                    .child(h_flex().relative().gap_3().px_3().py_2().border_1().border_color(hsla(0., 0., 0., 0.)).items_center().bg(rgb(look::SLIP)).when(!on, |x| x.opacity(0.5))
-                        .child(div().absolute().inset_0().overflow_hidden().child(crate::backdrop::view(cache, look::h(&d.room), duo, vec![], 0., true, true, 0.)))
-                        .child(div().relative().child(avatar(&d.name)))
-                        .child(div().relative().flex_1().font_family(look::F_SHARP).text_size(px(24.)).line_height(px(24.)).child(d.name.clone()))
-                        .when(unread > 0, |x| x.child(div().relative().font_family(look::F_NAME).text_size(px(13.)).text_color(look::paper()).child(stars)))
-                        .child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(if on { "" } else { "waiting for them" })))
-                    .child(sq::front(18., Some(rgb(look::VOID).into()), Some((1., edge)), Some(spot.clone())))
-                    .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| { if sq::clicked(&spot, ev, 18.) { this.open_room(cid.clone(), room.clone(), window, cx) } })));
-            }
-        }
-        let me = snap.me_name.clone();
-        v_flex().size_full().child(self.top_bar(if me.is_empty() { "mega".into() } else { format!("mega · {me}") }, None, cx)).child(col)
-    }
-
-    fn render_server(&mut self, cid: &str, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(c) = self.snap.as_ref().and_then(|s| s.community(cid)).cloned() else { return v_flex().size_full().child(self.top_bar("…".into(), Some(Level::Home), cx)) };
-        let mut cards: Vec<AnyElement> = vec![];
-        for ch in &c.channels {
-            let voice = ch.kind == "voice";
-            let here = self.pres.calls.get(&ch.gid).cloned().unwrap_or_default();
-            let card = Card { key: ch.gid.clone(), cid: c.id.clone(), room: ch.gid.clone(), title: ch.name.clone(),
-                sub: if !ch.joined { "not let in yet".into() } else if voice { "voice".into() } else { "text".to_string() },
-                unread: ch.unread, duo: Duo::of(&ch.gid, c.room_colours.iter().find(|(g, _)| g == &ch.gid).map(|(_, d)| d)), fx: ascii::auto_fx(&ch.name), big: false, dim: !ch.joined,
-                people: self.people_on(&c.id, &ch.gid), here };
-            cards.push(self.card(card, cx).into_any_element());
-        }
-        // two cards to a row
-        let mut grid = v_flex().id("server").flex_1().min_h_0().w_full().overflow_y_scroll().px_6().pb_6().gap_4();
-        let mut it = cards.into_iter();
-        while let Some(a) = it.next() {
-            let b = it.next();
-            grid = grid.child(h_flex().flex_none().w_full().gap_4().child(div().flex_1().min_w_0().child(a)).child(div().flex_1().min_w_0().children(b)));
-        }
-        v_flex().size_full().child(self.top_bar(c.name.clone(), Some(Level::Home), cx)).child(grid)
-    }
-
-    /// The rail beside a chat: home, the community's cards, then one "spine" per room, like the spines of books on a shelf:
-    /// the room's name set upright in big rounded type on its own colour. The open room's spine is wider and carries a ring.
-    fn render_rail(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut col = v_flex().id("rail").w(px(RAIL)).h_full().flex_none().items_center().pt_5().pb_3().gap_3().bg(rgb(look::VOID)).overflow_y_scroll();
-        col = col.child(div().id("rail-home").relative().flex_none().size(px(20.)).cursor_pointer().child(sq::back(6., look::paper())).on_click(cx.listener(|this, _, window, cx| this.go(Level::Home, window, cx))));
-        let Some(c) = self.cid.as_ref().and_then(|cid| self.snap.as_ref()?.community(cid)).cloned() else { return col };
-        if !c.direct {
-            let (cid, duo) = (c.id.clone(), Duo::of(&c.id, c.colours.as_ref()));
-            col = col.child(div().id("rail-server").relative().flex_none().size(px(16.)).cursor_pointer().child(sq::back(5., duo.dot())).on_click(cx.listener(move |this, _, window, cx| this.go(Level::Server(cid.clone()), window, cx))));
-        }
-        col = col.child(div().flex_none().h(px(6.)));
-        for ch in c.channels.iter().filter(|ch| ch.joined) {
-            let (cid, gid) = (c.id.clone(), ch.gid.clone());
-            let duo = Duo::of(&ch.gid, c.room_colours.iter().find(|(g, _)| g == &ch.gid).map(|(_, d)| d));
-            let on = self.gid.as_deref() == Some(ch.gid.as_str());
-            let name: Vec<String> = ch.name.chars().take(14).map(|c| c.to_string()).collect();
-            let (w, ink) = (if on { 56. } else { 46. }, duo.ink());
-            let hgt = (name.len() as f32 * 19. + 44.).max(84.);
-            let spot = sq::spot();
-            let rr = if on { 22. } else { 18. };
-            col = col.child(div().id(SharedString::from(format!("dot-{}", ch.gid))).relative().flex_none().w(px(w)).h(px(hgt)).cursor_pointer()
-                .border_2().border_color(hsla(0., 0., 0., 0.))
-                .when(!on, |d| d.opacity(0.9))
-                .child(sq::back(if on { 22. } else { 18. }, duo.field()))
-                .child(sq::front(if on { 22. } else { 18. }, None, on.then(|| (2., look::paper())), Some(spot.clone())))
-                // unread: a dot in the room's highlight colour on the spine's head
-                .child(div().absolute().top(px(8.)).left_0().right_0().flex().justify_center()
-                    .child(div().size(px(10.)).rounded_full().when(ch.unread > 0 && !on, |d| d.bg(rgb(duo.hi)).border_1().border_color(ink)).when(ch.kind == "voice" && !(ch.unread > 0 && !on), |d| d.border_2().border_color(ink))))
-                .child(v_flex().absolute().top(px(26.)).left_0().right_0().items_center().font_family(look::F_MSG).text_size(px(18.)).line_height(px(19.)).text_color(ink)
-                    .children(name.into_iter().map(|c| div().child(c))))
-                .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| { if sq::clicked(&spot, ev, rr) { this.open_room(cid.clone(), gid.clone(), window, cx) } })));
-        }
-        col
+            .child(chip("settings", "settings").on_click(cx.listener(|this, _, window, cx| this.go(Level::Settings, window, cx))))
     }
 
     /// An owner's choice of colours for the open room: three bold presets, and the default back.
@@ -413,11 +268,11 @@ impl Render for Mega {
             Screen::Welcome | Screen::Locked => base.child(self.render_sign_in(cx)),
             Screen::Main => {
                 let body: AnyElement = match self.level.clone() {
-                    Level::Home => self.render_home(cx).into_any_element(),
-                    Level::Server(cid) => self.render_server(&cid, cx).into_any_element(),
+                    Level::Home => self.render_home(window, cx),
+                    Level::Server(cid) => self.render_server(&cid, window, cx),
                     Level::Chat => {
                         let deck = self.deck_column(window, cx);
-                        h_flex().size_full().items_start().child(self.render_rail(cx)).children(deck).child(self.render_chat(cx)).into_any_element()
+                        h_flex().size_full().items_start().child(self.render_rail(window, cx)).children(deck).child(self.render_chat(cx)).into_any_element()
                     }
                     Level::Settings => self.render_settings(cx).into_any_element(),
                 };

@@ -11,6 +11,8 @@ pub const DANGER: u32 = 0xff6b62;
 
 /// Titles and numerals.
 pub const F_SHARP: &str = "FK Raster Roman Compact Trial Sharp";
+/// Titles while a card moves (the page swaps to Sharp when it settles).
+pub const F_BLEND: &str = "FK Raster Roman Compact Trial Blended";
 /// Message text (the "Raster" chat font).
 pub const F_MSG: &str = "FK Raster Roman Compact Trial Rounded";
 /// Names.
