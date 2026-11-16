@@ -106,7 +106,7 @@ impl Mega {
         if let Some(e) = &self.call.engine { return e.clone(); }
         let settings_path = self.core.dir.join("gpui-call-prefs.json");
         let settings = CallSettings::load(&settings_path);
-        let e = Arc::new(CallEngine::start(Arc::new(Linked(self.core.clone())), Options { audio: AudioMode::from_env(), settings, settings_path: Some(settings_path) }));
+        let e = Arc::new(CallEngine::start(Arc::new(Linked(self.core.clone())), Options { audio: AudioMode::from_env(), settings, settings_path: Some(settings_path), shortcuts: crate::calls::shortcuts::Mode::from_env() }));
         // the engine's change channel wakes the window: nothing else does, so a call that changes nothing costs nothing
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<()>();
         let mut ch = e.changes();
