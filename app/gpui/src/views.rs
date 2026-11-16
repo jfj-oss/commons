@@ -96,15 +96,28 @@ impl Mega {
         let typing = match self.win.typing.len() { 0 => String::new(), 1 => format!("{} is writing…", self.win.typing[0]), n => format!("{n} people are writing…") };
         let (font, size, lh) = self.chat_font();
         // The room's backdrop: a two-colour speckle that organises into bands around new activity (backdrop.rs).
-        let backdrop = crate::backdrop::view(self.bd_cache.clone(), look::h(&gid), duo, self.waves.clone(), self.bd_clock, self.still(), is_dm, 0.);
+        // the owner's own backdrop colours and strength (the colours panel's "chat backdrop"), else the room's colours at 100 percent
+        let (bd_duo, bd_dim) = match self.channel(&gid).filter(|(c, _)| !c.direct).map(|(c, _)| c.id.clone()) {
+            Some(cid) => { let l = self.look_for(&cid, &gid); (l.back.and_then(|(m, h)| Some(Duo { main: look::parse_hex(&m)?, hi: look::parse_hex(&h)? })).unwrap_or(duo), l.dim.map(|d| d.min(crate::paint::DIM_MAX) as f32 / 100.).unwrap_or(1.)) }
+            None => (duo, 1.),
+        };
+        let backdrop = crate::backdrop::view(self.bd_cache.clone(), look::h(&gid), bd_duo, self.waves.clone(), self.bd_clock, self.still(), is_dm, 0., bd_dim);
         let holes = self.holes.clone();
+        // the room's wall: behind the chat, over the backdrop; the pen's layer and the tools over everything while drawing
+        self.wall_room_focus(if is_dm { None } else { Some(gid.clone()) });
+        let wall_layer = self.wall_room_layer(&gid);
+        let wall_hit = self.wall_room_hit(cx);
+        let wall_bar = self.wall_toolbar(cx);
+        let wall_btn = if is_dm { None } else { self.wall_room_button(cx) };
         v_flex().flex_1().h_full().min_w_0().relative().bg(rgb(0x14111a))
             .child(div().absolute().inset_0().child(backdrop))
+            .child(wall_layer)
             .child(h_flex().flex_none().items_start().px_5().pt_3().pb_1()
                 .child(v_flex().items_start()
                     .child(div().relative().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).child(title.clone()).child(hole(&holes)))
                     .child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(sub).child(hole(&holes))))
                 .child(div().flex_1())
+                .children(wall_btn)
                 .children(if is_dm { self.call_person_button(&gid, cx) } else { None })
                 .when(!is_dm, |d| d.children(chat_cid.map(|cid| self.community_buttons(&cid, cx)).unwrap_or_default()))
                 .when(owner, |d| d.child(self.colour_picker(cx))))
@@ -118,6 +131,8 @@ impl Mega {
                 .child(sq::back(22., hsla(0.71, 0.22, 0.07, 0.93))).child(hole(&holes))
                 .child(Textarea::new(&self.composer).appearance(false).text_size(px(size)).line_height(px(lh)))
                 .child(sq::front(22., None, Some((1., look::line())), None)))
+            .children(wall_hit)
+            .children(wall_bar)
             .into_any_element()
     }
 
@@ -274,7 +289,7 @@ impl Render for Mega {
                 if this.wall.pen { if ev.pressed_button.is_none() { this.wall_pen_up(); } else { this.wall_pen(ev.position, false, window, cx); } }
                 if this.call.resize.is_some() { if ev.pressed_button.is_none() { this.resize_end(window, cx); } else { this.resize_move(f32::from(ev.position.x), window, cx); } } }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| { this.paint_drag_end(cx); this.wall_pen_up(); this.resize_end(window, cx) }))
-            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| { this.ptt_key_event(ev.keystroke.key.as_str(), true, cx); }))
+            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| { if this.wall.on && this.wall.room_mode && ev.keystroke.key == "escape" { this.wall_off(); cx.notify(); cx.stop_propagation(); return; } this.ptt_key_event(ev.keystroke.key.as_str(), true, cx); }))
             .capture_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| { this.ptt_key_event(ev.keystroke.key.as_str(), false, cx); }));
         match self.screen {
             Screen::Starting => base,

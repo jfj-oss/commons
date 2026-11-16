@@ -51,7 +51,9 @@ pub fn order_at(waves: &[Wave], clock: f64, x: f64, y: f64, aspect: f64) -> (f32
 }
 
 /// The picture: `w` x `h` logical pixels, as BGRA bytes (opaque). Pure, so it can be tested.
-pub fn pixels(w: usize, h: usize, seed: u32, duo: Duo, waves: &[Wave], clock: f64) -> Vec<u8> {
+pub fn pixels(w: usize, h: usize, seed: u32, duo: Duo, waves: &[Wave], clock: f64) -> Vec<u8> { pixels_dim(w, h, seed, duo, waves, clock, 1.) }
+/// As `pixels`, with the owner's backdrop strength (`dim`: 1 is the usual 100 percent, 0 is no speckle at all, up to 1.6).
+pub fn pixels_dim(w: usize, h: usize, seed: u32, duo: Duo, waves: &[Wave], clock: f64, dim: f32) -> Vec<u8> {
     let bg = look::mix(BASE, duo.main, 0.04);
     let c_main = if look::contrast(duo.main, bg) < 1.6 { look::mix(duo.main, duo.hi, 0.4) } else { duo.main };
     let c_hi = duo.hi;
@@ -68,7 +70,7 @@ pub fn pixels(w: usize, h: usize, seed: u32, duo: Duo, waves: &[Wave], clock: f6
             let pick = r * (1. - o) + band * o;
             let col = if pick > 0.5 { c_hi } else { c_main };
             // a faint tone-on-tone: most specks barely show, a few more (kept low: text lies on this)
-            let a = (0.035 + 0.075 * r2 * r2) * (1. + 1.9 * o);
+            let a = (0.035 + 0.075 * r2 * r2) * (1. + 1.9 * o) * dim;
             let cc = [(col >> 16) as f32, ((col >> 8) & 255) as f32, (col & 255) as f32];
             let px = [(bgc[2] + (cc[2] - bgc[2]) * a) as u8, (bgc[1] + (cc[1] - bgc[1]) * a) as u8, (bgc[0] + (cc[0] - bgc[0]) * a) as u8, 255];
             for y in cy * CELL..((cy + 1) * CELL).min(h) {
@@ -80,8 +82,8 @@ pub fn pixels(w: usize, h: usize, seed: u32, duo: Duo, waves: &[Wave], clock: f6
     out
 }
 
-pub fn render_image(w: usize, h: usize, seed: u32, duo: Duo, waves: &[Wave], clock: f64) -> Arc<RenderImage> {
-    let img = RgbaImage::from_raw(w as u32, h as u32, pixels(w, h, seed, duo, waves, clock)).expect("size");
+pub fn render_image(w: usize, h: usize, seed: u32, duo: Duo, waves: &[Wave], clock: f64, dim: f32) -> Arc<RenderImage> {
+    let img = RgbaImage::from_raw(w as u32, h as u32, pixels_dim(w, h, seed, duo, waves, clock, dim)).expect("size");
     Arc::new(RenderImage::new(smallvec![Frame::new(img)]))
 }
 
@@ -108,24 +110,24 @@ pub fn pixels_dm(w: usize, h: usize, seed: u32, duo: Duo) -> Vec<u8> {
 
 /// What the canvas remembers between frames: the last picture and what it was made for.
 #[derive(Default)]
-pub struct Cache { key: Option<(usize, usize, u32, u32, u32, i64)>, img: Option<Arc<RenderImage>>, pub made: u64 }
+pub struct Cache { key: Option<(usize, usize, u32, u32, u32, i64, u32)>, img: Option<Arc<RenderImage>>, pub made: u64 }
 pub type Shared = Rc<RefCell<Cache>>;
 
 /// The element: fills its parent. `still`: the settled speckle only (battery saver).
-pub fn view(cache: Shared, seed: u32, duo: Duo, waves: Vec<Wave>, clock: f64, still: bool, dm: bool, radius: f32) -> impl IntoElement {
+pub fn view(cache: Shared, seed: u32, duo: Duo, waves: Vec<Wave>, clock: f64, still: bool, dm: bool, radius: f32, dim: f32) -> impl IntoElement {
     canvas(|_, _, _| (), move |bounds, _, window, _| {
         let (w, h) = (f32::from(bounds.size.width).round() as usize, f32::from(bounds.size.height).round() as usize);
         if w == 0 || h == 0 { return; }
         let live = !still && waves.iter().any(|v| (0. ..LIFE).contains(&(clock - v.t0)));
         // 15 pictures a second while a wave runs; one picture when there is none
         let bucket = if dm { -2 } else if live { (clock * 15.) as i64 } else { -1 };
-        let key = (w, h, seed, duo.main, duo.hi, bucket);
+        let key = (w, h, seed, duo.main, duo.hi, bucket, (dim * 100.) as u32);
         let mut c = cache.borrow_mut();
         if c.key != Some(key) {
             let new = if dm {
                 let img = RgbaImage::from_raw(w as u32, h as u32, pixels_dm(w, h, seed, duo)).expect("size");
                 Arc::new(RenderImage::new(smallvec![Frame::new(img)]))
-            } else { render_image(w, h, seed, duo, if live { &waves } else { &[] }, clock) };
+            } else { render_image(w, h, seed, duo, if live { &waves } else { &[] }, clock, dim) };
             if let Some(old) = c.img.replace(new) { let _ = window.drop_image(old); }
             c.key = Some(key);
             c.made += 1;
@@ -150,6 +152,15 @@ mod tests {
         let base = look::mix(BASE, duo().main, 0.04);
         let (br, bg, bb) = ((base >> 16) as i32, ((base >> 8) & 255) as i32, (base & 255) as i32);
         for p in a.chunks(4) { assert!((p[2] as i32 - br).abs() < 46 && (p[1] as i32 - bg).abs() < 46 && (p[0] as i32 - bb).abs() < 46); }
+    }
+    #[::core::prelude::v1::test]
+    fn the_owners_backdrop_strength_scales_the_speckle() {
+        let flat = pixels_dim(60, 40, 2, duo(), &[], 0., 0.);
+        let first = &flat[..4];
+        assert!(flat.chunks(4).all(|p| p == first), "strength 0: no speckle at all, one flat colour");
+        assert_eq!(pixels_dim(60, 40, 2, duo(), &[], 0., 1.), pixels(60, 40, 2, duo(), &[], 0.), "100 percent is the usual picture");
+        let spread = |dim: f32| { let p = pixels_dim(60, 40, 2, duo(), &[], 0., dim); let v: Vec<i32> = p.chunks(4).map(|c| c[0] as i32 + c[1] as i32 + c[2] as i32).collect(); v.iter().max().unwrap() - v.iter().min().unwrap() };
+        assert!(spread(1.6) > spread(1.) && spread(1.) > spread(0.4), "stronger is more contrast");
     }
     #[::core::prelude::v1::test]
     fn a_direct_backdrop_is_quieter_than_a_rooms_speckle() {

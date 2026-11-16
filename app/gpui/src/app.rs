@@ -467,6 +467,7 @@ impl Mega {
         if let Level::Server(c) = &level { self.nav.last_home = Some(c.clone()); }
         if matches!(level, Level::Home | Level::Server(_)) { window.focus(&self.nav.focus, cx); }
         self.level = level;
+        if self.level != Level::Chat { self.wall.room_mode = false; if !matches!(self.level, Level::Home | Level::Server(_)) { self.wall_focus(None, Default::default(), vec![]); } }
         self.focus_card(None);
         cx.notify();
     }

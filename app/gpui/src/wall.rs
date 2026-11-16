@@ -95,6 +95,8 @@ pub struct WallUi {
     pub key: Option<String>,
     pub spot: Spot,
     pub room_mode: bool,
+    /// Where the open room's area was last painted (x, y, w, h): its wall's grid is centred in it.
+    pub room_rect: Rc<std::cell::Cell<(f32, f32, f32, f32)>>,
     /// Wall keys of the cards on screen, for reading each once.
     pub visible: Vec<String>,
     pub on: bool,
@@ -440,6 +442,39 @@ impl Mega {
             .into_any_element())
     }
 
+    /// In a room: the layer that holds the room's wall behind the chat (the marks), and measures the area the grid is centred in.
+    pub fn wall_room_layer(&mut self, gid: &str) -> AnyElement {
+        let rect = self.wall.room_rect.clone();
+        let (w, h) = { let r = rect.get(); (r.2, r.3) };
+        let marks_cells = Rc::new(self.wall.marks_of(gid));
+        let ink = self.wall_inks(gid);
+        let grid = grid_in(w.max(1.), h.max(1.), false);
+        div().absolute().inset_0()
+            .child(canvas(move |b, _, _| rect.set((f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height))), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+            .when(!marks_cells.is_empty(), |d| d.child(marks(Marks { cells: marks_cells, grid, ink, holes: Rc::new(vec![]) })))
+            .into_any_element()
+    }
+    /// The layer over the open room while drawing: catches the pen (and the wheel).
+    pub fn wall_room_hit(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.wall.on || !self.wall.room_mode { return None; }
+        Some(div().id("wall-hit-room").absolute().inset_0().cursor_crosshair().occlude()
+            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| { cx.stop_propagation(); this.wall_pen(ev.position, true, window, cx); }))
+            .into_any_element())
+    }
+    /// The room's "draw" button (mega-wall.js `chrome`): hidden when the owner locked the wall and this is not the owner.
+    pub fn wall_room_button(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let key = self.wall.key.clone()?;
+        if !self.wall_drawable(&key) { return None; }
+        Some(crate::cards::chip("b-draw-room", if self.wall.on { "drawing" } else { "draw" }).on_click(cx.listener(|this, _, window, cx| this.wall_toggle(window, cx))).into_any_element())
+    }
+    /// A room is open (or not): its wall is the one under the focus.
+    pub fn wall_room_focus(&mut self, gid: Option<String>) {
+        let r = self.wall.room_rect.get();
+        self.wall.room_mode = true;
+        self.wall_focus(gid, Spot { x: r.0, y: r.1, w: r.2, h: r.3, s: 1. }, vec![]);
+    }
+
     /// The tools (mega.css `#mega-wallbar`): glyphs, colours, the owner's lock and clear, done.
     pub fn wall_toolbar(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.wall.on { return None; }
@@ -468,8 +503,10 @@ impl Mega {
                     .child(div().size(px(20.)).rounded_full().bg(rgb(c)).border_1().border_color(hsla(0., 0., 1., 0.35)).when(on, |d| d.size(px(23.6)).border_2().border_color(paper)))
                     .on_click(cx.listener(move |this, _, _, cx| { this.wall.col = i as u8; cx.notify(); }))
             }));
-        Some(div().absolute().left_0().right_0().bottom(px(14.)).flex().justify_center().child(
-            h_flex().id("mega-wallbar").flex_wrap().justify_center().items_center().gap(px(8.)).max_w(px((self.nav.vp.get().0.max(400.)) / 2.)).px(px(12.)).py(px(8.)).rounded(px(26.)).bg(rgb(0x17151e)).border_1().border_color(hsla(0., 0., 1., 0.14))
+        let room = self.wall.room_mode;
+        let place = if room { div().absolute().left_0().right_0().top(px(58.)).flex().justify_center() } else { div().absolute().left_0().right_0().bottom(px(14.)).flex().justify_center() };
+        Some(place.child(
+            h_flex().id("mega-wallbar").flex_wrap().justify_center().items_center().gap(px(8.)).max_w(px(if room { (self.wall.room_rect.get().2 / 2.).max(300.) } else { self.nav.vp.get().0.max(400.) / 2. })).px(px(12.)).py(px(8.)).rounded(px(26.)).bg(rgb(0x17151e)).border_1().border_color(hsla(0., 0., 1., 0.14))
                 .font_family(look::F_UI).font_weight(FontWeight::SEMIBOLD).text_size(px(12.)).text_color(paper).occlude()
                 .child(div().px(px(4.)).opacity(0.6).font_weight(FontWeight::MEDIUM).child("everyone sees this"))
                 .child(glyphs).child(colours)
@@ -482,7 +519,8 @@ impl Mega {
     pub fn wall_inks(&self, key: &str) -> [u32; 2] {
         let Some(c) = self.wall_cid(key).and_then(|c| self.snap.as_ref()?.community(&c).cloned()) else { return [0xffffff, 0xffffff] };
         let (id, chosen) = if is_cw(key) { (c.id.clone(), c.colours.clone()) } else { (key.to_string(), c.room_colours.iter().find(|(g, _)| g == key).map(|(_, d)| d.clone())) };
-        look::wall_ink(&self.duo_for(&id, chosen.as_ref()))
+        let d = self.duo_for(&id, chosen.as_ref());
+        if self.wall.room_mode { [look::lift(d.main, 5.), look::lift(d.hi, 6.)] } else { look::wall_ink(&d) }
     }
 }
 

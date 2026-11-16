@@ -329,7 +329,7 @@ impl Mega {
             if text {
                 let seg = |id: &'static str, label: &'static str, on: bool| div().id(id).flex_1().flex().items_center().justify_center().py(px(7.)).rounded_full().text_size(px(12.)).line_height(px(14.4)).cursor_pointer()
                     .when(on, |d| d.bg(paper).text_color(rgb(0x050407))).child(label);
-                body = body.child(h_flex().w_full().gap(px(4.)).p(px(3.)).rounded_full().bg(hsla(0., 0., 1., 0.06))
+                body = body.child(h_flex().w_full().gap(px(4.)).p(px(3.)).mb(px(8.)).rounded_full().bg(hsla(0., 0., 1., 0.06))
                     .child(seg("mp-card", "card", !back_mode).on_click(cx.listener(|this, _, window, cx| { this.paint.back_mode = false; this.paint_set_well(this.paint.well, window, cx); })))
                     .child(seg("mp-back", "chat backdrop", back_mode).on_click(cx.listener(|this, _, window, cx| { this.paint.back_mode = true; this.paint_set_well(this.paint.well, window, cx); }))));
             }

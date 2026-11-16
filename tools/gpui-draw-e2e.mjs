@@ -79,7 +79,8 @@ try {
   const web = expr => bob.page.ev(`(async()=>{ return ${expr}; })()`);
   const key = async k => { const vk = { ArrowDown: 40, ArrowUp: 38, Enter: 13, Escape: 27 }[k]; await bob.page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code: k, windowsVirtualKeyCode: vk }); await bob.page.send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code: k, windowsVirtualKeyCode: vk }); await sleep(900); };
   await sleep(2500);
-  await key('Enter'); await sleep(2500);   // the one community's room cards
+  // (with one community the web starts at its room cards)
+  console.log('web level', await web(`__mega.level`));
   for (let i = 0; i < 8 && (await web(`__megaWall.state().gid`)) !== room; i++) { await key('ArrowDown'); await sleep(900); }
   const webOpen = await soft(until(async () => (await web(`__megaWall.state().gid`)) === room, 20000, 'bob has the sketches card focused', 400));
   check('0 the native window is Alice (owner), the web client is Bob (member), the sketches card is in focus on the web', !timedOut(webOpen), { webGid: await web(`__megaWall.state().gid`), mode: await web(`__megaWall.state().mode`) });
@@ -100,10 +101,10 @@ try {
   await W.cmd('draw', { on: true }); await sleep(400);
   check('A0 draw mode is on in the window', (await W.wall()).on === true);
   await W.cmd('tool', { brush: 1, col: 0 });
-  const [sx, sy, sw, sh] = spot;
-  await W.cmd('pen', stroke(sx + sw * .2, sy + sh * .3, sx + sw * .8, sy + sh * .3).points ? stroke(sx + sw * .2, sy + sh * .3, sx + sw * .8, sy + sh * .3) : {});
+  const [sx, sy, sw, shh] = spot;
+  await W.cmd('pen', stroke(sx + sw * .2, sy + shh * .3, sx + sw * .8, sy + shh * .3).points ? stroke(sx + sw * .2, sy + shh * .3, sx + sw * .8, sy + shh * .3) : {});
   await W.cmd('tool', { brush: 5, col: 4 });
-  await W.cmd('pen', stroke(sx + sw * .2, sy + sh * .4, sx + sw * .8, sy + sh * .6));
+  await W.cmd('pen', stroke(sx + sw * .2, sy + shh * .4, sx + sw * .8, sy + shh * .6));
   await sleep(300); await shot('02-native-drawing');
   const mine = (await W.wall()).cells.map(c => c.join(','));
   check('A1 the pen puts cells under the window\'s wall', mine.length > 40, mine.length);
@@ -140,7 +141,7 @@ try {
   check('C2 a member\'s stroke on the locked wall is refused by the core', timedOut(refused) && /lock/.test(refused.timeout), J(refused).slice(0, 120));
   check('C2b and the web client offers no draw chip on a locked wall', (await web(`document.querySelector('[data-m="draw"]').hidden`)) === true);
   check('C3 the window does not hold the refused cells', !afterLock.includes((3 * 0 + 3 * 120 + 3) + ',1,0') && afterLock.length === before, { before, after: afterLock.length });
-  const owner2 = await W.cmd('pen', stroke(sx + sw * .3, sy + sh * .8, sx + sw * .6, sy + sh * .8, 6));
+  const owner2 = await W.cmd('pen', stroke(sx + sw * .3, sy + shh * .8, sx + sw * .6, sy + shh * .8, 6));
   check('C4 the owner can still draw while it is locked', owner2.pending > 0 || (await W.wall()).cells.length > before, owner2);
   await W.cmd('wall_do', { what: 'lock' });   // unlock (the same button)
   await until(async () => !((await web(`(S.snap.communities.find(c => c.id === ${J(cid)}).style || {}).locked`)) || []).includes(room), 30000, 'unlock reached the web', 500);
