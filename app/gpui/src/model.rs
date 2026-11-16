@@ -18,7 +18,15 @@ pub struct Community {
     pub room_colours: Vec<(String, (String, String))>,
     /// A direct (one-to-one) conversation: its room and the other person.
     pub direct: bool, pub peer: String, pub room: String,
+    /// Admins see who is banned and the open invites; `locked` are the rooms (or the community's own card) whose wall the owner froze.
+    pub banned: Vec<(String, String)>, pub invites: Vec<Invite>, pub locked: Vec<String>, pub removed_reason: String,
 }
+
+#[derive(Clone, Debug, Default)]
+pub struct Invite { pub id: String, pub expires: f64, pub uses_left: Option<u64>, pub mine: bool, pub password: bool }
+/// A community this account asked to join, or was refused by (with the reason).
+#[derive(Clone, Debug, Default)]
+pub struct Joining { pub id: String, pub name: String, pub reason: String }
 
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
@@ -26,6 +34,7 @@ pub struct Snapshot {
     pub communities: Vec<Community>, pub direct: Vec<Community>,
     pub rune_url: String, pub typing_enabled: bool, pub read_receipts: bool, pub share_listening: bool, pub outbox: u64,
     pub problems: Vec<String>,
+    pub joining: Vec<Joining>, pub refused: Vec<Joining>,
 }
 
 fn duo(v: &Value) -> Option<(String, String)> {
@@ -42,6 +51,10 @@ impl Snapshot {
         let communities = v["communities"].as_array().map(|l| l.iter().map(|c| Community {
             id: st(c, "id"), name: st(c, "name"), role: st(c, "role"), members: un(c, "members"), removed: bo(c, "removed"), unread: un(c, "unread"), channels: channels(c),
             colours: duo(&c["style"]["community"]),
+            banned: c["banned"].as_array().map(|l| l.iter().map(|b| (st(b, "account"), st(b, "name"))).collect()).unwrap_or_default(),
+            invites: c["invites"].as_array().map(|l| l.iter().map(|i| Invite { id: st(i, "id"), expires: i["expires"].as_f64().unwrap_or(0.), uses_left: i["uses_left"].as_u64(), mine: bo(i, "mine"), password: bo(i, "password") }).collect()).unwrap_or_default(),
+            locked: c["style"]["locked"].as_array().map(|l| l.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
+            removed_reason: st(c, "removed_reason"),
             room_colours: c["style"]["rooms"].as_object().map(|m| m.iter().filter_map(|(g, d)| duo(d).map(|d| (g.clone(), d))).collect()).unwrap_or_default(),
             ..Default::default()
         }).collect()).unwrap_or_default();
@@ -51,6 +64,8 @@ impl Snapshot {
         Snapshot {
             me_account: st(&v["me"], "account"), me_name: st(&v["me"], "name"), relay: st(v, "relay"), net: st(v, "net"), net_detail: st(v, "net_detail"),
             communities, direct, rune_url: st(v, "rune_url"), typing_enabled: bo(v, "typing_enabled"), read_receipts: bo(v, "read_receipts"), share_listening: bo(v, "share_listening"), outbox: un(v, "outbox"),
+            joining: v["joining"].as_array().map(|l| l.iter().map(|j| Joining { id: st(j, "id"), name: st(j, "name"), reason: String::new() }).collect()).unwrap_or_default(),
+            refused: v["refused"].as_array().map(|l| l.iter().map(|j| Joining { id: st(j, "id"), name: st(j, "name"), reason: st(j, "reason") }).collect()).unwrap_or_default(),
             problems: v["problems"].as_array().map(|l| l.iter().map(|p| st(p, "text")).collect()).unwrap_or_default(),
         }
     }

@@ -32,7 +32,7 @@ pub struct Mega {
     pub default_relay: String,
     // the rooms
     pub snap: Option<Snapshot>,
-    snap_hash: String,
+    pub snap_hash: String,
     pub cid: Option<String>,
     pub gid: Option<String>,
     pub level: Level,
@@ -64,6 +64,9 @@ pub struct Mega {
     pub ring: crate::ringui::RingUi,
     pub rune: crate::runebar::RuneUi,
     pub uitest: Option<Arc<crate::uitest::Queue>>,
+    /// People, admin, invites and joining (members.rs), and an invite link given on the command line, waiting for an account.
+    pub mem: crate::members::MembersUi,
+    pub pending_link: Option<String>,
     /// The owner's colour presets are showing in the open room's header.
     pub colours_open: bool,
     /// Checks only (`dmunread=N` step): pretend this many unread messages in every direct conversation, for the core reports none yet.
@@ -87,6 +90,7 @@ impl Mega {
         let relay = cx.new(|cx| InputState::new(window, cx).placeholder("Relay address (https://…)"));
         let set_name = cx.new(|cx| InputState::new(window, cx).placeholder("Your name"));
         let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 8).submit_on_enter(true).placeholder("Write a message"));
+        let (mem, mem_subs) = crate::members::MembersUi::new(window, cx);
         let mut subs = vec![
             cx.subscribe_in(&composer, window, |this: &mut Self, _, ev: &InputEvent, window, cx| match ev {
                 // Enter sends; Shift+Enter is a new line (the input inserts it itself and does not report it as a submit).
@@ -96,12 +100,13 @@ impl Mega {
             }),
             cx.subscribe_in(&pass, window, |this: &mut Self, _, ev: &InputEvent, window, cx| { if let InputEvent::PressEnter { .. } = ev { this.submit_sign_in(window, cx); } }),
         ];
+        subs.extend(mem_subs);
         subs.push(cx.observe_window_activation(window, |this, window, cx| this.beat(window, cx)));
         let prefs = Prefs::load(&core.dir);
         let call = crate::callui::CallUi::new(prefs.deck_w, window, cx);
         let upd = crate::updateui::UpdateUi::new(&core.dir);
         let mut this = Mega {
-            call, upd, ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), dm_caches: Default::default(),
+            call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), dm_caches: Default::default(),
             level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., waves: vec![], bd_clock: 0., bd_cache: Default::default(), holes: Default::default(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
@@ -125,7 +130,7 @@ impl Mega {
         // Rings, what notifications ask of the window, rune in the call bar, the test port: a quarter-second clock.
         this._tasks.push(cx.spawn_in(window, async move |this, cx| loop {
             cx.background_executor().timer(Duration::from_millis(250)).await;
-            if this.update_in(cx, |this, window, cx| { this.ring_tick(window, cx); this.rune_tick(window, cx); this.uitest_tick(window, cx); }).is_err() { break; }
+            if this.update_in(cx, |this, window, cx| { this.ring_tick(window, cx); this.mem_tick(window, cx); this.rune_tick(window, cx); this.uitest_tick(window, cx); }).is_err() { break; }
         }));
         // The fields move at 20 frames a second on the cards and 10 behind a chat (25 while a ripple runs), as in mega.js;
         // not at all with the battery saver on, or while the window is not the active one.
@@ -209,6 +214,18 @@ impl Mega {
             Screen::Welcome => {
                 let (name, relay) = (self.name.read(cx).value().to_string(), self.relay.read(cx).value().to_string());
                 self.busy = true; self.error = None; cx.notify();
+                // an invite link given on the command line: its server and sign-up secret make the account, and it is used to join afterwards
+                if let Some(link) = self.pending_link.clone() {
+                    self.rpc("parse_link", json!({"link": link}), window, cx, move |this, r, window, cx| {
+                        let (relay, secret) = match r { Ok(v) => (v["relay"].as_str().unwrap_or("").to_string(), v["secret"].as_str().unwrap_or("").to_string()), Err(e) => { this.busy = false; this.error = Some(e.into()); cx.notify(); return; } };
+                        this.rpc("create_account", json!({"relay": relay, "passphrase": pass, "name": name, "invite": secret}), window, cx, |this, r, window, cx| {
+                            this.busy = false;
+                            match r { Ok(_) => this.enter(window, cx), Err(e) => this.error = Some(e.into()) }
+                            cx.notify();
+                        });
+                    });
+                    return;
+                }
                 self.rpc("create_account", json!({"relay": relay, "passphrase": pass, "name": name, "invite": ""}), window, cx, |this, r, window, cx| {
                     this.busy = false;
                     match r { Ok(_) => this.enter(window, cx), Err(e) => this.error = Some(e.into()) }
@@ -233,6 +250,7 @@ impl Mega {
         self.rpc("notify_get", json!({}), window, cx, |this, r, _, _| { if let Ok(v) = r { this.notify_settings = v; } });
         self.tick(window, cx);
         self.start_ui_steps(window, cx);
+        if let Some(l) = self.pending_link.take() { self.join_with(l, window, cx); }
     }
 
     // ---- the look every half second ----

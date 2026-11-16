@@ -72,11 +72,13 @@ impl Mega {
 
     fn top_bar(&mut self, title: String, back: Option<Level>, cx: &mut Context<Self>) -> impl IntoElement {
         let net = self.snap.as_ref().map(|s| s.net.clone()).unwrap_or_default();
+        let extra: Vec<AnyElement> = match self.level.clone() { Level::Server(cid) => self.community_buttons(&cid, cx), Level::Home => self.home_buttons(cx), _ => vec![] };
         h_flex().flex_none().w_full().px_6().pt_5().pb_3().gap_3().items_end()
             .when_some(back, |d, to| d.child(div().id("back").size(px(22.)).mb_2().rounded(px(6.)).bg(look::paper()).cursor_pointer()
                 .on_click(cx.listener(move |this, _, window, cx| this.go(to.clone(), window, cx)))))
             .child(div().font_family(look::F_SHARP).text_size(px(48.)).line_height(px(44.)).child(title))
             .child(div().flex_1())
+            .children(extra)
             .when(net != "online", |d| d.child(div().mb_1().font_family(look::F_NAME).text_size(px(12.)).text_color(rgb(look::DANGER)).child(if net == "connecting" { "connecting…".to_string() } else { "offline".to_string() })))
             .when(self.still(), |d| d.child(div().mb_1().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child("battery saver")))
             .child(Button::new("settings").ghost().small().label("settings").on_click(cx.listener(|this, _, window, cx| this.go(Level::Settings, window, cx))))
@@ -86,6 +88,7 @@ impl Mega {
         let snap = self.snap.clone().unwrap_or_default();
         let mut col = v_flex().id("home").flex_1().min_h_0().w_full().overflow_y_scroll().px_6().pb_6().gap_4();
         for card in self.update_cards(cx) { col = col.child(card); }
+        for n in self.joining_notes(cx) { col = col.child(n); }
         for c in snap.communities.iter().filter(|c| !c.removed) {
             let here: Vec<String> = c.channels.iter().filter(|x| x.kind == "voice").filter_map(|x| self.pres.calls.get(&x.gid)).flatten().cloned().collect();
             let card = Card { key: c.id.clone(), cid: c.id.clone(), room: String::new(), title: c.name.clone(), sub: format!("{} rooms · {} people", c.channels.len(), c.members), unread: c.unread,
@@ -93,7 +96,7 @@ impl Mega {
             col = col.child(self.card(card, cx));
         }
         if snap.communities.iter().all(|c| c.removed) {
-            col = col.child(div().py_8().text_color(look::mute()).child("No communities yet. Creating one and joining with an invite are not in this build yet: use the web or Tauri app for that."));
+            col = col.child(div().py_8().text_color(look::mute()).child("No communities yet. Use \"new community\" above to start one, or \"join\" if someone sent you an invite."));
         }
         // people: one-to-one conversations, named after the other person
         if !snap.direct.is_empty() {
@@ -202,6 +205,7 @@ impl Mega {
         let duo = self.room_duo(&gid);
         let is_dm = self.channel(&gid).is_some_and(|(c, _)| c.direct);
         let owner = self.channel(&gid).is_some_and(|(c, _)| !c.direct && (c.role == "owner" || c.role == "admin"));
+        let chat_cid = self.channel(&gid).map(|(c, _)| c.id.clone());
         let typing = match self.win.typing.len() { 0 => String::new(), 1 => format!("{} is writing…", self.win.typing[0]), n => format!("{n} people are writing…") };
         let (font, size, lh) = self.chat_font();
         // The room's backdrop: a two-colour speckle that organises into bands around new activity (backdrop.rs).
@@ -215,6 +219,7 @@ impl Mega {
                     .child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(sub).child(hole(&holes))))
                 .child(div().flex_1())
                 .children(if is_dm { self.call_person_button(&gid, cx) } else { None })
+                .when(!is_dm, |d| d.children(chat_cid.map(|cid| self.community_buttons(&cid, cx)).unwrap_or_default()))
                 .when(owner, |d| d.child(self.colour_picker(cx))))
             .child(div().flex_1().min_h_0().relative()
                 .child(list(self.list.clone(), cx.processor(|this, ix: usize, _, _| this.render_msg(ix))).size_full())
@@ -361,7 +366,8 @@ impl Render for Mega {
                 let bar = self.call_bar(cx);
                 let pop = self.call_popover(cx);
                 let rings = self.ring_overlay(cx);
-                base.child(v_flex().size_full().child(div().flex_1().min_h_0().w_full().child(body)).children(bar)).children(pop).children(rings)
+                let people = self.members_overlay(cx);
+                base.child(v_flex().size_full().child(div().flex_1().min_h_0().w_full().child(body)).children(bar)).children(pop).children(people).children(rings)
             }
         }
     }

@@ -14,6 +14,7 @@ mod popout;
 mod video;
 mod fonts;
 mod linen;
+mod members;
 mod model;
 mod notifier;
 mod ringui;
