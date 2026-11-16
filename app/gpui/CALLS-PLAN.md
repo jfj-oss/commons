@@ -78,6 +78,30 @@ The window side of step 3 and step 4, in `src/callui.rs`, `deck.rs`, `video.rs`,
 - Checks: `app/gpui/bench/ui-world.mjs` builds a throwaway world (relay, LiveKit, Alice, Bob, Carol, two headless native engines);
   `MEGA_GPUI_UI_STEPS="join;wait=6000;settings;..."` drives the window without a pointer; `examples/fakekeys` does pointer and keys.
 
+## Progress (2026-11-16, branch `gpui-video`): pictures in the window, local previews, camera
+
+Step 4's engine half and step 6, on top of the merged voice + share + PTT + UI branch.
+
+- **Remote pictures**: every subscribed remote camera and screen share is read by `calls/videoin.rs` (`NativeVideoStream`, the SDK's
+  default queue of one frame, so a slow window never builds a queue), converted I420 to BGRA with libyuv off the async worker and
+  pushed to `video::Frames` under the track's sid. `Options.frames` is the switch (`None` = video tracks are not read). A tile marked
+  `Frames::set_hidden` is read and dropped without conversion (the UI does not mark tiles yet: the window has no off-screen tile
+  notion, the hook is there). Subscribed video is asked for the High layer (`set_video_quality`, call.js "auto"); a new subscription
+  starts on a lower layer and rises with the server's bandwidth estimate (the tests wait for it). `Snapshot.muted_video` lists remote
+  cameras that are switched off (no tile; the last picture is cleared on mute so it never flashes on return).
+- **Local previews**: `Snapshot.local_video` (`<me>/<sid>:Camera|Screenshare`); the share and camera tasks push the buffer they are
+  sending (scaled down to at most 1280x720 for the tile) under their publication's sid. No second capture, no re-encode.
+- **Camera** (`calls/camera.rs`, `camera_linux.rs`): commands `ListCameras/StartCamera/StopCamera/SwitchCamera/SetCameraProfile`,
+  `Snapshot.cameras/camera/camId`, profiles 720p and 1080p with call.js's encodings (VP8, simulcast, balanced). Off = muted, not
+  unpublished (same sid back on). Same publish rule as the mic and share (must come back encrypted). **V4L2 by hand** (libc ioctl +
+  mmap, MJPEG via zune-jpeg or YUYV): `nokhwa` and the `v4l` crate both need `bindgen`/libclang and a second `bitflags`/`rustix`,
+  which would change the lock file for the other workspace members; the lock now differs only by two entries in mega-gpui's own
+  dependency list (`libc`, `zune-jpeg 0.5.15`, both already built). UI: a Camera button in the call bar, camera and 720p/1080p choices in
+  call settings, your own tile ("You").
+- **Tests**: `tools/gpui-call-video.mjs`, 24 checks (see its header). The camera is the engine's synthetic source through the same
+  fit/publish/preview path; the V4L2 path is only pointed at a device that does not exist. Real camera and V4L2 streaming are **not**
+  run by any test (no loopback device, no kernel modules loaded); the struct sizes and ioctl numbers are asserted in unit tests.
+
 ## Summary
 
 - **Go.** A Rust LiveKit participant and the real `call.js` in headless Chromium were put in one local LiveKit room

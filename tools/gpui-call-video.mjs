@@ -81,7 +81,7 @@ try {
   const natTrack = async (source, ms = 10000, wantMuted = false) => { const t = Date.now(); let r; for (;;) { r = await natPub(source); if (r.present && r.muted === wantMuted && (wantMuted || r.sub)) return r; if (Date.now() - t > ms) return { ...r, timeout: true }; await sleep(250); } };
   // the picture at one quality on Alice's side: size once it settles, then frames per second over 4 s; and two sampled pixels
   const view = (source, q, wantH) => call(A, `(async () => { const sleep = ms => new Promise(r => setTimeout(r, ms));
-    let t; for (let i = 0; i < 60 && !t; i++) { t = [...c.tracks.values()].find(x => x.identity === ${J(N.device)} && x.source === ${J(source)} && !x.pub.isMuted); if (!t) await sleep(250); } if (!t) return { present: false };
+    let t; for (let i = 0; i < 60 && !t; i++) { t = [...c.tracks.values()].find(x => x.identity === ${J(N.device)} && x.source === ${J(source)} && !x.pub.isMuted && x.track && x.track.receiver); if (!t) await sleep(250); } if (!t) return { present: false };
     c.setViewQuality(t.pub.trackSid, ${J(q)}); const v = t.track.attach(); v.muted = true; await v.play().catch(() => {});
     const stats = async () => { const r = await t.track.receiver.getStats(); let o = null; r.forEach(s => { if (s.type === 'inbound-rtp' && s.kind === 'video') o = s; }); return o; };
     let s = null; const t0 = Date.now(); while (Date.now() - t0 < 25000) { await sleep(500); s = await stats(); if (s && s.frameHeight === ${wantH}) break; }
