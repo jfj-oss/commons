@@ -1,6 +1,6 @@
 //! What is on screen: the community cards, a community's room cards, a room beside its colour dots, and settings.
 use crate::app::{clock, Level, Mega, Screen};
-use crate::ascii::{self, hole, Field, Holes};
+use crate::ascii::{self, hole, Holes};
 use crate::look::{self, Duo};
 use crate::cards::chip;
 use crate::model::Msg;
@@ -14,6 +14,7 @@ use gpui_kit::component::{h_flex, v_flex, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::json;
+use std::rc::Rc;
 
 /// Corner of a card (mega.css --m-sq is 76 px on the web's big cards, a true squircle, which reads rounder at the same number than a circle does).
 const SQ: f32 = 60.;
@@ -95,13 +96,22 @@ impl Mega {
         let chat_cid = self.channel(&gid).map(|(c, _)| c.id.clone());
         let typing = match self.win.typing.len() { 0 => String::new(), 1 => format!("{} is writing…", self.win.typing[0]), n => format!("{n} people are writing…") };
         let (font, size, lh) = self.chat_font();
-        // The room's backdrop: a two-colour speckle that organises into bands around new activity (backdrop.rs).
-        // the owner's own backdrop colours and strength (the colours panel's "chat backdrop"), else the room's colours at 100 percent
-        let (bd_duo, bd_dim) = match self.channel(&gid).filter(|(c, _)| !c.direct).map(|(c, _)| c.id.clone()) {
-            Some(cid) => { let l = self.look_for(&cid, &gid); (l.back.and_then(|(m, h)| Some(Duo { main: look::parse_hex(&m)?, hi: look::parse_hex(&h)? })).unwrap_or(duo), l.dim.map(|d| d.min(crate::paint::DIM_MAX) as f32 / 100.).unwrap_or(1.)) }
-            None => (duo, 1.),
+        // The room's backdrop: the room's ASCII field in the owner's chat pattern, colours and strength, dim behind the chat (backdrop.rs).
+        // The owner's own backdrop colours, else the room's; the chat pattern, else the room's automatic one; strength 100 percent unless set.
+        let (cid_look, auto) = match self.channel(&gid).filter(|(c, _)| !c.direct) {
+            Some((c, _)) => { let i = c.channels.iter().position(|x| x.gid == gid).unwrap_or(0); (Some(c.id.clone()), [0, 3, 4, 5, 2][(look::h(&c.id) as usize + i) % 5]) }
+            None => (None, ascii::auto_fx(&title)),
         };
-        let backdrop = crate::backdrop::view(self.bd_cache.clone(), look::h(&gid), bd_duo, self.waves.clone(), self.bd_clock, self.still(), is_dm, 0., bd_dim);
+        let lk = cid_look.as_ref().map(|c| self.look_for(c, &gid)).unwrap_or_default();
+        let bd_duo = lk.back.clone().and_then(|(m, h)| Some(Duo { main: look::parse_hex(&m)?, hi: look::parse_hex(&h)? })).unwrap_or(duo);
+        let bd_dim = self.bd_dim(&gid);
+        let bd_fx = lk.chat.filter(|n| *n < ascii::FX_NAMES.len()).unwrap_or(auto);
+        let marks = Rc::new(self.wall.marks_of(&gid));
+        let (rw, rh) = { let r = self.wall.room_rect.get(); (r.2.max(1.), r.3.max(1.)) };
+        let avoid = (!marks.is_empty()).then(|| (crate::wall::grid_in(rw, rh, false), marks));
+        let still = self.still();
+        let bd_back = crate::backdrop::wash(bd_duo.main, crate::backdrop::lv(bd_dim));
+        let backdrop = (bd_dim > 0).then(|| ascii::field(crate::backdrop::field(&gid, bd_fx, bd_duo, bd_dim, &self.bd, still, &self.holes, avoid, rw < 560.)));
         let holes = self.holes.clone();
         // the room's wall: behind the chat, over the backdrop; the pen's layer and the tools over everything while drawing
         self.wall_room_focus(if is_dm { None } else { Some(gid.clone()) });
@@ -109,8 +119,8 @@ impl Mega {
         let wall_hit = self.wall_room_hit(cx);
         let wall_bar = self.wall_toolbar(cx);
         let wall_btn = if is_dm { None } else { self.wall_room_button(cx) };
-        v_flex().flex_1().h_full().min_w_0().relative().bg(rgb(0x14111a))
-            .child(div().absolute().inset_0().child(backdrop))
+        v_flex().flex_1().h_full().min_w_0().relative().bg(rgb(bd_back))
+            .children(backdrop.map(|b| div().absolute().inset_0().child(b)))
             .child(wall_layer)
             .child(h_flex().flex_none().items_start().px_5().pt_3().pb_1()
                 .child(v_flex().items_start()
