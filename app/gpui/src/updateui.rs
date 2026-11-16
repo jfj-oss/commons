@@ -147,7 +147,8 @@ impl Mega {
     }
 
     fn card_shell(&self) -> Div {
-        v_flex().flex_none().w_full().gap_2().p_4().rounded(px(18.)).bg(rgb(look::SLIP)).border_1().border_color(look::line())
+        v_flex().relative().flex_none().w_full().gap_2().p_4().border_1().border_color(hsla(0., 0., 0., 0.))
+            .child(crate::squircle::back(18., rgb(look::SLIP))).child(crate::squircle::front(18., None, Some((1., look::line())), None))
     }
     fn card_title(t: String) -> Div { div().font_family(look::F_NAME).text_size(px(20.)).line_height(px(24.)).text_color(look::paper()).child(t) }
     fn card_text(t: String) -> Div { div().font_family(look::F_UI).text_size(px(14.)).line_height(px(20.)).text_color(look::mute()).child(t) }

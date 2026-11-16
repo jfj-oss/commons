@@ -82,7 +82,7 @@ pub struct Field {
     pub gate: f64,
     pub hi_t: f64,
     pub alpha: f32,
-    /// Corner radius of what the field lies on: cells outside the rounded corners are left out.
+    /// Corner radius of the squircle the field lies on: cells outside its corners are left out.
     pub radius: f32,
     pub ripples: Vec<Ripple>,
     /// Boxes (relative to the field) the pattern flows around: the words on a card.
@@ -145,12 +145,8 @@ pub fn field(f: Field) -> impl IntoElement {
             holes.extend(live.borrow().iter().filter(|b| b.intersects(&bounds)).map(|b| Bounds::new(point(b.origin.x - bounds.origin.x - px(cw), b.origin.y - bounds.origin.y), size(b.size.width + px(2. * cw), b.size.height))));
         }
         let rad = f.radius;
-        let outside_corner = |x: f32, y: f32| -> bool {
-            if rad <= 0. { return false; }
-            let dx = if x < rad { rad - x } else if x > w - rad { x - (w - rad) } else { 0. };
-            let dy = if y < rad { rad - y } else if y > h - rad { y - (h - rad) } else { 0. };
-            dx > 0. && dy > 0. && dx * dx + dy * dy > rad * rad
-        };
+        // cells outside the squircle's corners are left out (the card's own cut corners then only have to tidy the edge)
+        let outside_corner = |x: f32, y: f32| -> bool { rad > 0. && !crate::squircle::contains(x, y, 0., 0., w, h, rad) };
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             for y in 0..rows {
                 for x in 0..cols {

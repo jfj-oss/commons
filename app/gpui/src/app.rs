@@ -46,6 +46,10 @@ pub struct Mega {
     pub bd_clock: f64,
     pub bd_cache: crate::backdrop::Shared,
     pub holes: crate::ascii::Holes,
+    /// Messages resolving out of glyphs and reactions flying to their pills (arrive.rs); empty almost always, and then no frames are asked for.
+    pub arrivals: crate::arrive::Arrivals,
+    pub flights: crate::arrive::Flights,
+    pub epoch: Instant,
     last_anim: Instant,
     pub notify_settings: Value,
     pub set_name: Entity<InputState>,
@@ -107,7 +111,7 @@ impl Mega {
         let upd = crate::updateui::UpdateUi::new(&core.dir);
         let mut this = Mega {
             call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), dm_caches: Default::default(),
-            level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., waves: vec![], bd_clock: 0., bd_cache: Default::default(), holes: Default::default(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
+            level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., waves: vec![], bd_clock: 0., bd_cache: Default::default(), holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
             list: ListState::new(0, ListAlignment::Bottom, px(600.)), composer, typing_sent: None, ticking: false, again: false, first_frame_done: false,
@@ -173,6 +177,34 @@ impl Mega {
         self.last_anim = Instant::now();
         cx.notify();
     }
+    /// Seconds on the arrival clock.
+    /// (Tests slow it down with MEGA_GPUI_ARRIVE_SLOW=10 so a screenshot can catch it half way.)
+    pub fn now_secs(&self) -> f64 {
+        static SLOW: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+        let slow = *SLOW.get_or_init(|| std::env::var("MEGA_GPUI_ARRIVE_SLOW").ok().and_then(|x| x.parse::<f64>().ok()).filter(|x| *x >= 1.).unwrap_or(1.));
+        self.epoch.elapsed().as_secs_f64() / slow
+    }
+    /// Effects run only with the saver off, in a window that is showing the room and that someone can see.
+    fn showing(&self, window: &Window) -> bool { self.level == Level::Chat && !self.still() && window.is_window_active() }
+    /// Messages that were not in the open room a moment ago resolve out of glyphs (arrive.rs).
+    fn arrive(&mut self, known: &std::collections::HashSet<String>, window: &Window) {
+        let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let mo = crate::arrive::Moment { now: self.now_secs(), wall, showing: self.showing(window), still: self.still() };
+        let fresh: Vec<_> = self.win.msgs.iter().filter(|m| !known.contains(&m.id)).cloned().collect();
+        self.arrivals.arrive(&fresh, mo);
+    }
+    /// A count that went up on a message that was already showing: its emoji flies to the pill.
+    fn throw_reactions(&mut self, old: &[(String, Vec<crate::arrive::Rx>)], known: &std::collections::HashSet<String>, window: &Window) {
+        let ok = self.showing(window);
+        let now = self.now_secs();
+        for m in &self.win.msgs {
+            if !known.contains(&m.id) || m.reactions.is_empty() { continue; }
+            let before: &[crate::arrive::Rx] = old.iter().find(|(id, _)| id == &m.id).map(|(_, r)| r.as_slice()).unwrap_or(&[]);
+            let after: Vec<crate::arrive::Rx> = m.reactions.iter().map(|x| (x.emoji.clone(), x.count, x.mine)).collect();
+            self.flights.throw(&m.id, before, &after, now, ok);
+        }
+    }
+
     /// Activity in the open room: a wave leaves from where the newest line is and the speckle organises into bands around it.
     pub fn stir(&mut self, n: usize) {
         if self.still() || self.gid.as_deref().and_then(|g| self.channel(g)).is_some_and(|(c, _)| c.direct) { return; }
@@ -301,7 +333,14 @@ impl Mega {
         if let Some((gid, Ok(r))) = out.msgs {
             if self.gid.as_deref() != Some(gid.as_str()) { return; }
             let was = self.win.msgs.len();
-            match self.win.apply(&r) {
+            // reactions as they were, to see which counts went up (thrown reactions)
+            let old_rx: Vec<(String, Vec<crate::arrive::Rx>)> = self.win.msgs.iter().filter(|m| !m.reactions.is_empty()).map(|m| (m.id.clone(), m.reactions.iter().map(|x| (x.emoji.clone(), x.count, x.mine)).collect())).collect();
+            let known: std::collections::HashSet<String> = self.win.msgs.iter().map(|m| m.id.clone()).collect();
+            let loaded = !self.win.hash.is_empty();
+            let applied = self.win.apply(&r);
+            // new messages in a room that was already showing resolve out of glyphs, however the answer described them (a difference or the whole window)
+            if loaded && matches!(applied, Ok(Change::InPlace { .. }) | Ok(Change::Reset)) { self.arrive(&known, window); self.throw_reactions(&old_rx, &known, window); }
+            match applied {
                 Ok(Change::Same) => {}
                 Ok(Change::InPlace { changed, appended }) => {
                     // a changed row is measured again; new rows are added at the end, and a list that was at the bottom stays there
@@ -355,7 +394,7 @@ impl Mega {
     pub fn open_room(&mut self, cid: String, gid: String, window: &mut Window, cx: &mut Context<Self>) {
         self.level = Level::Chat;
         if self.gid.as_deref() == Some(gid.as_str()) { cx.notify(); return; }
-        self.waves.clear();
+        self.waves.clear(); self.arrivals.clear(); self.flights.clear();
         let unread = self.channel(&gid).filter(|(c, _)| c.direct).map(|(_, ch)| ch.unread as usize).unwrap_or(0).max(if self.channel(&gid).is_some_and(|(c, _)| c.direct) { self.fake_dm_unread } else { 0 });
         self.dm_marks = (gid.clone(), unread);
         self.cid = Some(cid);
