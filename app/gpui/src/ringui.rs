@@ -26,6 +26,8 @@ pub struct RingUi {
     pub joining: Vec<(String, String, f64)>,
     chime: Option<Chime>,
     chime_sound: Option<bool>,
+    /// Tests only: behave as a window nobody is looking at.
+    pub unattended: bool,
     /// Counts for checks.
     pub stats: Stats,
 }
@@ -38,6 +40,9 @@ impl Mega {
         if self.ring.notes.len() > 3 { self.ring.notes.remove(0); }
         cx.notify();
     }
+
+    /// Is this window the one being looked at? (A test can say it is not: `{"cmd":"attend","on":false}` on the test port.)
+    pub fn attended(&self, window: &Window) -> bool { window.is_window_active() && !self.ring.unattended }
 
     /// The room of the call we are in, whatever its phase.
     fn my_call_gid(&self) -> Option<String> { if self.call.in_call() { self.call.snap.gid.clone() } else { None } }
@@ -119,13 +124,13 @@ impl Mega {
 
     /// A system notification for a ring while the window is not the one being looked at, unless notifications are off.
     fn notify_ring(&mut self, c: &ring::Card, window: &Window) {
-        if window.is_window_active() || !self.notifications_on() { return; }
+        if self.attended(window) || !self.notifications_on() { return; }
         let Some(n) = self.core.notifier.clone() else { return };
         let title = if c.direct { format!("{} is calling you", c.name) } else { format!("{} is calling in {}", c.name, c.room) };
         n.show_plain(&format!("ring:{}", c.ring), &title, &format!("{} · {}", c.room, c.comm), Some(&c.gid));
     }
     fn notify_missed(&mut self, window: &Window) {
-        if window.is_window_active() || !self.notifications_on() { return; }
+        if self.attended(window) || !self.notifications_on() { return; }
         let (Some(n), Some(m)) = (self.core.notifier.clone(), self.ring.book.missed.last().cloned()) else { return };
         n.show_plain(&format!("missed:{}", m.at as u64), "Missed call", &m.line(), None);
     }

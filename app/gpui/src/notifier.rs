@@ -85,7 +85,7 @@ mod linux {
     const DEST: &str = "org.freedesktop.Notifications";
     const PATH: &str = "/org/freedesktop/Notifications";
 
-    enum Cmd { Show { tag: String, title: String, body: String, gid: Option<String> }, Close }
+    enum Cmd { Show { tag: String, title: String, body: String, gid: Option<String>, reply: bool }, Close }
 
     /// The notification sink and the way to show a plain one (a ring, a missed call). Cheap to share.
     pub struct Notifier { tx: UnboundedSender<Cmd> }
@@ -104,13 +104,15 @@ mod linux {
         /// A note that is not a message: `tag` replaces an older one with the same tag; a click opens the window (and the
         /// room, when `gid` is given).
         pub fn show_plain(&self, tag: &str, title: &str, body: &str, gid: Option<&str>) {
-            let _ = self.tx.send(Cmd::Show { tag: tag.into(), title: title.into(), body: body.into(), gid: gid.map(String::from) });
+            let _ = self.tx.send(Cmd::Show { tag: tag.into(), title: title.into(), body: body.into(), gid: gid.map(String::from), reply: false });
         }
         /// Takes down the note with this tag (a ring that was answered).
         pub fn close_all(&self) { let _ = self.tx.send(Cmd::Close); }
     }
     impl Sink for Notifier {
-        fn show(&self, note: &Note) { self.show_plain(&format!("room:{}", note.gid), &note.title, &note.body, Some(&note.gid)); }
+        fn show(&self, note: &Note) {
+            let _ = self.tx.send(Cmd::Show { tag: format!("room:{}", note.gid), title: note.title.clone(), body: note.body.clone(), gid: Some(note.gid.clone()), reply: true });
+        }
     }
 
     async fn connect(bus: &Bus) -> Result<Connection, String> {
@@ -136,7 +138,7 @@ mod linux {
         let mut acted: Option<zbus::proxy::SignalStream<'static>> = None;
         let mut closed: Option<zbus::proxy::SignalStream<'static>> = None;
         let mut replied: Option<zbus::proxy::SignalStream<'static>> = None;
-        let mut known: BTreeMap<u32, (String, Option<String>)> = BTreeMap::new();   // notification id -> (tag, room)
+        let mut known: BTreeMap<u32, (String, Option<String>, bool)> = BTreeMap::new();   // notification id -> (tag, room to open, a reply goes there)
         let mut by_tag: HashMap<String, u32> = HashMap::new();
         loop {
             tokio::select! {
@@ -147,7 +149,7 @@ mod linux {
                             if let Some(l) = &live { for id in known.keys() { let _ = l.proxy.call_method("CloseNotification", &(*id,)).await; } }
                             known.clear(); by_tag.clear();
                         }
-                        Cmd::Show { tag, title, body, gid } => {
+                        Cmd::Show { tag, title, body, gid, reply: can_reply } => {
                             if live.is_none() {
                                 match attach(&bus).await {
                                     Ok(l) => {
@@ -160,7 +162,7 @@ mod linux {
                                 }
                             }
                             let l = live.as_ref().unwrap();
-                            let w = wire(&l.caps, gid.is_some(), &body);
+                            let w = wire(&l.caps, gid.is_some() && can_reply, &body);
                             let replaces = by_tag.get(&tag).copied().unwrap_or(0);
                             let mut hints: HashMap<&str, Value<'_>> = HashMap::new();
                             hints.insert("category", Value::from("im.received"));
@@ -171,8 +173,8 @@ mod linux {
                             match sent {
                                 Ok(id) => {
                                     by_tag.insert(tag.clone(), id);
-                                    known.insert(id, (tag, gid));
-                                    while known.len() > KNOWN { if let Some((&old, _)) = known.iter().next() { if let Some((t, _)) = known.remove(&old) { if by_tag.get(&t) == Some(&old) { by_tag.remove(&t); } } } }
+                                    known.insert(id, (tag, gid, can_reply));
+                                    while known.len() > KNOWN { if let Some((&old, _)) = known.iter().next() { if let Some((t, _, _)) = known.remove(&old) { if by_tag.get(&t) == Some(&old) { by_tag.remove(&t); } } } }
                                 }
                                 Err(e) => { eprintln!("notifications: {e}"); live = None; acted = None; closed = None; replied = None; }
                             }
@@ -182,7 +184,7 @@ mod linux {
                 m = next(acted.as_mut()) => {
                     let Some(m) = m else { live = None; acted = None; closed = None; replied = None; continue };
                     if let Ok((id, key)) = m.body().deserialize::<(u32, String)>() {
-                        if let Some((_, gid)) = known.get(&id) {
+                        if let Some((_, gid, _)) = known.get(&id) {
                             if key == "default" || key == "Open" { inbox.push(Inbound::Open(gid.clone())); }
                         }
                     }
@@ -190,13 +192,13 @@ mod linux {
                 m = next(closed.as_mut()) => {
                     let Some(m) = m else { live = None; acted = None; closed = None; replied = None; continue };
                     if let Ok((id, _why)) = m.body().deserialize::<(u32, u32)>() {
-                        if let Some((tag, _)) = known.remove(&id) { if by_tag.get(&tag) == Some(&id) { by_tag.remove(&tag); } }
+                        if let Some((tag, _, _)) = known.remove(&id) { if by_tag.get(&tag) == Some(&id) { by_tag.remove(&tag); } }
                     }
                 }
                 m = next(replied.as_mut()) => {
                     let Some(m) = m else { replied = None; continue };
                     let Ok((id, text)) = m.body().deserialize::<(u32, String)>() else { continue };
-                    let Some((_, Some(gid))) = known.get(&id).cloned() else { continue };
+                    let Some((_, Some(gid), true)) = known.get(&id).cloned() else { continue };
                     let text = text.trim().to_string();
                     if text.is_empty() { continue; }
                     // the core call blocks: off this thread, so the next signal is not held up
@@ -380,7 +382,7 @@ mod tests {
         let Some(bus) = PrivateBus::start("plain") else { eprintln!("skipped: no dbus-daemon"); return };
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
         let svc = rt.block_on(Service::start(&bus.addr, &["actions", "inline-reply"]));
-        let (reply, _) = recorder();
+        let (reply, sent) = recorder();
         let inbox = Arc::new(Inbox::default());
         let n = Notifier::start(Bus::Address(bus.addr.clone()), reply, inbox.clone());
         rt.block_on(async {
@@ -390,6 +392,15 @@ mod tests {
             assert_eq!(g.actions, ["default", "Open"]);
             svc.signal("ActionInvoked", g.id, "default").await;
             until("open", || inbox.take().contains(&Inbound::Open(None))).await;
+            // a ring that opens a room still offers no reply: there is nothing to answer in writing
+            n.show_plain("ring2", "Bob is calling in porch", "porch", Some("gid-9"));
+            until("second note", || svc.got.lock().unwrap().len() == 2).await;
+            let g2 = svc.got.lock().unwrap()[1].clone();
+            assert_eq!(g2.actions, ["default", "Open"]);
+            svc.signal("NotificationReplied", g2.id, "no").await;
+            svc.signal("ActionInvoked", g2.id, "default").await;
+            until("open the room", || inbox.take().contains(&Inbound::Open(Some("gid-9".into())))).await;
+            assert!(sent.lock().unwrap().is_empty(), "no reply is ever sent for a ring");
         });
     }
 

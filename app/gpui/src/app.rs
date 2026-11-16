@@ -326,7 +326,7 @@ impl Mega {
 
     fn beat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.screen != Screen::Main { return; }
-        let attended = window.is_window_active();
+        let attended = self.attended(window);
         self.rpc("notify_beat", json!({"attended": attended, "web": false}), window, cx, |_, _, _, _| {});
     }
 
