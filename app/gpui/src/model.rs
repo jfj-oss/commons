@@ -97,6 +97,8 @@ pub struct Reaction { pub emoji: String, pub count: u64, pub mine: bool }
 pub struct Msg {
     pub id: String, pub sender: String, pub name: String, pub mine: bool, pub ts: u64, pub kind: String, pub text: String, pub status: String,
     pub file: Option<(String, u64)>, pub reply: Option<(String, String)>, pub edited: bool, pub deleted: bool, pub reactions: Vec<Reaction>, pub read_by: Vec<String>,
+    /** the sender's role in the community ("owner", "admin", "member"), the start of their account id, and whether another person here has the same name */
+    pub role: String, pub tag: String, pub same_name: bool,
 }
 impl Msg {
     pub fn parse(v: &Value) -> Msg {
@@ -107,6 +109,7 @@ impl Msg {
             edited: bo(v, "edited"), deleted: bo(v, "deleted"),
             reactions: v["reactions"].as_array().map(|l| l.iter().map(|r| Reaction { emoji: st(r, "emoji"), count: un(r, "count"), mine: bo(r, "mine") }).collect()).unwrap_or_default(),
             read_by: v["read_by"].as_array().map(|l| l.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
+            role: st(v, "role"), tag: st(v, "tag"), same_name: bo(v, "same_name"),
         }
     }
 }

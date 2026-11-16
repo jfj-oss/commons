@@ -13,18 +13,23 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{h_flex, v_flex, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::rc::Rc;
 
 /// Corner of a card (mega.css --m-sq is 76 px on the web's big cards, a true squircle, which reads rounder at the same number than a circle does).
 const SQ: f32 = 60.;
 
+/// The padlock before the room's small print (a 9 by 12 drawing).
+fn lock_icon() -> Div {
+    v_flex().items_center().flex_none().child(div().w(px(6.)).h(px(5.)).border_1().border_b_0().border_color(look::mute()).rounded_t(px(3.))).child(div().w(px(9.)).h(px(6.)).rounded(px(1.5)).bg(look::mute()))
+}
+
 pub(crate) fn face_dot(name: &str, size: f32) -> Div {
     div().size(px(size)).flex_none().rounded_full().bg(look::face(name)).border_1().border_color(hsla(0., 0., 0., 0.35))
 }
-fn avatar(name: &str) -> Div {
+fn avatar(name: &str, size: f32) -> Div {
     let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into());
-    div().relative().size(px(36.)).flex_none().text_color(rgb(0x0c0d12)).font_family(look::F_SHARP).text_size(px(24.)).line_height(px(36.))
+    div().relative().size(px(size)).flex_none().text_color(rgb(0x0c0d12)).font_family(look::F_SHARP).text_size(px(size * 24. / 36.)).line_height(px(size))
         .flex().items_center().justify_center().child(sq::back(11., look::face(name))).child(div().relative().child(initial))
 }
 
@@ -53,9 +58,9 @@ impl Mega {
             .child(chip("settings", "settings").on_click(cx.listener(|this, _, window, cx| this.go(Level::Settings, window, cx))))
     }
 
-    /// An owner's choice of colours for the open room: three bold presets, and the default back.
+    /// An owner's choice of colours for the open room: a chip like the others, three bold presets after it, and the default back.
     fn colour_picker(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut row = h_flex().relative().gap_2().items_center().pt_1();
+        let mut row = h_flex().relative().gap_2().items_center();
         if self.colours_open {
             for (i, (_name, main, hi)) in look::PRESETS.iter().enumerate() {
                 let (m, h) = (*main, *hi);
@@ -63,11 +68,41 @@ impl Mega {
                     .child(div().size_full().bg(linear_gradient(135., linear_color_stop(rgb(m), 0.5), linear_color_stop(rgb(h), 0.5))))
                     .on_click(cx.listener(move |this, _, window, cx| this.set_room_colours(Some((m, h)), window, cx))));
             }
-            row = row.child(div().id("preset-default").px_2().rounded_full().border_1().border_color(look::line()).font_family(look::F_NAME).text_size(px(12.)).cursor_pointer().child("default")
-                .on_click(cx.listener(|this, _, window, cx| this.set_room_colours(None, window, cx))));
+            row = row.child(chip("preset-default", "default").on_click(cx.listener(|this, _, window, cx| this.set_room_colours(None, window, cx))));
         }
-        row.child(div().id("preset-open").px_2().py_0p5().rounded_full().border_1().border_color(look::line()).font_family(look::F_NAME).text_size(px(12.)).cursor_pointer().child("colours")
-            .on_click(cx.listener(|this, _, _, cx| { this.colours_open = !this.colours_open; cx.notify(); })))
+        row.child(chip("preset-open", "colours").on_click(cx.listener(|this, _, _, cx| { this.colours_open = !this.colours_open; cx.notify(); })))
+    }
+
+    /// Where the visible rows were drawn last time, taken before the list lays out (it cannot be asked while it does): each row's top
+    /// and height against the room's top, the room's size and how many pixels are left to scroll.
+    fn reading_look(&mut self) {
+        let vp = self.list.viewport_bounds();
+        let remaining = f32::from(self.list.max_offset_for_scrollbar().y) + f32::from(self.list.scroll_px_offset_for_scrollbar().y);
+        let g = &mut self.reading.geo;
+        g.clear();
+        let start = self.list.logical_scroll_top().item_ix;
+        for ix in start..self.win.msgs.len() {
+            let Some(b) = self.list.bounds_for_item(ix) else { break };
+            g.insert(ix, (f32::from(b.top() - vp.top()), f32::from(b.size.height)));
+            if b.top() > vp.bottom() + px(10.) { break; }
+        }
+        self.reading.size = (f32::from(vp.size.width), f32::from(vp.size.height));
+        // the first time the room is laid out with its unread line far up: that line a third of the way down, as the web does
+        if let Some(ix) = self.new_place { if vp.size.height > px(0.) {
+            self.new_place = None;
+            self.list.scroll_to(ListOffset { item_ix: ix, offset_in_item: px(0.) });
+            self.list.scroll_by(-vp.size.height * 0.3);
+        } }
+        self.reading.remaining = remaining;
+    }
+
+    /// For the test port: the rows drawn last time with their scale, the room's height and how far it is from its end.
+    pub fn reading_dump(&self) -> Value {
+        let (vh, remaining) = (self.reading.size.1, self.reading.remaining);
+        let mut rows: Vec<_> = self.reading.last.iter().filter(|(ix, _)| self.reading.geo.get(*ix).is_some_and(|(t, h)| t + h > 0. && *t < vh))
+            .map(|(ix, (k, op))| json!({"ix": ix, "k": k, "opacity": op, "top": self.reading.geo.get(ix).map(|g| g.0)})).collect();
+        rows.sort_by_key(|r| r["ix"].as_u64());
+        json!({"height": vh, "width": self.reading.size.0, "remaining": remaining, "msgs": self.win.msgs.len(), "rows": rows})
     }
 
     fn render_msg(&mut self, ix: usize) -> AnyElement {
@@ -76,14 +111,63 @@ impl Mega {
         let star = self.dm_marks.0 == self.gid.clone().unwrap_or_default() && self.dm_marks.1 > 0 && ix + self.dm_marks.1 >= self.win.msgs.len() && !m.mine;
         let me = self.snap.as_ref().map(|s| s.me_name.as_str()).unwrap_or("");
         let now = self.now_secs();
+        let today = chrono::Local::now();
+        let day = (m.ts > 0 && prev.map_or(true, |p| p.ts == 0 || day_words(p.ts, today) != day_words(m.ts, today))).then(|| day_words(m.ts, today));
+        let new = self.new_line.as_ref().filter(|(id, _)| *id == m.id).map(|(_, n)| *n);
+        // The reading zone (reading.rs): where this row was last drawn tells how far it is from the middle of the room. A row drawn smaller
+        // keeps the box it has at full size (so the list does not move under the reader) and sits in the middle of it, as the web's
+        // `transform: scale()` from the left centre does. Not while the battery saver holds still, nor at the end of the room.
+        let ((width, vh), remaining) = (self.reading.size, self.reading.remaining);
+        if (self.reading.width - width).abs() > 0.5 { self.reading.width = width; self.reading.full.clear(); self.reading.scaled.clear(); }
+        let geo = self.reading.geo.get(&ix).copied();
+        let mut k = 1.;
+        let mut op = 1.;
+        let mut full = None;
+        if let Some((top, height)) = geo {
+            let was_scaled = self.reading.scaled.contains(&m.id);
+            if !was_scaled { self.reading.full.insert(m.id.clone(), height); }
+            if !self.still() && self.reading.on {
+                if let (Some((sc, o)), Some(h)) = (crate::reading::effect(top, top + height, vh, remaining), self.reading.full.get(&m.id)) { k = sc; op = o; full = Some(*h); }
+            }
+        }
+        self.reading.last.insert(ix, (k, op));
+        if full.is_some() { self.reading.scaled.insert(m.id.clone()); } else { self.reading.scaled.remove(&m.id); }
         let fx = RowFx {
             tier_px: crate::arrive::tier_px(crate::arrive::size_tier(m, me)),
             arrive: self.arrivals.progress(&m.id, now).map(|k| (k, (now * 60.) as u64)),
             hi: rgb(self.room_duo(self.gid.as_deref().unwrap_or("")).hi).into(),
             flights: self.flights.live.iter().filter(|f| f.msg == m.id).cloned().collect(),
-            now,
+            now, k, day, new,
         };
-        row(m, prev, self.chat_font(), &self.holes, star, &fx)
+        let el = row(m, prev, self.chat_font(), &self.holes, star, &fx);
+        match full { Some(h) => div().w_full().h(px(h)).flex().flex_col().justify_center().overflow_hidden().opacity(op).child(el).into_any_element(), None => el }
+    }
+
+    /// The room's header chips (the web's search, aa, draw, people...): the ones that fit, never wrapping or cut off; the least important go first.
+    fn room_bar(&mut self, gid: &str, is_dm: bool, owner: bool, wall_btn: Option<AnyElement>, chat_cid: Option<String>, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let chip_w = |label: &str| 32. + label.chars().count() as f32 * 7.8;
+        // (importance, place from the left, width, the chip): lower importance goes first
+        let mut items: Vec<(u8, u8, f32, AnyElement)> = vec![];
+        if let Some(b) = wall_btn { items.push((1, 1, chip_w("drawing"), b)); }
+        if is_dm { if let Some(b) = self.call_person_button(gid, cx) { items.push((0, 0, 120., b)); } }
+        if !is_dm {
+            for (i, b) in chat_cid.map(|cid| self.community_buttons(&cid, cx)).unwrap_or_default().into_iter().enumerate() {
+                items.push(([0, 3, 4][i.min(2)], 10 + i as u8, chip_w(["people", "invite", "manage"][i.min(2)]), b));
+            }
+        }
+        items.push((2, 2, chip_w("aa"), crate::cards::chip("b-aa", "aa").on_click(cx.listener(|this, _, _, cx| {
+            this.prefs.chat_font = match this.prefs.chat_font { ChatFont::Bellefair => ChatFont::Raster, ChatFont::Raster => ChatFont::Bellefair }; this.prefs.save(); this.list.remeasure(); this.reading.full.clear(); cx.notify();
+        })).into_any_element()));
+        if owner { items.push((5, 20, if self.colours_open { 300. } else { 96. }, self.colour_picker(cx).into_any_element())); }
+        let rw = { let w = self.wall.room_rect.get().2; if w < 200. { 1000. } else { w } };
+        let room = rw - 40. - 220.;
+        // by importance, then as many as fit, then in their places
+        items.sort_by_key(|i| i.0);
+        let widths: Vec<f32> = items.iter().map(|i| i.2).collect();
+        let n = crate::reading::fit(&widths, 10., room);
+        items.truncate(n);
+        items.sort_by_key(|i| i.1);
+        items.into_iter().map(|i| i.3).collect()
     }
 
     fn render_chat(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -119,28 +203,48 @@ impl Mega {
         let wall_hit = self.wall_room_hit(cx);
         let wall_bar = self.wall_toolbar(cx);
         let wall_btn = if is_dm { None } else { self.wall_room_button(cx) };
+        self.reading_look();
+        // the day of the first row in view, and the way back to the end (the web's `#day-float` and `#jump`): only while reading back
+        let float_day = (!crate::reading::at_end(self.reading.remaining)).then(|| {
+            let ix = self.reading.geo.iter().filter(|(_, (t, h))| t + h > 0.).map(|(i, _)| *i).min()?;
+            let m = self.win.msgs.get(ix)?; (m.ts > 0).then(|| day_words(m.ts, chrono::Local::now()))
+        }).flatten();
+        let jump = self.reading.remaining >= 260.;
+        let has_text = !self.composer.read(cx).value().trim().is_empty();
+        let bar_chips = self.room_bar(&gid, is_dm, owner, wall_btn, chat_cid, cx);
         v_flex().flex_1().h_full().min_w_0().relative().bg(rgb(bd_back))
             .children(backdrop.map(|b| div().absolute().inset_0().child(b)))
             .child(wall_layer)
-            .child(h_flex().flex_none().items_start().px_5().pt_3().pb_1()
-                .child(v_flex().items_start()
-                    .child(div().relative().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).child(title.clone()).child(hole(&holes)))
-                    .child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(sub).child(hole(&holes))))
-                .child(div().flex_1())
-                .children(wall_btn)
-                .children(if is_dm { self.call_person_button(&gid, cx) } else { None })
-                .when(!is_dm, |d| d.children(chat_cid.map(|cid| self.community_buttons(&cid, cx)).unwrap_or_default()))
-                .when(owner, |d| d.child(self.colour_picker(cx))))
+            .child(h_flex().flex_none().items_start().gap(px(10.)).px_5().pt_3().pb_1()
+                .child(v_flex().flex_1().min_w_0().items_start().overflow_hidden()
+                    .child(div().relative().max_w_full().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).child(title.clone()).child(hole(&holes)))
+                    .child(div().relative().max_w_full().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(sub).child(hole(&holes))))
+                .children(bar_chips))
             .child(div().flex_1().min_h_0().relative()
                 .child(list(self.list.clone(), cx.processor(|this, ix: usize, _, _| this.render_msg(ix))).size_full())
-                .child(div().absolute().top_0().right_0().bottom_0().w(px(12.)).child(Scrollbar::vertical(&self.list))))
-            .child(h_flex().flex_none().h(px(18.)).px_5().child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(duo.dot()).when(!typing.is_empty(), |d| d.child(hole(&holes))).child(typing)))
-            .child(div().relative().flex_none().mx_4().mb_4().px_2().py_1().border_1().border_color(hsla(0., 0., 0., 0.))
-                .font_family(font)
-                // a translucent slip over the backdrop: a squircle fill and border, never a cut (the backdrop moves behind it)
-                .child(sq::back(22., hsla(0.71, 0.22, 0.07, 0.93))).child(hole(&holes))
-                .child(Textarea::new(&self.composer).appearance(false).text_size(px(size)).line_height(px(lh)))
-                .child(sq::front(22., None, Some((1., look::line())), None)))
+                .child(div().absolute().top_0().right_0().bottom_0().w(px(12.)).child(Scrollbar::vertical(&self.list)))
+                .children(float_day.map(|t| h_flex().absolute().top(px(6.)).left_0().right_0().justify_center().child(div().px(px(14.)).py(px(6.)).rounded_full().bg(rgb(0x1b1922)).border_1().border_color(look::line()).font_family(look::F_SHARP).text_size(px(14.)).text_color(look::mute()).child(t))))
+                .children(jump.then(|| h_flex().absolute().bottom(px(10.)).left_0().right_0().justify_center().child(div().id("jump").px(px(14.)).py(px(7.)).rounded_full().bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_UI).text_size(px(12.)).cursor_pointer().child("\u{2193} latest")
+                    .on_click(cx.listener(|this, _, _, cx| { this.list.scroll_to_end(); cx.notify(); }))))))
+            .child(h_flex().w_full().flex_none().justify_center().px_4()
+                .child(v_flex().w_full().max_w(px(COLUMN - 20.))
+                    .child(div().relative().w_full().px_2().py_1().border_1().border_color(hsla(0., 0., 0., 0.))
+                        .font_family(font)
+                        // a translucent slip over the backdrop: a squircle fill and border, never a cut (the backdrop moves behind it)
+                        .child(sq::back(22., hsla(0.71, 0.22, 0.07, 0.93))).child(hole(&holes))
+                        .child(h_flex().relative().items_end().gap_2()
+                            .child(div().flex_1().min_w_0().child(Textarea::new(&self.composer).appearance(false).text_size(px(size)).line_height(px(lh))))
+                            .child(div().id("send").flex_none().mb_1().flex().items_center().h(px(36.)).px(px(16.)).rounded_full().cursor_pointer().whitespace_nowrap()
+                                .font_family(look::F_UI).text_size(px(13.))
+                                .when(has_text, |d| d.bg(look::paper()).text_color(rgb(look::VOID)))
+                                .when(!has_text, |d| d.bg(hsla(0., 0., 1., 0.06)).text_color(look::mute()))
+                                .child("send").on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))))
+                        .child(sq::front(22., None, Some((1., look::line())), None)))
+                    // the small print under the slip: who is writing, or what the room promises (web `#typing` and `#hint`)
+                    .child(h_flex().h(px(22.)).px_3().gap(px(5.)).items_center().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute())
+                        .child(hole(&holes))
+                        .when(typing.is_empty(), |d| d.child(lock_icon()).child("end-to-end encrypted.").child(div().ml(px(3.)).child("shift+enter for a new line.")))
+                        .when(!typing.is_empty(), |d| d.text_color(duo.dot()).child(typing.clone())))))
             .children(wall_hit)
             .children(wall_bar)
             .into_any_element()
@@ -222,30 +326,85 @@ impl Mega {
 }
 
 /// What is happening to one message right now (arrive.rs): its size tier, its glyph copy while it arrives, reactions flying to it.
-pub struct RowFx { pub tier_px: Option<f32>, pub arrive: Option<(f64, u64)>, pub hi: Hsla, pub flights: Vec<crate::arrive::Flight>, pub now: f64 }
+/// `k` is the reading zone's scale (reading.rs; 1 = whole), `day` the day line above it, `new` the "N new" line above it.
+pub struct RowFx { pub tier_px: Option<f32>, pub arrive: Option<(f64, u64)>, pub hi: Hsla, pub flights: Vec<crate::arrive::Flight>, pub now: f64, pub k: f32, pub day: Option<String>, pub new: Option<usize> }
+
+/// The widest the message column gets (mega-design.css: `--gutter` 58 + `--measure` 800 + 44 around it).
+pub const COLUMN: f32 = 902.;
+
+/// The double check of a read message (app.js `RR_ICON`, a 15 by 10 drawing).
+fn ticks(color: Hsla, k: f32) -> impl IntoElement {
+    canvas(|_, _, _| {}, move |b, _, window, _| {
+        let (sx, sy) = (f32::from(b.size.width) / 15., f32::from(b.size.height) / 10.);
+        let pt = |x: f32, y: f32| point(b.origin.x + px(x * sx), b.origin.y + px(y * sy));
+        for line in [[(1., 5.4), (4., 8.4), (9.6, 1.4)].as_slice(), [(7.4, 8.4), (13.9, 1.4)].as_slice()] {
+            let mut p = gpui_kit::PathBuilder::stroke(px(1.5 * sx));
+            p.move_to(pt(line[0].0, line[0].1));
+            for q in &line[1..] { p.line_to(pt(q.0, q.1)); }
+            if let Ok(path) = p.build() { window.paint_path(path, color); }
+        }
+    }).w(px(13. * k)).h(px(9. * k)).flex_none()
+}
+
+/// A small outlined tag next to a name (mega-polish.css `.chip`: "owner", "admin").
+fn tag(text: String, k: f32) -> Div {
+    div().px(px(8. * k)).rounded_full().border_1().border_color(look::line()).text_color(look::mute()).text_size(px(11. * k)).line_height(px(16. * k)).child(text)
+}
+
+/// The line above the first message of a day (mega-polish.css `.day`): the day in the room's small type between two hairlines.
+fn day_line(text: String, holes: &Holes) -> Div {
+    let hair = || div().flex_1().h(px(1.)).bg(hsla(0., 0., 1., 0.08));
+    h_flex().w_full().items_center().gap(px(14.)).mt(px(18.)).mb(px(8.)).px_2().text_color(look::mute())
+        .child(hair()).child(div().relative().font_family(look::F_SHARP).text_size(px(14.)).line_height(px(14.)).child(text).child(hole(holes))).child(hair())
+}
+
+/// The "N new" line (mega-polish.css `.newline`): in the room's bright colour, a line after it.
+fn new_line(n: usize, hi: Hsla, holes: &Holes) -> Div {
+    h_flex().w_full().items_center().gap(px(10.)).mt(px(14.)).mb(px(8.)).pl(px(58.)).pr_2()
+        .child(div().relative().font_family(look::F_SHARP).text_size(px(14.)).line_height(px(14.)).text_color(hi).child(format!("{n} new")).child(hole(holes)))
+        .child(div().flex_1().h(px(1.)).bg(hi.opacity(0.6)))
+}
+
+/// What a day line says (app.js `fmtDay`, lowercased by the room's type): today, yesterday, or the weekday and date.
+pub fn day_words(ts: u64, now: chrono::DateTime<chrono::Local>) -> String {
+    use chrono::TimeZone as _;
+    let Some(d) = chrono::Local.timestamp_opt(ts as i64, 0).single() else { return String::new() };
+    let (a, b) = (d.date_naive(), now.date_naive());
+    if a == b { return "today".into(); }
+    if b.pred_opt() == Some(a) { return "yesterday".into(); }
+    let fmt = if chrono::Datelike::year(&a) == chrono::Datelike::year(&b) { "%A, %B %-d" } else { "%A, %B %-d, %Y" };
+    d.format(fmt).to_string().to_lowercase()
+}
 
 /// One message. `prev` decides whether the face and name are shown again (same person within five minutes: no).
 pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f32), holes: &Holes, star: bool, fx: &RowFx) -> AnyElement {
+    let k = fx.k;
     let (size, lh) = match fx.tier_px { Some(p) => (p, (p * 1.05).round()), None => (size, lh) };
+    let (size, lh) = (size * k, (lh * k).round());
+    let line = |inner: Div| h_flex().w_full().justify_center().child(inner.w_full().max_w(px(COLUMN)));
+    if m.deleted { return div().into_any_element(); }
     if m.kind == "member" || m.kind == "notice" {
-        return h_flex().w_full().pl(px(68.)).pr_4().py_1().child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(m.text.clone()).child(hole(holes))).into_any_element();
+        return v_flex().w_full().when_some(fx.day.clone(), |d, t| d.child(line(day_line(t, holes)))).when_some(fx.new, |d, n| d.child(line(new_line(n, fx.hi, holes))))
+            .child(line(h_flex().pl(px(68.)).pr_4().py_1().child(div().relative().font_family(look::F_NAME).text_size(px(12. * k)).text_color(look::mute()).child(m.text.clone()).child(hole(holes))))).into_any_element();
     }
-    let head = !prev.is_some_and(|p| p.sender == m.sender && p.kind != "member" && p.kind != "notice" && m.ts.saturating_sub(p.ts) < 300);
+    let head = fx.day.is_some() || fx.new.is_some() || m.reply.is_some() || !prev.is_some_and(|p| p.sender == m.sender && p.kind != "member" && p.kind != "notice" && m.ts.saturating_sub(p.ts) < 300);
     // every piece is as wide as its words (items_start), so the backdrop is cut out around the words and not the row
     let mut col = v_flex().flex_1().min_w_0().items_start();
     if head {
-        col = col.child(h_flex().relative().child(hole(holes)).gap_2().items_baseline().font_family(look::F_NAME).text_size(px(12.))
-            .child(div().text_color(look::face(&m.name)).child(m.name.clone()))
-            .child(div().text_color(look::mute()).child(clock(m.ts))));
+        col = col.child(h_flex().relative().child(hole(holes)).gap_2().items_center().font_family(look::F_NAME).text_size(px(12. * k))
+            .child(div().text_color(hsla(0., 0., 0.94, 0.78)).child(m.name.clone()))
+            .when(m.role == "owner" || m.role == "admin", |d| d.child(tag(m.role.clone(), k)))
+            .when(m.same_name && !m.tag.is_empty(), |d| d.child(tag(m.tag.clone(), k)))
+            .child(div().text_color(look::mute()).child(clock(m.ts)))
+            .when(!m.read_by.is_empty(), |d| d.child(ticks(look::mute(), k))));
     }
     if let Some((who, text)) = &m.reply {
         col = col.child(div().relative().child(hole(holes)).max_w_full().pl_2().border_l_2().border_color(look::line()).text_color(look::mute()).font_family(font).text_size(px(size * 0.7)).child(format!("{who}: {text}")));
     }
-    let body: AnyElement = if m.deleted { div().relative().child(hole(holes)).text_color(look::mute()).text_size(px(16.)).child("(deleted)").into_any_element() }
-        else if let Some((name, bytes)) = &m.file { div().relative().child(hole(holes)).max_w_full().text_color(look::mute()).text_size(px(16.)).child(format!("[file] {name} ({} KB){}", bytes / 1024, if m.text.is_empty() { String::new() } else { format!("  {}", m.text) })).into_any_element() }
-        else if let Some((k, tick)) = fx.arrive {
+    let body: AnyElement = if let Some((name, bytes)) = &m.file { div().relative().child(hole(holes)).max_w_full().text_color(look::mute()).text_size(px(16. * k)).child(format!("[file] {name} ({} KB){}", bytes / 1024, if m.text.is_empty() { String::new() } else { format!("  {}", m.text) })).into_any_element() }
+        else if let Some((kk, tick)) = fx.arrive {
             // the real words stay where they are (invisible, so the row keeps its size); a copy made of glyphs sits over them and resolves
-            let (copy, real) = crate::arrive::compose(&m.text, k, tick);
+            let (copy, real) = crate::arrive::compose(&m.text, kk, tick);
             let ink = look::paper();
             div().relative().child(hole(holes)).max_w_full().font_family(font).text_size(px(size)).line_height(px(lh))
                 .child(div().text_color(hsla(0., 0., 0., 0.)).child(m.text.clone()))
@@ -264,21 +423,23 @@ pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f3
             let mut t = crate::arrive::Flights::default(); t.live = fx.flights.clone(); t.shown(&m.id, &r.emoji, fx.now, r.count)
         };
         if let Some(f) = fx.flights.iter().find(|f| f.emoji == r.emoji) { flying.push((i, f.clone())); }
-        let pill = div().relative().px_1p5().border_1().border_color(hsla(0., 0., 0., 0.)).text_size(px(13.)).child(format!("{} {}", r.emoji, shown.unwrap_or(r.count)))
+        let pill = div().relative().px_1p5().border_1().border_color(hsla(0., 0., 0., 0.)).text_size(px(13. * k)).child(format!("{} {}", r.emoji, shown.unwrap_or(r.count)))
             .child(sq::front(999., None, Some((1., if r.mine { look::paper() } else { look::line() })), None));
         foot = foot.child(if shown.is_none() { pill.opacity(0.) } else { pill });
     }
     if !flying.is_empty() { foot = foot.child(flight_spot(landing.clone())); }
-    if m.edited { foot = foot.child(div().text_color(look::mute()).text_size(px(11.)).child("edited")); }
-    if m.mine && (m.status == "pending" || m.status == "failed") { foot = foot.child(div().text_color(look::mute()).text_size(px(11.)).child(m.status.clone())); }
-    if !m.read_by.is_empty() { foot = foot.child(div().text_color(look::mute()).text_size(px(11.)).child(format!("read by {}", m.read_by.join(", ")))); }
-    let has_foot = !m.reactions.is_empty() || m.edited || !m.read_by.is_empty() || (m.mine && (m.status == "pending" || m.status == "failed"));
+    if m.edited { foot = foot.child(div().text_color(look::mute()).text_size(px(11. * k)).child("edited")); }
+    if m.mine && (m.status == "pending" || m.status == "failed") { foot = foot.child(div().text_color(look::mute()).text_size(px(11. * k)).child(m.status.clone())); }
+    // a continuation row has no name line to carry the double check: it sits in the small print
+    if !m.read_by.is_empty() && !head { foot = foot.child(div().flex().items_center().h(px(14.)).child(ticks(look::mute(), k))); }
+    let has_foot = !m.reactions.is_empty() || m.edited || (!m.read_by.is_empty() && !head) || (m.mine && (m.status == "pending" || m.status == "failed"));
     if has_foot { foot = foot.child(hole(holes)); }
-    h_flex().relative().w_full().items_start().gap_3().px_5().pb_1().when(head, |d| d.pt_3())
-        .when(!flying.is_empty(), |d| d.child(flight_layer(flying, landing, fx.now, fx.hi)))
-        .when(star, |d| d.child(div().absolute().left(px(5.)).top(px(if head { 22. } else { 8. })).text_size(px(13.)).text_color(look::paper()).opacity(0.8).child("✦")))
-        .child(if head { avatar(&m.name).mt_1() } else { div().w(px(36.)).flex_none() })
-        .child(col.child(foot)).into_any_element()
+    v_flex().w_full().when_some(fx.day.clone(), |d, t| d.child(line(day_line(t, holes)))).when_some(fx.new, |d, n| d.child(line(new_line(n, fx.hi, holes))))
+        .child(line(h_flex().relative().items_start().gap_3().px(px(10.)).pb_1().when(head, |d| d.pt(px(10.)))
+            .when(!flying.is_empty(), |d| d.child(flight_layer(flying, landing, fx.now, fx.hi)))
+            .when(star, |d| d.child(div().absolute().left(px(-12.)).top(px(if head { 22. } else { 8. })).text_size(px(13.)).text_color(look::paper()).opacity(0.8).child("✦")))
+            .child(if head { avatar(&m.name, 36. * k).mt_1() } else { div().w(px(36. * k)).flex_none() })
+            .child(col.child(foot)))).into_any_element()
 }
 
 impl Render for Mega {

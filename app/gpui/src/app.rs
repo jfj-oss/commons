@@ -75,6 +75,13 @@ pub struct Mega {
     pub fake_dm_unread: usize,
     /// A direct conversation's unread messages when it was opened: the last few rows carry a small star until it is left.
     pub dm_marks: (String, usize),
+    /// The first unread message of the open room and how many are new (the web's `S.firstNew`, `S.newCount`), and the unread count the room had when it was opened, until the messages come.
+    pub new_line: Option<(String, usize)>,
+    pub new_pending: usize,
+    /// The list index of the "N new" line, until the room has been scrolled to put it a third of the way down (app.js `place`).
+    pub new_place: Option<usize>,
+    /// The reading zone's bookkeeping (reading.rs).
+    pub reading: crate::reading::Ui,
     /// The updater's state and cards (updateui.rs).
     pub upd: crate::updateui::UpdateUi,
     /// The card column of the home and community levels (cards.rs).
@@ -115,7 +122,7 @@ impl Mega {
         let (paint, paint_sub) = crate::paint::PaintUi::new(window, cx);
         subs.push(paint_sub);
         let mut this = Mega {
-            nav, rail: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0),
+            nav, rail: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(),
             level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd: crate::backdrop::Bd::new(""), holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
@@ -355,7 +362,7 @@ impl Mega {
                 Ok(Change::Same) => {}
                 Ok(Change::InPlace { changed, appended }) => {
                     // a changed row is measured again; new rows are added at the end, and a list that was at the bottom stays there
-                    for i in changed { self.list.splice(i..i + 1, 1); if i + 1 < was { self.list.splice(i + 1..i + 2, 1); } }
+                    for i in changed { if let Some(m) = self.win.msgs.get(i) { self.reading.full.remove(&m.id); self.reading.scaled.remove(&m.id); } self.list.splice(i..i + 1, 1); if i + 1 < was { self.list.splice(i + 1..i + 2, 1); } }
                     if appended > 0 { if was > 0 { self.list.splice(was - 1..was, 1); } self.list.splice(was..was, appended); self.stir(appended); }
                     cx.notify();
                 }
@@ -366,7 +373,20 @@ impl Mega {
                 }
                 Err(()) => { self.win.hash.clear(); self.again = true; }
             }
+            self.first_new();
             self.mark_read(window, cx);
+        }
+    }
+
+    /// The first unread message, counted the way the core counts it (app.js `renderStream`): once, when the room's messages first come.
+    fn first_new(&mut self) {
+        if self.new_pending == 0 || self.win.msgs.is_empty() { return; }
+        let (n, mut left) = (self.new_pending, self.new_pending);
+        self.new_pending = 0;
+        for (i, m) in self.win.msgs.iter().enumerate().rev() {
+            if m.mine || m.deleted || m.kind == "member" || m.kind == "notice" { continue; }
+            left -= 1;
+            if left == 0 { self.new_line = Some((m.id.clone(), n)); self.new_place = (i >= 4).then_some(i); break; }
         }
     }
 
@@ -410,8 +430,16 @@ impl Mega {
         self.dm_marks = (gid.clone(), unread);
         self.cid = Some(cid);
         self.gid = Some(gid.clone());
-        self.win = MsgWindow { key: gid, ..Default::default() };
+        self.win = MsgWindow { key: gid.clone(), ..Default::default() };
         self.list = ListState::new(0, ListAlignment::Bottom, px(600.));
+        // the reading zone follows the scroll: the rows are drawn again at every move
+        let me = cx.entity();
+        self.list.set_scroll_handler(move |_, _, app| me.update(app, |_, cx| cx.notify()));
+        self.reading = Default::default();
+        self.new_line = None; self.new_place = None;
+        self.new_pending = self.channel(&gid).filter(|(c, _)| !c.direct).map(|(_, ch)| ch.unread as usize).unwrap_or(0);
+        let name = self.channel(&gid).map(|(c, ch)| if c.direct { c.name.clone() } else { ch.name.clone() }).unwrap_or_default();
+        self.composer.update(cx, |c, cx| c.set_placeholder(format!("write to {name}"), window, cx));
         self.composer.update(cx, |c, cx| c.focus(window, cx));
         bench::mark("room_open");
         cx.notify();
@@ -419,7 +447,7 @@ impl Mega {
     }
 
     // ---- the composer ----
-    fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(gid) = self.gid.clone() else { return };
         let text = self.composer.read(cx).value().to_string();
         if text.trim().is_empty() { return; }
