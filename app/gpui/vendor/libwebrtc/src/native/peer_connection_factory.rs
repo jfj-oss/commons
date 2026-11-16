@@ -17,10 +17,11 @@ use std::sync::Arc;
 use cxx::{SharedPtr, UniquePtr};
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
-use webrtc_sys::{peer_connection_factory as sys_pcf, rtc_error as sys_err, webrtc as sys_rtc};
+use webrtc_sys::{audio_track as sys_at, peer_connection_factory as sys_pcf, rtc_error as sys_err, webrtc as sys_rtc};
 
 use crate::{
     audio_source::native::NativeAudioSource,
+    audio_source::AudioSourceOptions,
     audio_track::RtcAudioTrack,
     imp::{audio_track as imp_at, peer_connection as imp_pc, video_track as imp_vt},
     peer_connection::PeerConnection,
@@ -153,6 +154,22 @@ impl PeerConnectionFactory {
         RtcAudioTrack {
             handle: imp_at::RtcAudioTrack {
                 sys_handle: self.sys_handle.create_device_audio_track(label.to_string()),
+            },
+        }
+    }
+
+    /// Create a device audio track with explicit software processing options (mega patch W2).
+    pub fn create_device_audio_track_with_options(
+        &self,
+        label: &str,
+        options: AudioSourceOptions,
+    ) -> RtcAudioTrack {
+        RtcAudioTrack {
+            handle: imp_at::RtcAudioTrack {
+                sys_handle: self.sys_handle.create_device_audio_track_with_options(
+                    label.to_string(),
+                    sys_at::ffi::AudioSourceOptions::from(options),
+                ),
             },
         }
     }

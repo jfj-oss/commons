@@ -1,0 +1,80 @@
+--- a/src/native/peer_connection_factory.rs
++++ b/src/native/peer_connection_factory.rs
+@@ -17,10 +17,11 @@
+ use cxx::{SharedPtr, UniquePtr};
+ use lazy_static::lazy_static;
+ use parking_lot::Mutex;
+-use webrtc_sys::{peer_connection_factory as sys_pcf, rtc_error as sys_err, webrtc as sys_rtc};
++use webrtc_sys::{audio_track as sys_at, peer_connection_factory as sys_pcf, rtc_error as sys_err, webrtc as sys_rtc};
+ 
+ use crate::{
+     audio_source::native::NativeAudioSource,
++    audio_source::AudioSourceOptions,
+     audio_track::RtcAudioTrack,
+     imp::{audio_track as imp_at, peer_connection as imp_pc, video_track as imp_vt},
+     peer_connection::PeerConnection,
+@@ -156,6 +157,22 @@
+             },
+         }
+     }
++
++    /// Create a device audio track with explicit software processing options (mega patch W2).
++    pub fn create_device_audio_track_with_options(
++        &self,
++        label: &str,
++        options: AudioSourceOptions,
++    ) -> RtcAudioTrack {
++        RtcAudioTrack {
++            handle: imp_at::RtcAudioTrack {
++                sys_handle: self.sys_handle.create_device_audio_track_with_options(
++                    label.to_string(),
++                    sys_at::ffi::AudioSourceOptions::from(options),
++                ),
++            },
++        }
++    }
+ 
+     pub fn get_rtp_sender_capabilities(&self, media_type: MediaType) -> RtpCapabilities {
+         self.sys_handle.rtp_sender_capabilities(media_type.into()).into()
+--- a/src/peer_connection_factory.rs
++++ b/src/peer_connection_factory.rs
+@@ -217,8 +217,8 @@
+ pub mod native {
+     use super::PeerConnectionFactory;
+     use crate::{
+-        audio_source::native::NativeAudioSource, audio_track::RtcAudioTrack,
+-        video_source::native::NativeVideoSource, video_track::RtcVideoTrack,
++        audio_source::native::NativeAudioSource, audio_source::AudioSourceOptions,
++        audio_track::RtcAudioTrack, video_source::native::NativeVideoSource, video_track::RtcVideoTrack,
+     };
+ 
+     pub trait PeerConnectionFactoryExt {
+@@ -229,6 +229,13 @@
+         /// The track will capture audio from the selected recording device.
+         fn create_device_audio_track(&self, label: &str) -> RtcAudioTrack;
+ 
++        /// Create a device audio track with explicit software AEC/NS/AGC (mega patch W2).
++        fn create_device_audio_track_with_options(
++            &self,
++            label: &str,
++            options: AudioSourceOptions,
++        ) -> RtcAudioTrack;
++
+         // Device enumeration
+         fn playout_devices(&self) -> i16;
+         fn recording_devices(&self) -> i16;
+@@ -301,6 +308,14 @@
+             self.handle.create_device_audio_track(label)
+         }
+ 
++        fn create_device_audio_track_with_options(
++            &self,
++            label: &str,
++            options: AudioSourceOptions,
++        ) -> RtcAudioTrack {
++            self.handle.create_device_audio_track_with_options(label, options)
++        }
++
+         fn playout_devices(&self) -> i16 {
+             self.handle.playout_devices()
+         }

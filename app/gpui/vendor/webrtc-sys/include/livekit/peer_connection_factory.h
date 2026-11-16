@@ -22,6 +22,7 @@
 #include "api/task_queue/task_queue_factory.h"
 #include "livekit/adm_proxy.h"
 #include "livekit/audio_device_controller.h"
+#include "livekit/audio_track.h"
 #include "media_stream.h"
 #include "rtp_parameters.h"
 #include "rust/cxx.h"
@@ -69,6 +70,11 @@ class PeerConnectionFactory {
   // This creates a track that captures from the selected recording device
   std::shared_ptr<AudioTrack> create_device_audio_track(
       rust::String label) const;
+
+  // mega patch W2: the same, with the software processing options baked into the
+  // source (libwebrtc applies them when the track starts sending).
+  std::shared_ptr<AudioTrack> create_device_audio_track_with_options(
+      rust::String label, AudioSourceOptions options) const;
 
   RtpCapabilities rtp_sender_capabilities(MediaType type) const;
 

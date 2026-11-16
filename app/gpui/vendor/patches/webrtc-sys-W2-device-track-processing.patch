@@ -1,0 +1,76 @@
+--- a/include/livekit/peer_connection_factory.h
++++ b/include/livekit/peer_connection_factory.h
+@@ -22,6 +22,7 @@
+ #include "api/task_queue/task_queue_factory.h"
+ #include "livekit/adm_proxy.h"
+ #include "livekit/audio_device_controller.h"
++#include "livekit/audio_track.h"
+ #include "media_stream.h"
+ #include "rtp_parameters.h"
+ #include "rust/cxx.h"
+@@ -70,6 +71,11 @@
+   std::shared_ptr<AudioTrack> create_device_audio_track(
+       rust::String label) const;
+ 
++  // mega patch W2: the same, with the software processing options baked into the
++  // source (libwebrtc applies them when the track starts sending).
++  std::shared_ptr<AudioTrack> create_device_audio_track_with_options(
++      rust::String label, AudioSourceOptions options) const;
++
+   RtpCapabilities rtp_sender_capabilities(MediaType type) const;
+ 
+   RtpCapabilities rtp_receiver_capabilities(MediaType type) const;
+--- a/src/peer_connection_factory.cpp
++++ b/src/peer_connection_factory.cpp
+@@ -247,11 +247,23 @@
+ 
+ std::shared_ptr<AudioTrack> PeerConnectionFactory::create_device_audio_track(
+     rust::String label) const {
+-  // Create an audio source that uses the ADM for capture
++  AudioSourceOptions options;
++  options.echo_cancellation = true;
++  options.noise_suppression = true;
++  options.auto_gain_control = true;
++  return create_device_audio_track_with_options(std::move(label), options);
++}
++
++// mega patch W2: a device audio track whose software AEC/NS/AGC are chosen here
++// instead of always on, so the app's processing switches can be applied without
++// rejoining (the engine republishes the microphone with the new options).
++std::shared_ptr<AudioTrack>
++PeerConnectionFactory::create_device_audio_track_with_options(
++    rust::String label, AudioSourceOptions options) const {
+   webrtc::AudioOptions audio_options;
+-  audio_options.echo_cancellation = true;
+-  audio_options.auto_gain_control = true;
+-  audio_options.noise_suppression = true;
++  audio_options.echo_cancellation = options.echo_cancellation;
++  audio_options.noise_suppression = options.noise_suppression;
++  audio_options.auto_gain_control = options.auto_gain_control;
+ 
+   webrtc::scoped_refptr<webrtc::AudioSourceInterface> audio_source =
+       peer_factory_->CreateAudioSource(audio_options);
+--- a/src/peer_connection_factory.rs
++++ b/src/peer_connection_factory.rs
+@@ -57,6 +57,7 @@
+         type IceConnectionState = crate::peer_connection::ffi::IceConnectionState;
+         type IceGatheringState = crate::peer_connection::ffi::IceGatheringState;
+         type AudioTrackSource = crate::audio_track::ffi::AudioTrackSource;
++        type AudioSourceOptions = crate::audio_track::ffi::AudioSourceOptions;
+         type VideoTrackSource = crate::video_track::ffi::VideoTrackSource;
+         type RtpCapabilities = crate::rtp_parameters::ffi::RtpCapabilities;
+         type AudioTrack = crate::audio_track::ffi::AudioTrack;
+@@ -122,6 +123,13 @@
+             label: String,
+         ) -> SharedPtr<AudioTrack>;
+ 
++        // mega patch W2: the same, with the software processing options baked into the source.
++        fn create_device_audio_track_with_options(
++            self: &PeerConnectionFactory,
++            label: String,
++            options: AudioSourceOptions,
++        ) -> SharedPtr<AudioTrack>;
++
+         fn rtp_sender_capabilities(
+             self: &PeerConnectionFactory,
+             kind: MediaType,

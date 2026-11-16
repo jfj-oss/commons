@@ -247,11 +247,23 @@ std::shared_ptr<AudioTrack> PeerConnectionFactory::create_audio_track(
 
 std::shared_ptr<AudioTrack> PeerConnectionFactory::create_device_audio_track(
     rust::String label) const {
-  // Create an audio source that uses the ADM for capture
+  AudioSourceOptions options;
+  options.echo_cancellation = true;
+  options.noise_suppression = true;
+  options.auto_gain_control = true;
+  return create_device_audio_track_with_options(std::move(label), options);
+}
+
+// mega patch W2: a device audio track whose software AEC/NS/AGC are chosen here
+// instead of always on, so the app's processing switches can be applied without
+// rejoining (the engine republishes the microphone with the new options).
+std::shared_ptr<AudioTrack>
+PeerConnectionFactory::create_device_audio_track_with_options(
+    rust::String label, AudioSourceOptions options) const {
   webrtc::AudioOptions audio_options;
-  audio_options.echo_cancellation = true;
-  audio_options.auto_gain_control = true;
-  audio_options.noise_suppression = true;
+  audio_options.echo_cancellation = options.echo_cancellation;
+  audio_options.noise_suppression = options.noise_suppression;
+  audio_options.auto_gain_control = options.auto_gain_control;
 
   webrtc::scoped_refptr<webrtc::AudioSourceInterface> audio_source =
       peer_factory_->CreateAudioSource(audio_options);

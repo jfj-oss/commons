@@ -2,6 +2,7 @@
 //! THROWAWAY account with `MEGA_GPUI_PASS`, needs `MEGA_GPUI_CALL_TEST=<port>` for its control port, and should run
 //! with `MEGA_GPUI_CALL_AUDIO=none` so no audio device is opened. Prints one `ready` line, then serves until `quit`.
 use super::engine::{AudioMode, CallEngine, CoreLink, Options};
+use super::settings::CallSettings;
 use super::testhook;
 use crate::core::Core;
 use std::sync::Arc;
@@ -21,7 +22,9 @@ pub fn run() {
     if std::env::var_os("MEGA_GPUI_NOTIFY_FILE").is_none() { std::env::set_var("MEGA_GPUI_NOTIFY_FILE", crate::core::data_dir().join("notes.jsonl")); }
     let core = Core::open();
     if let Err(e) = core.call("unlock", serde_json::json!({"passphrase": pass})) { eprintln!("unlock: {e}"); std::process::exit(1); }
-    let engine = Arc::new(CallEngine::start(Arc::new(Linked(core.clone())), Options { audio: AudioMode::from_env(), push_to_talk: false }));
+    let settings_path = core.dir.join("gpui-call-prefs.json");
+    let settings = CallSettings::load(&settings_path);
+    let engine = Arc::new(CallEngine::start(Arc::new(Linked(core.clone())), Options { audio: AudioMode::from_env(), settings, settings_path: Some(settings_path) }));
     let rt = engine.rt.clone();
     let e2 = engine.clone();
     let me = core.call("snapshot", serde_json::json!({})).ok().map(|s| s["me"].clone()).unwrap_or_default();

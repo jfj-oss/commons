@@ -1,0 +1,20 @@
+--- a/src/room/track/local_audio_track.rs
++++ b/src/room/track/local_audio_track.rs
+@@ -74,6 +74,17 @@
+         Self::new(name.to_string(), rtc_track, source)
+     }
+ 
++    /// Create a microphone track from the platform's recording device with explicit software processing options
++    /// (mega patch W2). libwebrtc bakes these into the source, so a change republishes the track (never the room).
++    /// Call `PlatformAudio::new()` first, as for [`Self::create_audio_track`] with `RtcAudioSource::Device`.
++    pub fn create_device_audio_track_with_options(name: &str, options: AudioSourceOptions) -> LocalAudioTrack {
++        use libwebrtc::peer_connection_factory::native::PeerConnectionFactoryExt;
++        let rtc_track = LkRuntime::instance()
++            .pc_factory()
++            .create_device_audio_track_with_options(&libwebrtc::native::create_random_uuid(), options);
++        Self::new(name.to_string(), rtc_track, RtcAudioSource::Device)
++    }
++
+     pub fn sid(&self) -> TrackSid {
+         self.inner.info.read().sid.clone()
+     }

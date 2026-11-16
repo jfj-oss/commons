@@ -57,6 +57,7 @@ pub mod ffi {
         type IceConnectionState = crate::peer_connection::ffi::IceConnectionState;
         type IceGatheringState = crate::peer_connection::ffi::IceGatheringState;
         type AudioTrackSource = crate::audio_track::ffi::AudioTrackSource;
+        type AudioSourceOptions = crate::audio_track::ffi::AudioSourceOptions;
         type VideoTrackSource = crate::video_track::ffi::VideoTrackSource;
         type RtpCapabilities = crate::rtp_parameters::ffi::RtpCapabilities;
         type AudioTrack = crate::audio_track::ffi::AudioTrack;
@@ -120,6 +121,13 @@ pub mod ffi {
         fn create_device_audio_track(
             self: &PeerConnectionFactory,
             label: String,
+        ) -> SharedPtr<AudioTrack>;
+
+        // mega patch W2: the same, with the software processing options baked into the source.
+        fn create_device_audio_track_with_options(
+            self: &PeerConnectionFactory,
+            label: String,
+            options: AudioSourceOptions,
         ) -> SharedPtr<AudioTrack>;
 
         fn rtp_sender_capabilities(

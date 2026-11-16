@@ -217,8 +217,8 @@ mod tests {
 pub mod native {
     use super::PeerConnectionFactory;
     use crate::{
-        audio_source::native::NativeAudioSource, audio_track::RtcAudioTrack,
-        video_source::native::NativeVideoSource, video_track::RtcVideoTrack,
+        audio_source::native::NativeAudioSource, audio_source::AudioSourceOptions,
+        audio_track::RtcAudioTrack, video_source::native::NativeVideoSource, video_track::RtcVideoTrack,
     };
 
     pub trait PeerConnectionFactoryExt {
@@ -228,6 +228,13 @@ pub mod native {
         /// Create an audio track that uses the Platform ADM for capture.
         /// The track will capture audio from the selected recording device.
         fn create_device_audio_track(&self, label: &str) -> RtcAudioTrack;
+
+        /// Create a device audio track with explicit software AEC/NS/AGC (mega patch W2).
+        fn create_device_audio_track_with_options(
+            &self,
+            label: &str,
+            options: AudioSourceOptions,
+        ) -> RtcAudioTrack;
 
         // Device enumeration
         fn playout_devices(&self) -> i16;
@@ -299,6 +306,14 @@ pub mod native {
 
         fn create_device_audio_track(&self, label: &str) -> RtcAudioTrack {
             self.handle.create_device_audio_track(label)
+        }
+
+        fn create_device_audio_track_with_options(
+            &self,
+            label: &str,
+            options: AudioSourceOptions,
+        ) -> RtcAudioTrack {
+            self.handle.create_device_audio_track_with_options(label, options)
         }
 
         fn playout_devices(&self) -> i16 {

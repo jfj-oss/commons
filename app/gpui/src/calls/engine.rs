@@ -1,26 +1,46 @@
-//! The call engine (CALLS-PLAN.md section 8): one room's call, without any window. call.js ported with the same
-//! constants: join, keys, who may be heard, heartbeat, reconnects, mute, deafen, game keys, speaking.
+//! The call engine (CALLS-PLAN.md section 8, plus step 3's voice): one room's call, without any window. call.js ported
+//! with the same constants: join, keys, who may be heard, heartbeat, reconnects, mute, deafen, game keys, speaking,
+//! and now the voice controls: audio devices, the three processing switches, push-to-talk and per-person volume.
+//!
+//! # The UI's API
+//!
+//! - **Start**: [`CallEngine::start`] with the core link ([`CoreLink`]) and [`Options`] (audio mode, settings).
+//! - **Do things**: [`CallEngine::send`] a [`Command`]. Everything the engine does is a command.
+//! - **Read state**: [`CallEngine::snapshot`] returns a [`Snapshot`] (`phase`, `error`, `peers`, `devices`, `muted`,
+//!   `deafened`, `echo_cancellation`/`noise_suppression`/`auto_gain_control`, `push_to_talk`, `ptt_held`, per-peer
+//!   `volume`, …).
+//! - **Wait for changes**: [`CallEngine::changes`] is a `watch` channel bumped (at most once per 60 ms) whenever the
+//!   snapshot changed. Poll `snapshot()` after each bump; do not poll on a timer.
+//! - **Device lists** are on demand: send [`Command::ListDevices`], wait for the change, read `snapshot().devices`.
+//! - **Tests only**: [`CallEngine::plout`] (the receiver's playout energy, the W1 measure) and
+//!   [`CallEngine::mic_options`] (what the published microphone source actually runs).
+//!
+//! The UI keeps nothing of its own; every choice is remembered by the engine in [`crate::calls::settings::CallSettings`]
+//! (per device, beside the account) and applied again on the next join.
 //!
 //! Shape: an actor on a tokio runtime of its own (2 threads). The UI sends [`Command`]s and reads a [`Snapshot`], which
 //! is rebuilt at most every 60 ms when something changed. Core calls are blocking and go to dedicated threads, never a
 //! pool (SPIKE.md: a pool keeps a heap per thread): one for the call's own calls, one for the game-key long poll, which
 //! would otherwise hold the 1.5 s heartbeat up for its 4 s.
+use super::audio::{self, Devices, Processing};
 use super::errors::{explain, removed_from_room, removed_notice, token_refused, CallError, Kind, PASSING_FADE};
 use super::gate::{MicGate, Publish};
 use super::keys::{self, KeyBook};
 use super::reconnect::{self as rc, MediaWatch};
+use super::settings::CallSettings;
 use super::{ice, review, tone};
 use futures::StreamExt;
 use livekit::e2ee::{E2eeOptions, EncryptionType};
 use livekit::options::TrackPublishOptions;
 use livekit::prelude::*;
 use livekit::webrtc::audio_frame::AudioFrame;
-use livekit::webrtc::audio_source::{native::NativeAudioSource, AudioSourceOptions, RtcAudioSource};
+use livekit::webrtc::audio_source::{native::NativeAudioSource, RtcAudioSource};
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -69,7 +89,13 @@ impl AudioMode {
 }
 
 #[derive(Clone, Debug)]
-pub struct Options { pub audio: AudioMode, pub push_to_talk: bool }
+pub struct Options {
+    pub audio: AudioMode,
+    /// The remembered choices (devices, processing, push-to-talk, volumes). Loaded by the caller from
+    /// `settings::CallSettings::load`; the engine re-saves it to `settings_path` on every change.
+    pub settings: CallSettings,
+    pub settings_path: Option<PathBuf>,
+}
 
 #[derive(Debug)]
 pub enum Command {
@@ -79,6 +105,18 @@ pub enum Command {
     SetDeafened(bool),
     /// Per account, 0 to 10 (1 unchanged), applied to every device of that account (patch W1).
     SetVolume { account: String, volume: f64 },
+    /// Fill `Snapshot.devices` from the platform's microphone and speaker lists, then raise the change.
+    ListDevices,
+    /// Choose the recording (microphone) device and switch to it live; remembered in settings.
+    SetMicDevice { id: String },
+    /// Choose the playout (speaker) device and switch to it live; remembered in settings.
+    SetOutDevice { id: String },
+    /// The three processing switches, applied to the microphone source (a change republishes the mic, never the room).
+    SetProcessing(Processing),
+    /// Enable or disable push-to-talk mode (the preference). While on, the mic follows press/release.
+    SetPushToTalk(bool),
+    /// A push-to-talk key went down (`true`) or up (`false`); ignored while PTT is off or the call is deafened.
+    PushToTalk(bool),
     /// Tests: a game key as the core's `game_mute_wait` would report it; `None` hands the mic back to the real watcher.
     TestGame(Option<bool>),
     /// Tests: play every encrypted track whoever sends it, so a test can show the cryptography alone keeps a removed member out.
@@ -108,6 +146,16 @@ pub struct Snapshot {
     pub subscribed: Vec<String>,
     pub attempt: u32,
     pub events: Vec<String>,
+    /// The platform's microphones and speakers, filled on [`Command::ListDevices`] (empty in the silent test mode).
+    pub devices: Devices,
+    /// The remembered recording and playout devices (settings), the ones actually in use while in a call.
+    #[serde(rename = "micId")] pub mic_id: Option<String>,
+    #[serde(rename = "outId")] pub out_id: Option<String>,
+    #[serde(rename = "echoCancellation")] pub echo_cancellation: bool,
+    #[serde(rename = "noiseSuppression")] pub noise_suppression: bool,
+    #[serde(rename = "autoGainControl")] pub auto_gain_control: bool,
+    #[serde(rename = "pushToTalk")] pub push_to_talk: bool,
+    #[serde(rename = "pttHeld")] pub ptt_held: bool,
 }
 
 /// Tests: tone meters on the subscribed microphones.
@@ -153,6 +201,23 @@ impl CallEngine {
     pub fn snapshot(&self) -> Snapshot { self.snap.lock().clone() }
     /// Bumped whenever the snapshot changed (at most every 60 ms).
     pub fn changes(&self) -> tokio::sync::watch::Receiver<u64> { self.version.clone() }
+
+    /// Tests: the receiver's playout energy of one sender's microphone over `ms` (inbound-rtp `totalAudioEnergy`, the
+    /// W1 measure; a tap would sit before the gain and miss it). `present: false` when that sender has no microphone
+    /// subscribed here.
+    pub async fn plout(&self, identity: &str, ms: u64) -> Value {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.tx.send(Msg::Plout { identity: identity.to_string(), ms, reply: tx }).is_err() { return json!({"present": false}); }
+        rx.await.unwrap_or_else(|_| json!({"error": "the engine is gone"}))
+    }
+
+    /// Tests: what the published microphone source actually runs (its `AudioSourceOptions`). In the silent test mode
+    /// the source follows the processing switches, so this shows a switch reaching the SDK.
+    pub async fn mic_options(&self) -> Value {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.tx.send(Msg::MicOptions { reply: tx }).is_err() { return json!({"present": false}); }
+        rx.await.unwrap_or_else(|_| json!({"error": "the engine is gone"}))
+    }
 }
 
 // ------------------------------------------------------------------------------------------------ the actor
@@ -179,6 +244,10 @@ enum Msg {
     Polled { call: u64, result: Result<Value, String> },
     Game { call: u64, news: GameNews },
     Mic { call: u64, result: Result<(), String> },
+    Devices { call: u64, result: Result<Devices, String> },
+    Device { call: u64, result: Result<(), String> },
+    Plout { identity: String, ms: u64, reply: tokio::sync::oneshot::Sender<Value> },
+    MicOptions { reply: tokio::sync::oneshot::Sender<Value> },
     Room { gen: u64, ev: RoomEvent },
 }
 
@@ -186,26 +255,86 @@ struct Session { room: Arc<Room>, book: Arc<Mutex<KeyBook>>, gen: u64 }
 
 struct TrackInfo { identity: String, source: TrackSource, audio: Option<RemoteAudioTrack> }
 
-/// What the gate switches: the microphone of the current session.
-#[derive(Default)]
-struct MicSlot { gen: u64, room: Option<Arc<Room>>, book: Option<Arc<Mutex<KeyBook>>>, publication: Option<LocalTrackPublication>, feeder: Option<tokio::task::JoinHandle<()>>, platform: Option<livekit::PlatformAudio> }
+/// What the audio should be doing right now. The gate owns `on` (mute/unmute); the engine owns the device choices and
+/// the processing switches. [`realize_mic`] reconciles this against the realised [`MicSlot`], so whoever changed the
+/// wish (a mute press, a device pick, a processing switch) ends up with the same final microphone.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct AudioWish { on: bool, processing: Processing, mic_id: Option<String>, out_id: Option<String> }
 
-async fn switch_mic(slot: Arc<tokio::sync::Mutex<MicSlot>>, mode: AudioMode, on: bool) -> Result<(), String> {
+/// The realised audio of the current session.
+#[derive(Default)]
+struct MicSlot {
+    gen: u64,
+    room: Option<Arc<Room>>,
+    book: Option<Arc<Mutex<KeyBook>>>,
+    publication: Option<LocalTrackPublication>,
+    feeder: Option<tokio::task::JoinHandle<()>>,
+    platform: Option<livekit::PlatformAudio>,
+    realized: AudioWish,
+}
+
+/// Makes the microphone and the platform's devices match `wish`. Device switches are hot-swaps on the SDK's device
+/// module (no republish, so the call is never dropped); a processing change republishes the microphone, because
+/// libwebrtc bakes the software AEC/NS/AGC into the source when it is created. Muting keeps the track but turns
+/// recording off, so the system's microphone indicator goes off too (call.js `stopRecording`/`startRecording`).
+async fn realize_mic(slot: Arc<tokio::sync::Mutex<MicSlot>>, mode: AudioMode, wish: Arc<parking_lot::Mutex<AudioWish>>) -> Result<(), String> {
     let mut s = slot.lock().await;
     let Some(room) = s.room.clone() else { return Err("not in a call".into()) };
-    if !on { if let Some(p) = &s.publication { p.mute(); } return Ok(()); }
-    if let Some(p) = &s.publication { p.unmute(); return Ok(()); }
-    let (source, feeder_src) = match &mode {
+    let w = wish.lock().clone();
+
+    // device changes: switch on the device module in place
+    if w.out_id != s.realized.out_id {
+        if let (Some(p), Some(id)) = (&s.platform, &w.out_id) { p.switch_playout_device(&audio::playout_id(id)).map_err(|e| format!("speaker device: {e}"))?; }
+        s.realized.out_id = w.out_id.clone();
+    }
+    if w.mic_id != s.realized.mic_id {
+        if let (Some(p), Some(id)) = (&s.platform, &w.mic_id) { p.switch_recording_device(&audio::recording_id(id)).map_err(|e| format!("microphone device: {e}"))?; }
+        s.realized.mic_id = w.mic_id.clone();
+    }
+
+    // processing change: the options are part of the source, so the mic is republished (never the room)
+    if w.processing != s.realized.processing {
+        if let Some(p) = s.publication.take() {
+            let sid = p.sid();
+            let _ = room.local_participant().unpublish_track(&sid).await;
+            if let Some(f) = s.feeder.take() { f.abort(); }
+        }
+        s.realized.processing = w.processing;
+    }
+
+    if !w.on {
+        if let Some(p) = &s.publication { p.mute(); }
+        if let Some(p) = &s.platform { let _ = p.stop_recording(); }
+        return Ok(());
+    }
+    if let Some(p) = &s.publication {
+        p.unmute();
+        if let Some(p) = &s.platform { let _ = p.start_recording(); }
+        return Ok(());
+    }
+
+    // create and publish a fresh microphone
+    let (feeder_src, platform_source) = match &mode {
         AudioMode::Silent { .. } => {
-            let src = NativeAudioSource::new(AudioSourceOptions { echo_cancellation: false, noise_suppression: false, auto_gain_control: false }, 48000, 1, 100);
-            (RtcAudioSource::Native(src.clone()), Some(src))
+            let src = NativeAudioSource::new(w.processing.into(), 48000, 1, 100);
+            (Some(src), None)
         }
         AudioMode::Platform => {
-            if s.platform.is_none() { s.platform = Some(livekit::PlatformAudio::new().map_err(|e| format!("microphone: {e}"))?); }
-            (s.platform.as_ref().unwrap().rtc_source(), None)
+            if s.platform.is_none() {
+                let p = livekit::PlatformAudio::new().map_err(|e| format!("microphone: {e}"))?;
+                // apply the remembered devices before the first publish
+                if let Some(id) = &w.out_id { if p.playout_devices().any(|d| d.id.as_str() == id) { p.set_playout_device(&audio::playout_id(id)).map_err(|e| format!("speaker device: {e}"))?; } }
+                if let Some(id) = &w.mic_id { if p.recording_devices().any(|d| d.id.as_str() == id) { p.set_recording_device(&audio::recording_id(id)).map_err(|e| format!("microphone device: {e}"))?; } }
+                s.platform = Some(p);
+            }
+            let p = s.platform.as_ref().unwrap();
+            (None, Some(p.rtc_source()))
         }
     };
-    let track = LocalAudioTrack::create_audio_track("microphone", source);
+    let track = match platform_source {
+        Some(_) => LocalAudioTrack::create_device_audio_track_with_options("microphone", w.processing.into()),
+        None => LocalAudioTrack::create_audio_track("microphone", RtcAudioSource::Native(feeder_src.clone().unwrap())),
+    };
     let p = room.local_participant().publish_track(LocalTrack::Audio(track), TrackPublishOptions { source: TrackSource::Microphone, dtx: true, ..Default::default() }).await.map_err(|e| format!("microphone: {e}"))?;
     if p.encryption_type() == EncryptionType::None {
         let _ = room.local_participant().unpublish_track(&p.sid()).await;
@@ -220,6 +349,8 @@ async fn switch_mic(slot: Arc<tokio::sync::Mutex<MicSlot>>, mode: AudioMode, on:
             loop { t.tick().await; let d = tone::sine(tone_hz, &mut n, 12000.); let _ = src.capture_frame(&AudioFrame { data: d.into(), sample_rate: 48000, num_channels: 1, samples_per_channel: 480 }).await; }
         }));
     }
+    if let Some(p) = &s.platform { let _ = p.start_recording(); }
+    s.realized = w;
     s.publication = Some(p);
     Ok(())
 }
@@ -265,9 +396,13 @@ struct Actor {
     game_muted: bool,
     game_injected: bool,
     trust_all: bool,
-    volumes: HashMap<String, f64>,
+    ptt_held: bool,
+    devices: Devices,
+    settings: CallSettings,
+    settings_path: Option<PathBuf>,
     gate: Arc<MicGate>,
     mic: Arc<tokio::sync::Mutex<MicSlot>>,
+    wish: Arc<parking_lot::Mutex<AudioWish>>,
     game_watch: Option<tokio::task::JoinHandle<()>>,
     dirty: bool,
     published_at: Instant,
@@ -277,16 +412,24 @@ struct Actor {
 impl Actor {
     fn new(core: Arc<dyn CoreLink>, opts: Options, tx: UnboundedSender<Msg>, snap_out: Arc<Mutex<Snapshot>>, version: tokio::sync::watch::Sender<u64>, taps: Arc<Taps>) -> Actor {
         let mic: Arc<tokio::sync::Mutex<MicSlot>> = Default::default();
-        let (m2, mode) = (mic.clone(), opts.audio.clone());
-        let publish: Publish = Arc::new(move |on| Box::pin(switch_mic(m2.clone(), mode.clone(), on)));
+        let wish: Arc<parking_lot::Mutex<AudioWish>> = Arc::new(parking_lot::Mutex::new(AudioWish {
+            on: false, processing: opts.settings.processing, mic_id: opts.settings.mic_id.clone(), out_id: opts.settings.out_id.clone(),
+        }));
+        let (m2, mode, w2) = (mic.clone(), opts.audio.clone(), wish.clone());
+        let publish: Publish = Arc::new(move |on| {
+            let (m, mode, w) = (m2.clone(), mode.clone(), w2.clone());
+            Box::pin(async move { w.lock().on = on; realize_mic(m, mode, w).await })
+        });
+        let settings = opts.settings.clone();
+        let settings_path = opts.settings_path.clone();
         Actor {
             core, lane: Lane::new("mega-call-core"), game_lane: Lane::new("mega-call-keys"), opts, tx, snap_out, version, taps,
             gid: None, room_name: String::new(), phase: "idle", error: None, events: VecDeque::new(), call: 0, gen: 0, session: None, token: None,
             attempt: 0, retry_at: None, rejoin_started: None, reconnecting_since: None, media: MediaWatch::default(), polling: false, me: String::new(),
             members: BTreeMap::new(), blocked: BTreeMap::new(), tracks: BTreeMap::new(), speaking: HashSet::new(), want_speaking: false, speaking_sent: None,
             speak_at: Instant::now() - Duration::from_secs(5), speak_due: None, decrypt_fail: HashMap::new(), rekeyed: HashMap::new(),
-            muted: false, deafened: false, game_muted: false, game_injected: false, trust_all: false, volumes: HashMap::new(),
-            gate: Arc::new(MicGate::new(publish)), mic, game_watch: None, dirty: true, published_at: Instant::now(), v: 0,
+            muted: false, deafened: false, game_muted: false, game_injected: false, trust_all: false, ptt_held: false, devices: Devices::default(),
+            settings, settings_path, gate: Arc::new(MicGate::new(publish)), mic, wish, game_watch: None, dirty: true, published_at: Instant::now(), v: 0,
         }
     }
 
@@ -322,6 +465,10 @@ impl Actor {
             Msg::Polled { call, result } => { if call == self.call { self.polling = false; self.on_polled(result); } }
             Msg::Game { call, news } => { if call == self.call { self.on_game(news); } }
             Msg::Mic { call, result } => { if call == self.call { self.on_mic(result); } }
+            Msg::Devices { call, result } => { if call == self.call { self.on_devices(result); } }
+            Msg::Device { call, result } => { if call == self.call { self.on_device(result); } }
+            Msg::Plout { identity, ms, reply } => self.on_plout(identity, ms, reply),
+            Msg::MicOptions { reply } => self.on_mic_options(reply),
             Msg::Room { gen, ev } => { if self.session.as_ref().is_some_and(|s| s.gen == gen) { self.on_room(ev); } }
         }
     }
@@ -340,16 +487,97 @@ impl Actor {
             }
             Command::SetVolume { account, volume } => {
                 let v = volume.clamp(0., 10.);
-                self.volumes.insert(account.clone(), v);
+                self.settings.volumes.insert(account.clone(), v);
                 for t in self.tracks.values() { if self.members.get(&t.identity).is_some_and(|m| m.account == account) { if let Some(a) = &t.audio { a.rtc_track().set_volume(v); } } }
+                self.save_settings();
                 self.dirty = true;
             }
+            Command::ListDevices => self.list_devices(),
+            Command::SetMicDevice { id } => { self.settings.mic_id = Some(id.clone()); self.wish.lock().mic_id = Some(id); self.save_settings(); self.apply_audio(); }
+            Command::SetOutDevice { id } => { self.settings.out_id = Some(id.clone()); self.wish.lock().out_id = Some(id); self.save_settings(); self.apply_audio(); }
+            Command::SetProcessing(p) => { self.set_processing(p); }
+            Command::SetPushToTalk(p) => { self.settings.push_to_talk = p; self.save_settings(); if p { self.ptt_held = false; self.set_muted(true); } self.dirty = true; }
+            Command::PushToTalk(down) => self.push_to_talk(down),
             Command::TestGame(g) => match g {
                 Some(m) => { self.game_injected = true; self.on_game_state(m, Some("test".into())); }
                 None => { self.game_injected = false; self.on_game_state(false, None); }
             },
             Command::TestTrustAll(t) => { self.trust_all = t; self.review_all(); }
         }
+    }
+
+    fn save_settings(&self) { if let Some(p) = &self.settings_path { self.settings.save(p); } }
+
+    fn set_processing(&mut self, p: Processing) {
+        // call.js `setNoiseSuppression`: turning noise suppression on also forces echo cancellation on.
+        let p = if p.noise_suppression && !p.echo_cancellation { p.with_noise(true) } else { p };
+        self.settings.processing = p;
+        self.wish.lock().processing = p;
+        self.save_settings();
+        self.apply_audio();
+    }
+
+    fn push_to_talk(&mut self, down: bool) {
+        if !self.settings.push_to_talk || self.deafened { return; }
+        self.ptt_held = down;
+        self.set_muted(!down);
+        self.dirty = true;
+    }
+
+    fn apply_audio(&mut self) {
+        if self.session.is_none() { self.dirty = true; return; }
+        let (mic, mode, wish, tx, call) = (self.mic.clone(), self.opts.audio.clone(), self.wish.clone(), self.tx.clone(), self.call);
+        tokio::spawn(async move { if let Err(e) = realize_mic(mic, mode, wish).await { let _ = tx.send(Msg::Device { call, result: Err(e) }); } });
+        self.dirty = true;
+    }
+
+    fn list_devices(&mut self) {
+        if matches!(self.opts.audio, AudioMode::Silent { .. }) { self.devices = Devices::default(); self.dirty = true; return; }
+        let (tx, call) = (self.tx.clone(), self.call);
+        tokio::task::spawn_blocking(move || { let r = audio::list_devices(); let _ = tx.send(Msg::Devices { call, result: r }); });
+    }
+
+    fn on_devices(&mut self, r: Result<Devices, String>) {
+        match r {
+            Ok(d) => { self.log(format!("{} microphones, {} speakers", d.mic.len(), d.out.len())); self.devices = d; }
+            Err(e) => { self.log(format!("device list unavailable: {e}")); self.devices = Devices::default(); }
+        }
+        self.dirty = true;
+    }
+
+    fn on_device(&mut self, r: Result<(), String>) {
+        if let Err(e) = r { self.log(format!("audio device: {e}")); self.fail(CallError::new(Kind::Device, e)); }
+    }
+
+    fn on_plout(&mut self, identity: String, ms: u64, reply: tokio::sync::oneshot::Sender<Value>) {
+        let t = self.tracks.values().find(|t| t.identity == identity && t.source == TrackSource::Microphone).and_then(|t| t.audio.clone());
+        tokio::spawn(async move {
+            let v = match t {
+                Some(t) => {
+                    let e0 = audio::playout_energy(&t).await;
+                    tokio::time::sleep(Duration::from_millis(ms)).await;
+                    let e1 = audio::playout_energy(&t).await;
+                    json!({"present": true, "energy": e1 - e0})
+                }
+                None => json!({"present": false}),
+            };
+            let _ = reply.send(v);
+        });
+    }
+
+    fn on_mic_options(&mut self, reply: tokio::sync::oneshot::Sender<Value>) {
+        let mic = self.mic.clone();
+        tokio::spawn(async move {
+            let m = mic.lock().await;
+            let v = match m.publication.as_ref().and_then(|p| p.track()) {
+                Some(LocalTrack::Audio(a)) => {
+                    let o = a.rtc_source().audio_options();
+                    json!({"present": true, "echoCancellation": o.echo_cancellation, "noiseSuppression": o.noise_suppression, "autoGainControl": o.auto_gain_control})
+                }
+                _ => json!({"present": false}),
+            };
+            let _ = reply.send(v);
+        });
     }
 
     fn set_muted(&mut self, m: bool) {
@@ -367,7 +595,7 @@ impl Actor {
         self.gid = Some(gid);
         self.room_name = name;
         self.phase = "connecting";
-        self.muted = self.opts.push_to_talk || self.muted;
+        self.muted = self.settings.push_to_talk || self.muted;
         self.start_attempt(Attempt::Join(0));
         self.start_game_watch();
     }
@@ -387,7 +615,7 @@ impl Actor {
         self.teardown();
         self.gid = None;
         self.reset();
-        self.muted = false; self.deafened = false;
+        self.muted = false; self.deafened = false; self.ptt_held = false;
         self.dirty = true;
     }
 
@@ -403,7 +631,12 @@ impl Actor {
             {
                 // only this session's microphone: a newer session may already own the slot
                 let mut m = mic.lock().await;
-                if m.gen == gen { if let Some(f) = m.feeder.take() { f.abort(); } m.publication = None; m.room = None; m.book = None; }
+                if m.gen == gen {
+                    if let Some(f) = m.feeder.take() { f.abort(); }
+                    m.publication = None; m.room = None; m.book = None;
+                    // the microphone indicator goes off when the call ends, whatever the mute state was
+                    if let Some(p) = &m.platform { let _ = p.stop_recording(); }
+                }
             }
             let _ = tokio::time::timeout(Duration::from_secs(3), room.close()).await;
         });
@@ -633,7 +866,7 @@ impl Actor {
                 let audio = match track {
                     RemoteTrack::Audio(a) => {
                         if self.deafened { a.disable(); }
-                        if let Some(v) = self.members.get(&id).and_then(|m| self.volumes.get(&m.account)) { a.rtc_track().set_volume(*v); }
+                        if let Some(v) = self.members.get(&id).and_then(|m| self.settings.volumes.get(&m.account)) { a.rtc_track().set_volume(*v); }
                         if let AudioMode::Silent { .. } = self.opts.audio {
                             let (taps, who, t) = (self.taps.clone(), id.clone(), a.clone());
                             tokio::spawn(async move { let mut s = NativeAudioStream::new(t.rtc_track(), 48000, 1); while let Some(f) = s.next().await { taps.push(&who, &f); } });
@@ -797,7 +1030,7 @@ impl Actor {
                 peers.push(Peer {
                     identity: id.clone(), me: false, name: m.map(|m| m.name.clone()).unwrap_or_else(|| format!("Unknown device {}", &id[..id.len().min(8)])),
                     account: m.map(|m| m.account.clone()), member: m.is_some(), speaking: self.speaking.contains(&id), muted: mic.unwrap_or(true),
-                    deafened: rp.attributes().get("deaf").is_some_and(|v| v == "1"), volume: m.and_then(|m| self.volumes.get(&m.account)).copied().unwrap_or(1.),
+                    deafened: rp.attributes().get("deaf").is_some_and(|v| v == "1"), volume: m.and_then(|m| self.settings.volumes.get(&m.account)).copied().unwrap_or(1.),
                     cant_decrypt: self.decrypt_fail.get(&id).is_some_and(|(_, t)| t.elapsed() < Duration::from_secs(6)),
                 });
             }
@@ -810,6 +1043,9 @@ impl Actor {
             muted: self.muted, game_muted: self.game_muted, deafened: self.deafened, peers, encryption: enc, blocked: self.blocked.values().cloned().collect(),
             subscribed: self.tracks.iter().map(|(k, t)| format!("{}:{:?}", k, t.source)).collect(), attempt: self.attempt,
             events: self.events.iter().rev().take(12).rev().cloned().collect(),
+            devices: self.devices.clone(), mic_id: self.settings.mic_id.clone(), out_id: self.settings.out_id.clone(),
+            echo_cancellation: self.settings.processing.echo_cancellation, noise_suppression: self.settings.processing.noise_suppression,
+            auto_gain_control: self.settings.processing.auto_gain_control, push_to_talk: self.settings.push_to_talk, ptt_held: self.ptt_held,
         }
     }
 }
