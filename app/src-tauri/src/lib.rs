@@ -27,7 +27,12 @@ impl Poller {
     fn start(app: Arc<App>) -> Poller {
         let (tx, rx) = channel::<(String, Value, Sender<Result<Value, String>>)>();
         std::thread::Builder::new().name("rpc-poll".into()).spawn(move || {
-            while let Ok((method, args, reply)) = rx.recv() { let _ = reply.send(app.call(&method, args)); }
+            // A panic in one call must not take the worker (and every later poll) with it.
+            while let Ok((method, args, reply)) = rx.recv() {
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.call(&method, args)))
+                    .unwrap_or_else(|_| Err(format!("{method}: internal error")));
+                let _ = reply.send(r);
+            }
         }).expect("spawn the poll worker");
         Poller { tx }
     }
