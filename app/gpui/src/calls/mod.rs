@@ -17,3 +17,4 @@ pub mod capture;
 #[cfg(target_os = "linux")]
 pub mod capture_linux;
 pub mod share;
+pub mod shortcuts;

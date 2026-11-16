@@ -8,6 +8,7 @@
 //!   {"cmd":"share","profile":"text|motion|motion60","source":"test|portal","w","h","speed","audio":<stream id>}  {"cmd":"share_stop"}
 //!   {"cmd":"share_switch","source","w","h","speed"} {"cmd":"share_profile","profile"} {"cmd":"share_end"} {"cmd":"share_stats"}
 //!   {"cmd":"share_apps"} {"cmd":"share_audio","stream"} {"cmd":"share_audio_stop"}
+//!   {"cmd":"ptt_mode","on"} {"cmd":"ptt","down"} {"cmd":"shortcut","id","down"} {"cmd":"rebind"} {"cmd":"plout","identity","ms"} {"cmd":"mic_options"}
 //!   {"cmd":"core","method","args"} {"cmd":"call_active"} {"cmd":"quit"}
 use super::audio::Processing;
 use super::capture::{ShareSource, TestPattern};
@@ -69,6 +70,11 @@ async fn handle(e: &Arc<CallEngine>, c: &Value, quit: &tokio::sync::mpsc::Unboun
             e.send(Command::SetProcessing(p)); json!({"ok": true})
         }
         "ptt_mode" => { e.send(Command::SetPushToTalk(on)); json!({"ok": true}) }
+        "shortcut" => match super::shortcuts::Shortcut::from_id(&s("id")) {
+            Some(sc) => { e.send(Command::Shortcut { shortcut: sc, down: c["down"].as_bool().unwrap_or(on) }); json!({"ok": true}) }
+            None => json!({"error": "unknown shortcut id"}),
+        },
+        "rebind" => { e.send(Command::RebindShortcuts); json!({"ok": true}) }
         "ptt" => { e.send(Command::PushToTalk(c["down"].as_bool().unwrap_or(on))); json!({"ok": true}) }
         "share" => {
             let Some(profile) = Profile::parse(c["profile"].as_str().unwrap_or("text")) else { return json!({"error": "unknown profile"}) };

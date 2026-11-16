@@ -11,6 +11,11 @@
 //!   `volume`, …).
 //! - **Wait for changes**: [`CallEngine::changes`] is a `watch` channel bumped (at most once per 60 ms) whenever the
 //!   snapshot changed. Poll `snapshot()` after each bump; do not poll on a timer.
+//! - **Global keys**: push-to-talk, mute and deafen work system-wide through the desktop portal ([`super::shortcuts`], started
+//!   with the engine; `Options.shortcuts`). `Snapshot.global_shortcuts` (`off|pending|active|denied|unavailable|unsupported`),
+//!   `global_shortcuts_note` and `shortcuts` (ids, descriptions, the keys the desktop gave) say how it went; when it is not
+//!   `active` the keys work only while the window is focused, and the UI sends them as [`Command::Shortcut`]. Ask the
+//!   desktop again with [`Command::RebindShortcuts`].
 //! - **Device lists** are on demand: send [`Command::ListDevices`], wait for the change, read `snapshot().devices`.
 //! - **Screen share and one app's sound** (step 5): `Command::StartShare` / `StopShare` / `SwitchShareSource` /
 //!   `SetShareProfile` / `ListShareApps` / `StartShareAudio` / `StopShareAudio`, read from `Snapshot.share` and
@@ -35,6 +40,7 @@ use super::settings::CallSettings;
 use super::appaudio::AppStream;
 use super::capture::ShareSource;
 use super::share::{self, Profile, Report, Sess, ShareCmd, ShareHandle, ShareView};
+use super::shortcuts::{self, Shortcut, ShortcutInfo, VoiceState};
 use super::{ice, review, tone};
 use futures::StreamExt;
 use livekit::e2ee::{E2eeOptions, EncryptionType};
@@ -51,6 +57,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+
+/// The name the desktop portal knows the app by (the window's own app id).
+const APP_ID: &str = "app.commons.chat.gpui";
 
 // ------------------------------------------------------------------------------------------------ the core
 
@@ -102,6 +111,8 @@ pub struct Options {
     /// `settings::CallSettings::load`; the engine re-saves it to `settings_path` on every change.
     pub settings: CallSettings,
     pub settings_path: Option<PathBuf>,
+    /// System-wide push-to-talk, mute and deafen through the desktop portal ([`shortcuts`]); `Mode::Off` for tests.
+    pub shortcuts: shortcuts::Mode,
 }
 
 #[derive(Debug)]
@@ -124,6 +135,12 @@ pub enum Command {
     SetPushToTalk(bool),
     /// A push-to-talk key went down (`true`) or up (`false`); ignored while PTT is off or the call is deafened.
     PushToTalk(bool),
+    /// A voice shortcut went down or up: the same path for the system-wide keys (the portal) and the window's own keys,
+    /// so they can never disagree. Push to talk acts only in push-to-talk mode; the toggles act on the press.
+    Shortcut { shortcut: Shortcut, down: bool },
+    /// Ask the desktop for the global shortcuts again (after they were declined, or to change the keys); `Snapshot.global_shortcuts`
+    /// follows. Does nothing where there is no portal.
+    RebindShortcuts,
     /// Tests: a game key as the core's `game_mute_wait` would report it; `None` hands the mic back to the real watcher.
     TestGame(Option<bool>),
     /// Share a screen (the system's picker opens for [`ShareSource::Portal`]), optionally with one app's sound (an id from
@@ -183,6 +200,14 @@ pub struct Snapshot {
     pub share: ShareView,
     /// The apps playing sound, filled on [`Command::ListShareApps`].
     #[serde(rename = "shareApps")] pub share_apps: Vec<AppStream>,
+    /// Whether push-to-talk, mute and deafen work with any window focused: `off` (not asked for), `pending` (the desktop's
+    /// approval dialog may be open), `active`, `denied` (ask again with [`Command::RebindShortcuts`]), `unavailable` (no
+    /// portal) or `unsupported` (this platform). Anything but `active` means the window's own keys only.
+    #[serde(rename = "globalShortcuts")] pub global_shortcuts: String,
+    /// A short reason for `global_shortcuts`, empty when there is nothing to say.
+    #[serde(rename = "globalShortcutsNote")] pub global_shortcuts_note: String,
+    /// The three shortcuts and the keys the desktop gave them (empty trigger: none set yet).
+    pub shortcuts: Vec<ShortcutInfo>,
 }
 
 /// Tests: tone meters on the subscribed microphones.
@@ -286,6 +311,7 @@ enum Msg {
     Room { gen: u64, ev: RoomEvent },
     Share(Report),
     ShareApps(Result<Vec<AppStream>, String>),
+    Shortcuts(shortcuts::Event),
 }
 
 struct Session { room: Arc<Room>, book: Arc<Mutex<KeyBook>>, gen: u64 }
@@ -456,6 +482,10 @@ struct Actor {
     game_injected: bool,
     trust_all: bool,
     ptt_held: bool,
+    sc_ctl: Option<tokio::sync::mpsc::UnboundedSender<shortcuts::Ctl>>,
+    sc_status: shortcuts::Status,
+    sc_note: String,
+    sc_infos: Vec<ShortcutInfo>,
     devices: Devices,
     share: Option<ShareHandle>,
     share_view: ShareView,
@@ -490,7 +520,7 @@ impl Actor {
             attempt: 0, retry_at: None, rejoin_started: None, reconnecting_since: None, media: MediaWatch::default(), polling: false, me: String::new(),
             members: BTreeMap::new(), blocked: BTreeMap::new(), tracks: BTreeMap::new(), speaking: HashSet::new(), want_speaking: false, speaking_sent: None,
             speak_at: Instant::now() - Duration::from_secs(5), speak_due: None, decrypt_fail: HashMap::new(), rekeyed: HashMap::new(),
-            muted: false, deafened: false, game_muted: false, game_injected: false, trust_all: false, ptt_held: false, devices: Devices::default(), share: None, share_view: ShareView { state: "idle".into(), ..Default::default() }, share_apps: vec![],
+            muted: false, deafened: false, game_muted: false, game_injected: false, trust_all: false, ptt_held: false, sc_ctl: None, sc_status: shortcuts::Status::Off, sc_note: String::new(), sc_infos: vec![], devices: Devices::default(), share: None, share_view: ShareView { state: "idle".into(), ..Default::default() }, share_apps: vec![],
             settings, settings_path, gate: Arc::new(MicGate::new(publish)), mic, wish, game_watch: None, dirty: true, published_at: Instant::now(), v: 0,
         }
     }
@@ -500,6 +530,8 @@ impl Actor {
         let mut poll = tokio::time::interval(rc::POLL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let tx = self.tx.clone();
+        self.sc_ctl = shortcuts::spawn(&tokio::runtime::Handle::current(), self.opts.shortcuts.clone(), APP_ID, Arc::new(move |e| { let _ = tx.send(Msg::Shortcuts(e)); }));
         loop {
             tokio::select! {
                 m = rx.recv() => match m { Some(m) => self.on_msg(m), None => break },
@@ -537,6 +569,7 @@ impl Actor {
                 Ok(v) => { self.log(format!("{} apps playing sound", v.len())); self.share_apps = v; self.dirty = true; }
                 Err(e) => { self.log(format!("app list unavailable: {e}")); self.share_apps.clear(); self.dirty = true; }
             },
+            Msg::Shortcuts(e) => self.on_shortcuts(e),
             Msg::Room { gen, ev } => { if self.session.as_ref().is_some_and(|s| s.gen == gen) { self.on_room(ev); } }
         }
     }
@@ -546,13 +579,7 @@ impl Actor {
             Command::Join { gid, name } => self.join(gid, name),
             Command::Leave => { self.leave(); self.phase = "idle"; self.error = None; }
             Command::SetMuted(m) => self.set_muted(m),
-            Command::SetDeafened(d) => {
-                self.deafened = d;
-                for t in self.tracks.values() { if let Some(a) = &t.audio { if d { a.disable() } else { a.enable() } } }
-                self.announce_deafened();
-                if d { self.set_muted(true); }
-                self.dirty = true;
-            }
+            Command::SetDeafened(d) => self.set_deafened(d),
             Command::SetVolume { account, volume } => {
                 let v = volume.clamp(0., 10.);
                 self.settings.volumes.insert(account.clone(), v);
@@ -577,6 +604,8 @@ impl Actor {
             Command::StartShareAudio { stream } => self.share_cmd(ShareCmd::AudioStart(stream), true),
             Command::StopShareAudio => self.share_cmd(ShareCmd::AudioStop, false),
             Command::TestShareEnd => self.share_cmd(ShareCmd::TestEnd, false),
+            Command::Shortcut { shortcut, down } => self.on_shortcut(shortcut, down),
+            Command::RebindShortcuts => { if let Some(c) = &self.sc_ctl { let _ = c.send(shortcuts::Ctl::Rebind); } }
             Command::TestGame(g) => match g {
                 Some(m) => { self.game_injected = true; self.on_game_state(m, Some("test".into())); }
                 None => { self.game_injected = false; self.on_game_state(false, None); }
@@ -616,10 +645,38 @@ impl Actor {
         self.apply_audio();
     }
 
-    fn push_to_talk(&mut self, down: bool) {
-        if !self.settings.push_to_talk || self.deafened { return; }
-        self.ptt_held = down;
-        self.set_muted(!down);
+    fn set_deafened(&mut self, d: bool) {
+        self.deafened = d;
+        for t in self.tracks.values() { if let Some(a) = &t.audio { if d { a.disable() } else { a.enable() } } }
+        self.announce_deafened();
+        if d { self.set_muted(true); }
+        self.dirty = true;
+    }
+
+    fn voice(&self) -> VoiceState { VoiceState { ptt_mode: self.settings.push_to_talk, muted: self.muted, deafened: self.deafened, ptt_held: self.ptt_held } }
+
+    /// Makes the engine match a state the pure state machine ([`VoiceState`]) worked out.
+    fn apply_voice(&mut self, new: VoiceState) {
+        let old = self.voice();
+        self.ptt_held = new.ptt_held;
+        if new.deafened != old.deafened { self.set_deafened(new.deafened); }
+        if new.muted != self.muted { self.set_muted(new.muted); }
+        self.dirty = true;
+    }
+
+    fn push_to_talk(&mut self, down: bool) { self.on_shortcut(Shortcut::PushToTalk, down); }
+
+    fn on_shortcut(&mut self, s: Shortcut, down: bool) {
+        let new = self.voice().key(s, down);
+        self.apply_voice(new);
+    }
+
+    fn on_shortcuts(&mut self, e: shortcuts::Event) {
+        match e {
+            shortcuts::Event::Status { status, note } => { self.sc_status = status; self.sc_note = note; }
+            shortcuts::Event::Triggers(t) => self.sc_infos = t,
+            shortcuts::Event::Key { shortcut, down } => self.on_shortcut(shortcut, down),
+        }
         self.dirty = true;
     }
 
@@ -1155,6 +1212,7 @@ impl Actor {
             echo_cancellation: self.settings.processing.echo_cancellation, noise_suppression: self.settings.processing.noise_suppression,
             auto_gain_control: self.settings.processing.auto_gain_control, push_to_talk: self.settings.push_to_talk, ptt_held: self.ptt_held,
             share: self.share_view.clone(), share_apps: self.share_apps.clone(),
+            global_shortcuts: self.sc_status.as_str().into(), global_shortcuts_note: self.sc_note.clone(), shortcuts: self.sc_infos.clone(),
         }
     }
 }

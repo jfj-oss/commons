@@ -6102,6 +6102,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols-plasma",
  "webrtc-sys",
+ "zbus 5.19.0",
 ]
 
 [[package]]
