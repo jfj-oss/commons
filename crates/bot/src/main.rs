@@ -4,11 +4,13 @@
 //!   megatron-bot run                  serve the rooms it is in (what the systemd user service runs)
 //!
 //! Data lives in ~/.local/share/megatron-bot (override: MEGATRON_BOT_DATA). The account's passphrase is generated on
-//! first use and kept in that folder, readable by its owner only, so the unattended service can unlock it.
-use commons_bot::bot::{Bot, Config, Job, JobKind, SharedClient, DEFAULT_NAME};
+//! first use and kept in that folder, readable by its owner only, so the unattended service can unlock it. The per-room
+//! settings people set in chat (DeepSeek, Studio, quiet, the daily bulletin's time) are in bot-state.json there too.
+use commons_bot::assistant::{config::AssistConfig, mcp as assist_mcp, tools::RealSys, Assistant};
+use commons_bot::bot::{AvatarOutcome, Bot, Config, Job, JobKind, SharedClient, DEFAULT_NAME};
 use commons_bot::gpu::{GpuGate, Pause};
 use commons_bot::llm::{DeepSeek, Ollama, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DEFAULT_OLLAMA};
-use commons_bot::search::{DuckDuckGo, WebSearch, DEFAULT_SEARCH_URL, SEARCH_TIMEOUT};
+use commons_bot::search::{DuckDuckGo, SearXng, WebSearch, DEFAULT_SEARCH_URL, SEARCH_TIMEOUT};
 use commons_bot::studio::{HttpStudio, StudioApi, DEFAULT_STUDIO_URL};
 use commons_core::client::Client;
 use commons_core::envelope::InviteLink;
@@ -58,6 +60,9 @@ fn config() -> Config {
     cfg.art_daily_max = env_usize("MEGATRON_BOT_ART_DAILY", cfg.art_daily_max as usize) as u32;
     cfg.wall_chance_pct = env_usize("MEGATRON_BOT_WALL_PERCENT", 3).min(100);
     cfg.wall_daily_max = env_usize("MEGATRON_BOT_WALL_DAILY", cfg.wall_daily_max as usize) as u32;
+    cfg.avatar_daily = matches!(env_string("MEGATRON_BOT_AVATAR_DAILY").as_deref(), Some("1" | "true" | "yes" | "on"));
+    cfg.avatar_hour = env_usize("MEGATRON_BOT_AVATAR_HOUR", cfg.avatar_hour as usize).min(23) as u32;
+    cfg.avatar_announce = !matches!(env_string("MEGATRON_BOT_AVATAR_ANNOUNCE").as_deref(), Some("0" | "false" | "no" | "off"));
     cfg
 }
 
@@ -99,7 +104,7 @@ fn open_client(dir: &Path) -> Result<Client, String> {
 }
 
 fn usage() -> ! {
-    eprintln!("megatron-bot: a local-model member for Megatron\n\n  megatron-bot join <invite-link>   create the bot's account and join a community\
+    eprintln!("megatron-bot: a local-model member for Megatron\n\n  megatron-bot join <invite-link or invite password>   join a community (a link also creates the bot's account)\
         \n  megatron-bot run                  answer mentions in every room it is in (the systemd service runs this)\n\n\
         Environment: MEGATRON_BOT_DATA, MEGATRON_BOT_NAME (default {DEFAULT_NAME}), MEGATRON_BOT_MODEL,\
         \n  MEGATRON_BOT_OLLAMA_URL (default {DEFAULT_OLLAMA}), MEGATRON_BOT_DEEPSEEK_URL, MEGATRON_BOT_DEEPSEEK_MODEL,\
@@ -109,24 +114,49 @@ fn usage() -> ! {
         \n  MEGATRON_BOT_STUDIO_DAILY_CAP (default: no limit), MEGATRON_BOT_STUDIO_DAILY_VIDEO_CAP (default: no limit),\
         \n  MEGATRON_BOT_STUDIO_QUEUE_MAX (default 3), MEGATRON_BOT_VOICE_SETTINGS,\
         \n  MEGATRON_BOT_WALL_PERCENT (default 3), MEGATRON_BOT_WALL_DAILY (default 2 per room),\
-        \n  MEGATRON_BOT_MAX_PER_MINUTE, MEGATRON_BOT_MAX_REPLY_CHARS");
+        \n  MEGATRON_BOT_AVATAR_DAILY (1 = a new self-designed profile picture each day, default off), MEGATRON_BOT_AVATAR_HOUR (default 6),\
+        \n  MEGATRON_BOT_AVATAR_ANNOUNCE (default 1: one line about it in rooms where he may join in),\
+        \n  MEGATRON_BOT_MAX_PER_MINUTE, MEGATRON_BOT_MAX_REPLY_CHARS,\n  MEGATRON_BOT_OWNER_ACCOUNT (hex id; switches on the assistant room), MEGATRON_BOT_ASSIST=0 (off), MEGATRON_BOT_ASSIST_ROOTS,\n  MEGATRON_BOT_ASSIST_UNITS, MEGATRON_BOT_ASSIST_CLAUDE, MEGATRON_BOT_RUNE_URL, MEGATRON_BOT_ASSIST_DOMAINS\n\n\
+        In chat (owner or admin): \"@{DEFAULT_NAME} bulletin here\", \"@{DEFAULT_NAME} bulletin at 8pm\" (or 20:00), \"@{DEFAULT_NAME} stop bulletin\": \
+        a daily Babylon bulletin in that room (default 09:00 local), kept in bot-state.json.");
     std::process::exit(2)
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(String::as_str) {
-        Some("join") => match args.get(1) { Some(link) => join(link), None => { eprintln!("Which invite link? Usage: megatron-bot join <invite-link>"); std::process::exit(2) } },
+        Some("join") => match args.get(1) { Some(link) => join(link), None => { eprintln!("Which invite? Usage: megatron-bot join <invite-link or invite password>"); std::process::exit(2) } },
         Some("run") => run(),
+        // started by Claude Code itself as its permission-prompt server; never typed by hand
+        Some("assist-mcp") => {
+            let Some(sock) = args.get(1) else { eprintln!("assist-mcp needs a socket path"); std::process::exit(2) };
+            let token = std::env::var("MEGATRON_ASSIST_TOKEN").unwrap_or_default();
+            std::process::exit(assist_mcp::run_stdio(sock, &token))
+        }
         Some("help" | "-h" | "--help") => usage(),
         _ => usage(),
     };
     if let Err(e) = r { eprintln!("megatron-bot: {e}"); std::process::exit(1); }
 }
 
-fn join(link: &str) -> Result<(), String> {
+fn join(link_or_password: &str) -> Result<(), String> {
     let dir = data_dir();
     let cfg = config();
+    // An invite password ("amber-fox-teal-…") instead of a link: the bot's own relay holds the sealed link for it.
+    let looked_up;
+    let link = match InviteLink::decode(link_or_password) {
+        Ok(_) => link_or_password,
+        Err(link_err) => {
+            if !Client::exists(&dir) {
+                return Err(format!("That is not a Megatron community invite link ({link_err}). An invite password works only once the bot has an account; join with a link first."));
+            }
+            let relay = open_client(&dir)?.st.relay.clone();
+            let api = Api { t: HttpTransport::new(&relay).into_arc() };
+            println!("Looking up the invite password on {relay}…");
+            looked_up = commons_core::pwinvite::lookup(&api, &relay, link_or_password, KdfParams::STRONG).map_err(|e| format!("{e:#}"))?;
+            looked_up.as_str()
+        }
+    };
     let inv = InviteLink::decode(link).map_err(|e| format!("That is not a Megatron community invite link ({e})."))?;
     let exists = Client::exists(&dir);
     let pass = passphrase(&dir, !exists)?.ok_or_else(|| format!("{} has no usable passphrase file; the account there cannot be unlocked", dir.join("passphrase").display()))?;
@@ -178,6 +208,17 @@ fn run() -> Result<(), String> {
         c.st.typing_enabled = true;
         let _ = c.save();
     }
+    // A bot plays no music: it shares no "listening to".
+    if c.st.share_listening {
+        c.st.share_listening = false;
+        c.st.share_listening_chosen = true;
+        let _ = c.save();
+    }
+    // A bot reads everything at once and nobody needs to be told: it sends no read receipts (and is shown none).
+    if c.read_receipts_on() {
+        c.set_read_receipts(false);
+        let _ = c.save();
+    }
 
     let timeout = Duration::from_secs(env_usize("MEGATRON_BOT_LLM_TIMEOUT_SECS", 120).max(5) as u64);
     let ollama_url = env_string("MEGATRON_BOT_OLLAMA_URL").or_else(|| env_string("OLLAMA_URL")).unwrap_or_else(|| DEFAULT_OLLAMA.into());
@@ -192,12 +233,22 @@ fn run() -> Result<(), String> {
     let ds_model = env_string("MEGATRON_BOT_DEEPSEEK_MODEL").unwrap_or_else(|| DEFAULT_DEEPSEEK_MODEL.into());
     let deepseek = DeepSeek::new(&ds_url, deepseek_key_file(), &ds_model, timeout);
     let search_url = env_string("MEGATRON_BOT_SEARCH_URL").unwrap_or_else(|| DEFAULT_SEARCH_URL.into());
-    let searcher: Arc<dyn WebSearch> = Arc::new(DuckDuckGo::new(&search_url, SEARCH_TIMEOUT));
+    // MEGATRON_BOT_SEARXNG_URL (e.g. http://127.0.0.1:8092): a local SearXNG instance instead of DuckDuckGo's HTML page.
+    let engine: Arc<dyn WebSearch> = match env_string("MEGATRON_BOT_SEARXNG_URL") {
+        Some(sx) => { eprintln!("[bot] web search: SearXNG at {sx}"); Arc::new(SearXng::new(&sx, SEARCH_TIMEOUT)) }
+        None => Arc::new(DuckDuckGo::new(&search_url, SEARCH_TIMEOUT)),
+    };
+    // The daily bulletin also reads a fixed list of news feeds (bulletin::FEEDS); chat questions only ever search.
+    let searcher: Arc<dyn WebSearch> = Arc::new(commons_bot::search::WithFeeds::new(engine, SEARCH_TIMEOUT));
     let studio_url = env_string("MEGATRON_BOT_STUDIO_URL").unwrap_or_else(|| DEFAULT_STUDIO_URL.into());
     let studio: Arc<dyn StudioApi> = Arc::new(HttpStudio::new(&studio_url, &studio_token_file()));
     let gate = Arc::new(GpuGate::from_env());
 
-    let bot = Arc::new(Bot::new(
+    let assistant = AssistConfig::from_env(&dir).map(|a| {
+        eprintln!("[bot] assistant room: available (owner account {}..., roots {:?})", &a.owner[..6.min(a.owner.len())], a.roots);
+        Arc::new(Assistant::new(a, Arc::new(RealSys)))
+    });
+    let mut bot = Bot::new(
         cfg.clone(),
         Box::new(local),
         Box::new(deepseek),
@@ -205,7 +256,9 @@ fn run() -> Result<(), String> {
         studio,
         gate,
         dir.join("bot-state.json"),
-    ));
+    );
+    if let Some(a) = assistant { bot = bot.with_assistant(a); }
+    let bot = Arc::new(bot);
     eprintln!("[bot] running as \"{}\"; answers stay local unless an admin switches a room to DeepSeek", cfg.name);
     serve(c, bot);
     Ok(())
@@ -247,6 +300,26 @@ fn serve(client: Client, bot: Arc<Bot>) {
         });
     }
 
+    // The daily profile picture: a minute-by-minute look; does nothing unless MEGATRON_BOT_AVATAR_DAILY=1. It waits for the
+    // GPU to be free and makes the picture on its own thread, so it never holds up an answer.
+    if bot.cfg.avatar_daily {
+        let bot = bot.clone();
+        let shared = shared.clone();
+        std::thread::spawn(move || {
+            let mut last = String::new();
+            loop {
+                let mut chat = SharedClient(&shared);
+                let out = bot.avatar_tick(&mut chat);
+                let text = format!("{out:?}");
+                if text != last && !matches!(out, AvatarOutcome::NotYet | AvatarOutcome::Settled | AvatarOutcome::GaveUp | AvatarOutcome::Disabled) {
+                    eprintln!("[bot] daily profile picture: {text}");
+                }
+                last = text;
+                std::thread::sleep(Duration::from_secs(60));
+            }
+        });
+    }
+
     // One worker per room: one answer at a time there, with a small queue behind it, and rooms do not wait for each other.
     let mut rooms: HashMap<String, mpsc::SyncSender<Job>> = HashMap::new();
     loop {
@@ -256,8 +329,18 @@ fn serve(client: Client, bot: Arc<Bot>) {
             bot.poll(&mut c)
         };
         for job in jobs {
+            // The assistant room: on its own thread, because a task waits for the owner's replies, which arrive through `poll`.
+            if matches!(job.kind, JobKind::Assistant | JobKind::AssistantNotice(_)) {
+                let bot = bot.clone();
+                let shared = shared.clone();
+                std::thread::spawn(move || {
+                    let mut chat = SharedClient(&shared);
+                    bot.answer(&mut chat, &job);
+                });
+                continue;
+            }
             // Unasked: on its own thread, so a song being made for fun never holds up an answer to a real question.
-            if matches!(job.kind, JobKind::Chime | JobKind::Wall) {
+            if matches!(job.kind, JobKind::Chime | JobKind::Wall | JobKind::Bulletin) {
                 let bot = bot.clone();
                 let shared = shared.clone();
                 std::thread::spawn(move || {

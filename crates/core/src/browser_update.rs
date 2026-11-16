@@ -309,7 +309,9 @@ fn swap_inner(install: &Path, new_root: &Path, fail_after: Option<usize>) -> Res
     let mut items = vec![Item { name: "ui", dir: true }, Item { name: bridge_name(), dir: false }];
     // Windows and macOS packages also update the launcher. A running launcher can be renamed aside on both systems
     // (Windows allows renaming a running executable), so it is part of the same transaction.
-    if meta(&new_root.join(launcher_name())).is_some_and(|t| t.is_file()) {
+    // On macOS the launcher is not in Contents/Resources (it is Contents/MacOS/launcher), so a file of that name here is not
+    // part of the transaction; the Mac launcher travels inside ui/ (see refresh_mac_launcher).
+    if !cfg!(target_os = "macos") && meta(&new_root.join(launcher_name())).is_some_and(|t| t.is_file()) {
         items.push(Item { name: launcher_name(), dir: false });
     }
     for it in &items {
@@ -522,22 +524,105 @@ pub fn check(relay: &str, current: &str) -> Result<Value, String> {
 /// Gatekeeper happy on the next launch; codesign is part of macOS itself. Failure is not fatal (the app still runs).
 /// Only a bundle layout is re-signed: install is Megatron.app/Contents/Resources.
 #[cfg(target_os = "macos")]
-pub fn resign_bundle(install: &Path) {
+pub fn resign_bundle(install: &Path) -> bool {
     use std::process::{Command, Stdio};
-    let Some(contents) = install.parent() else { return };
-    let Some(app) = contents.parent() else { return };
+    let Some(contents) = install.parent() else { return false };
+    let Some(app) = contents.parent() else { return false };
     if contents.file_name().and_then(|n| n.to_str()) != Some("Contents")
         || install.file_name().and_then(|n| n.to_str()) != Some("Resources")
         || app.extension().and_then(|e| e.to_str()) != Some("app")
     {
-        return;
+        return false;
     }
-    let _ = Command::new("codesign")
-        .args(["--force", "--deep", "--sign", "-"])
-        .arg(app)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    let run = |args: &[&str]| Command::new("codesign").args(args).arg(app)
+        .stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+    run(&["--force", "--deep", "--sign", "-"]) && run(&["--verify", "--strict"])
+}
+
+/// Inside ui/, in a macOS update tarball: the new `Contents/MacOS/launcher`. It travels in ui/ because an older bridge, which
+/// is the one that installs the update, only knows to move `ui/`, `bridge` and (where it exists in the install folder)
+/// `launcher`; a top-level `launcher` would make it refuse the whole update on a Mac. The bridge dispatches it at its next start.
+pub const MAC_LAUNCHER_CARRIER: &str = ".launcher-macos";
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum LauncherSwap {
+    /// No carrier, or not a bundle layout: nothing to do.
+    Nothing,
+    /// The launcher was already the new one; the carrier was cleared.
+    Same,
+    /// The launcher was replaced and the bundle signed again.
+    Replaced,
+    /// Something failed; the old launcher is back. The reason is for the log.
+    Failed(String),
+    /// This carrier failed before; not tried again.
+    Skipped,
+}
+
+fn sha_hex(b: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(b))
+}
+
+/// Replaces `Megatron.app/Contents/MacOS/launcher` with the one an update left in `<install>/ui/.launcher-macos`, when it differs.
+/// `install` is `Contents/Resources`; `state` is a folder outside the bundle (the data folder) for the backup and the marker;
+/// `sign` signs the whole bundle again and says whether it verifies.
+///
+/// Steps: the new file is written next to the launcher and renamed over it (atomic; a running launcher is not disturbed, it keeps
+/// its old inode); the carrier is moved out of Resources (so the seal covers what stays); the bundle is signed. If signing fails
+/// the old launcher is put back, the carrier returns to ui/, and a marker (the carrier's hash) stops it being tried at every
+/// start. The caller runs this before the bridge binds its port, so a launcher that is waiting for the bridge never signs the
+/// bundle at the same moment.
+pub fn refresh_mac_launcher(install: &Path, state: &Path, sign: &dyn Fn() -> bool) -> LauncherSwap {
+    let carrier = install.join("ui").join(MAC_LAUNCHER_CARRIER);
+    let Ok(cm) = std::fs::symlink_metadata(&carrier) else { return LauncherSwap::Nothing };
+    if !cm.file_type().is_file() { return LauncherSwap::Nothing; }
+    let Some(macos) = install.parent().map(|c| c.join("MacOS")) else { return LauncherSwap::Nothing };
+    let target = macos.join(launcher_name());
+    if !macos.is_dir() { return LauncherSwap::Nothing; }
+    let fail = |m: String| LauncherSwap::Failed(m);
+    let new = match std::fs::read(&carrier) { Ok(b) if !b.is_empty() && b.len() < 64 << 20 => b, _ => return fail("the new launcher in the update could not be read".into()) };
+    let hash = sha_hex(&new);
+    let marker = state.join(".launcher-swap-failed");
+    if std::fs::read_to_string(&marker).is_ok_and(|m| m.trim() == hash) { return LauncherSwap::Skipped; }
+    if !std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_file()) {
+        return fail(format!("{} is not a plain file; left alone", target.display()));
+    }
+    let cur = match std::fs::read(&target) { Ok(b) => b, Err(e) => return fail(format!("could not read the launcher: {e}")) };
+    let pending = state.join("launcher.pending");
+    let _ = std::fs::create_dir_all(state);
+    // The carrier leaves Resources whatever happens next, so that the signature below covers what stays.
+    let move_out = || std::fs::rename(&carrier, &pending).or_else(|_| std::fs::copy(&carrier, &pending).and_then(|_| std::fs::remove_file(&carrier)));
+    if cur == new {
+        if let Err(e) = move_out() { return fail(format!("could not clear the update's launcher copy: {e}")); }
+        let _ = std::fs::remove_file(&pending);
+        if !sign() { return fail("signing the bundle again failed".into()); }
+        return LauncherSwap::Same;
+    }
+    let tmp = macos.join(".launcher.new");
+    let previous = state.join("launcher.previous");
+    let put = |dest_tmp: &Path, bytes: &[u8], to: &Path| -> std::io::Result<()> {
+        let _ = std::fs::remove_file(dest_tmp);
+        std::fs::write(dest_tmp, bytes)?;
+        #[cfg(unix)]
+        { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(dest_tmp, std::fs::Permissions::from_mode(0o755))?; }
+        std::fs::rename(dest_tmp, to).map_err(|e| { let _ = std::fs::remove_file(dest_tmp); e })
+    };
+    if let Err(e) = std::fs::write(&previous, &cur) { return fail(format!("could not keep a copy of the old launcher: {e}")); }
+    if let Err(e) = put(&tmp, &new, &target) { return fail(format!("could not write the new launcher: {e}")); }
+    if let Err(e) = move_out() {
+        let _ = put(&tmp, &cur, &target);
+        return fail(format!("could not clear the update's launcher copy: {e}"));
+    }
+    if sign() {
+        let _ = std::fs::remove_file(&pending);
+        return LauncherSwap::Replaced;
+    }
+    // Back to how it was: old launcher, carrier in ui/, signed again, and no more tries for this launcher.
+    let _ = put(&tmp, &cur, &target);
+    let _ = std::fs::rename(&pending, &carrier).or_else(|_| std::fs::copy(&pending, &carrier).and_then(|_| std::fs::remove_file(&pending)));
+    let _ = std::fs::write(&marker, &hash);
+    let _ = sign();
+    fail("signing the bundle with the new launcher failed; the old launcher is back".into())
 }
 
 /// A short line for the log / the launcher.
@@ -877,5 +962,93 @@ mod tests {
         let out = run(&format!("http://{addr}"), d.path(), "0.2.3", "").unwrap();
         assert_eq!(out, Outcome::None);
         assert!(take_note(d.path()).is_none());
+    }
+
+    /// A fake bundle: <root>/Megatron.app/Contents/{MacOS/launcher, Resources/ui/}, and a data folder outside it.
+    fn fake_bundle(d: &Path, old: &str, carrier: Option<&str>) -> (PathBuf, PathBuf) {
+        let res = d.join("Megatron.app/Contents/Resources");
+        std::fs::create_dir_all(res.join("ui")).unwrap();
+        std::fs::create_dir_all(d.join("Megatron.app/Contents/MacOS")).unwrap();
+        std::fs::write(d.join("Megatron.app/Contents/MacOS/launcher"), old).unwrap();
+        if let Some(c) = carrier { std::fs::write(res.join("ui").join(MAC_LAUNCHER_CARRIER), c).unwrap(); }
+        let state = d.join("data");
+        std::fs::create_dir_all(&state).unwrap();
+        (res, state)
+    }
+
+    #[test]
+    fn the_mac_launcher_is_replaced_once_signed_and_the_old_one_is_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let (res, state) = fake_bundle(d.path(), "old", Some("new"));
+        let macos = d.path().join("Megatron.app/Contents/MacOS");
+        let signed = std::cell::Cell::new(0);
+        let sign = || { signed.set(signed.get() + 1); true };
+        assert_eq!(refresh_mac_launcher(&res, &state, &sign), LauncherSwap::Replaced);
+        assert_eq!(std::fs::read_to_string(macos.join("launcher")).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(state.join("launcher.previous")).unwrap(), "old");
+        assert!(!res.join("ui").join(MAC_LAUNCHER_CARRIER).exists(), "the carrier leaves Resources before signing");
+        assert!(!state.join("launcher.pending").exists());
+        assert!(!macos.join(".launcher.new").exists(), "nothing stray in MacOS, which codesign would treat as code");
+        assert_eq!(signed.get(), 1);
+        // the next start has nothing to do
+        assert_eq!(refresh_mac_launcher(&res, &state, &sign), LauncherSwap::Nothing);
+        assert_eq!(signed.get(), 1);
+        #[cfg(unix)]
+        { use std::os::unix::fs::PermissionsExt; assert_eq!(std::fs::metadata(macos.join("launcher")).unwrap().permissions().mode() & 0o777, 0o755); }
+    }
+
+    #[test]
+    fn an_identical_mac_launcher_only_clears_the_carrier() {
+        let d = tempfile::tempdir().unwrap();
+        let (res, state) = fake_bundle(d.path(), "same", Some("same"));
+        assert_eq!(refresh_mac_launcher(&res, &state, &|| true), LauncherSwap::Same);
+        assert!(!res.join("ui").join(MAC_LAUNCHER_CARRIER).exists());
+        assert!(!state.join("launcher.previous").exists());
+    }
+
+    #[test]
+    fn a_failed_signature_puts_the_old_launcher_back_and_is_not_retried() {
+        let d = tempfile::tempdir().unwrap();
+        let (res, state) = fake_bundle(d.path(), "old", Some("new"));
+        let macos = d.path().join("Megatron.app/Contents/MacOS");
+        let n = std::cell::Cell::new(0);
+        let bad = || { n.set(n.get() + 1); false };
+        assert!(matches!(refresh_mac_launcher(&res, &state, &bad), LauncherSwap::Failed(_)));
+        assert_eq!(std::fs::read_to_string(macos.join("launcher")).unwrap(), "old");
+        assert_eq!(std::fs::read_to_string(res.join("ui").join(MAC_LAUNCHER_CARRIER)).unwrap(), "new", "the carrier is back, untouched");
+        assert!(!macos.join(".launcher.new").exists() && !state.join("launcher.pending").exists());
+        let tried = n.get();
+        assert_eq!(refresh_mac_launcher(&res, &state, &bad), LauncherSwap::Skipped, "the same launcher is not tried at every start");
+        assert_eq!(n.get(), tried);
+        // a different launcher in a later update is tried again
+        std::fs::write(res.join("ui").join(MAC_LAUNCHER_CARRIER), "newer").unwrap();
+        assert_eq!(refresh_mac_launcher(&res, &state, &|| true), LauncherSwap::Replaced);
+        assert_eq!(std::fs::read_to_string(macos.join("launcher")).unwrap(), "newer");
+    }
+
+    #[test]
+    fn the_mac_launcher_swap_leaves_odd_layouts_alone() {
+        let d = tempfile::tempdir().unwrap();
+        let (res, state) = fake_bundle(d.path(), "old", None);
+        assert_eq!(refresh_mac_launcher(&res, &state, &|| true), LauncherSwap::Nothing, "no carrier");
+        // not a bundle: no MacOS folder next to the install
+        let flat = d.path().join("flat");
+        std::fs::create_dir_all(flat.join("ui")).unwrap();
+        std::fs::write(flat.join("ui").join(MAC_LAUNCHER_CARRIER), "x").unwrap();
+        assert_eq!(refresh_mac_launcher(&flat, &state, &|| true), LauncherSwap::Nothing);
+        // an empty carrier is refused
+        let (res, state) = fake_bundle(&d.path().join("b"), "old", Some(""));
+        assert!(matches!(refresh_mac_launcher(&res, &state, &|| true), LauncherSwap::Failed(_)));
+        assert_eq!(std::fs::read_to_string(d.path().join("b/Megatron.app/Contents/MacOS/launcher")).unwrap(), "old");
+        // a launcher that is a symlink is not followed or replaced
+        #[cfg(unix)]
+        {
+            let (res, state) = fake_bundle(&d.path().join("c"), "old", Some("new"));
+            let l = d.path().join("c/Megatron.app/Contents/MacOS/launcher");
+            std::fs::remove_file(&l).unwrap();
+            std::os::unix::fs::symlink("/bin/sh", &l).unwrap();
+            assert!(matches!(refresh_mac_launcher(&res, &state, &|| true), LauncherSwap::Failed(_)));
+            assert!(std::fs::symlink_metadata(&l).unwrap().file_type().is_symlink());
+        }
     }
 }

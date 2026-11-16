@@ -32,9 +32,16 @@ pub struct State {
     /// What each account said it is listening to, when we heard it. Expires by itself (see `NowPlaying`'s TTL).
     #[serde(default)]
     pub listening: BTreeMap<String, Heard>,
-    /// Share what rune plays with the people in our communities. Off unless the person turns it on.
+    /// Share what rune plays with the people in our communities. On unless the person turns it off (see the two flags below).
     #[serde(default)]
     pub share_listening: bool,
+    /// The person changed the switch themselves, so it stays as they left it.
+    #[serde(default)]
+    pub share_listening_chosen: bool,
+    /// Sharing has been switched on once for this account as the default (a new account, or one from before the default that
+    /// never chose). After that only the person changes it.
+    #[serde(default)]
+    pub share_listening_default_applied: bool,
     /// Where rune answers. Empty means the default.
     #[serde(default)]
     pub rune_url: String,
@@ -43,6 +50,11 @@ pub struct State {
     pub listening_sent: Option<NowPlaying>,
     #[serde(default)]
     pub listening_sent_ts: u64,
+    /// The Spotify app (client id) the person made for mega, and their login on this device. Both stay here.
+    #[serde(default)]
+    pub spotify_client_id: String,
+    #[serde(default)]
+    pub spotify: Option<SpotifyAuth>,
     pub outbox: Vec<OutItem>,
     pub welcome_out: Vec<WelcomeOut>,
     pub acl_jobs: Vec<AclJob>,
@@ -61,6 +73,10 @@ pub struct State {
     pub avatar_removed: bool,
     pub lr_published: bool,
     pub typing_enabled: bool,
+    /// "Send read receipts" was turned off: this app sends none and shows nobody else's. On unless the person turns it off, so
+    /// the stored flag is the "off" (an account from before the switch reads as on).
+    #[serde(default)]
+    pub read_receipts_off: bool,
     /// Set once typing hints have been switched on for this account. Older versions stored off for everyone, so one switch-on
     /// is applied when such an account first opens; after that, turning them off in the options room sticks.
     #[serde(default)]
@@ -93,6 +109,25 @@ pub struct State {
     pub direct_joining: BTreeMap<String, u64>,
     #[serde(default)]
     pub direct_refused: BTreeSet<String>,
+    /// History for a new device of this account (history.rs): chunks this device still has to hand to the inbox, requests waiting for
+    /// the person's yes, the yes given with a pairing approval (until when), what this device is receiving, whether it still wants
+    /// history (a freshly paired device) and when it last asked, and what it sent to whom.
+    #[serde(default)]
+    pub history_out: Vec<HistoryOut>,
+    #[serde(default)]
+    pub history_requests: BTreeMap<String, HistoryRequest>,
+    #[serde(default)]
+    pub history_preapproved: u64,
+    #[serde(default)]
+    pub history_in: Option<HistoryIn>,
+    #[serde(default)]
+    pub history_wanted: bool,
+    #[serde(default)]
+    pub history_wanted_since: u64,
+    #[serde(default)]
+    pub history_asked: u64,
+    #[serde(default)]
+    pub history_sent: BTreeMap<String, HistorySent>,
     /// This app has told everyone it takes direct calls (one profile refresh after an update).
     #[serde(default)]
     pub direct_announced: bool,
@@ -201,6 +236,9 @@ pub struct Profile {
     /// Their app can take part in one-to-one calls (their newest profile said so). False for older apps.
     #[serde(default)]
     pub direct: bool,
+    /// Their app opens call offers whose invite secret is sealed to them (0.3.6 on).
+    #[serde(default)]
+    pub direct_sealed: bool,
     /// Where this account's picture is, if it has one. One picture per account, as there is one name per account.
     #[serde(default)]
     pub avatar: Option<AvatarRef>,
@@ -209,7 +247,17 @@ pub struct Profile {
 /// A status someone shared, and the local time it arrived: a sender that goes quiet (playback stops, the app
 /// closes) stops being shown by itself.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct Heard { pub what: NowPlaying, pub ts: u64 }
+pub struct Heard {
+    pub what: NowPlaying, pub ts: u64,
+    /// Local clock (ms) when this exact sample arrived. Listening along extrapolates from it; a re-sent copy of the same
+    /// sample (same `at_ms`) keeps the first arrival time.
+    #[serde(default)] pub rx_ms: u64,
+}
+
+/// This device's Spotify login for listening along. Lives only in the encrypted local state: never in a message, never on
+/// the relay.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct SpotifyAuth { pub access: String, pub refresh: String, pub expires_at: u64 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Notice { pub ts: u64, pub kind: String, pub text: String }
@@ -245,6 +293,9 @@ pub struct Community {
     pub style: Option<StyleDoc>,
     #[serde(default)]
     pub style_sig: String,
+    /// The exact text the owner signed, so that an admin can carry the very same document back into a table that lost it.
+    #[serde(default)]
+    pub style_text: String,
     /// When this device (as owner) last put the colours back into the table on its own.
     #[serde(default)]
     pub style_repub: u64,
@@ -262,16 +313,24 @@ pub struct Community {
     #[serde(default)]
     pub direct_bad: bool,
 }
+/// How far a style document's version may jump past the one in force and still be adopted. An owner device raises it by one per change.
+pub const MAX_STYLE_STEP: u64 = 1_000_000;
 impl Community {
     /// Take a verified document if it is newer than the one in force: higher version, then later time, then the
     /// signature as the final tie-break, so every device settles on the same one whatever order it saw them in.
-    pub fn adopt_style(&mut self, doc: StyleDoc, sig: &str) -> bool {
+    pub fn adopt_style(&mut self, doc: StyleDoc, signed: &SignedStyle) -> bool {
         let newer = match &self.style {
             None => true,
-            Some(cur) => (doc.ver, doc.ts, sig) > (cur.ver, cur.ts, self.style_sig.as_str()),
+            // A version far beyond the one in force is a broken or hostile owner device trying to park the counter at its ceiling (audit L3):
+            // a device that already holds a document ignores it; one with nothing yet takes it, so an honest owner is never stuck.
+            Some(cur) => doc.ver <= cur.ver.saturating_add(MAX_STYLE_STEP) && (doc.ver, doc.ts, signed.sig.as_str()) > (cur.ver, cur.ts, self.style_sig.as_str()),
         };
-        if newer { self.style = Some(doc); self.style_sig = sig.to_string(); }
+        if newer { self.style = Some(doc); self.style_sig = signed.sig.clone(); self.style_text = signed.doc.clone(); }
         newer
+    }
+    /// The signed document this device holds, exactly as the owner signed it (None until one was adopted).
+    pub fn held_style(&self) -> Option<SignedStyle> {
+        (self.style.is_some() && !self.style_text.is_empty()).then(|| SignedStyle { doc: self.style_text.clone(), sig: self.style_sig.clone() })
     }
     pub fn role_of(&self, acct: &str) -> Option<Role> {
         if acct == self.owner { Some(Role::Owner) } else if self.admins.iter().any(|a| a == acct) { Some(Role::Admin) } else { Some(Role::Member) }
@@ -348,6 +407,9 @@ pub enum MsgBody {
         /// Too large for one blob: the real size, chunk layout and whole-file hash. Absent for ordinary files.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         large: Option<LargeFile>,
+        /// A voice message (see `Envelope::File`). Absent for ordinary files.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        voice: Option<crate::envelope::Voice>,
     },
     /// System line shown in the timeline (decrypt failures, rejoin notices...). Never silent.
     Notice(String),
@@ -374,6 +436,14 @@ pub struct ChannelLog {
     pub msgs: Vec<Msg>,
     pub orphans: Vec<(Envelope, String, u64)>,
     pub read_upto: usize,
+    /// Read receipts (receipts.rs): for each other account, the id of the newest message it said it has read here.
+    #[serde(default)]
+    pub read_by: BTreeMap<String, String>,
+    /// Our own receipts: the message id last sent, and one waiting for the pause between two receipts to pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_sent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_want: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -405,3 +475,37 @@ pub struct ParkedWelcome { pub id: String, pub data: String, pub ts: u64 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Pairing { pub rid: String, pub secret: String, pub public: String }
+
+/// One sealed history chunk waiting to be handed to the relay's inbox for `device` (`data` is the whole inbox item, base64).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HistoryOut { pub id: String, pub device: String, pub tid: String, pub i: u32, pub n: u32, pub data: String, pub queued: bool }
+/// A new device of this account asked for the history and the person has not answered yet.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HistoryRequest { pub ts: u64, pub cert: DeviceCert }
+/// A transfer this device is receiving (or received).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HistoryIn { pub tid: String, pub from: String, pub n: u32, pub got: BTreeSet<u32>, pub msgs: u64, pub omitted: u64, pub started: u64, pub done: u64, #[serde(default)] pub dismissed: bool }
+/// A transfer this device sent (or is sending).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HistorySent { pub tid: String, pub ts: u64, pub chunks: u32, pub done: u32 }
+
+#[cfg(test)]
+mod style_tests {
+    use super::*;
+    fn doc(ver: u64) -> StyleDoc { StyleDoc { ver, ts: 10, community: None, rooms: Default::default(), locked: Default::default(), wall: Default::default(), looks: Default::default() } }
+    fn signed(sig: &str) -> SignedStyle { SignedStyle { doc: "{}".into(), sig: sig.into() } }
+    /// Audit L3: a device holding a document does not adopt one whose version leaps to the ceiling; a device with none takes what it is given.
+    #[test]
+    fn a_version_that_leaps_to_the_ceiling_is_not_adopted_over_one_in_force() {
+        let mut c = Community::default();
+        assert!(c.adopt_style(doc(3), &signed("a")));
+        assert!(!c.adopt_style(doc(1 << 53), &signed("b")), "the ceiling is not adopted over version 3");
+        assert!(!c.adopt_style(doc(3 + MAX_STYLE_STEP + 1), &signed("b")));
+        assert!(c.adopt_style(doc(3 + MAX_STYLE_STEP), &signed("b")), "a large but plausible step is");
+        assert!(c.adopt_style(doc(3 + MAX_STYLE_STEP + 1), &signed("c")), "and the next one after it");
+        assert!(!c.adopt_style(doc(2), &signed("d")), "older never");
+        let mut fresh = Community::default();
+        assert!(fresh.adopt_style(doc(1 << 53), &signed("z")), "a device with nothing yet takes any valid document");
+        assert_eq!(fresh.held_style().unwrap().sig, "z");
+    }
+}

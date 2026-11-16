@@ -12,7 +12,8 @@ openmls_basic_credential = "0.6"
 openmls_traits = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+ed25519-dalek = { version = "2", features = ["rand_core", "hazmat"] }
+x25519-dalek = "2"
 rand = "0.8"
 hex = "0.4"
 base64 = "0.22"
@@ -32,6 +33,8 @@ flate2 = "1"
 # Game keys read a desktop's keyboard state. Phones have no such thing, and the crate has no mobile backend.
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
 commons-gamekeys = { path = "../gamekeys" }
+# OS notifications from the background part (notify.rs): freedesktop over zbus on Linux (pure Rust, no libdbus), Notification Center on macOS, toasts on Windows.
+notify-rust = { version = "4", default-features = false, features = ["z"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

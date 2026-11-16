@@ -184,7 +184,7 @@ Sharer: one computer. Viewer: another, preferably over the slowest connection pr
 1. **Camera:** press the camera button. In **Call settings**, **Camera quality**: try **720p, 30 fps**, then **1080p, 30 fps**. The
    viewer sees a tile named `<name> · camera`. **Report** sharpness, smoothness and whether the tile re-appeared after the quality change.
 2. **Screen share:** **Share your screen**. The browser's own picker appears (screen, window, tab). Share a window with text, then one
-   with a moving video. In **Call settings**, **Share as**: try all three, **Sharp text (up to 1440p, 15 fps)**, **Smooth motion
+   with a moving video. In **Call settings**, **Share as**: try all three, **Sharp text (up to 1440p, 30 fps)**, **Smooth motion
    (1080p, 30 fps)**, **Fast motion (1080p, 60 fps)**; stop and start the share after each change. **Report** readability of small text
    and smoothness of motion for each.
 3. **Viewer's choice:** under the tile, **Quality: auto**, then **High**, **Medium**, **Low**, then **Fullscreen**. **Report** whether
@@ -298,6 +298,23 @@ Do this **last**, and only if the Owner has decided to publish the next version;
 
 **Report** any change that one person saw and another did not after a minute.
 
+## R. The iPhone's gestures and scrolling (P, 5 minutes)
+
+These exist only on a phone-sized touch screen; a computer is unchanged.
+
+1. In a chat with a few hundred messages, read back with the finger and let it fly. Expect it to stay smooth; the dimming and shrinking
+   of the rows away from the middle now settles in when the scroll pauses, not while it moves. **Report** any stutter.
+2. Swipe to the right, starting on the header, the composer or a gap between rows: the chat follows the finger, and past about a third of
+   the screen (or a quick flick) it slides out and the room cards open. A short swipe springs back. Swipe left on the room in focus: back
+   into its chat. On the rooms, swipe right again: all communities (with one community it rubber-bands and stays). The dots still work as
+   before: a swipe in from the left edge or along them opens the cards.
+3. Swipe a message to the right a little: the row follows, a reply mark appears, and letting go past it starts a reply to that message. Keep
+   the same swipe going across the screen instead: the row springs back and the whole chat slides to the rooms, with no reply.
+4. Hold a message: its menu (reactions, reply, copy text, edit and delete when they apply), with no text selection or copy bubble from iOS.
+   Tap a message twice: a ❤️ (twice again takes it away). A single tap still shows the row's tools; a link opens once.
+5. Tap a picture: full screen. Pinch to zoom and drag around; two taps zoom in and out; pull down to close; swipe sideways through the room's
+   other pictures. **Report** anything that scrolled or selected when it should not have.
+
 ## Results
 
 One line per check. Pass means it did what the check says; write the version, system and browser in Notes for anything else.
@@ -340,5 +357,6 @@ One line per check. Pass means it did what the check says; write the version, sy
 | O5 | Large download: pause, continue, file opens | A | | |
 | P | Update to the next version on every system | all | | |
 | Q | Admin panel changes seen by everyone | Owner + A | | |
+| R1–R5 | iPhone: smooth scrolling, swipes between levels, swipe to reply, hold and double tap, picture viewer | P | | |
 
 Versions used: mega ______ (Owner), ______ (A), ______ (B), ______ (P), ______ (Old). Date: __________.

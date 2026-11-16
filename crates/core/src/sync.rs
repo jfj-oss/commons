@@ -63,7 +63,9 @@ impl Client {
             if !self.seen_welcomes.insert(w.id.clone()) { self.st.ack_welcomes.push(w.id.clone()); continue; }
             let data = match unb64(&w.data) { Ok(d) => d, Err(_) => { self.st.ack_welcomes.push(w.id.clone()); continue; } };
             if self.st.parked_welcomes.iter().any(|p| p.id == w.id) { self.st.ack_welcomes.push(w.id.clone()); continue; }
-            // MLS messages start with a version number, our JSON with a brace.
+            // MLS messages start with a version number, our JSON with a brace; history chunks for a new device with their own mark.
+            if data.starts_with(crate::history::MAGIC) { self.history_take_chunk(&data[crate::history::MAGIC.len()..]); self.st.ack_welcomes.push(w.id.clone()); continue; }
+            if data.starts_with(br#"{"t":"hist-req""#) { self.history_take_request(&data); self.st.ack_welcomes.push(w.id.clone()); continue; }
             if data.first() == Some(&b'{') { self.handle_join_reply(&data); self.st.ack_welcomes.push(w.id.clone()); continue; }
             match self.handle_welcome(&w.id, &data) {
                 Ok(true) => opened = true,
@@ -413,6 +415,7 @@ impl Client {
                 let Some(cert) = cert else { self.notice("reject", "commit from a sender with an invalid certificate rejected".to_string()); return };
                 match self.authorize(gid, group, &cert, &sc) {
                     Verdict::Ok => {
+                        if let Some(w) = self.style_warning(gid, group, &cert, &sc) { self.notice("style", w); }
                         let self_removed = sc.self_removed();
                         let added: Vec<String> = sc.add_proposals().filter_map(|a| { let k = a.add_proposal().key_package(); mls::cert_of(k.leaf_node().credential(), k.leaf_node().signature_key().as_slice()).map(|c| c.device) }).collect();
                         match group.merge_staged_commit(&self.prov, *sc) {
@@ -503,7 +506,7 @@ impl Client {
                         let c = self.st.communities.entry(gid.to_string()).or_insert_with(|| Community { id: gid.into(), ..Default::default() });
                         c.name = name; c.owner = owner; c.admins = admins; c.nonce = nonce; c.channels = channels; c.invites = invites; c.banned = banned; c.transfers = transfers;
                         c.founder = founder; c.direct = direct; c.direct_bad = direct_bad;
-                        if let Some(doc) = style.as_ref().and_then(|ss| verify_style(&c.owner, gid, ss).ok().map(|d| (d, ss.sig.clone()))) { c.adopt_style(doc.0, &doc.1); }
+                        if let Some(ss) = style.as_ref() { if let Ok(doc) = verify_style(&c.owner, gid, ss) { c.adopt_style(doc, ss); } }
                         // The removal itself may take our entry out of the table: what we knew before it is what gets withdrawn.
                         if let Some(mine) = consents.iter().find(|x| x.account == me && verify_consent(gid, x).is_ok()) { c.my_consent = Some(mine.clone()); }
                         else if active { c.my_consent = None; }
@@ -575,13 +578,31 @@ impl Client {
         Ok
     }
 
+    /// A commit by someone other than the owner that takes the owner's signed style document out of the table, or puts an older one
+    /// back (audit M1). It is merged all the same, because versions before 0.3.6 merge it and refusing would split the community;
+    /// this device keeps the newer document it holds, and admins put it back (ops.rs). The owner can see who did it and act.
+    fn style_warning(&self, gid: &str, group: &MlsGroup, sender: &DeviceCert, sc: &StagedCommit) -> Option<String> {
+        if self.st.groups.get(gid)?.kind != Kind::Control { return None; }
+        let (owner, _) = self.roles(gid, group);
+        if sender.account == owner { return None; }
+        let old = mls::group_ext(group.extensions())?;
+        let new = sc.queued_proposals().find_map(|qp| match qp.proposal() { Proposal::GroupContextExtensions(e) => mls::group_ext(e.extensions()), _ => None })?;
+        let (GroupExt::Control { style: st1, .. }, GroupExt::Control { style: st2, .. }) = (&old, &new) else { return None };
+        let od = st1.as_ref().and_then(|s| verify_style(&owner, gid, s).ok())?;
+        let regressed = match st2.as_ref().and_then(|s| verify_style(&owner, gid, s).ok()) {
+            None => true,
+            Some(nd) => (nd.ver, nd.ts) < (od.ver, od.ts),
+        };
+        regressed.then(|| format!("{} put an older version of the owner's colours and wall settings in the table (or none); this device keeps the newer one and the admins put it back", self.display_name(&sender.account)))
+    }
+
     // ------------------------------------------------------------------ application envelopes
     fn apply_env(&mut self, gid: &str, seq: u64, cert: &DeviceCert, env: Envelope) {
         let kind = self.st.groups[gid].kind.clone();
         let comm = self.st.groups[gid].community.clone();
         let acct = cert.account.clone();
         match (&kind, env) {
-            (Kind::Control, Envelope::Profile { name, ts, listen, avatar, avatar_cleared, direct }) => {
+            (Kind::Control, Envelope::Profile { name, ts, listen, avatar, avatar_cleared, direct, direct_sealed }) => {
                 let ts = sane_ts(ts);
                 let newer = {
                     let p = self.st.profiles.entry(acct.clone()).or_default();
@@ -589,6 +610,7 @@ impl Client {
                         p.name = name;
                         p.ts = ts;
                         p.direct = direct;
+                        p.direct_sealed = direct_sealed;
                         // An older app sends this same message with neither picture field. That must not wipe a picture
                         // set from a newer one, so only a picture or an explicit removal changes it.
                         if avatar_cleared { p.avatar = None; }
@@ -599,7 +621,15 @@ impl Client {
                 // A status is only as good as the profile it rode in on: an older one, arriving late, changes nothing.
                 if newer {
                     match listen {
-                        Some(l) => { self.st.listening.insert(acct, Heard { what: l, ts: now_secs() }); }
+                        Some(l) => {
+                            let now = crate::spotify::now_ms();
+                            // The same sample again (a profile re-sent for another reason) is not a new reading of the position.
+                            let rx_ms = match self.st.listening.get(&acct) {
+                                Some(h) if l.spotify.is_some() && h.what.spotify.as_ref().map(|s| (&s.id, s.at_ms, s.paused)) == l.spotify.as_ref().map(|s| (&s.id, s.at_ms, s.paused)) && h.rx_ms > 0 => h.rx_ms,
+                                _ => now,
+                            };
+                            self.st.listening.insert(acct, Heard { what: l, ts: now_secs(), rx_ms });
+                        }
                         None => { self.st.listening.remove(&acct); }
                     }
                 }
@@ -647,7 +677,8 @@ impl Client {
             }
             (Kind::Channel, Envelope::Live { kind, data, ts }) => self.take_live(gid, &acct, kind, data, ts),
             (Kind::Channel, Envelope::Ring { id, ts, to, end }) => self.take_ring(gid, &acct, id, ts, to, end),
-            (Kind::Channel, Envelope::Direct { id, ts, to, nonce, link }) => self.take_direct(gid, &acct, id, ts, to, nonce, link),
+            (Kind::Channel, Envelope::Direct { id, ts, to, nonce, link, sealed }) => self.take_direct(gid, &acct, id, ts, to, nonce, link, sealed),
+            (Kind::Channel, Envelope::Read { upto }) => self.take_read(gid, &acct, upto),
             (Kind::Channel, Envelope::Typing) => { self.typing.insert(format!("{gid}|{acct}"), now_secs()); }
             (Kind::Channel, env @ (Envelope::Text { .. } | Envelope::File { .. } | Envelope::Edit { .. } | Envelope::Delete { .. } | Envelope::React { .. })) => {
                 self.apply_chat(gid, seq, cert, env, false);
@@ -727,10 +758,10 @@ impl Client {
                 log.msgs.push(Msg { id: id.clone(), sender: cert.account.clone(), device: cert.device.clone(), ts, seq, body: MsgBody::Text(text), reply, edited: false, deleted: false, reactions: Default::default(), status: if local { "sending".into() } else { status.into() } });
                 Self::drain_orphans(log, &id, gid);
             }
-            Envelope::File { id, name, mime, size, blob, key, nonce, caption, reply, ts, large } => {
+            Envelope::File { id, name, mime, size, blob, key, nonce, caption, reply, ts, large, voice } => {
                 let ts = sane_ts(ts);
                 if let Some(m) = log.msgs.iter_mut().find(|m| m.id == id) { if local { return; } if m.sender == cert.account { m.seq = seq; m.status = "sent".into(); } return; }
-                log.msgs.push(Msg { id: id.clone(), sender: cert.account.clone(), device: cert.device.clone(), ts, seq, body: MsgBody::File { name, mime, size, blob, key, nonce, caption, large }, reply, edited: false, deleted: false, reactions: Default::default(), status: if local { "sending".into() } else { status.into() } });
+                log.msgs.push(Msg { id: id.clone(), sender: cert.account.clone(), device: cert.device.clone(), ts, seq, body: MsgBody::File { name, mime, size, blob, key, nonce, caption, large, voice }, reply, edited: false, deleted: false, reactions: Default::default(), status: if local { "sending".into() } else { status.into() } });
                 Self::drain_orphans(log, &id, gid);
             }
             Envelope::Edit { ref target, ref text, .. } => {
@@ -760,7 +791,7 @@ impl Client {
     fn orphan(log: &mut ChannelLog, env: Envelope, acct: &str, seq: u64) {
         if log.orphans.len() < 500 { log.orphans.push((env, acct.to_string(), seq)); }
     }
-    fn drain_orphans(log: &mut ChannelLog, id: &str, _gid: &str) {
+    pub(crate) fn drain_orphans(log: &mut ChannelLog, id: &str, _gid: &str) {
         let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut log.orphans).into_iter().partition(|(e, _, _)| match e {
             Envelope::Edit { target, .. } | Envelope::Delete { target } | Envelope::React { target, .. } => target == id, _ => false });
         log.orphans = rest;

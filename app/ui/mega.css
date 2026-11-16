@@ -247,7 +247,7 @@ html.mega.mg-room #chan-title { font-size: round(down, 24px, 12px); }
 html.mega.mg-room #chan-sub { font-size: 12px; }
 html.mega.mg-room #stream { padding-bottom: 42px; overflow-x: hidden; }
 html.mega.mg-room .body .at.self { background: var(--mg-hi); color: var(--mg-hi-ink); padding: 0 .16em; border-radius: 4px; }
-#main > #mega-bd { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+#main > #mega-bd { transition: background-color .6s; position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
 
 /* text sizes by length (text-only messages); all multiples of 12px, line-height stays 1.05 */
 html.mega .msg[data-mz="1"] .body { font-size: 36px; line-height: var(--read-lead); }
@@ -303,6 +303,10 @@ html.mega #typing .dots { display: none; }
 .mp-head #mp-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mp-body { display: grid; gap: 12px; }
 #mega-paint.off .mp-body { display: none; }
+.mp-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 8px; padding: 3px; border-radius: 999px; background: rgb(255 255 255 / .06); }
+.mp-mode[hidden], #mp-same[hidden] { display: none; }
+.mp-m { padding: 7px 10px; border-radius: 999px; color: inherit; font: 12px/1.2 var(--m-ui); background: transparent; }
+.mp-m[aria-pressed="true"] { background: var(--m-paper); color: #050407; }
 .mp-wells { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .mp-well { display: flex; align-items: center; gap: 9px; padding: 7px; border-radius: 16px; background: rgb(255 255 255 / .05); border: 1px solid transparent; font-weight: 500; color: inherit; }
 .mp-well[aria-pressed="true"] { border-color: var(--m-paper); background: rgb(255 255 255 / .1); }
@@ -324,10 +328,16 @@ html.mega #typing .dots { display: none; }
 @media (max-width: 760px) { #mega-paint { top: auto; bottom: 12px; max-height: 66dvh; } }
 
 /* ---- the camera and screenshare stack (phase 4): one column on the left, the dots and everything else slide over ---- */
-html.mega { --m-deckw: 0px; --m-deckh: 0px; }
+html.mega { --m-deckw: 0px; --m-deckh: 0px; --m-deckcol: min(270px, 24vw); --m-deckrow: 104px; }
+/* the size is each person's own: drag the column's right edge (the strip's lower edge on a phone); mega-deck.js keeps it in --m-deckset / --m-deckhset.
+   The chat always keeps 420px; a phone's strip stops where one picture fills the width, and at 60% of the height. */
+html.mega.deck-wset { --m-deckcol: clamp(200px, var(--m-deckset), max(200px, 100vw - 420px)); }
+html.mega.deck-hset { --m-deckrow: clamp(84px, var(--m-deckhset), max(84px, min(60vh, 56.25vw + 14px))); }
 @media (min-width: 761px) {
-  html.mega.deck-open { --m-deckw: min(270px, 24vw); }
+  html.mega.deck-open { --m-deckw: var(--m-deckcol); }
+  html.mega #c-shares .ctile:not(.local) { max-height: calc(100vh - 64px); }   /* a wide column never makes one picture taller than the window */
   html.mega #app { transition: padding-left .5s var(--m-spring); }
+  html.mega.mg-snap #app { transition: none; }   /* cards <-> chat moves the page's left edge at once: easing it re-lays-out the whole chat on every frame of the flight (only the deck's slide eases) */
   html.mega #mega-rail { left: var(--m-deckw); transition: left .5s var(--m-spring), width .5s var(--m-spring), background .3s; }
   html.mega #mega { left: var(--m-deckw); transition: left .5s var(--m-spring); }
   html.mega #mega-opts { left: calc(var(--m-railw) + var(--m-deckw)); transition: left .5s var(--m-spring); }
@@ -337,7 +347,7 @@ html.mega { --m-deckw: 0px; --m-deckh: 0px; }
   html.mega.mg-cards #rail#rail { left: calc(12px + var(--m-deckw)); }
   html.mega #mega-deckshow { left: calc(var(--m-railw) + 10px); }
 }
-html.mega #call-stage { position: fixed; z-index: 24; left: 0; top: 0; bottom: 0; width: min(270px, 24vw); max-height: none; padding: 12px 10px 12px max(10px, env(safe-area-inset-left, 0px)); gap: 8px; background: var(--m-void, #050407); border-right: 1px solid rgb(255 255 255 / .1); overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; transform: translateX(-102%); transition: transform .5s var(--m-spring); }
+html.mega #call-stage { position: fixed; z-index: 24; left: 0; top: 0; bottom: 0; width: var(--m-deckcol); max-height: none; padding: 12px 10px 12px max(10px, env(safe-area-inset-left, 0px)); gap: 8px; background: var(--m-void, #050407); border-right: 1px solid rgb(255 255 255 / .1); overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; transform: translateX(-102%); transition: transform .5s var(--m-spring); }
 html.mega.deck-open #call-stage { transform: none; }
 html.mega #call-stage[hidden], html.mega #call-stage.mega-hid { display: none !important; }
 html.mega #mega-deckhead { display: flex; align-items: center; gap: 8px; min-height: 28px; flex: none; font: 600 12px/1.2 var(--m-ui); letter-spacing: var(--m-small); color: var(--m-paper, #f2f0f6); }
@@ -354,14 +364,26 @@ html.mega #c-shares .ctile.held::after { content: attr(data-holder) " has this";
 html.mega #c-shares .ctile.busy { animation: mdeckno .35s; }
 @keyframes mdeckno { 30% { transform: translateX(-5px); } 60% { transform: translateX(5px); } }
 html.mega #c-play { flex: none; }
+/* the edge you drag: a hairline with a short pill, brighter under the pointer; double-click puts the size back */
+#mega-deckgrip { display: none; }
+html.mega.deck-open #mega-deckgrip { display: block; position: fixed; z-index: 25; top: 0; bottom: 0; left: calc(var(--m-deckw) - 4px); width: 12px; cursor: ew-resize; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+html.mega #mega-deckgrip::before { content: ""; position: absolute; left: 50%; top: 50%; width: 4px; height: 44px; margin: -22px 0 0 -2px; border-radius: 999px; background: var(--m-paper, #f2f0f6); opacity: .28; transition: opacity .15s, height .15s, margin .15s; }
+html.mega #mega-deckgrip:hover::before, html.mega #mega-deckgrip:focus-visible::before, html.mega.deck-sizing #mega-deckgrip::before { opacity: .85; height: 64px; margin-top: -32px; }
+html.mega #mega-deckgrip:focus-visible { outline: none; }
+html.mega.deck-sizing, html.mega.deck-sizing * { cursor: ew-resize !important; user-select: none !important; -webkit-user-select: none !important; }
+html.mega.deck-sizing #call-stage, html.mega.deck-sizing #app, html.mega.deck-sizing #mega-rail, html.mega.deck-sizing #mega, html.mega.deck-sizing #mega-opts, html.mega.deck-sizing #rail#rail { transition: none !important; }
 @media (max-width: 760px) {
-  html.mega.deck-open { --m-deckh: 104px; }
+  html.mega.deck-open { --m-deckh: var(--m-deckrow); }
+  html.mega.deck-open #mega-deckgrip { top: calc(var(--m-deckh) - 11px); bottom: auto; left: 0; right: 0; width: auto; height: 22px; cursor: ns-resize; }
+  html.mega #mega-deckgrip::before { width: 44px; height: 4px; margin: -2px 0 0 -22px; }
+  html.mega #mega-deckgrip:hover::before, html.mega #mega-deckgrip:focus-visible::before, html.mega.deck-sizing #mega-deckgrip::before { width: 64px; height: 4px; margin: -2px 0 0 -32px; }
+  html.mega.deck-sizing, html.mega.deck-sizing * { cursor: ns-resize !important; }
   html.mega #call-stage { left: 0; right: 0; top: 0; bottom: auto; width: auto; height: var(--m-deckh); padding: 6px 8px 6px max(8px, env(safe-area-inset-left, 0px)); flex-direction: row; align-items: stretch; gap: 8px; border-right: 0; border-bottom: 1px solid rgb(255 255 255 / .1); overflow-x: auto; overflow-y: hidden; transform: translateY(-102%); }
   html.mega.deck-open #call-stage { transform: none; }
   html.mega #mega-deckhead { flex-direction: column; justify-content: center; min-width: 52px; }
   html.mega #mega-deckhead .mdh-t { display: none; }
   html.mega #c-shares { flex-direction: row; }
-  html.mega #c-shares .ctile { width: auto; height: 100%; aspect-ratio: 16 / 9; }
+  html.mega #c-shares .ctile { width: auto; height: 100%; aspect-ratio: 16 / 9; max-width: calc(100vw - 16px); }
   html.mega #c-shares .ctile.local { height: 100%; }
   html.mega #c-play { min-width: 240px; }
   html.mega #app { padding-top: var(--m-deckh); }
@@ -390,10 +412,13 @@ html.mega #call-dock { --rail-ink: var(--m-paper); --rail-mute: rgba(255, 255, 2
 #mega-wallbar button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; min-width: 30px; height: 30px; padding: 0 10px; border-radius: 999px; font-family: var(--m-mono, ui-monospace, monospace); font-weight: 700; font-size: 14px; }
 #mega-wallbar button:hover { background: rgb(255 255 255 / .12); }
 #mega-wallbar button[aria-pressed="true"] { background: var(--m-paper, #f2f0f6); color: var(--m-void, #050407); }
-#mega-wallbar .mwb-c button { min-width: 30px; padding: 0; }
-#mega-wallbar .mwb-c button::before { content: ""; display: block; width: 16px; height: 16px; margin: auto; border-radius: 50%; background: var(--sw); box-shadow: 0 0 0 1px rgb(255 255 255 / .4); }
-#mega-wallbar .mwb-c button[aria-pressed="true"] { background: rgb(255 255 255 / .25); color: inherit; }
+#mega-wallbar .mwb-c { max-width: 100%; gap: 3px; }
+#mega-wallbar .mwb-c button { min-width: 32px; width: 32px; height: 32px; padding: 0; }
+#mega-wallbar .mwb-c button::before { content: ""; display: block; width: 20px; height: 20px; margin: auto; border-radius: 50%; background: var(--sw); box-shadow: 0 0 0 1px rgb(255 255 255 / .35); transition: transform .12s; }
+#mega-wallbar .mwb-c button[aria-pressed="true"] { background: rgb(255 255 255 / .22); color: inherit; }
+#mega-wallbar .mwb-c button[aria-pressed="true"]::before { transform: scale(1.18); box-shadow: 0 0 0 2px var(--m-void, #050407), 0 0 0 4px var(--m-paper, #fff); }
 #mega-wallbar .mwb-b { font-family: var(--m-ui); font-size: 12px; background: rgb(255 255 255 / .1); }
+@media (max-width: 760px) { #mega-wallbar .mwb-c { width: 100%; } #mega-wallbar .mwb-c button { min-width: 0; width: 15%; max-width: 46px; height: 36px; } }   /* twelve colours: two rows of six */
 #mega-wallbar :focus-visible { outline: 2px solid var(--m-paper, #fff); outline-offset: 2px; }
 html.mg-drawing #stream { user-select: none; -webkit-user-select: none; }
 @media (max-width: 760px) { #main > #mega-wallbar { top: 52px; width: calc(100% - 20px); border-radius: 22px; } #mega-wallbar .mwb-g { width: 100%; } #mega-wallbar button { min-width: 34px; } }
@@ -484,3 +509,18 @@ html.mega.mg-room #chan-title { font: 400 round(down, 44px, 12px)/1 var(--m-shar
   html.mega.mg-room #head.searching .search-wrap { display: flex; flex: 1; }
   html.mega.mg-room #head.searching #search, html.mega.mg-room #head.searching #search:focus { width: 100%; }
 }
+
+/* The open rail: square-ish cards (a narrower rail), each with its own live ascii field like the big cards; names wrap to two lines */
+#mega-rail.open { width: min(210px, 72vw); }
+#mega-rail.open .mitem, #mega-rail.open .mitem.voice, #mega-rail.open .mitem.active { height: auto; aspect-ratio: 1 / .92; border-radius: 30px; }
+@supports (corner-shape: squircle) { #mega-rail.open .mitem { corner-shape: squircle; border-radius: 34%; } }
+#mega-rail .mitem > .masc { position: absolute; left: 0; top: 0; z-index: 0; pointer-events: none; }
+#mega-rail .mitem > .mlb, #mega-rail .mitem > .mct, #mega-rail .mitem > .mvc { z-index: 1; }
+#mega-rail.open .mlb { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; font-size: round(down, 26px, var(--m-dsnap)); line-height: .95; }
+
+/* options room: the "get mega" link for friends */
+.mjoin { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.mjoin code { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; padding: 8px 12px; border-radius: 12px; background: rgb(255 255 255 / .06); font: 13px/1.3 var(--mono, ui-monospace, monospace); }
+
+/* Battery saver (html.fx-saver, app.js): the mascots stand still. fx-lite, set with it, already stops the other small loops. */
+html.fx-saver .mmascot svg, html.fx-saver .mmascot .ha, html.fx-saver .mmascot .hb, html.fx-saver .mmascot .eyes { animation: none; }

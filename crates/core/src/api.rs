@@ -32,6 +32,9 @@ pub struct App {
     /// How many times the client has been held for a change (an action from the UI, a sync round, the live channel):
     /// a cached answer from before the latest is not served as the state of now (`read`).
     changes: AtomicU64,
+    /// Per `messages` key, the last few windows served: each answer's hash with the id and hash of every row in it, so a
+    /// page that says which answer it holds can be sent only what changed (`messages_answer`).
+    windows: Mutex<HashMap<String, std::collections::VecDeque<(String, Vec<(String, u64)>)>>>,
     files: Mutex<Vec<(String, Arc<Vec<u8>>)>>,
     /// loopback server for "open this call in my browser" (started on first use). Desktops only: a phone has no
     /// second browser to hand a call to.
@@ -47,6 +50,10 @@ pub struct App {
     /// fails (a relay that wants its secret, a full relay, a lost connection), trying again must not spend another.
     pw_link: Mutex<Option<(String, String, std::time::Instant)>>,
     me: std::sync::Weak<App>,
+    /// Notification rules and hand-over between the page and the background part (notify.rs).
+    notify: Arc<crate::notify::Hub>,
+    /// Listening along with a friend's Spotify song (listen.rs).
+    pub(crate) along: crate::listen::Along,
 }
 
 /// A running call asks the core at least every few seconds (call.js: the key poll every 1.5 s, the game-key heartbeat
@@ -55,11 +62,14 @@ pub const CALL_QUIET: Duration = Duration::from_secs(20);
 
 /// How often the core looks at rune while sharing is on. This is not the send rate: a shared status goes out only
 /// when it changes, plus a renewal every `LISTENING_REFRESH_SECS` while it keeps playing.
-const RUNE_POLL_SECS: u64 = 15;
+const RUNE_POLL_SECS: u64 = 4;
+/// After this many looks in a row with no rune answering, it is asked only every `RUNE_ABSENT_SECS`.
+const RUNE_MISSES: u32 = 3;
+const RUNE_ABSENT_SECS: u64 = 30;
 
-/// How long the live poller lets the relay hold a poll for news. A room joined meanwhile is not in the poll in flight, so this
-/// is also the longest a new room waits to be heard.
-const LIVE_POLL_WAIT_MS: u64 = 3000;
+/// How long the live poller lets the relay hold a poll for news (the relay caps it at 25 s). A room joined meanwhile is
+/// not in the poll in flight; the ordinary round polls such a room until the next poll covers it (round.rs).
+const LIVE_POLL_WAIT_MS: u64 = 20_000;
 
 /// How long a read waits for a busy client when its cached answer is from before the UI's last action (`App::read`).
 const READ_WAIT: Duration = Duration::from_millis(1500);
@@ -131,15 +141,18 @@ pub fn bridge_request_ok(host: Option<&str>, origin: Option<&str>, port: u16) ->
 impl App {
     pub fn new(dir: PathBuf, default_relay: &str) -> Arc<App> { Self::with_kdf(dir, default_relay, KdfParams::STRONG) }
     pub fn with_kdf(dir: PathBuf, default_relay: &str, kdf: KdfParams) -> Arc<App> {
+        let notify = Arc::new(crate::notify::Hub::new(Some(dir.clone())));
         Arc::new_cyclic(|me| App {
-            me: me.clone(), call_seen: Mutex::new(None), pw_link: Mutex::new(None), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None),
-            wake: (Mutex::new(false), Condvar::new()), live_wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), changes: AtomicU64::new(0), files: Mutex::new(vec![]),
+            along: Default::default(), notify, me: me.clone(), call_seen: Mutex::new(None), pw_link: Mutex::new(None), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None),
+            wake: (Mutex::new(false), Condvar::new()), live_wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), changes: AtomicU64::new(0), windows: Mutex::new(HashMap::new()), files: Mutex::new(vec![]),
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
             bridge: Mutex::new(None),
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
             game: commons_gamekeys::Service::new(),
         })
     }
+    /// The notification hub: the program that owns this core installs how notes are shown (`Hub::set_sink`).
+    pub fn notify_hub(&self) -> Arc<crate::notify::Hub> { self.notify.clone() }
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     fn open_call_in_browser(&self, gid: &str, name: &str, launch: bool) -> R {
         self.with(|c| c.call_state(gid).map(|_| ()).map_err(e))?;      // only for rooms we are really in
@@ -177,15 +190,17 @@ impl App {
     }
     /// A panic in one call must not take every later call down with it.
     #[track_caller]
-    fn lock(&self) -> Held<'_> { self.lock_at(std::panic::Location::caller()) }
+    pub(crate) fn lock(&self) -> Held<'_> { self.lock_at(std::panic::Location::caller()) }
     fn lock_at(&self, who: &'static std::panic::Location<'static>) -> Held<'_> {
         let t = Instant::now();
         let g = self.client.lock().unwrap_or_else(|p| p.into_inner());
         Held { g, at: Instant::now(), waited: t.elapsed(), who, changes: Some(&self.changes) }
     }
 
-    /// Background sync loop: every second (or immediately after a user action). The client is held
-    /// only to plan a round and to apply its result, never while waiting for the relay.
+    /// Background loop: a round every second (or immediately after a user action, or when the sync poller brought news).
+    /// The client is held only to plan a round and to apply its result, never while waiting for the relay. Receiving is
+    /// the sync poller's below; the round sends (and syncs only for a group the poller's request in flight does not
+    /// cover), so what this device sends never waits behind a request the relay is holding.
     pub fn start_background(self: &Arc<Self>) {
         let app = self.clone();
         std::thread::spawn(move || loop {
@@ -202,6 +217,29 @@ impl App {
                 let Some(c) = g.as_mut() else { break };
                 let _ = c.finish_round(done);
                 if !c.more { break; }
+            }
+        });
+        // The sync poller: one request at a time, which the relay holds until there is something for this device or
+        // SYNC_POLL_WAIT_MS pass, so news arrives when it is posted and an idle device costs the relay a request every
+        // 25 s instead of every second. Nothing is held while it waits. A relay from before long polls answers at once
+        // (the request is the same, with a wait it ignores), which is the old cadence.
+        let app = self.clone();
+        std::thread::spawn(move || {
+            let mut wait = crate::round::SYNC_POLL_WAIT_MS;
+            loop {
+                if *app.stop.lock().unwrap() { break; }
+                let plan = { let mut g = app.lock(); g.as_mut().and_then(|c| c.sync_plan(wait)) };
+                match plan {
+                    Some(p) => {
+                        let d = p.run();
+                        let (more, failed, news) = (d.more(), d.failed(), d.got_any());
+                        if let Some(c) = app.lock().as_mut() { c.finish_sync(d); }
+                        if news { app.nudge(); }   // what came in may want an answer (a welcome, a join to grant, keys to fetch)
+                        wait = if more { 0 } else { crate::round::SYNC_POLL_WAIT_MS };
+                        if failed { std::thread::sleep(Duration::from_millis(1500)); }
+                    }
+                    None => std::thread::sleep(Duration::from_millis(500)),
+                }
             }
         });
         // The unstored live channel (live.rs) has two threads of its own. The sender posts what is waiting within a tenth
@@ -224,7 +262,7 @@ impl App {
         let app = self.clone();
         std::thread::spawn(move || loop {
             if *app.stop.lock().unwrap() { break; }
-            let plan = { let mut g = app.lock(); g.as_mut().and_then(|c| { c.set_live_background(true); c.live_plan_with(false, true) }) };
+            let plan = { let mut g = app.lock(); g.as_mut().and_then(|c| { c.set_live_background(true); let p = c.live_plan_with(false, true); c.set_live_polling(p.as_ref().map(|p| p.rooms()).unwrap_or_default()); p }) };
             match plan {
                 Some(p) => {
                     let wait = if p.quick() { 400 } else { LIVE_POLL_WAIT_MS };
@@ -236,16 +274,39 @@ impl App {
                 None => std::thread::sleep(Duration::from_millis(500)),
             }
         });
+        // New messages while no window is being looked at (notify.rs). Does nothing until the program installs a sink.
+        let app = self.clone();
+        std::thread::spawn(move || loop {
+            if *app.stop.lock().unwrap() { break; }
+            std::thread::sleep(Duration::from_millis(1000));
+            if !app.notify.has_sink() { continue; }
+            // A look, not a change: if the client is busy it is simply looked at a second later.
+            let g = match app.client.try_lock() { Ok(g) => g, Err(TryLockError::Poisoned(p)) => p.into_inner(), Err(TryLockError::WouldBlock) => continue };
+            if let Some(c) = g.as_ref() { app.notify.tick(c); }
+        });
+        // Listening along: its own thread too, because every step is a network call to rune or Spotify.
+        let app = self.clone();
+        std::thread::spawn(move || loop {
+            if *app.stop.lock().unwrap() { break; }
+            app.along_tick();
+            std::thread::sleep(Duration::from_millis(1000));
+        });
         // Its own thread, because asking rune is a network wait that must not hold up the relay loop or the UI.
         let app = self.clone();
         std::thread::spawn(move || {
-            let mut due = 0u64;
+            // Sharing is on for everyone who did not turn it off, and most people have no rune: after a few looks in a row that
+            // nothing answered, look only now and then.
+            let (mut due, mut missed, mut asked) = (0u64, 0u32, String::new());
             loop {
                 if *app.stop.lock().unwrap() { break; }
-                let on = app.rune_settings().is_some_and(|(on, _)| on);
-                if !on { due = 0; std::thread::sleep(Duration::from_millis(500)); continue; }
+                let (on, url) = app.rune_settings().unwrap_or_default();
+                if !on { due = 0; missed = 0; std::thread::sleep(Duration::from_millis(500)); continue; }
+                if url != asked { asked = url; due = 0; missed = 0; }   // a new address is asked at once
                 let now = commons_proto::now_secs();
-                if now >= due { due = now + RUNE_POLL_SECS; app.poll_rune(); }
+                if now >= due {
+                    missed = if app.poll_rune() { 0 } else { missed.saturating_add(1) };
+                    due = now + if missed >= RUNE_MISSES { RUNE_ABSENT_SECS } else { RUNE_POLL_SECS };
+                }
                 std::thread::sleep(Duration::from_millis(500));
             }
         });
@@ -271,30 +332,35 @@ impl App {
 
     /// One look at rune. A failure leaves the last known status alone: rune may just be busy, and the receivers'
     /// TTL ends a status whose sender has really gone quiet.
-    fn poll_rune(&self) {
-        let Some((on, url)) = self.rune_settings() else { return };
-        if !on { return; }
+    /// Whether rune answered.
+    fn poll_rune(&self) -> bool {
+        let Some((on, url)) = self.rune_settings() else { return false };
+        if !on { return false; }
         let got = crate::rune::now_playing(&url);
         let mut g = self.lock();
-        let Some(c) = g.as_mut() else { return };
-        if !c.st.share_listening { return; } // turned off while we were asking
+        let Some(c) = g.as_mut() else { return false };
+        if !c.st.share_listening { return false; } // turned off while we were asking
         match got {
-            Ok(now) => { let _ = c.update_listening(now); }
-            Err(e) => log::info!("rune at {url}: {e}"),
+            Ok(now) => { let _ = c.update_listening(now); true }
+            Err(e) => { log::debug!("rune at {url}: {e}"); false }
         }
     }
 
     pub fn call(&self, method: &str, a: Value) -> R {
+        if method.starts_with("notify_") { return self.notify.call(method, &a); }
+        // Read-only and cheap: answered before the client lock, and it does not wake the background rounds.
+        if method == "power_status" { return Ok(json!({"battery": crate::power::on_battery()})); }
+        if method.starts_with("listen_") || method.starts_with("spotify_") { return self.along_rpc(method, &a); }
         let in_call = matches!(method, "call_state" | "call_token" | "game_mute_wait");
         if in_call { self.saw_call(); }
         let r = self.dispatch(method, a);
         if in_call && r.is_ok() { self.saw_call(); }
-        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "file_transfers" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait" | "call_presence" | "live_poll" | "ring_poll" | "wall_get" | "pcaudio_status" | "pcaudio_caps" | "pcaudio_streams") { self.nudge(); }
+        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "file_transfers" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait" | "call_presence" | "live_poll" | "ring_poll" | "wall_get" | "notify_get" | "notify_beat" | "pcaudio_status" | "pcaudio_caps" | "pcaudio_streams") { self.nudge(); }
         r
     }
 
     #[track_caller]
-    fn with<T>(&self, f: impl FnOnce(&mut Client) -> Result<T, String>) -> Result<T, String> {
+    pub(crate) fn with<T>(&self, f: impl FnOnce(&mut Client) -> Result<T, String>) -> Result<T, String> {
         let mut g = self.lock_at(std::panic::Location::caller());
         match g.as_mut() { Some(c) => f(c), None => Err("locked".into()) }
     }
@@ -473,6 +539,7 @@ impl App {
             "lock" => {
                 *self.lock() = None;
                 self.seen.lock().unwrap().clear();
+                self.windows.lock().unwrap().clear();
                 self.files.lock().unwrap().clear();
                 Ok(json!({"ok": true}))
             }
@@ -480,9 +547,13 @@ impl App {
             "messages" => {
                 let (gid, around) = (s(&a, "gid"), s(&a, "around"));
                 let limit = a.get("limit").and_then(|x| x.as_u64()).unwrap_or(200).clamp(1, 5000) as usize;
-                same_or(self.read(format!("messages/{gid}/{limit}/{around}"), |c| messages(c, &gid, limit, &around)), &a)
+                let key = format!("messages/{gid}/{limit}/{around}");
+                let v = self.read(key.clone(), |c| messages(c, &gid, limit, &around))?;
+                self.messages_answer(key, v, &a)
             }
-            "mark_read" => self.with(|c| { c.mark_read(&s(&a, "gid")); c.save().map_err(e)?; Ok(json!({})) }),
+            // The page calls this only while the room is in view, so it is also what sends a read receipt (receipts.rs), unless the
+            // page says the reader is not at it just now (`seen: false`: the window is open behind another one).
+            "mark_read" => self.with(|c| { c.mark_read(&s(&a, "gid")); if a["seen"].as_bool() != Some(false) { c.note_read(&s(&a, "gid")); } c.save().map_err(e)?; Ok(json!({})) }),
             "send_text" => self.with(|c| { let r = a.get("reply").and_then(|x| x.as_str()).map(|x| x.to_string()); c.send_text(&s(&a, "gid"), &s(&a, "text"), r).map(|id| json!({"id": id})).map_err(e) }),
             "edit" => self.with(|c| c.edit_message(&s(&a, "gid"), &s(&a, "id"), &s(&a, "text")).map(|_| json!({})).map_err(e)),
             "delete" => self.with(|c| c.delete_message(&s(&a, "gid"), &s(&a, "id")).map(|_| json!({})).map_err(e)),
@@ -531,7 +602,13 @@ impl App {
                 let room_opt = (!room.is_empty()).then_some(room.as_str());
                 let quiet = a["oracle_quiet"].as_bool().or_else(|| c.look_of(&cid, room_opt).and_then(|l| l.oracle_quiet));
                 let draw = a["oracle_draw"].as_bool().or_else(|| c.look_of(&cid, room_opt).and_then(|l| l.oracle_draw));
-                let look = crate::envelope::Look { card: card.map(|v| v as u8), chat: chat.map(|v| v as u8), dim: dim.map(|v| v as u16), oracle_quiet: quiet, oracle_draw: draw };
+                // `back` (the backdrop's own {main, hi}) is kept unless named; `back: null` puts the backdrop back on the card's colours.
+                let back = match a.get("back") {
+                    None => c.look_of(&cid, room_opt).and_then(|l| l.back),
+                    Some(Value::Null) => None,
+                    Some(v) => Some(crate::envelope::Duo { main: v["main"].as_str().unwrap_or("").to_string(), hi: v["hi"].as_str().unwrap_or("").to_string() }),
+                };
+                let look = crate::envelope::Look { card: card.map(|v| v as u8), chat: chat.map(|v| v as u8), dim: dim.map(|v| v as u16), oracle_quiet: quiet, oracle_draw: draw, back };
                 c.set_look(&cid, room_opt, Some(look)).map(|_| json!({})).map_err(e)
             }),
             // Owner only: `on` true lets the Oracle bot doodle on this room's backdrop now and then; false stops it.
@@ -567,7 +644,8 @@ impl App {
             "set_listening_sharing" => self.with(|c| c.set_listening_sharing(a["on"].as_bool().unwrap_or(false), &s(&a, "rune")).map(|_| json!({})).map_err(e)),
             "send_file" => {
                 let data = unb64(&s(&a, "data")).map_err(e)?;
-                let (f, (api, k)) = self.with(|c| Ok((c.file_prepare(&s(&a, "gid"), &s(&a, "name"), &s(&a, "mime"), &data, &s(&a, "caption")).map_err(e)?, c.net_handle().map_err(e)?)))?;
+                let voice = a.get("voice").filter(|v| v.is_object()).map(|v| crate::envelope::Voice { ms: v["ms"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32, peaks: v["peaks"].as_str().unwrap_or("").to_string() });
+                let (f, (api, k)) = self.with(|c| Ok((c.file_prepare_voice(&s(&a, "gid"), &s(&a, "name"), &s(&a, "mime"), &data, &s(&a, "caption"), voice).map_err(e)?, c.net_handle().map_err(e)?)))?;
                 f.upload(&api, &k).map_err(e)?; // the slow part, with the client free
                 self.with(|c| c.file_queue(f).map(|id| json!({"id": id})).map_err(e))
             }
@@ -796,7 +874,7 @@ impl App {
             "delete_channel" => self.with(|c| c.delete_channel(&s(&a, "cid"), &s(&a, "room")).map(|_| json!({})).map_err(e)),
             "unban" => self.with(|c| c.unban(&s(&a, "cid"), &s(&a, "account")).map(|_| json!({})).map_err(e)),
             "revoke_invite" => self.with(|c| c.revoke_invite(&s(&a, "cid"), &s(&a, "id")).map(|_| json!({})).map_err(e)),
-            "members" => { let cid = s(&a, "cid"); self.read(format!("members/{cid}"), |c| json!(c.members(&cid).into_iter().map(|m| json!({"account": m.account, "name": m.name, "role": m.role.name(), "devices": m.devices, "verified": m.verified, "me": m.is_me, "tag": m.tag, "same_name": m.same_name, "listening": m.listening.map(|l| json!({"title": l.title, "artist": l.artist}))})).collect::<Vec<_>>())) }
+            "members" => { let cid = s(&a, "cid"); self.read(format!("members/{cid}"), |c| json!(c.members(&cid).into_iter().map(|m| json!({"account": m.account, "name": m.name, "role": m.role.name(), "devices": m.devices, "verified": m.verified, "me": m.is_me, "tag": m.tag, "same_name": m.same_name, "listening": m.listening.map(|l| listening_json(&l))})).collect::<Vec<_>>())) }
             "safety" => self.with(|c| {
                 let acct = s(&a, "account");
                 let num = safety_number(&c.my_account(), &acct);
@@ -821,8 +899,15 @@ impl App {
             "approve_pairing" => {
                 let (rid, sealed, chk, (api, k)) = self.with(|c| { let (r, x, chk) = c.pairing_seal(&s(&a, "code")).map_err(e)?; Ok((r, x, chk, c.net_handle().map_err(e)?)) })?;
                 api.rv_put(&k, &rid, "a", &sealed).map_err(e)?;
-                self.with(|c| { c.notice("pair", "pairing data sent; the new device will appear in your device list once it registers"); Ok(json!({"check": chk})) })
+                let send_history = a.get("send_history").and_then(|x| x.as_bool()).unwrap_or(false);
+                self.with(|c| { if send_history { c.history_preapprove(); } c.notice("pair", "pairing data sent; the new device will appear in your device list once it registers"); Ok(json!({"check": chk})) })
             }
+            // History for a new device of this account (history.rs): send this device's rooms to a device that asked, leave the request, or
+            // stop showing the note about a transfer here.
+            "history_send" => self.with(|c| c.history_send(&s(&a, "device")).map_err(e)),
+            "history_decline" => self.with(|c| c.history_decline(&s(&a, "device")).map(|_| json!({})).map_err(e)),
+            "history_dismiss" => self.with(|c| c.history_dismiss().map(|_| json!({})).map_err(e)),
+            "history_status" => self.with(|c| Ok(c.history_status())),
             "recovery_key" => self.with(|c| c.recovery_key_with_passphrase(&s(&a, "passphrase")).map(|k| json!({"key": k})).map_err(e)),
             "search" => self.with(|c| {
                 let r = c.search(&s(&a, "q"));
@@ -843,6 +928,7 @@ impl App {
             // The sign-up secret, typed in once on a device that never got it. Checked with the relay before saving.
             "set_relay_invite" => self.with(|c| c.set_relay_invite(&s(&a, "secret")).map(|_| json!({})).map_err(e)),
             "set_typing_enabled" => self.with(|c| { c.st.typing_enabled = a["on"].as_bool().unwrap_or(false); c.save().map_err(e)?; Ok(json!({})) }),
+            "set_read_receipts" => self.with(|c| { c.set_read_receipts(a["on"].as_bool().unwrap_or(true)); c.save().map_err(e)?; Ok(json!({})) }),
             "notices" => self.read("notices".into(), |c| json!(c.st.notices.iter().rev().take(80).map(|n| json!({"ts": n.ts, "kind": n.kind, "text": n.text})).collect::<Vec<_>>())),
             "call_state" => self.with(|c| {
                 let st = c.call_state(&s(&a, "gid")).map_err(e)?;
@@ -935,15 +1021,72 @@ pub fn debug_snapshot(c: &Client) -> Value { snapshot(c) }
 /// The page polls `snapshot` and `messages` twice a second, and almost always nothing has changed. Every answer carries a
 /// `hash` of itself; a caller that sends the hash it holds as `if` gets `{"same": true}` back when the answer would be the
 /// same, instead of the whole thing again. A caller that sends nothing gets the full answer, as before.
-fn same_or(r: R, a: &Value) -> R {
+fn hash_of(v: &Value) -> u64 {
     use std::hash::{Hash, Hasher};
-    let mut v = r?;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     v.to_string().hash(&mut h);
-    let hash = format!("{:016x}", h.finish());
+    h.finish()
+}
+
+fn same_or(r: R, a: &Value) -> R {
+    let mut v = r?;
+    let hash = format!("{:016x}", hash_of(&v));
     if a["if"].as_str() == Some(hash.as_str()) { return Ok(json!({"same": true, "hash": hash})); }
     if let Value::Object(m) = &mut v { m.insert("hash".into(), Value::String(hash)); }
     Ok(v)
+}
+
+/// Windows remembered per `messages` key, and keys remembered at all (the open room, and the cards' one look at the
+/// newest line of every room, make a key per room and window size).
+const WINDOWS_PER_KEY: usize = 4;
+const WINDOW_KEYS: usize = 96;
+
+impl App {
+    /// The answer to `messages`, sized to what the page already holds. `if` names (by hash) the answer the page has: the
+    /// same hash gets "same", as for every read. A page that can take a difference says so (`delta`); when the core
+    /// still remembers the rows of the answer it names, it gets only the rows that are new or changed (an edit, a
+    /// reaction, a deletion, a line decrypted later), the ids that left the window, and the whole order only when
+    /// appending the new rows does not give it; `more`, `typing` and `status` always, since they are small. Applied to
+    /// what the page holds, that is exactly the full answer, hash included. A page that does not ask for a difference,
+    /// or holds an answer the core no longer remembers, gets the whole window, exactly as before.
+    fn messages_answer(&self, key: String, mut v: Value, a: &Value) -> R {
+        let hash = format!("{:016x}", hash_of(&v));
+        let have = a["if"].as_str();
+        if have == Some(hash.as_str()) { return Ok(json!({"same": true, "hash": hash})); }
+        let wants_delta = a["delta"].as_bool().unwrap_or(false) || a["delta"].as_u64().is_some_and(|n| n > 0);
+        if !wants_delta { // a page from before differences: the whole window, as always
+            if let Value::Object(m) = &mut v { m.insert("hash".into(), Value::String(hash)); }
+            return Ok(v);
+        }
+        let rows: Vec<(String, u64)> = v["messages"].as_array().map(|l| l.iter().map(|m| (m["id"].as_str().unwrap_or("").to_string(), hash_of(m))).collect()).unwrap_or_default();
+        let old = {
+            let mut w = self.windows.lock().unwrap();
+            let old = have.and_then(|h| w.get(&key)?.iter().find(|(k, _)| k == h).map(|(_, r)| r.clone()));
+            if !w.contains_key(&key) && w.len() >= WINDOW_KEYS { w.clear(); }
+            let list = w.entry(key).or_default();
+            list.retain(|(k, _)| k != &hash);
+            list.push_back((hash.clone(), rows.clone()));
+            while list.len() > WINDOWS_PER_KEY { list.pop_front(); }
+            old
+        };
+        let distinct = rows.iter().map(|(id, _)| id).collect::<std::collections::HashSet<_>>().len() == rows.len();
+        if let (Some(old), true) = (old, distinct) {
+            let now: HashMap<&str, u64> = rows.iter().map(|(id, h)| (id.as_str(), *h)).collect();
+            let was: HashMap<&str, u64> = old.iter().map(|(id, h)| (id.as_str(), *h)).collect();
+            let msgs = v["messages"].as_array().cloned().unwrap_or_default();
+            let changed: Vec<Value> = msgs.iter().filter(|m| { let id = m["id"].as_str().unwrap_or(""); was.get(id) != now.get(id) }).cloned().collect();
+            let drop: Vec<&str> = old.iter().map(|(id, _)| id.as_str()).filter(|id| !now.contains_key(id)).collect();
+            // What the page builds (its order less the dropped, the new ones appended) against the order that is.
+            let mut built: Vec<&str> = old.iter().map(|(id, _)| id.as_str()).filter(|id| now.contains_key(id)).collect();
+            built.extend(rows.iter().map(|(id, _)| id.as_str()).filter(|id| !was.contains_key(id)));
+            let actual: Vec<&str> = rows.iter().map(|(id, _)| id.as_str()).collect();
+            let mut out = json!({"delta": true, "hash": hash, "rows": changed, "drop": drop, "more": v["more"], "typing": v["typing"], "status": v["status"]});
+            if built != actual { out["order"] = json!(actual); }
+            return Ok(out);
+        }
+        if let Value::Object(m) = &mut v { m.insert("hash".into(), Value::String(hash)); }
+        Ok(v)
+    }
 }
 
 fn snapshot(c: &Client) -> Value {
@@ -955,7 +1098,7 @@ fn snapshot(c: &Client) -> Value {
         let chans: Vec<Value> = list.into_iter().map(|ch| json!({"gid": ch.gid, "name": ch.name, "kind": ch.kind, "joined": ch.joined, "unread": ch.unread, "status": c.group_status(&ch.gid)})).collect();
         let style = co.style.as_ref().map(|d| json!({"ver": d.ver, "ts": d.ts, "by": c.display_name(&co.owner), "community": d.community.as_ref().map(|x| x.lower()).map(|x| json!({"main": x.main, "hi": x.hi})),
             "locked": d.locked.iter().filter(|g| **g == co.id || co.channels.iter().any(|ch| &ch.id == *g)).collect::<Vec<_>>(),
-            "looks": d.looks.iter().filter(|(g, _)| **g == co.id || co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, l)| (g.clone(), { let mut v = json!({"card": l.card, "chat": l.chat, "dim": l.dim}); if l.oracle_quiet == Some(true) { v["oracle_quiet"] = json!(true); } if l.oracle_draw == Some(true) { v["oracle_draw"] = json!(true); } v })).collect::<serde_json::Map<String, Value>>(),
+            "looks": d.looks.iter().filter(|(g, _)| **g == co.id || co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, l)| (g.clone(), { let mut v = json!({"card": l.card, "chat": l.chat, "dim": l.dim}); if l.oracle_quiet == Some(true) { v["oracle_quiet"] = json!(true); } if l.oracle_draw == Some(true) { v["oracle_draw"] = json!(true); } if let Some(b) = &l.back { v["back"] = json!({"main": b.main, "hi": b.hi}); } v })).collect::<serde_json::Map<String, Value>>(),
             "wall": d.wall.iter().filter(|(g, _)| **g == co.id || co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, n)| (g.clone(), json!(n))).collect::<serde_json::Map<String, Value>>(),
             "rooms": d.rooms.iter().filter(|(g, _)| co.channels.iter().any(|ch| &ch.id == *g)).map(|(g, x)| { let x = x.lower(); (g.clone(), json!({"main": x.main, "hi": x.hi})) }).collect::<serde_json::Map<String, Value>>()}));
         json!({"id": co.id, "style": style, "name": if co.name.is_empty() { "…".to_string() } else { co.name.clone() }, "role": role.name(), "members": c.st.groups.get(&co.id).map(|g| g.accounts.len()).unwrap_or(0), "removed": co.removed, "removed_reason": co.removed_reason, "channels": chans, "unread": unread,
@@ -971,12 +1114,20 @@ fn snapshot(c: &Client) -> Value {
         "channels": c.channels_of(&d.cid).into_iter().map(|ch| json!({"gid": ch.gid, "name": ch.name, "kind": ch.kind, "joined": ch.joined, "unread": 0})).collect::<Vec<_>>()})).collect();
     let direct_refused: Vec<Value> = c.st.direct_refused.iter().filter(|a| !a.starts_with("c:")).map(|a| json!({"account": a, "name": c.display_name(a)})).collect();
     let net = match c.net.state { NetState::Connecting => "connecting", NetState::Online => "online", NetState::Offline => "offline" };
-    let listening = c.listening_of(&me).map(|l| json!({"title": l.title, "artist": l.artist}));
+    let listening = c.listening_of(&me).map(listening_json);
     json!({"me": {"account": me, "name": c.st.name, "device": c.my_device(), "recovery_unsaved": c.st.recovery_unsaved}, "relay": c.st.relay, "relay_secret": !c.st.relay_invite.is_empty(), "communities": comms, "direct": direct, "direct_refused": direct_refused, "joining": joining, "refused": refused,
-           "typing_enabled": c.st.typing_enabled, "share_listening": c.st.share_listening, "rune_url": c.rune_url(), "listening": listening,
+           "typing_enabled": c.st.typing_enabled, "read_receipts": c.read_receipts_on(), "share_listening": c.st.share_listening, "rune_url": c.rune_url(), "listening": listening,
            "outbox": c.st.outbox.len(), "problems": problems, "net": net, "net_detail": c.net.detail, "revoked": c.st.self_revoked,
-           "download_dir": c.download_dir().display().to_string(),
+           "download_dir": c.download_dir().display().to_string(), "history": c.history_status(),
            "mobile": cfg!(any(target_os = "ios", target_os = "android")), "version": c.activity})
+}
+
+/// A shared status for the page. A Spotify song also says which one and whether it is paused, so the page can offer to join.
+pub fn listening_json(l: &crate::envelope::NowPlaying) -> Value {
+    match &l.spotify {
+        Some(sp) => json!({"title": l.title, "artist": l.artist, "spotify": {"id": sp.id, "paused": sp.paused, "link": crate::spotify::open_link(&sp.id)}}),
+        None => json!({"title": l.title, "artist": l.artist}),
+    }
 }
 
 /// A web address from a message that may be handed to the system browser: http or https, a host, and only the characters
@@ -1001,10 +1152,11 @@ fn messages(c: &Client, gid: &str, limit: usize, around: &str) -> Value {
     if !around.is_empty() { if let Some(p) = all.iter().position(|m| m.id == around) { start = start.min(p.saturating_sub(20)); } }
     let find: HashMap<&str, &Msg> = all.iter().map(|m| (m.id.as_str(), *m)).collect();
     let who = c.st.groups.get(gid).map(|g| c.people_of(&g.community)).unwrap_or_default();
+    let read_by = c.read_marks(gid, &all[start..]);
     let out: Vec<Value> = all[start..].iter().map(|m| {
         let (kind, text, file) = match &m.body {
             MsgBody::Text(t) => ("text", t.clone(), Value::Null),
-            MsgBody::File { name, mime, size, caption, large, .. } => {
+            MsgBody::File { name, mime, size, caption, large, voice, .. } => {
                 let mut f = json!({"name": name, "mime": mime, "size": large.as_ref().map(|l| l.size).unwrap_or(*size)});
                 if let Some(l) = large {
                     f["large"] = json!({"size": l.size, "chunks": l.chunks, "chunk_size": l.chunk_size, "sha256": l.sha256, "expires": l.expires});
@@ -1012,18 +1164,81 @@ fn messages(c: &Client, gid: &str, limit: usize, around: &str) -> Value {
                         f["download"] = json!({"done": d.done, "chunks": d.chunks, "size": d.size, "finished": d.finished, "path": d.path, "save_name": d.save_name});
                     }
                 }
+                if let Some(v) = voice { f["voice"] = json!({"ms": v.ms, "peaks": v.peaks}); }
                 ("file", caption.clone(), f)
             }
             MsgBody::Notice(t) => match member_line(c, t) { Some(line) => ("member", line, Value::Null), None => ("notice", t.clone(), Value::Null) },
         };
         let reply = m.reply.as_deref().and_then(|id| find.get(id)).map(|r| json!({"id": r.id, "name": c.display_name(&r.sender), "text": match &r.body { MsgBody::Text(t) if !r.deleted => t.chars().take(120).collect::<String>(), MsgBody::File { name, .. } => format!("[file] {name}"), _ => "(deleted)".into() }}));
         let (role, same_name) = who.get(&m.sender).cloned().unwrap_or((Role::Member, false));
-        json!({"id": m.id, "sender": m.sender, "name": if m.sender.is_empty() { String::new() } else { c.display_name(&m.sender) }, "mine": m.sender == me, "ts": m.ts, "seq": m.seq,
+        let mut row = json!({"id": m.id, "sender": m.sender, "name": if m.sender.is_empty() { String::new() } else { c.display_name(&m.sender) }, "mine": m.sender == me, "ts": m.ts, "seq": m.seq,
                "role": role.name(), "tag": crate::ops::account_tag(&m.sender), "same_name": same_name,
                "status": m.status, "kind": kind, "text": text, "file": file, "reply": reply, "edited": m.edited, "deleted": m.deleted,
-               "reactions": m.reactions.iter().map(|(e, who)| json!({"emoji": e, "count": who.len(), "mine": who.contains(&me), "names": who.iter().map(|w| c.display_name(w)).collect::<Vec<_>>()})).collect::<Vec<_>>()})
+               "reactions": m.reactions.iter().map(|(e, who)| json!({"emoji": e, "count": who.len(), "mine": who.contains(&me), "names": who.iter().map(|w| c.display_name(w)).collect::<Vec<_>>()})).collect::<Vec<_>>()});
+        // Only on the row somebody's reading has reached, so every other row is what it always was.
+        if let Some(names) = read_by.get(m.id.as_str()) { row["read_by"] = json!(names); }
+        row
     }).collect();
     json!({"messages": out, "more": start > 0, "typing": c.typing_now(gid), "status": c.group_status(gid)})
+}
+
+#[cfg(test)]
+mod messages_answer_tests {
+    use super::*;
+    fn app() -> (Arc<App>, tempfile::TempDir) { let d = tempfile::tempdir().unwrap(); (App::with_kdf(d.path().to_path_buf(), "", KdfParams::TEST), d) }
+    fn row(id: &str, text: &str) -> Value { json!({"id": id, "text": text, "reactions": [], "edited": false, "deleted": false}) }
+    fn window(rows: &[Value], typing: &[&str]) -> Value { json!({"messages": rows, "more": false, "typing": typing, "status": "ok"}) }
+    /// What app.js `mergeMessages` does with a difference.
+    fn merge(have: &Value, d: &Value) -> Value {
+        let gone: Vec<&str> = d["drop"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()).collect();
+        let mut list: Vec<Value> = have["messages"].as_array().unwrap().iter().filter(|x| !gone.contains(&x["id"].as_str().unwrap())).cloned().collect();
+        for r in d["rows"].as_array().unwrap() {
+            match list.iter().position(|x| x["id"] == r["id"]) { Some(i) => list[i] = r.clone(), None => list.push(r.clone()) }
+        }
+        if let Some(o) = d["order"].as_array() { list = o.iter().map(|id| list.iter().find(|x| x["id"] == *id).unwrap().clone()).collect(); }
+        json!({"messages": list, "more": d["more"], "typing": d["typing"], "status": d["status"], "hash": d["hash"]})
+    }
+    fn full_with_hash(v: &Value) -> Value { let mut f = v.clone(); f["hash"] = json!(format!("{:016x}", hash_of(v))); f }
+
+    #[test]
+    fn a_page_from_before_gets_the_whole_window_and_a_new_page_only_the_difference() {
+        let (app, _d) = app();
+        let key = "messages/g/200/".to_string();
+        let w1 = window(&[row("a", "one"), row("b", "two"), row("c", "three")], &[]);
+        // An old page: never says `delta`, gets the window with its hash, then "same".
+        let full = app.messages_answer(key.clone(), w1.clone(), &json!({})).unwrap();
+        assert_eq!(full, full_with_hash(&w1));
+        let h1 = full["hash"].as_str().unwrap().to_string();
+        assert_eq!(app.messages_answer(key.clone(), w1.clone(), &json!({"if": h1})).unwrap(), json!({"same": true, "hash": h1}));
+        // The old page holds h1 but a change comes: the whole window, as always (nothing was remembered for it).
+        let w2 = window(&[row("a", "one"), row("b", "two"), row("c", "three")], &["bob"]);
+        let full2 = app.messages_answer(key.clone(), w2.clone(), &json!({"if": h1})).unwrap();
+        assert_eq!(full2, full_with_hash(&w2));
+        // A new page: the first answer is the window; from then on differences, each of which rebuilds the full answer.
+        let page = app.messages_answer(key.clone(), w1.clone(), &json!({"delta": 1})).unwrap();
+        assert_eq!(page, full_with_hash(&w1));
+        let mut have = page;
+        let steps = [
+            window(&[row("a", "one"), row("b", "two"), row("c", "three")], &["bob"]),                 // typing only
+            window(&[row("a", "one"), row("b", "two"), row("c", "three"), row("d", "four")], &[]),  // a new message
+            window(&[row("a", "one"), row("b", "TWO"), row("c", "three"), row("d", "four")], &[]),  // an edit
+            window(&[row("b", "TWO"), row("c", "three"), row("d", "four"), row("e", "five")], &[]), // the window slid
+            window(&[row("b", "TWO"), row("c", "three"), row("x", "late"), row("d", "four"), row("e", "five")], &[]), // decrypted later, in the middle
+        ];
+        for (i, w) in steps.iter().enumerate() {
+            let d = app.messages_answer(key.clone(), w.clone(), &json!({"delta": 1, "if": have["hash"]})).unwrap();
+            assert_eq!(d["delta"], true, "step {i}: a difference, not the window");
+            let rows = d["rows"].as_array().unwrap().len();
+            assert!(rows <= 1, "step {i}: at most one row changed, got {rows}");
+            assert_eq!(d["order"].is_array(), i == 4, "step {i}: the order travels only when appending does not give it");
+            have = merge(&have, &d);
+            assert_eq!(have, full_with_hash(w), "step {i}: the page holds exactly the full answer");
+        }
+        // An answer the core no longer remembers (another room was open meanwhile, many times): the whole window.
+        for k in 0..WINDOWS_PER_KEY + 1 { app.messages_answer(key.clone(), window(&[row("z", &k.to_string())], &[]), &json!({"delta": 1})).unwrap(); }
+        let w = window(&[row("b", "TWO")], &[]);
+        assert_eq!(app.messages_answer(key.clone(), w.clone(), &json!({"delta": 1, "if": have["hash"]})).unwrap(), full_with_hash(&w));
+    }
 }
 
 #[cfg(test)]

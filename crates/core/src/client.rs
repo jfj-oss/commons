@@ -48,6 +48,8 @@ pub struct Client {
     /// ids of groups we have fully caught up on since this process started (safe to encrypt)
     pub(crate) synced: BTreeSet<String>,
     pub typing: BTreeMap<String, u64>,
+    /// Per room, when (ms) this device last sent a read receipt. Never saved.
+    pub(crate) read_sent_at: BTreeMap<String, u64>,
     /// Live events received and not yet read by the UI, newest last. Never saved, and capped.
     pub(crate) live_in: std::collections::VecDeque<LiveEvent>,
     pub(crate) live_next: u64,
@@ -64,6 +66,12 @@ pub struct Client {
     pub(crate) direct_rate: BTreeMap<String, std::collections::VecDeque<u64>>,
     pub(crate) direct_joined: std::collections::VecDeque<u64>,
     pub(crate) direct_out: Vec<crate::direct::DirectOut>,
+    /// History for a new device (history.rs): when the inbox said "full", nothing more is handed to it before this; and the chunk size.
+    pub(crate) history_hold_until: u64,
+    pub(crate) history_chunk_bytes: usize,
+    /// Every call offer this device saw, as it travelled (test builds only): the link and the sealed secret.
+    #[cfg(feature = "test-hooks")]
+    pub debug_offers: Vec<(String, Option<String>)>,
     /// The unstored live channel (live.rs).
     pub(crate) live: crate::live::LiveChan,
     /// The walls as they are now (a copy goes into the saved state every so often), whether that copy is behind, when it was made,
@@ -90,6 +98,8 @@ pub struct Client {
     /// Exclusive lock on the data folder, held for as long as this client lives.
     lock: Option<std::fs::File>,
     /// How long a looked-up device list stays good, and how often an admin compares the relay's ACL with the group.
+    /// The pause between two read receipts for one room (`receipts::READ_GAP_MS`; a test makes it long and gives the times itself).
+    pub read_gap_ms: u64,
     pub dir_ttl_secs: u64,
     pub acl_check_secs: u64,
     /// Device lists and key packages are fetched between rounds, so that planning a change needs no network.
@@ -105,6 +115,11 @@ pub struct Client {
     /// Another round would do something useful right now: more entries are waiting, or a lookup just came back.
     pub more: bool,
     pub(crate) sync_cap: u64,
+    /// Set when the app runs its own sync poller (api.rs), which waits at the relay for news instead of asking every
+    /// second. The ordinary round then syncs only for groups that poll does not cover (`sync_polling`: the groups of the
+    /// request in flight), so a group joined meanwhile is heard within a round and not when the held poll returns.
+    pub(crate) sync_bg: bool,
+    pub(crate) sync_polling: BTreeSet<String>,
     pub(crate) pair_ack: Option<(String, String)>,
     pub net: NetStatus,
     /// When we last offered our consent to a community whose table has none from us.
@@ -178,10 +193,16 @@ impl Client {
     }
     fn assemble(dir: &Path, vault: Vault, mut st: State, prov: Prov, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
         if !st.typing_default_applied { st.typing_default_applied = true; st.typing_enabled = true; }
+        // The same for sharing "listening to": on for a new account and, once, for an account from before this default that never
+        // changed the switch. An account that chose (on or off) keeps its choice.
+        if !st.share_listening_default_applied { st.share_listening_default_applied = true; if !st.share_listening_chosen { st.share_listening = true; } }
         let walls = st.walls.clone();
-        Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), wall_peer_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), live_in: Default::default(), live_next: 0, live: Default::default(), ring_in: Default::default(), ring_next: 0, ring_seen: BTreeMap::new(), ring_rate: BTreeMap::new(), ring_ends: BTreeMap::new(), ring_sent: BTreeMap::new(), direct_seen: BTreeMap::new(), direct_rate: BTreeMap::new(), direct_joined: Default::default(), direct_out: vec![], live_out: BTreeMap::new(), live_sent: BTreeMap::new(), live_rate: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new(),
-            lock: Some(lock), dir_ttl_secs: 30, acl_check_secs: 60, dir_cache: HashMap::new(), dir_wanted: BTreeSet::new(), dir_hot_until: 0, kp_cache: HashMap::new(), kp_wanted: BTreeMap::new(), kp_refill: false, seen_welcomes: HashSet::new(), last_parked_try: 0,
-            more: false, sync_cap: SYNC_MAX_BYTES, pair_ack: None, net: NetStatus::default(), consent_offered: HashMap::new() }
+        Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), wall_peer_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), read_sent_at: BTreeMap::new(), live_in: Default::default(), live_next: 0, live: Default::default(), ring_in: Default::default(), ring_next: 0, ring_seen: BTreeMap::new(), ring_rate: BTreeMap::new(), ring_ends: BTreeMap::new(), ring_sent: BTreeMap::new(), direct_seen: BTreeMap::new(), direct_rate: BTreeMap::new(), direct_joined: Default::default(), direct_out: vec![], history_hold_until: 0, history_chunk_bytes: crate::history::CHUNK_PLAIN,
+            #[cfg(feature = "test-hooks")]
+            debug_offers: vec![],
+            live_out: BTreeMap::new(), live_sent: BTreeMap::new(), live_rate: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new(),
+            lock: Some(lock), read_gap_ms: crate::receipts::READ_GAP_MS, dir_ttl_secs: 30, acl_check_secs: 60, dir_cache: HashMap::new(), dir_wanted: BTreeSet::new(), dir_hot_until: 0, kp_cache: HashMap::new(), kp_wanted: BTreeMap::new(), kp_refill: false, seen_welcomes: HashSet::new(), last_parked_try: 0,
+            more: false, sync_cap: SYNC_MAX_BYTES, sync_bg: false, sync_polling: BTreeSet::new(), pair_ack: None, net: NetStatus::default(), consent_offered: HashMap::new() }
     }
     fn blank(dir: &Path, vault: Vault, relay: &str, name: &str, t: Arc<dyn Transport>, lock: std::fs::File) -> Client {
         let mut st = State::default();
@@ -295,6 +316,10 @@ impl Client {
 
     #[doc(hidden)]
     pub fn debug_release_lock(&mut self) { self.lock = None; }
+    /// Smaller history chunks, so a test gets several of them from a small history (test builds only).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_history_chunk_bytes(&mut self, n: usize) { self.history_chunk_bytes = n; }
 
     pub fn has_identity(&self) -> bool { self.st.cert.is_some() }
     pub fn my_account(&self) -> String { self.st.cert.as_ref().map(|c| c.account.clone()).unwrap_or_default() }
@@ -451,6 +476,10 @@ impl Client {
         if self.st.name.is_empty() { self.st.name = if check_name("name", pl.name.trim()).is_ok() { pl.name.trim().into() } else { "me".into() }; }
         self.st.pairing = None;
         self.st.registered = false;
+        // a device that has just been paired has no history: it asks the account's other devices (history.rs)
+        self.st.history_wanted = true;
+        self.st.history_wanted_since = now_secs();
+        self.st.history_asked = 0;
         self.save()?;
         self.pair_ack = Some((p.rid, self.my_device()));
         self.dir_hot_until = now_secs() + PAIR_HOT_SECS;

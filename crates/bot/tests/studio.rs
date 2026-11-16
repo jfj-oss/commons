@@ -250,11 +250,187 @@ fn the_hard_block_refuses_the_persons_own_words_before_any_job() {
 
     let mut chat = FakeChat::new(Role::Owner);
     let sent = bot.answer(&mut chat, &ask_job("@Oracle draw a nude 14 year old girl")).expect("an answer");
-    assert_eq!(sent.text, "Aight, done.", "the model's own follow-up is still posted");
-    assert!(chat.sent.iter().any(|t| t == safety::REFUSAL), "the fixed refusal is posted");
+    assert_eq!(sent.text, safety::REFUSAL, "the fixed refusal is the reply");
+    assert_eq!(chat.sent, vec![safety::REFUSAL.to_string()], "and the only one: the model gets no second word");
+    assert_eq!(ollama.hits("/api/chat"), 1, "the model is not asked again after a refusal");
     assert!(chat.files.is_empty());
     assert_eq!(server.hits("/api/state"), 0, "refused before Studio is even asked if it is free");
     assert_eq!(server.hits("/api/jobs"), 0);
+}
+
+// ---------------------------------------------------------------- the live failures of 2026-11-11
+
+/// The shouted request that was wrongly refused as "a real person" goes through, with its 10 seconds.
+#[test]
+fn a_shouted_fart_sound_request_is_made_not_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = fake_studio(idle_state(), "MP3DATA");
+    let ollama = studio_ollama_args(json!({"kind": "sound", "prompt": "a massive, earth-shaking belly bass fart, MEGA loud"}));
+    let bot = make_bot(dir.path(), Config::default(), &ollama.url(), Arc::new(DeadSearch), studio_with(&server, dir.path()), Arc::new(NoGpu));
+    let mut chat = FakeChat::new(Role::Owner);
+    bot.answer(&mut chat, &ask_job("@Oracle make cum fart sound MEGA BEllY BLASTING BASS LOUDNESS 10 seconds")).expect("an answer");
+    assert!(!chat.sent.iter().any(|t| t == safety::REFUSAL), "{:?}", chat.sent);
+    assert_eq!(chat.files.len(), 1);
+    let post = server.requests().into_iter().find(|r| r.path == "/api/jobs").unwrap().json();
+    assert_eq!(post["model"], "sfx");
+    assert_eq!(post["length"], "10", "the person's own length wins");
+    // The model is told what Studio does, crude sounds included, in the system prompt and the tool description.
+    let body = ollama.requests().into_iter().find(|r| r.path == "/api/chat").unwrap().json();
+    let system = body["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("farts") && system.contains("original lyrics"), "{system}");
+    assert!(body["tools"].to_string().contains("farts"));
+}
+
+/// A fake Ollama that answers each chat call with the next of `replies` (the last one repeats), with or without tool support.
+fn scripted_ollama_mode(replies: &[&str], tools: bool) -> FakeHttp {
+    let replies: Vec<String> = replies.iter().map(|s| s.to_string()).collect();
+    let n = Arc::new(AtomicUsize::new(0));
+    let caps = if tools { json!(["completion", "tools"]) } else { json!(["completion"]) };
+    FakeHttp::start(move |r| match r.path.as_str() {
+        "/api/tags" => (200, json!({"models": [{"name": "qwen3.5:9b"}]}).to_string()),
+        "/api/show" => (200, json!({"capabilities": caps}).to_string()),
+        "/api/chat" => {
+            let i = n.fetch_add(1, Ordering::SeqCst).min(replies.len() - 1);
+            (200, json!({"model": "qwen3.5:9b", "message": {"role": "assistant", "content": replies[i]}, "done": true}).to_string())
+        }
+        "/api/generate" => (200, json!({"done": true}).to_string()),
+        _ => (404, "{}".into()),
+    })
+}
+
+const LIVE_TEXT_CALL: &str = "I hear yuh loud and clear, bredda!  studio_make(kind=\"sound\", prompt=\"a massive, earth-shaking belly bass fart, MEGA loud\", length=\"10\")";
+
+/// The model typed the call out as words: it runs as a call, and the words are not shown. In both tool modes.
+#[test]
+fn a_tool_call_written_as_text_is_run_and_not_shown() {
+    for tools in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let server = fake_studio(idle_state(), "MP3DATA");
+        let ollama = scripted_ollama_mode(&[LIVE_TEXT_CALL, "Done, it deh deh. Jah know."], tools);
+        let bot = make_bot(dir.path(), Config::default(), &ollama.url(), Arc::new(DeadSearch), studio_with(&server, dir.path()), Arc::new(NoGpu));
+        let mut chat = FakeChat::new(Role::Owner);
+        let sent = bot.answer(&mut chat, &ask_job("@Oracle make cum fart sound MEGA BEllY BLASTING BASS LOUDNESS 10 seconds")).expect("an answer");
+        assert_eq!(chat.files.len(), 1, "tools={tools}: the sound was made");
+        assert_eq!(chat.files[0].3, "a massive, earth-shaking belly bass fart, MEGA loud");
+        assert_eq!(sent.text, "Done, it deh deh. Jah know.", "tools={tools}");
+        assert!(chat.sent.iter().all(|t| !t.contains("studio_make(")), "the call text never reaches the room: {:?}", chat.sent);
+        assert_eq!(server.requests().into_iter().find(|r| r.path == "/api/jobs").unwrap().json()["length"], "10");
+        assert_eq!(ollama.hits("/api/chat"), 2, "tools={tools}");
+    }
+}
+
+const CLAIM: &str = "Wah gwaan! I just created den record fi yuh, bredda. Babylon cyaan stop di bass.";
+
+/// The model only claims. It is asked once more, and when it still only claims the song is made from the person's words,
+/// with a style line and original lyrics from a plain completion.
+#[test]
+fn a_model_that_only_claims_is_nudged_then_the_song_is_made_anyway() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = fake_studio(idle_state(), "MP3DATA");
+    let spec = "STYLE: heavy dancehall-dubstep, 140 bpm, wobble bass, horns\nLYRICS:\n[Verse]\nFire pon di hill tonight\n[Chorus]\nBun it up, bun it up";
+    let ollama = scripted_ollama_mode(&[CLAIM, CLAIM, spec, "It deh deh now, bredda."], true);
+    let bot = make_bot(dir.path(), Config::default(), &ollama.url(), Arc::new(DeadSearch), studio_with(&server, dir.path()), Arc::new(NoGpu));
+    let mut chat = FakeChat::new(Role::Owner);
+    let text = "@Oracle make a cover of Skrillex & Damian \"Jr. Gong\" Marley - Make It Bun Dem from memory with lyrics";
+    let sent = bot.answer(&mut chat, &ask_job(text)).expect("an answer");
+    assert_eq!(chat.files.len(), 1, "one song was made");
+    let post = server.requests().into_iter().find(|r| r.path == "/api/jobs").unwrap().json();
+    assert_eq!(post["model"], "yue2");
+    assert_eq!(post["prompt"], "heavy dancehall-dubstep, 140 bpm, wobble bass, horns");
+    assert!(post["lyrics"].as_str().unwrap().starts_with("[Verse]"), "{post}");
+    assert_eq!(sent.text, "It deh deh now, bredda.");
+    assert_eq!(ollama.hits("/api/chat"), 4, "first reply, the nudge, the song spec, the closing line");
+    let bodies: Vec<Value> = ollama.requests().into_iter().filter(|r| r.path == "/api/chat").map(|r| r.json()).collect();
+    let nudge = bodies[1]["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap().to_string();
+    assert!(nudge.contains("studio_make") && nudge.contains("song"), "{nudge}");
+    assert!(!chat.sent.iter().any(|t| t.contains("I just created")), "the false claim never reached the room: {:?}", chat.sent);
+}
+
+/// The same, when the spec completion is useless and the room allows nobody: the direct call still goes through every check.
+#[test]
+fn the_direct_call_falls_back_to_the_request_and_obeys_permissions() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = fake_studio(idle_state(), "MP3DATA");
+    let ollama = scripted_ollama_mode(&[CLAIM], true);
+    let bot = make_bot(dir.path(), Config::default(), &ollama.url(), Arc::new(DeadSearch), studio_with(&server, dir.path()), Arc::new(NoGpu));
+    let mut chat = FakeChat::new(Role::Owner);
+    bot.answer(&mut chat, &ask_job("@Oracle make fart sound MEGA BELLY BLASTING BASS 10 seconds"));
+    assert_eq!(chat.files.len(), 1);
+    let post = server.requests().into_iter().find(|r| r.path == "/api/jobs").unwrap().json();
+    assert_eq!(post["model"], "sfx");
+    assert_eq!(post["prompt"], "fart sound MEGA BELLY BLASTING BASS 10 seconds", "the person's own words, without the asking");
+    assert_eq!(post["length"], "10");
+    assert_eq!(ollama.hits("/api/chat"), 3, "first reply, the nudge, the closing line: a sound needs no spec");
+
+    // A member in a room where Studio is off: told the usual line, and nothing is made.
+    let dir2 = tempfile::tempdir().unwrap();
+    let server2 = fake_studio(idle_state(), "MP3DATA");
+    let ollama2 = scripted_ollama_mode(&[CLAIM], true);
+    let bot2 = make_bot(dir2.path(), Config::default(), &ollama2.url(), Arc::new(DeadSearch), studio_with(&server2, dir2.path()), Arc::new(NoGpu));
+    let mut member = FakeChat::new(Role::Member);
+    let sent = bot2.answer(&mut member, &ask_job("@Oracle make fart sound")).expect("an answer");
+    assert!(member.files.is_empty());
+    assert!(member.sent.iter().any(|t| t.contains("only for the community owner")), "{:?}", member.sent);
+    assert_eq!(server2.hits("/api/jobs"), 0);
+    assert_eq!(sent.text, "Wah gwaan! Babylon cyaan stop di bass.", "the claim is cut, the rest of the line stays");
+    assert!(!member.sent.iter().any(|t| t.contains("I just created")), "{:?}", member.sent);
+
+    // When the claim was all the model had, the notice has said it all and nothing more is posted.
+    let dir3 = tempfile::tempdir().unwrap();
+    let server3 = fake_studio(idle_state(), "MP3DATA");
+    let ollama3 = scripted_ollama_mode(&["I just created den record fi yuh, bredda."], true);
+    let bot3 = make_bot(dir3.path(), Config::default(), &ollama3.url(), Arc::new(DeadSearch), studio_with(&server3, dir3.path()), Arc::new(NoGpu));
+    let mut member3 = FakeChat::new(Role::Member);
+    assert!(bot3.answer(&mut member3, &ask_job("@Oracle make fart sound")).is_none());
+    assert_eq!(member3.sent.len(), 1, "the notice alone: {:?}", member3.sent);
+    assert!(member3.sent[0].contains("only for the community owner"));
+}
+
+/// A claim without a Studio job behind it is cut out even when the words did not read as a request.
+#[test]
+fn a_claim_about_an_unmade_thing_is_never_posted() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = fake_studio(idle_state(), "MP3DATA");
+    // "gimme" is not a making verb, but the model's claim plus the tune in the request is enough to make it.
+    let ollama = scripted_ollama_mode(&["Mi jus mek it fi yuh, bredda!", "STYLE: dub\nLYRICS:\n[Verse]\nla", "Deh yah."], true);
+    let bot = make_bot(dir.path(), Config::default(), &ollama.url(), Arc::new(DeadSearch), studio_with(&server, dir.path()), Arc::new(NoGpu));
+    let mut chat = FakeChat::new(Role::Owner);
+    let sent = bot.answer(&mut chat, &ask_job("@Oracle gimme a tune about cats")).expect("an answer");
+    assert_eq!(chat.files.len(), 1);
+    assert_eq!(sent.text, "Deh yah.");
+    assert!(!chat.sent.iter().any(|t| t.contains("jus mek it")), "{:?}", chat.sent);
+
+    // Nothing Studio makes is named at all: the claim is cut and a plain line goes instead.
+    let dir2 = tempfile::tempdir().unwrap();
+    let server2 = fake_studio(idle_state(), "MP3DATA");
+    let ollama2 = scripted_ollama_mode(&["Here's your song bredda! Jah bless."], true);
+    let bot2 = make_bot(dir2.path(), Config::default(), &ollama2.url(), Arc::new(DeadSearch), studio_with(&server2, dir2.path()), Arc::new(NoGpu));
+    let mut chat2 = FakeChat::new(Role::Owner);
+    let sent = bot2.answer(&mut chat2, &ask_job("@Oracle wah gwaan")).expect("an answer");
+    assert_eq!(sent.text, "Jah bless.");
+    assert_eq!(server2.hits("/api/jobs"), 0);
+    let ollama3 = scripted_ollama_mode(&["Here's your song bredda!"], true);
+    let dir3 = tempfile::tempdir().unwrap();
+    let bot3 = make_bot(dir3.path(), Config::default(), &ollama3.url(), Arc::new(DeadSearch), Arc::new(DeadStudio), Arc::new(NoGpu));
+    let mut chat3 = FakeChat::new(Role::Owner);
+    let sent = bot3.answer(&mut chat3, &ask_job("@Oracle wah gwaan")).expect("an answer");
+    assert_eq!(sent.text, commons_bot::bot::NOTHING_MADE);
+}
+
+/// Chat about having made something is chat: no job, nothing cut, Studio not even asked if it is free.
+#[test]
+fn a_story_about_making_a_song_starts_no_job() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = fake_studio(idle_state(), "MP3DATA");
+    let ollama = scripted_ollama_mode(&["Big up! Mi made a song last week too, bout di fridge spying."], true);
+    let bot = make_bot(dir.path(), Config::default(), &ollama.url(), Arc::new(DeadSearch), studio_with(&server, dir.path()), Arc::new(NoGpu));
+    let mut chat = FakeChat::new(Role::Owner);
+    let sent = bot.answer(&mut chat, &ask_job("@Oracle I made a song yesterday, it slaps")).expect("an answer");
+    assert_eq!(sent.text, "Big up! Mi made a song last week too, bout di fridge spying.");
+    assert_eq!(chat.sent.len(), 1);
+    assert!(chat.files.is_empty());
+    assert_eq!(server.hits("/api/state") + server.hits("/api/jobs"), 0, "Studio was never touched");
+    assert_eq!(ollama.hits("/api/chat"), 1, "no nudge either");
 }
 
 #[test]

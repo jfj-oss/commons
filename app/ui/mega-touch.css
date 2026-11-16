@@ -1,0 +1,36 @@
+/* mega: the phone's gestures (mega-touch.js). Everything here is under html.mg-touch, which that file sets only on a phone-sized
+   touch screen, so a computer's chat is untouched. Nothing here animates a layout property: transforms and opacity only. */
+
+/* A sideways drag is ours; up and down stays the browser's scroll. The sideways scrollers keep their own pans. */
+html.mg-touch #stream, html.mg-touch #head, html.mg-touch #composer, html.mg-touch #mega .mlist, html.mg-touch #mega-opts, html.mg-touch .mnews { touch-action: pan-y pinch-zoom; }
+html.mg-touch #head .head-actions, html.mg-touch #mega .mbar { touch-action: pan-x pinch-zoom; }
+/* Holding a message opens its menu (copy is in there), so the system's selection and callout stay out of the way. */
+html.mg-touch #stream .msg { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+html.mg-touch #main, html.mg-touch #mega .mlist { backface-visibility: hidden; }
+
+/* swipe a row to reply: the row follows the finger (over the reading focus's own transform), a reply mark waits where it was */
+html.mg-touch #stream .msg.mswp { transform: translateX(var(--sx, 0px)) !important; transition: none !important; }
+html.mg-touch #stream .msg.mheld { background: var(--hover); }
+#mega-swreply { position: absolute; left: 10px; top: 0; z-index: 3; width: 30px; height: 30px; display: none; place-items: center; border-radius: 50%; background: var(--mg-hi, #efedf2); color: var(--mg-hi-ink, #0c0d12); opacity: 0; transform: scale(.6); will-change: transform, opacity; pointer-events: none; }
+#mega-swreply.on { display: grid; }
+#mega-swreply.go { box-shadow: 0 0 0 3px color-mix(in srgb, var(--mg-hi, #efedf2) 35%, transparent); }
+#mega-swreply .ic { width: 16px; height: 16px; stroke-width: 2; }
+
+/* the held message's menu: a row of reactions, then the actions */
+.mpop.mtouch { min-width: 250px; max-width: calc(100vw - 16px); }
+.mtm .mtm-e { display: flex; justify-content: space-between; gap: 2px; padding: 2px 2px 8px; margin-bottom: 4px; border-bottom: 1px solid var(--m-line); }
+.mtm .mtm-e button { flex: 1; min-width: 0; padding: 6px 0; font-size: 20px; line-height: 1; text-align: center; border-radius: 10px; }
+.mtm .mtm-e button.on { background: rgb(255 255 255 / .16); }
+.mtm button.bad { color: var(--m-danger, #ff6b62); }
+.mtm button { min-height: 40px; }
+
+/* the picture viewer: pinch, pan, pull down to close, swipe sideways through the room's pictures */
+#mega-view { position: fixed; inset: 0; z-index: 70; background: rgb(0 0 0 / var(--mv-a, 1)); color: #fff; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; animation: mvin .16s ease-out; }
+@keyframes mvin { from { opacity: 0; } }
+#mega-view .mv-stage { position: absolute; inset: 0; display: grid; place-items: center; overflow: hidden; }
+#mega-view img { display: block; max-width: 100vw; max-height: 100dvh; object-fit: contain; transform-origin: center; -webkit-user-drag: none; }
+#mega-view .mv-x { position: absolute; z-index: 2; top: max(10px, env(safe-area-inset-top, 0px)); right: max(10px, env(safe-area-inset-right, 0px)); width: 44px; height: 44px; border: 0; border-radius: 50%; background: rgb(255 255 255 / .14); color: #fff; font: 26px/1 var(--m-ui, system-ui); cursor: pointer; }
+#mega-view .mv-cap { position: absolute; z-index: 2; left: 0; right: 0; bottom: max(14px, env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 0 16px; font: 500 13px/1.3 var(--m-ui, system-ui); color: rgb(255 255 255 / .75); pointer-events: none; text-align: center; }
+#mega-view .mv-cap > span:empty { display: none; }
+#mega-view .mv-t { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { #mega-view { animation: none; } }

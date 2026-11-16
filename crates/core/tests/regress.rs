@@ -84,7 +84,7 @@ fn a_single_use_invite_admits_one_person() {
 #[test]
 fn hostile_mime_and_channel_ids_are_refused() {
     let id = "0123456789abcdef0123456789abcdef".to_string();
-    let f = |mime: &str| Envelope::File { id: id.clone(), name: "a".into(), mime: mime.into(), size: 1, blob: id.clone(), key: "00".repeat(32), nonce: "00".repeat(12), caption: "".into(), reply: None, ts: 1, large: None }.to_bytes();
+    let f = |mime: &str| Envelope::File { id: id.clone(), name: "a".into(), mime: mime.into(), size: 1, blob: id.clone(), key: "00".repeat(32), nonce: "00".repeat(12), caption: "".into(), reply: None, ts: 1, large: None, voice: None }.to_bytes();
     assert!(Envelope::parse(&f("image/png")).is_ok());
     assert!(Envelope::parse(&f("application/vnd.oasis.opendocument.text+xml")).is_ok());
     for bad in ["image/png\" onerror=\"x", "image/png;base64,AAAA", "IMAGE/PNG", "image", "/png", "image/", "a/b/c", "image/png ", ""] {

@@ -168,6 +168,28 @@ impl Round {
     }
 }
 
+/// How long the app's sync poller lets the relay hold its request for news. The relay caps it at 30 s; a group joined
+/// meanwhile is not in the request, so the ordinary round asks for it (`Client::round_sync_req`).
+pub const SYNC_POLL_WAIT_MS: u64 = 25_000;
+
+/// The sync poller's one request, planned with the client held and run without it (api.rs runs one on its own thread).
+pub struct SyncPlan { api: Api, key: SigningKey, req: SyncReq, cap: u64 }
+pub struct SyncDone { r: Result<SyncResp>, acks: Vec<String>, bad: Vec<String>, cap: u64 }
+impl SyncPlan {
+    /// The network part: waits at the relay for up to the request's `wait_ms`.
+    pub fn run(self) -> SyncDone {
+        let (r, cap, bad) = fetch_sync(&self.api, &self.key, &self.req, self.cap);
+        SyncDone { r, acks: self.req.ack_welcomes, bad, cap }
+    }
+}
+impl SyncDone {
+    /// The relay holds more entries for some group: ask again at once.
+    pub fn more(&self) -> bool { self.r.as_ref().is_ok_and(|r| !r.more.is_empty()) }
+    pub fn failed(&self) -> bool { self.r.is_err() }
+    /// Something arrived (entries or invitations), so the ordinary round may have work: a reply to post, keys to fetch.
+    pub fn got_any(&self) -> bool { self.r.as_ref().is_ok_and(|r| !r.messages.is_empty() || !r.welcomes.is_empty()) }
+}
+
 /// anyhow errors do not clone; the kind is what matters later, so keep that.
 fn clone_err(e: &anyhow::Error) -> anyhow::Error {
     match e.downcast_ref::<RelayError>() {
@@ -235,14 +257,15 @@ impl Client {
             let avatar_cleared = std::mem::replace(&mut self.st.avatar_removed, false);
             let ts = self.st.profiles.get(&me).map_or_else(now_secs, |p| p.ts.max(now_secs()));
             let ctls: Vec<String> = self.st.groups.values().filter(|g| g.kind == Kind::Control && !g.removed && !g.broken).map(|g| g.gid.clone()).collect();
-            for g in ctls { self.queue_env(&g, Envelope::Profile { name: name.clone(), ts, listen: listen.clone(), avatar: avatar.clone(), avatar_cleared, direct: true }); }
+            for g in ctls { self.queue_env(&g, Envelope::Profile { name: name.clone(), ts, listen: listen.clone(), avatar: avatar.clone(), avatar_cleared, direct: true, direct_sealed: true }); }
         }
         self.flush_live();
+        self.flush_reads();
         self.reconcile();
         self.direct_tick();
         self.plan_relay_secret();
         // nothing goes out unless the state behind it is on disk
-        if let Err(e) = self.encrypt_outbox().and_then(|_| self.save()) { log::warn!("save before sending: {e}"); r.sync = Some(self.sync_req(wait_ms)); return r; }
+        if let Err(e) = self.encrypt_outbox().and_then(|_| self.save()) { log::warn!("save before sending: {e}"); r.sync = self.round_sync_req(wait_ms); return r; }
         for g in self.st.groups.values() {
             if let Some(p) = g.pending.as_ref().filter(|p| !p.posted) {
                 let acl = (!p.acl_add.is_empty()).then(|| AclReq { add: p.acl_add.clone(), grant: self.my_grant(&g.community), ..Default::default() });
@@ -252,6 +275,9 @@ impl Client {
         for it in self.st.outbox.iter().filter(|i| i.cipher.is_some()).take(200) {
             r.posts.push((it.id.clone(), it.gid.clone(), unb64(it.cipher.as_ref().unwrap()).unwrap_or_default()));
         }
+        // history for a new device (history.rs): hand the next sealed chunks to the inbox queue; a new device asks its other devices
+        self.history_feed(now);
+        self.history_ask(now);
         r.welcomes = self.st.welcome_out.clone();
         for j in self.st.acl_jobs.iter().filter(|j| now >= j.after) {
             let cid = self.st.groups.get(&j.gid).map(|g| g.community.clone()).unwrap_or_else(|| j.gid.clone());
@@ -269,9 +295,57 @@ impl Client {
             self.last_dir_check.insert("acl".into(), now);
             self.plan_acl_checks(&mut r);
         }
-        r.live = self.live_plan(!self.live.background);
-        r.sync = Some(self.sync_req(wait_ms));
+        // The app's poller waits at the relay for the rooms it knew when it asked; a room joined since is polled here (at
+        // once, no wait) until the poller's next request covers it.
+        let rooms_uncovered = self.live.background && self.live_poll_req().is_some_and(|q| q.cursors.keys().any(|g| !self.live.polling.contains(g)));
+        r.live = self.live_plan_with(true, !self.live.background || rooms_uncovered);
+        r.sync = self.round_sync_req(wait_ms);
         r
+    }
+
+    /// The round's sync request: as always, unless the app's own poller is waiting at the relay for exactly these groups.
+    fn round_sync_req(&mut self, wait_ms: u64) -> Option<SyncReq> {
+        if self.sync_bg {
+            let gids: Vec<&String> = self.st.groups.values().filter(|g| !g.removed).map(|g| &g.gid).collect();
+            if gids.len() == self.sync_polling.len() && gids.iter().all(|g| self.sync_polling.contains(*g)) { return None; }
+        }
+        Some(self.sync_req(wait_ms))
+    }
+
+    /// The sync poller's next request, or None while there is no account to ask for. Marks the groups it covers.
+    pub fn sync_plan(&mut self, wait_ms: u64) -> Option<SyncPlan> {
+        self.sync_bg = true;
+        if !self.has_identity() || self.st.self_revoked { self.sync_polling.clear(); return None; }
+        let Ok(key) = self.dev_key() else { self.sync_polling.clear(); return None };
+        let req = self.sync_req(wait_ms);
+        self.sync_polling = req.cursors.keys().cloned().collect();
+        Some(SyncPlan { api: self.api.clone(), key, req, cap: self.sync_cap })
+    }
+
+    /// Applies what the poller's request brought: the same as a round's sync, with the round's own `more` left alone.
+    pub fn finish_sync(&mut self, d: SyncDone) {
+        self.sync_cap = d.cap.max(SYNC_MIN_BYTES);
+        let more = self.more;
+        if let Err(e) = self.take_sync(d.r, d.acks, &d.bad) { self.note_failure(&e); }
+        self.more = more;
+        self.live_retry_held();
+        if let Err(e) = self.save() { log::warn!("save after sync: {e}"); }
+    }
+
+    /// What a sync's answer means for us: online and applied, or offline with the acknowledgements kept for next time.
+    fn take_sync(&mut self, r: Result<SyncResp>, acks: Vec<String>, bad: &[String]) -> Result<()> {
+        match r {
+            Ok(resp) => {
+                self.net = NetStatus { state: NetState::Online, detail: String::new() };
+                self.apply_sync(resp, bad);
+                Ok(())
+            }
+            Err(e) => {
+                self.st.ack_welcomes.extend(acks);
+                if self.net.detail.is_empty() || is_down(&e) { self.net = NetStatus { state: NetState::Offline, detail: format!("{e:#}") }; }
+                Err(e)
+            }
+        }
     }
 
     fn plan_joins(&mut self, r: &mut Round, now: u64) {
@@ -344,6 +418,7 @@ impl Client {
         for (id, r) in d.posts { keep_going |= self.item_posted(&id, r); }
         self.more |= keep_going;
         for (id, r) in d.welcomes {
+            if self.st.welcome_out.iter().any(|w| w.id == id && w.gid.starts_with("history:")) { self.history_posted(&id, &r); }
             match r {
                 Ok(()) => { self.st.welcome_out.retain(|w| w.id != id); self.activity += 1; }
                 Err(e) if relay_status(&e) == Some(404) => self.st.welcome_out.retain(|w| w.id != id), // that device is gone
@@ -374,19 +449,10 @@ impl Client {
         }
         if let Some(e) = &d.failure { self.note_failure(e); }
         if let Some(l) = d.live { self.live_finish(l); }
-        let mut result = Ok(());
-        match d.sync {
-            Some((Ok(resp), _, bad)) => {
-                self.net = NetStatus { state: NetState::Online, detail: String::new() };
-                self.apply_sync(resp, &bad);
-            }
-            Some((Err(e), acks, _)) => {
-                self.st.ack_welcomes.extend(acks);
-                if self.net.detail.is_empty() || is_down(&e) { self.net = NetStatus { state: NetState::Offline, detail: format!("{e:#}") }; }
-                result = Err(e);
-            }
-            None => if let Some(e) = d.failure { result = Err(e); },
-        }
+        let result = match d.sync {
+            Some((r, acks, bad)) => self.take_sync(r, acks, &bad),
+            None => match d.failure { Some(e) => Err(e), None => Ok(()) },
+        };
         self.live_retry_held(); // the log may have moved far enough for events that were waiting on it
         self.save()?;
         result

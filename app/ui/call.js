@@ -607,14 +607,18 @@
     }
 
     // ------------------------------------------------------------------ screen share and camera
-    // Bitrates are ceilings: on a weak link the browser sends less and viewers fall back to a smaller layer.
+    // Bitrates are ceilings: on a weak link the browser sends less.
+    // A screen share is sent as the full picture plus ONE cheap fallback, never as a three-step ladder. The browser fills the layers from
+    // the smallest up, so the old ladder (360p at 0.5 Mbit/s and 720p at up to 2.5 Mbit/s under the real picture) took the first 2 to 3 Mbit/s
+    // of the sender's upload for pictures nobody wanted; on a home upload the full picture was then switched off ("bandwidth") and every viewer
+    // was left on a blurry 720p or 360p copy. Measured with a 3 Mbit/s upload: the viewer never got 1440p with the ladder, and always with this.
+    // The fallback stays because a viewer whose own link cannot carry the full picture would otherwise see nothing at all (also measured).
     shareProfiles() {
       const LK = this.LK, V = (width, height, maxBitrate, maxFramerate) => new LK.VideoPreset({ width, height, maxBitrate, maxFramerate });
-      const small = V(640, 360, 500_000, 15), mid = V(1280, 720, 2_500_000, 30);
       return {
-        text: { label: 'Sharp text (up to 1440p, 15 fps)', preset: V(2560, 1440, 6_000_000, 15), layers: [small, V(1280, 720, 1_500_000, 15)], hint: 'detail', keep: 'maintain-resolution' },
-        motion: { label: 'Smooth motion (1080p, 30 fps)', preset: V(1920, 1080, 6_000_000, 30), layers: [small, mid], hint: 'motion', keep: 'maintain-framerate' },
-        motion60: { label: 'Fast motion (1080p, 60 fps)', preset: V(1920, 1080, 9_000_000, 60), layers: [small, mid], hint: 'motion', keep: 'maintain-framerate' },
+        text: { label: 'Sharp text (up to 1440p, 30 fps)', preset: V(2560, 1440, 6_000_000, 30), layers: [V(960, 540, 350_000, 5)], hint: 'detail', keep: 'maintain-resolution' },
+        motion: { label: 'Smooth motion (1080p, 30 fps)', preset: V(1920, 1080, 6_000_000, 30), layers: [V(960, 540, 600_000, 15)], hint: 'motion', keep: 'maintain-framerate' },
+        motion60: { label: 'Fast motion (1080p, 60 fps)', preset: V(1920, 1080, 9_000_000, 60), layers: [V(960, 540, 600_000, 15)], hint: 'motion', keep: 'maintain-framerate' },
       };
     }
     cameraProfiles() {
@@ -635,7 +639,7 @@
       try {
         const pub = await this.room.localParticipant.setScreenShareEnabled(true,
           { audio: wantAudio, resolution: { width: prof.preset.width, height: prof.preset.height, frameRate: prof.preset.encoding.maxFramerate }, contentHint: prof.hint, surfaceSwitching: 'include', systemAudio: 'include' },
-          { screenShareEncoding: prof.preset.encoding, screenShareSimulcastLayers: prof.layers, videoCodec: 'vp8', degradationPreference: prof.keep });
+          { screenShareEncoding: prof.preset.encoding, screenShareSimulcastLayers: prof.layers, simulcast: prof.layers.length > 0, videoCodec: 'vp8', degradationPreference: prof.keep });
         if (pub && !pub.isEncrypted) { await this.room.localParticipant.setScreenShareEnabled(false); throw new CallError('no-e2ee', 'The screen share was not encrypted and was stopped.'); }
         this.sharing = true;
         if (this.error && (this.error.kind === 'screen' || this.error.kind === 'no-screen')) this.error = null;   // it worked this time

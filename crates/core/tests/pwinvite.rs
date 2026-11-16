@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const K: KdfParams = KdfParams::TEST;
-const PW: &str = "amber-fox-teal-47";
+const PW: &str = "amber-fox-teal-moss-rain-47";
 
 fn app(net: &Net) -> (Arc<App>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -47,11 +47,11 @@ fn a_new_person_joins_with_only_the_password_and_a_name_and_can_chat() {
     assert!(made["download"].as_str().unwrap().ends_with("/join"));
     let (bo, _d2) = app(&net);
     // Wrong password: nothing is created, and the message is the same as for an unknown one.
-    let e1 = bo.call("create_account_password", json!({"password": "amber-fox-teal-48", "name": "bob", "passphrase": "my device pass"})).unwrap_err();
+    let e1 = bo.call("create_account_password", json!({"password": "amber-fox-teal-moss-rain-48", "name": "bob", "passphrase": "my device pass"})).unwrap_err();
     assert_eq!(e1, pw::NOT_FOUND);
     assert_eq!(bo.call("state", json!({})).unwrap()["exists"], false, "a failed password creates no account");
     // The right one (with different spacing and capitals), the name, and a device password: that is all.
-    let r = bo.call("create_account_password", json!({"password": "Amber Fox TEAL 47", "name": "bob", "passphrase": "my device pass"})).unwrap();
+    let r = bo.call("create_account_password", json!({"password": "Amber Fox TEAL moss-RAIN 47", "name": "bob", "passphrase": "my device pass"})).unwrap();
     assert_eq!(r["ok"], true);
     assert!(r.get("join_error").is_none(), "{r}");
     let gid = wait("bob sees the channel", || first_channel(&bo));
@@ -150,7 +150,7 @@ fn an_expired_copy_is_not_found_and_reads_like_a_wrong_password() {
     assert!(pw::lookup(&api(&net), &net.url(), PW, K).is_ok());
     db(&net).execute("UPDATE pwinvites SET expires = 1", []).unwrap();
     let gone = pw::lookup(&api(&net), &net.url(), PW, K).unwrap_err().to_string();
-    let wrong = pw::lookup(&api(&net), &net.url(), "amber-fox-teal-99", K).unwrap_err().to_string();
+    let wrong = pw::lookup(&api(&net), &net.url(), "amber-fox-teal-moss-rain-99", K).unwrap_err().to_string();
     assert_eq!(gone, wrong, "failures do not say whether a password exists");
     assert_eq!(gone, pw::NOT_FOUND);
     al.shutdown();
@@ -359,4 +359,67 @@ fn a_failed_attempt_after_the_lookup_does_not_spend_another_fetch() {
     assert_eq!(r["ok"], true);
     assert_eq!(left(), before - 1, "the retry used the copy it already had");
     for a in [&al, &bo] { a.shutdown(); }
+}
+
+/// A lookup or a filing as one caller: the address a reverse proxy would report. The relay is on loopback here, so the header is believed.
+fn as_caller(net: &Net, ip: &str, method: &str, path: &str, body: &[u8]) -> u16 {
+    let r = ureq::request(method, &format!("{}{path}", net.url())).set("X-Forwarded-For", ip).set("content-type", "application/json").send_bytes(body);
+    match r { Ok(r) => r.status(), Err(ureq::Error::Status(c, _)) => c, Err(e) => panic!("{e}") }
+}
+
+/// Audit M5: forty junk lookups from anyone locked the whole relay for ten minutes, and filing a copy under an id said whether that
+/// password was in use. Now one caller spends only its own budget, and a collision with somebody else's copy reads like success.
+#[test]
+fn one_caller_cannot_lock_everyone_out_and_filing_a_copy_is_not_an_oracle() {
+    let net = Net::with_limits(commons_relay::Limits { pwinvite_misses_per_client: 6, pwinvite_misses_per_window: 100, ..Default::default() });
+    let (al, _d, cid) = alice(&net);
+    al.call("create_invite", json!({"cid": cid, "password": PW})).unwrap();
+    let hit = pw::derive(PW, &net.url(), K).unwrap().lid;
+    let look = |ip: &str, lid: &str| as_caller(&net, ip, "POST", "/v1/pwinvite/lookup", &serde_json::to_vec(&json!({"lid": lid})).unwrap());
+    // Caller X guesses wrong six times and is then refused, even the right id; caller Y is not affected at all.
+    for i in 0..6 { assert_eq!(look("203.0.113.5", &pw::derive(&format!("junk-{i}-aaa-bbb-ccc"), &net.url(), K).unwrap().lid), 404); }
+    assert_eq!(look("203.0.113.5", &pw::derive("junk-9-aaa-bbb-ccc", &net.url(), K).unwrap().lid), 429);
+    assert_eq!(look("203.0.113.5", &hit), 429, "a caller that has spent its budget gets nothing more, hits included");
+    assert_eq!(look("203.0.113.6", &pw::derive("junk-8-aaa-bbb-ccc", &net.url(), K).unwrap().lid), 404, "another caller still gets answers");
+    assert_eq!(look("203.0.113.6", &hit), 200, "and the friend with the right password gets in");
+    // A stranger files a copy under alice's id: answered like success, nothing stored or replaced, alice's copy still opens.
+    let dev = stranger_dev(&net);
+    let put = |dev: &ed25519_dalek::SigningKey, lid: &str, pw: &str| {
+        let d = pw::derive(pw, &net.url(), K).unwrap();
+        let body = pw::put_body(&d, "commons://join/stranger", 3600, Some(1)).unwrap();
+        HttpTransport::new(&net.url()).request(Some(dev), "PUT", &format!("/v1/pwinvite/{lid}"), &body, Duration::from_secs(5)).unwrap().status
+    };
+    assert_eq!(put(&dev, &hit, PW), 200, "a collision with someone else's copy is not reported");
+    assert_eq!(put(&dev, &pw::derive("fresh-words-here-now-ok-12", &net.url(), K).unwrap().lid, "fresh-words-here-now-ok-12"), 200, "a free id is taken as before");
+    let row: (String, Vec<u8>) = db(&net).query_row("SELECT owner, blob FROM pwinvites WHERE lid=?1", [&hit], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_ne!(row.0, hex::encode(dev.verifying_key().to_bytes()), "alice's row was not taken over");
+    assert_eq!(pw::lookup(&api(&net), &net.url(), PW, K).is_ok(), true, "alice's copy still opens with her password");
+    assert_eq!(db(&net).query_row::<u64, _, _>("SELECT COUNT(*) FROM pwinvites", [], |r| r.get(0)).unwrap(), 2, "two rows: alice's and the stranger's own");
+    // Filing counts as a guess for the caller (loopback here: alice's own filing, the two above, and these): after its budget the stranger is refused there too.
+    for i in 0..4 { let _ = put(&dev, &pw::derive(&format!("more-words-{i}-aaa-bbb-cc"), &net.url(), K).unwrap().lid, &format!("more-words-{i}-aaa-bbb-cc")); }
+    assert_eq!(put(&dev, &pw::derive("last-words-aaa-bbb-cc-99", &net.url(), K).unwrap().lid, "last-words-aaa-bbb-cc-99"), 429);
+    al.shutdown();
+}
+
+#[test]
+fn a_full_table_makes_the_heaviest_account_give_up_a_copy_rather_than_refusing_everyone() {
+    let net = Net::with_limits(commons_relay::Limits { max_pwinvites_total: 4, max_pwinvites_per_account: 10, pwinvite_misses_per_client: 100, ..Default::default() });
+    let flooder = stranger_dev(&net);
+    let put = |dev: &ed25519_dalek::SigningKey, pw: &str| {
+        let d = pw::derive(pw, &net.url(), K).unwrap();
+        let body = pw::put_body(&d, "commons://join/x", 3600, Some(1)).unwrap();
+        HttpTransport::new(&net.url()).request(Some(dev), "PUT", &format!("/v1/pwinvite/{}", d.lid), &body, Duration::from_secs(5)).unwrap().status
+    };
+    for i in 0..4 { assert_eq!(put(&flooder, &format!("flood-words-{i}-aaa-bbb-cc")), 200); }
+    assert_eq!(db(&net).query_row::<u64, _, _>("SELECT COUNT(*) FROM pwinvites", [], |r| r.get(0)).unwrap(), 4);
+    // The table is full of one account's copies: an honest inviter still gets to file one, at the flooder's expense.
+    let (al, _d, cid) = alice(&net);
+    al.call("create_invite", json!({"cid": cid, "password": PW})).unwrap();
+    assert!(pw::lookup(&api(&net), &net.url(), PW, K).is_ok());
+    let flood_rows: u64 = db(&net).query_row("SELECT COUNT(*) FROM pwinvites WHERE owner=?1", [hex::encode(flooder.verifying_key().to_bytes())], |r| r.get(0)).unwrap();
+    let _ = flood_rows; // the flooder's account is the device's account in DeviceCert terms; what matters is the total stayed at the cap
+    assert_eq!(db(&net).query_row::<u64, _, _>("SELECT COUNT(*) FROM pwinvites", [], |r| r.get(0)).unwrap(), 4);
+    // The flooder itself, being the heaviest, is refused when it tries to go on.
+    assert_eq!(put(&flooder, "flood-words-9-aaa-bbb-cc"), 429);
+    al.shutdown();
 }

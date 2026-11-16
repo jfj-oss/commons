@@ -927,3 +927,33 @@ button.dl { background: none; border: 0; padding: 0; cursor: pointer; font-famil
 /* The wave field is one opaque layer behind everything. */
 #wave-dither { position: fixed; left: 0; top: 0; z-index: -1; pointer-events: none; image-rendering: pixelated; display: none; }
 :root[data-theme="wave"] #wave-dither { display: block; }
+
+/* ---- read receipts: a small double check after the time of the newest message somebody has read up to. Its names open on
+   the same line, beside it (never below: the newest message is the last row, and there is nothing under it to open into). ---- */
+.rr { position: relative; display: inline-flex; align-items: center; vertical-align: -1px; margin: 0 0 0 5px; padding: 2px; border: 0; border-radius: var(--r-s); background: none; color: var(--ink-3); font: inherit; line-height: 1; cursor: default; -webkit-tap-highlight-color: transparent; }
+.rr svg { width: 15px; height: 10px; display: block; }
+.rr.open, .rr:focus-visible { color: var(--ink); }
+.rr-names { position: absolute; right: calc(100% + 4px); top: 50%; transform: translateY(-50%); display: none; align-items: center; gap: 0 10px; max-width: min(64vw, 440px); overflow: hidden; white-space: nowrap; padding: 3px 10px; border: var(--hair) solid var(--line); border-radius: var(--r-full); background: var(--card); color: var(--ink); box-shadow: var(--shadow); font: 500 12px/1.5 var(--sans); letter-spacing: 0; text-align: left; z-index: 6; pointer-events: none; }
+.rr-names span { flex: 0 1 auto; min-width: 0; max-width: 11em; overflow: hidden; text-overflow: ellipsis; }
+.rr-names .rr-more { flex: none; color: var(--ink-3); }
+.rr.open .rr-names, .rr:focus-visible .rr-names { display: flex; }
+/* (not where fingers are used, html.mg-touch: there a tap opens and closes them, and a hover would stick after the tap) */
+html:not(.mg-touch) .rr:hover { color: var(--ink); }
+html:not(.mg-touch) .rr:hover .rr-names { display: flex; }
+/* while the mark is pointed at or open, the row's hover buttons keep away: on a narrow row they would lie on top of it, and
+   a finger that meant the mark must never land on Delete. A finger also gets more of a target than the mark's own size. */
+.msg:has(.rr:hover) > .actions, .msg:has(.rr.open) > .actions, .msg:has(.rr:focus) > .actions { opacity: 0; pointer-events: none; }
+html.mg-touch .rr::before { content: ""; position: absolute; inset: -11px -9px; }
+/* a continued row hides its time until it is pointed at; the mark on it shows all the time */
+.msg.cont.has-rr > .when { opacity: 1; }
+.msg.cont.has-rr:not(:hover):not(.open) > .when { color: transparent; }
+@container main (max-width: 660px) {
+  /* stacked rows: a continued row has no time at all, so the mark alone takes the time's place at the right of its first line */
+  .msg.cont.has-rr > .when { display: block; grid-column: 2; grid-row: 1; align-self: start; padding-top: 6px; font-size: 0; }
+  .msg.cont.has-rr > .txt { grid-column: 1; }
+  .msg.cont.has-rr > .when .rr { margin-left: 0; }
+  /* the time is at the right edge here, so the names open to the left, and to the left of the time rather than over it */
+  .msg.has-rr > .when { position: relative; }
+  .msg.has-rr > .when .rr { position: static; }
+  .msg.has-rr > .when .rr-names { right: calc(100% + 6px); }
+}

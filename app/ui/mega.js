@@ -127,7 +127,7 @@
     const k = a.sq.offsetWidth / sr.width, settled = a.sq.closest('.mslot')?.classList.contains('settled'); a.mask.fill(0);
     const hit = r => { const x0 = Math.max(0, Math.floor((r.left - sr.left) * k / a.cw) - 1), x1 = Math.min(a.cols, Math.ceil((r.right - sr.left) * k / a.cw) + 1), y0 = Math.max(0, Math.floor((r.top - sr.top) * k / a.ch)), y1 = Math.min(a.rows, Math.ceil((r.bottom - sr.top) * k / a.ch)); for (let y = y0; y < y1; y++) a.mask.fill(1, y * a.cols + x0, y * a.cols + Math.max(x0, x1)); };
     const rg = document.createRange();
-    $$('.mtop>span:not(.mat),.mti,.mnu' + (settled ? ',.mpreview' : ''), a.sq).forEach(e => { rg.selectNodeContents(e); [...rg.getClientRects()].forEach(hit); });
+    $$('.mtop>span:not(.mat),.mti,.mnu,.mlb,.mct,.mvc' + (settled ? ',.mpreview' : ''), a.sq).forEach(e => { rg.selectNodeContents(e); [...rg.getClientRects()].forEach(hit); });
     $$('.mat' + (settled ? ',.mwho>span,.mvact button,.mfaces-row' : ''), a.sq).forEach(e => hit(e.getBoundingClientRect()));
     if (window.__megaWall) __megaWall.cardMask(a);   // the words are cut out; now the drawing on the card is an obstacle too
   }
@@ -166,7 +166,7 @@
   const ti = (t, cls = 'mti', tag = 'h2') => `<${tag} class="${cls}" aria-label="${esc(t)}">${letters(String(t))}</${tag}>`;
 
   // ---------------------------------------------------------------- state and data (everything comes from S.snap)
-  const M = { started: false, level: 'home', cid: null, list: null, rail: false, opts: false, adm: false, busy: false, dirty: false, opening: false, sig: '', barSig: '', pal: null, closers: [] };
+  const M = { started: false, level: 'home', cid: null, list: null, rail: false, opts: false, adm: false, busy: false, dirty: false, opening: false, flying: false, flyDirty: false, sig: '', barSig: '', pal: null, closers: [] };
   const mega = document.createElement('div'); mega.id = 'mega'; mega.hidden = true; mega.setAttribute('aria-label', 'mega');
   const fxl = document.createElement('div'); fxl.id = 'mega-fx'; fxl.setAttribute('aria-hidden', 'true');
   const rail = document.createElement('nav'); rail.id = 'mega-rail'; rail.setAttribute('aria-label', 'Rooms'); rail.hidden = true;
@@ -194,6 +194,8 @@
   const lookStored = (cid, id) => { const c = comm(cid), st = c && c.style; return (st && st.looks && st.looks[id]) || null; };
   const lookOf = (cid, id) => { const h = LHOLD.get(id); if (h && h.until > Date.now()) return h.look; return lookStored(cid, id) || {}; };
   const patOf = n => (Number.isInteger(n) && n >= 0 && n < FX.length ? n : null);
+  // the backdrop's own two colours (owner-chosen, optional): [main, highlight], or null = the backdrop uses the card's colours
+  const backOf = lk => (lk.back && isHex(lk.back.main) && isHex(lk.back.hi) ? [lk.back.main.toLowerCase(), lk.back.hi.toLowerCase()] : null);
   const dimOf = lk => (Number.isFinite(lk.dim) ? Math.max(0, Math.min(DIM_MAX, Math.round(lk.dim))) : 100);
   const mk = (o, sigParts) => { o.theme = o.theme || themeOf(o); o.sig = JSON.stringify([sigParts, o.theme]); return o; };
 
@@ -215,7 +217,7 @@
     const room = ch => {
       const voice = ch.kind === 'voice', i = c.channels.indexOf(ch), people = voice ? peopleIn(ch.gid) : [], pv = PREV.get(ch.gid) || {};
       const auto = voice ? 1 : [0, 3, 4, 5, 2][(off + i) % 5], lk = lookOf(c.id, ch.gid);
-      const it = { key: ch.gid, id: ch.gid, gid: ch.gid, cid: c.id, kind: voice ? 'voice' : 'text', name: ch.name, unread: ch.unread || 0, at: S.mention.get(ch.gid) || 0, locked: !ch.joined, status: ch.joined && ch.status && ch.status !== 'ok' ? ch.status : '', people, here: voice && inCallHere(ch.gid), fxAuto: auto, fx: patOf(lk.card) ?? auto, chatFx: patOf(lk.chat) ?? auto, dim: DIMS.has(ch.gid) ? DIMS.get(ch.gid) : dimOf(lk), pv };
+      const it = { key: ch.gid, id: ch.gid, gid: ch.gid, cid: c.id, kind: voice ? 'voice' : 'text', name: ch.name, unread: ch.unread || 0, at: S.mention.get(ch.gid) || 0, locked: !ch.joined, status: ch.joined && ch.status && ch.status !== 'ok' ? ch.status : '', people, here: voice && inCallHere(ch.gid), fxAuto: auto, fx: patOf(lk.card) ?? auto, chatFx: patOf(lk.chat) ?? auto, dim: DIMS.has(ch.gid) ? DIMS.get(ch.gid) : dimOf(lk), back: backOf(lk), pv };
       it.act = it.unread;
       return mk(it, [it.name, it.unread, it.at, it.locked, it.status, people.map(p => [p.name, !!p.speaking, !!p.muted, !!p.deafened, !!p.me]), it.here, pv.who, pv.text]);
     };
@@ -232,10 +234,10 @@
     if (p && p.sig === sig && Date.now() - p.t < ttl) return false;   // the snapshot has no "last activity", so look again every so often
     let n;
     try {
-      const m = await rpc('messages', { gid: ch.gid, limit: 8 });
-      const last = [...m.messages].reverse().find(x => !x.deleted && x.kind !== 'notice' && x.kind !== 'member');
-      n = { sig, t: Date.now(), ts: last ? last.ts || 0 : 0, who: last ? last.name : '', text: last ? plain(last.text || (last.file ? last.file.name : '')) : '' };
-    } catch { n = { sig, t: Date.now(), ts: 0, who: '', text: '' }; }
+      const h = await fetchMessages({ gid: ch.gid, limit: 8 }, p && p.h);   // only what changed since the last look (app.js)
+      const last = [...h.m.messages].reverse().find(x => !x.deleted && x.kind !== 'notice' && x.kind !== 'member');
+      n = { sig, t: Date.now(), ts: last ? last.ts || 0 : 0, who: last ? last.name : '', text: last ? plain(last.text || (last.file ? last.file.name : '')) : '', h };
+    } catch { n = { sig, t: Date.now(), ts: 0, who: '', text: '', h: p && p.h }; }
     PREV.set(ch.gid, n);
     return !p || p.who !== n.who || p.text !== n.text;
   }
@@ -298,7 +300,7 @@
       else if (x.pv && x.pv.text) mid = `<div class="mpreview"><b>${esc(x.pv.who)}</b> ${esc(x.pv.text)}</div>`;
     }
     return `<div class="msq" style="${cardVars(x)}"><div class="mtop"><span>${esc(sub)}</span>${x.at ? `<span class="mat" aria-label="${x.at} mention${x.at === 1 ? '' : 's'}">@${x.at}</span>` : ''}</div>
-      <div class="mmid">${mid}</div>${ti(x.name)}${num !== '' ? `<div class="mnu" aria-label="${num}">${letters(String(num))}</div>` : ''}</div>`;
+      <div class="mmid">${mid}</div>${window.__megaNotify ? __megaNotify.mark(x) : ''}${ti(x.name)}${num !== '' ? `<div class="mnu" aria-label="${num}">${letters(String(num))}</div>` : ''}</div>`;
   }
   const cardLabel = x => [x.name, x.kind === 'voice' ? 'voice room' : '', x.kind === 'voice' && x.people.length ? x.people.length + ' in the call' : '', x.unread && x.kind !== 'voice' ? x.unread + ' unread' : '', x.at ? x.at + ' mentions of you' : '', x.locked ? 'waiting for keys' : ''].filter(Boolean).join(', ');
 
@@ -396,9 +398,12 @@
   const sq = () => getComputedStyle(root).getPropertyValue('--m-sq');
   function fly(r, m) { const f = document.createElement('div'); f.className = 'mfly'; f.style.cssText = `left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;--m-mesh:${m}`; fxl.append(f); return f; }
   function killList() { if (window.__megaWall) __megaWall.leave(); if (M.list) { M.list.destroy(); M.list = null; } mega.innerHTML = ''; hideTip(); closeRail(); }
+  let snapT = 0;
   function applyLevel() {
     const chat = M.level === 'chat';
+    if (chat && document.getElementById('mega-paint')) closePaint();   // the colours panel belongs to the cards: opening a room closes it (it had no way out there)
     mega.hidden = chat; rail.hidden = !chat;
+    root.classList.add('mg-snap'); clearTimeout(snapT); snapT = setTimeout(() => root.classList.remove('mg-snap'), 120);   // see .mg-snap in mega.css
     root.classList.toggle('mg-chat', chat); root.classList.toggle('mg-cards', !chat);
     if (!chat) { hideOpts(); closeRail(); }
     if (window.__placeCallDock) window.__placeCallDock();
@@ -506,6 +511,7 @@
     if (!M.opts) openRoomVia(x.gid);
     drawRail(true); killList(); applyLevel(); showOpts();
     if (calm() || !from.length) { rail.classList.remove('arriving'); return; }
+    M.flying = true;
     $('#main').classList.add('mslide'); setTimeout(() => $('#main').classList.remove('mslide'), 700);
     const runs = from.map(o => {
       const dot = $(`.mitem[data-key="${CSS.escape(o.x.key)}"]`, rail); if (!dot) return Promise.resolve();
@@ -513,7 +519,8 @@
       const d = dot.getBoundingClientRect(), r = o.r, f = fly(r, fieldOf(o.x));
       return f.animate([{ left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px', borderRadius: sq(), backgroundColor: fieldOf(o.x) }, { left: d.left + 'px', top: d.top + 'px', width: d.width + 'px', height: d.height + 'px', borderRadius: d.height > d.width ? '8px' : '50%', backgroundColor: dotOf(o.x) }], { duration: 460, delay: o.x.key === x.key ? 50 : 0, easing: 'cubic-bezier(.76,0,.18,1)', fill: 'forwards' }).finished.then(() => { dot.classList.remove('hold'); dot.style.animation = 'none'; f.remove(); });
     });
-    await Promise.all(runs); rail.classList.remove('arriving');
+    try { await Promise.all(runs); } finally { M.flying = false; if (M.flyDirty) { M.flyDirty = false; landed(); } }   // the backdrop's first picture eases in as the cards land
+    rail.classList.remove('arriving');
   });
   // and the other way: the dots open back out into the cards
   const openFromDots = guard(async () => {
@@ -538,7 +545,7 @@
     const vo = x.kind === 'voice', active = x.kind === 'options' ? M.opts && !M.adm : x.kind === 'admin' ? M.adm : (!M.opts && x.gid === S.gid);
     const say = [x.name, vo ? 'voice room' : '', vo && x.people.length ? x.people.length + ' in the call' : '', x.unread && !active ? x.unread + ' unread' : '', x.at ? x.at + ' mentions of you' : '', x.locked ? 'waiting for keys' : ''].filter(Boolean).join(', ');
     const un = x.unread && !active && !vo;
-    return `<button class="mitem ${vo ? 'voice' : ''} ${active ? 'active' : ''} ${un ? 'un' : ''} ${un && x.at ? 'at' : ''} ${vo && x.people.length ? 'live' : ''} ${vo && x.here ? 'here' : ''} ${x.kind === 'options' ? 'opt' : x.kind === 'admin' ? 'adm' : ''} ${x.locked ? 'pending' : ''}" type="button" data-key="${esc(x.key)}" aria-label="${esc(say)}"${active ? ' aria-current="true"' : ''} style="--c:${dotOf(x)};--mh:${markOf(x)};--m-cink:${bestInk(fieldOf(x))};--n:${i}">${x.at && !active ? `<span class="mbadge">${x.at}</span>` : ''}${vo ? `<span class="mvc">${x.people.length ? esc(x.people.map(p => p.me ? 'you' : p.name).join(', ')) : 'empty'}</span>` : ''}${ti(x.name, 'mlb', 'span')}${(vo ? x.people.length : un ? x.unread : 0) ? `<span class="mct">${vo ? x.people.length : x.unread}</span>` : ''}</button>`;
+    return `<button class="mitem ${vo ? 'voice' : ''} ${active ? 'active' : ''} ${un ? 'un' : ''} ${un && x.at ? 'at' : ''} ${vo && x.people.length ? 'live' : ''} ${vo && x.here ? 'here' : ''} ${x.kind === 'options' ? 'opt' : x.kind === 'admin' ? 'adm' : ''} ${x.locked ? 'pending' : ''}" type="button" data-key="${esc(x.key)}" aria-label="${esc(say)}"${active ? ' aria-current="true"' : ''} style="--c:${dotOf(x)};--mh:${markOf(x)};--m-cink:${bestInk(fieldOf(x))};--n:${i}">${x.at && !active ? `<span class="mbadge">${x.at}</span>` : ''}${vo ? `<span class="mvc">${x.people.length ? esc(x.people.map(p => p.me ? 'you' : p.name).join(', ')) : 'empty'}</span>` : ''}${ti(x.name, 'mlb', 'span')}${window.__megaNotify ? __megaNotify.mark(x) : ''}${(vo ? x.people.length : un ? x.unread : 0) ? `<span class="mct">${vo ? x.people.length : x.unread}</span>` : ''}</button>`;
   }
   const railSig = c => JSON.stringify([c.id, S.gid, M.opts, M.adm, roomItems(c).map(x => x.sig), comms().map(o => o.id !== c.id && unreadIn(o) > 0)]);
   function drawRail(arriving) {
@@ -551,10 +558,18 @@
   }
   function openRail() {
     if (M.rail || M.level !== 'chat') return; M.rail = true; hideTip(); if (window.__megaNew) __megaNew.railUsed();
-    $$('.mitem', rail).forEach((b, i) => { const x = M.railItems[i]; if (x) b.style.cssText += ';' + cardVars(x, true); });
+    $$('.mitem', rail).forEach((b, i) => { const x = M.railItems[i]; if (x) b.style.cssText += ';' + cardVars(x, false); });
     rail.classList.add('open'); const a = $('.mitem.active', rail); if (a) setTimeout(() => a.scrollIntoView({ block: 'center', behavior: calm() ? 'auto' : 'smooth' }), 240);
+    // the open rail's cards move like the big ones: a live ascii field on each, started once they have their open size
+    clearTimeout(M.railAsciiT);
+    M.railAsciiT = setTimeout(() => {
+      if (!M.rail) return;
+      railAsciiOff();
+      $$('.mitem', rail).forEach((b, i) => { const x = M.railItems[i]; if (x && x.kind !== 'options' && x.kind !== 'admin') { const o = asciiOn(b, x); if (o) M.railAscii.push(o); } });
+    }, 300);
   }
-  function closeRail() { if (!M.rail) return; M.rail = false; clearTimeout(M.railT); rail.classList.remove('open'); $$('.mitem', rail).forEach(i => i.style.transform = ''); const it = $('#m-items'); if (it) it.scrollTop = 0; }
+  function railAsciiOff() { (M.railAscii || []).forEach(asciiOff); M.railAscii = []; }
+  function closeRail() { if (!M.rail) return; M.rail = false; clearTimeout(M.railT); clearTimeout(M.railAsciiT); railAsciiOff(); rail.classList.remove('open'); $$('.mitem', rail).forEach(i => i.style.transform = ''); const it = $('#m-items'); if (it) it.scrollTop = 0; }
   let railRaf = 0;
   // Scrolling on the sidebar opens it and walks through the text rooms. The room only opens once the scrolling stops, so passing over
   // a room does not mark it read. Past the first or last text room the list itself scrolls, to reach voice rooms and options.
@@ -624,13 +639,23 @@
 
   // ---------------------------------------------------------------- the options room (client-only; same controls and ids as Settings)
   function hideOpts() { optsEl.hidden = true; optsEl.innerHTML = ''; }
+  /** The relay's public "/join" page (downloads for every system and how to join), from this device's relay address. Null on a local test relay. */
+  function joinLink() {
+    const r = (S.snap && S.snap.relay || '').trim();
+    if (!/^https:\/\//.test(r)) return null;
+    try { const u = new URL(r); return u.origin + '/join'; } catch { return null; }
+  }
   function optsHTML() {
     const wave = window.__waveDither ? window.__waveDither.palettes : [];
     const th = pref.get('theme') || '';
+    const join = joinLink();
     return `<div class="mopts-in mrise">${ti('options', '', 'h1')}<p>Only on this device. Nobody else can see these.</p>
-      <section><h3>alerts and sound</h3><label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p>Plays when mega is in the background or the message is in another room.</p></section>
+      ${join ? `<section><h3>get mega</h3><p>Send this to a friend: it has the downloads for Windows, Mac, Linux and the browser, and how to join. They also need an invite from a room's invite button.</p><div class="mjoin"><code id="m-join">${esc(join)}</code><button type="button" class="mchip" id="m-join-copy">copy link</button><a class="mchip" href="${esc(join)}" target="_blank" rel="noopener">open</a></div></section>` : ''}
+      <section><h3>alerts and sound</h3><label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p>Plays when mega is in the background or the message is in another room. A room you mute is silent here too.</p></section>
+      ${window.__megaNotify ? __megaNotify.optsHTML() : ''}
       <section><h3>on the cards</h3><label class="check"><input type="checkbox" id="pres" ${window.__megaPres && !__megaPres.on ? '' : 'checked'}><span>Show where I am on the cards — friends who share a community see a small dot in your colour on the card you are looking at; the relay sees only that a small packet was sent</span></label></section>
       <section><h3>typing hints</h3><label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints — the relay can see that a message-sized packet was sent at that moment</span></label></section>
+      <section><h3>read receipts</h3><label class="check"><input type="checkbox" id="rrs" ${S.snap.read_receipts !== false ? 'checked' : ''}><span>Send read receipts — the people in a room see how far you have read (a small ✓✓ beside a message's time), and you see how far they have. Turn it off and you send none and see none; the relay can see that a message-sized packet was sent at that moment</span></label></section>
       ${mobileApp() ? '' : `<section><h3>large files</h3><label for="dl-dir">Large-file downloads folder</label><input type="text" id="dl-dir" value="${esc(S.snap.download_dir || '')}" spellcheck="false"><p>Written here as they arrive, one verified piece at a time. Leave empty for your usual Downloads folder. Each download still asks where to save it.</p></section>`}
     </div>`;
   }
@@ -640,17 +665,21 @@
     optsEl.innerHTML = M.adm && window.__megaAdmin ? __megaAdmin.html(M.cid) : optsHTML(); optsEl.hidden = false; optsEl.scrollTop = 0;
   }
   optsEl.addEventListener('click', e => {
+    if (e.target.closest('#m-join-copy')) { const j = joinLink(); if (j) copy(j, 'Link copied: send it to your friend'); return; }
     const b = e.target.closest('.seg button'); if (!b) return;
     const g = b.parentElement, id = g.dataset.for, v = b.dataset.v;
     $$('button', g).forEach(x => x.setAttribute('aria-checked', x === b));
     $('#' + id, optsEl).value = v;
     if (id === 'snd') pref.set('sound', v === 'all' ? '' : v);
+    else if (id === 'ntf' && window.__megaNotify) __megaNotify.set({ mode: v });
     else if (id === 'th') { pref.set('theme', v); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh(); const r = $('#wave-row', optsEl); if (r) r.hidden = v !== 'wave'; }
   });
   optsEl.addEventListener('change', async e => {
     try {
-      if (e.target.id === 'pres') { if (window.__megaPres) __megaPres.set(e.target.checked); }
+      if (e.target.id === 'ntf-text' && window.__megaNotify) __megaNotify.set({ show_text: e.target.checked });
+      else if (e.target.id === 'pres') { if (window.__megaPres) __megaPres.set(e.target.checked); }
       else if (e.target.id === 'ty') { await rpc('set_typing_enabled', { on: e.target.checked }); tick(); }
+      else if (e.target.id === 'rrs') { await rpc('set_read_receipts', { on: e.target.checked }); tick(); }
       else if (e.target.id === 'dl-dir') { await rpc('set_download_dir', { dir: e.target.value }); tick(); }
       else if (e.target.id === 'wave-pal') { pref.set('wavePalette', e.target.value); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh(); }
     } catch (er) { toast(er.message); }
@@ -732,7 +761,7 @@
         const it = items.find(x => x.gid === S.gid && x.kind === 'text');
         if (it && BD && BD.gid === it.gid && mainEl) {
           const hi = lift(hiOf(it), 4.8); root.style.setProperty('--mg-c', dotOf(it)); root.style.setProperty('--mg-hi', hi); root.style.setProperty('--mg-hi-ink', bestInk(hi));
-          BD.f = fieldOf(it); BD.h = hiOf(it); bdLook(it); bdColours(BD); dirty(); if (window.__megaWall) __megaWall.recolour();
+          BD.f = (it.back || it.theme)[0]; BD.h = (it.back || it.theme)[1]; bdLook(it); bdColours(BD); dirty(); if (window.__megaWall) __megaWall.recolour();
         }
       }
     }, 16);
@@ -780,21 +809,27 @@
     closePops();
     const e = document.createElement('div'); e.id = 'mega-paint'; e.setAttribute('role', 'dialog'); e.setAttribute('aria-label', 'Colours');
     e.innerHTML = `<div class="mp-head"><span id="mp-name"></span><button class="mchip" id="mp-done" type="button">done</button></div><p class="mtag" id="mp-note"></p><div class="mp-body">
+      <div class="mp-mode" id="mp-mode" role="group" aria-label="Colours for" hidden><button type="button" class="mp-m" data-mode="card" aria-pressed="true">card</button><button type="button" class="mp-m" data-mode="back" aria-pressed="false">chat backdrop</button></div>
       <div class="mp-wells"><button type="button" class="mp-well" data-w="0"><span></span>colour</button><button type="button" class="mp-well" data-w="1"><span></span>highlight</button></div>
       <div id="mp-sv" tabindex="0" role="slider" aria-label="Saturation and brightness"><span id="mp-svt"></span></div>
       <input id="mp-hue" type="range" min="0" max="359" step="1" aria-label="Hue">
       <label class="mp-hex">hex <input id="mp-hex" maxlength="7" spellcheck="false" autocomplete="off" aria-label="Hex colour"></label>
       <div class="mp-presets">${PRESETS.map((p, i) => `<button type="button" data-p="${i}" aria-label="Preset ${i + 1}" style="background:linear-gradient(135deg,${p[0]} 50%,${p[1]} 50%)"></button>`).join('')}</div>
       <div id="mp-looks"></div>
-      <p class="mtag" id="mp-warn" role="status"></p><div class="mp-end"><button class="mchip" id="mp-reset" type="button">reset</button></div></div>`;
+      <p class="mtag" id="mp-warn" role="status"></p><div class="mp-end"><button class="mchip" id="mp-same" type="button" hidden>same as card</button><button class="mchip" id="mp-reset" type="button">reset</button></div></div>`;
     document.body.append(e); PT.open = true;
-    let w = 0, hsv = [0, 0, 0], target = start, timer = 0, ltimer = 0, tt = 0;
+    let w = 0, hsv = [0, 0, 0], target = start, timer = 0, ltimer = 0, tt = 0, mode = 'card';
     const quietHold = new Map(), drawHold = new Map();
     const looksBox = $('#mp-looks', e), idOf = t => (t.kind === 'community' ? t.cid : t.gid);
     const sv = $('#mp-sv', e), hue = $('#mp-hue', e), hx = $('#mp-hex', e);
-    const cur = () => (SHOWN.get(target.id) || themeOf(target)).slice();
+    const backMode = () => mode === 'back' && target.kind === 'text';
+    const cur = () => { if (backMode()) { const b = backOf(lookOf(target.cid, idOf(target))); if (b) return b.slice(); } return (SHOWN.get(target.id) || themeOf(target)).slice(); };
     const show = () => {
       if (!canPaint(target)) return;
+      const bm = backMode(), has = !!backOf(lookOf(target.cid, idOf(target)));
+      $('#mp-mode', e).hidden = target.kind !== 'text'; $$('.mp-m', e).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === mode)));
+      const same = $('#mp-same', e); if (same) same.hidden = !(bm && has);
+      $('#mp-note', e).textContent = bm ? (has ? 'These colours are only for the backdrop behind this chat.' : 'The backdrop uses the card colours until you pick its own.') : 'Everyone in the community sees these colours. Only you, the owner, can change them.';
       const t = cur();
       sv.style.setProperty('--hc', fromHsv(hsv[0], 1, 1)); const th = $('#mp-svt', e); th.style.left = hsv[1] * 100 + '%'; th.style.top = (1 - hsv[2]) * 100 + '%'; th.style.background = t[w]; hue.value = Math.round(hsv[0]);
       if (document.activeElement !== hx) hx.value = t[w];
@@ -821,16 +856,18 @@
       if (!canPaint(target)) return;
       const id = idOf(target), nl = { ...lookOf(target.cid, id), ...patch }, clean = {};
       for (const k of ['card', 'chat', 'dim']) if (Number.isFinite(nl[k])) clean[k] = nl[k];
+      if (nl.back === null) clean.back = null; else if (backOf(nl)) clean.back = { main: backOf(nl)[0], hi: backOf(nl)[1] };
       LHOLD.set(id, { look: clean, until: Date.now() + 6000 }); DIMS.set(id, dimOf(clean));
       repaintColours(); if (commit) queueLook(target, clean);
     };
-    const apply = d => { setShown(target.id, d, false); HOLD.set(target.id, Date.now() + 6000); repaintColours(); show(); tint(); };
-    const commit = () => { clearTimeout(timer); queueSave(target, cur()); };
+    const apply = d => { if (backMode()) { editLook({ back: { main: d[0], hi: d[1] } }, false); show(); tint(); return; } setShown(target.id, d, false); HOLD.set(target.id, Date.now() + 6000); repaintColours(); show(); tint(); };
+    const commit = () => { clearTimeout(timer); if (backMode()) editLook({}, true); else queueSave(target, cur()); };
     const later = () => { clearTimeout(timer); timer = setTimeout(commit, 450); };
     PT.set = x => {
+      if (!target || target.id !== x.id || x.kind !== 'text') mode = 'card';
       target = x; const ok = canPaint(x); e.classList.toggle('off', !ok);
       $('#mp-name').textContent = x.kind === 'options' ? 'options' : x.name;
-      $('#mp-note').textContent = x.kind === 'options' ? 'The options room is private to each person, so it stays grey.' : 'Everyone in the community sees these colours. Only you, the owner, can change them.';
+      if (x.kind === 'options') $('#mp-note').textContent = 'The options room is private to each person, so it stays grey.';
       if (ok) { hsv = toHsv(cur()[w]); show(); }
       fillLooks();
     };
@@ -862,9 +899,11 @@
     looksBox.addEventListener('change', ev => { if (ev.target.id !== 'mp-dim') return; const v = +ev.target.value; clearTimeout(ltimer); ltimer = setTimeout(() => editLook({ dim: v }, true), 350); });
     e.onclick = ev => {
       const tl = ev.target.closest('.mp-t'); if (tl) { editLook({ [tl.dataset.k]: tl.dataset.n === '' ? null : +tl.dataset.n }, true); $$('.mp-t[data-k="' + tl.dataset.k + '"]', e).forEach(b => b.setAttribute('aria-pressed', String(b === tl))); return; }
+      const mb = ev.target.closest('.mp-m'); if (mb) { mode = mb.dataset.mode; hsv = toHsv(cur()[w]); show(); tint(); return; }
+      if (ev.target.id === 'mp-same') { clearTimeout(timer); editLook({ back: null }, true); hsv = toHsv(cur()[w]); show(); tint(); return; }
       const b = ev.target.closest('.mp-well'); if (b) { w = +b.dataset.w; hsv = toHsv(cur()[w]); show(); return; }
       const p = ev.target.closest('[data-p]'); if (p) { const d = PRESETS[+p.dataset.p].slice(); hsv = toHsv(d[w]); apply(d); commit(); return; }
-      if (ev.target.id === 'mp-reset') { const d = DEF[H(target.gid || target.cid || target.id) % DEF.length].slice(); hsv = toHsv(d[w]); apply(d); clearTimeout(timer); queueSave(target, null); { const id = idOf(target); LHOLD.set(id, { look: {}, until: Date.now() + 6000 }); DIMS.set(id, 100); repaintColours(); queueLook(target, {}); fillLooks(); } return; }
+      if (ev.target.id === 'mp-reset') { const d = DEF[H(target.gid || target.cid || target.id) % DEF.length].slice(); hsv = toHsv(d[w]); apply(d); clearTimeout(timer); queueSave(target, null); { const id = idOf(target); LHOLD.set(id, { look: {}, until: Date.now() + 6000 }); DIMS.set(id, 100); repaintColours(); queueLook(target, { back: null }); mode = 'card'; show(); fillLooks(); } return; }
       if (ev.target.id === 'mp-done') closePaint();
     };
     PT.set(start);
@@ -951,7 +990,7 @@
   // ---------------------------------------------------------------- keys: Esc steps back one level
   function modalOpen() { return !!document.querySelector('#modal-root > .scrim'); }
   function back(e) {
-    if (modalOpen() || document.querySelector('.lightbox, .emojis, #call-pop')) return false;   // those answer Esc themselves
+    if (modalOpen() || document.querySelector('.lightbox, #mega-view, .emojis, #call-pop, .nm-menu')) return false;   // those answer Esc themselves
     const t = e.target, typing = t && /INPUT|TEXTAREA|SELECT/.test(t.tagName || '');
     if (typing && t.id === 'input' && (S.reply || S.edit || !$('#mention-pop').hidden)) return false;
     if (typing && t.id === 'search' && !$('#search-pop').hidden) return false;
@@ -1016,9 +1055,20 @@
   // The owner's backdrop strength scales how bright the glyphs are (100 is today's look exactly), how dense they get above that, and how much
   // a ripple or a busy room stirs it. At 0 nothing is drawn at all.
   const lvOf = a => (a.dim == null ? 100 : a.dim) / 100;
+  // The backdrop reads as its palette: a faint wash of the main colour behind the whole chat, the ASCII in the highlight colour. The wash is only as
+  // strong as the message text can bear (contrast of the text over it stays at 7:1 or better), and the strength slider scales both (0 = nothing).
+  const BD_TEXT = '#e9e7ef', BD_BASE = '#050407';
+  function bdWash(main, lv) {
+    if (!(lv > 0)) return BD_BASE;
+    let w = Math.min(.4, .24 * lv), c = mix(BD_BASE, main, w), i = 0;
+    while (w > .01 && contrast(BD_TEXT, c) < 7 && i++ < 24) { w *= .88; c = mix(BD_BASE, main, w); }
+    return c;
+  }
+  const liftOver = (c, bg, r) => { let i = 0; while (contrast(c, bg) < r && i++ < 16) c = mix(c, '#ffffff', .12); return c; };
   function bdColours(a) {
-    const v = '#050407', b = a.f, h = a.h, lv = lvOf(a);
-    a.at = atlasOf(mix(v, b, Math.min(1, .3 * lv)), mix(v, h, Math.min(1, .44 * lv)), a.sw, a.sh, a.fs); a.atB = atlasOf(mix(v, b, Math.min(1, .55 * lv)), mix(v, lift(h, 3.4), Math.min(1, lv)), a.sw, a.sh, a.fs);   // the concept's strength at 100 %
+    const lv = lvOf(a), k = Math.min(1, lv), wash = bdWash(a.f, lv), hi = liftOver(a.h, wash, 3.2);
+    a.wash = wash; a.c.style.backgroundColor = wash;
+    a.at = atlasOf(mix(wash, hi, .38 * k), mix(wash, hi, .75 * k), a.sw, a.sh, a.fs); a.atB = atlasOf(mix(wash, hi, .62 * k), hi, a.sw, a.sh, a.fs);
   }
   /** Take the owner's chat pattern and strength for this room (live: a change from the owner fades in). */
   function bdLook(it) {
@@ -1031,7 +1081,8 @@
   function bdSize() {
     const a = BD; if (!a) return; const box = a.c.parentElement, w0 = box.clientWidth, h0 = box.clientHeight; if (!w0 || !h0) return;
     const dpr = Math.min(devicePixelRatio || 1, 2), small = w0 < 560; a.cw = small ? 8 : 10; a.chh = small ? 13 : 17; a.fs = Math.round((small ? 11 : 14) * dpr); a.sw = Math.round(a.cw * dpr); a.sh = Math.round(a.chh * dpr);
-    a.cols = Math.ceil(w0 / a.cw); a.rows = Math.ceil(h0 / a.chh); a.c.width = a.cols * a.sw; a.c.height = a.rows * a.sh;
+    a.cols = Math.ceil(w0 / a.cw); a.rows = Math.ceil(h0 / a.chh); const sk = a.cols + 'x' + a.rows + 'x' + a.sw; if (sk === a.sizeKey) return; a.sizeKey = sk; if (!a.fullMs) a.fullMs = a.cols * a.rows / 1000;   // a first guess at the draw time (about 1 ms per 1000 cells), until one has been timed
+    a.c.width = a.cols * a.sw; a.c.height = a.rows * a.sh;
     a.mask = new Uint8Array(a.cols * a.rows); a.col = colFor(a.cols, H(a.gid)); bdColours(a); dirty();
   }
   // every rectangle the words occupy right now (the backdrop and the shared wall both paint around them)
@@ -1065,13 +1116,15 @@
     eachRect(hit);
     if (window.__megaWall) { __megaWall.fillMask(a.mask, a.cols, a.rows, b); __megaWall.remask(); }   // the drawing is an obstacle too, and the drawing avoids the words
   }
-  function bdDraw() {
+  /** Draws rows y0..y1 of the backdrop (all of them by default). */
+  function bdDraw(y0 = 0, y1 = Infinity) {
     const a = BD; if (!a || !a.mask || !a.at) return;
-    const { g, cols, rows, mask, sw, sh } = a; g.clearRect(0, 0, a.c.width, a.c.height);
+    const { g, cols, mask, sw, sh } = a, rows = Math.min(a.rows, y1); y0 = Math.max(0, y0); g.clearRect(0, y0 * sh, a.c.width, (rows - y0) * sh);
     if (a.dim === 0) return;
-    ST.bdDraws++;
+    if (!y0) ST.bdDraws++;
+    a.drawn = true;
     const gate = (.46 - .26 * a.heat) / Math.max(1, lvOf(a)), field = FX[a.fx], rips = a.rip, nr = rips.length;
-    for (let y = 0, i = 0; y < rows; y++) for (let x = 0; x < cols; x++, i++) {
+    for (let y = y0, i = y0 * cols; y < rows; y++) for (let x = 0; x < cols; x++, i++) {
       if (mask[i]) continue;
       let v = field(x, y, a.t, a), lit = 0;
       for (let k = 0; k < nr; k++) { const q = rips[k], d = Math.hypot(x - q.x, (y - q.y) * 1.7) - q.r; if (d * d < q.band * 5) { const e = Math.exp(-d * d / q.band) * q.s; v += e; if (e > lit) lit = e; } }
@@ -1080,22 +1133,39 @@
     }
   }
   function bdLoop(now) {
-    const a = BD; if (!a) return; a.raf = requestAnimationFrame(bdLoop);
-    if (document.hidden || still() || !a.mask || a.dim === 0) return;
+    const a = BD; if (!a) return;
+    // Hidden, or held still (reduced motion, or the battery saver, which also covers "another window has focus"): no more
+    // frames until bdWake. A picture half way through its bands is finished first.
+    if (!a.band && (document.hidden || still())) { a.raf = 0; return; }
+    a.raf = requestAnimationFrame(bdLoop);
+    if (!a.mask || a.dim === 0 || M.flying) return;   // the backdrop holds still while the cards fly: its draw is the biggest thing on a 4K frame
+    if (scrollAt && touchy()) return;   // a finger is scrolling: the scroll listener below redraws it around the moving words, nothing else does
+    if (a.band) { bdBand(a); return; }   // a picture being drawn a few rows per frame
     if (now - a.last < (a.rip.length ? 40 : 100)) return;   // 25 fps while a ripple runs, a steady 10 otherwise: a quiet room still drifts
     const dt = Math.min(.25, (now - a.last) / 1000); a.last = now;
     a.heat = Math.max(HEAT_FLOOR, a.heat * Math.pow(.5, dt / 18)); a.t += dt * (.1 + a.heat * 1.5);
     if ((a.nextRip -= dt) <= 0) { a.nextRip = 14 + Math.random() * 14; idleRipple(a); }   // now and then a gentle ring from somewhere in the room
     a.rip.forEach(q => { q.r += q.v * dt; q.s *= Math.pow(q.fade, dt); }); a.rip = a.rip.filter(q => q.s > .04 && q.r < a.cols * 1.3);
-    bdDraw();
+    a.band = { y: 0, n: Math.max(1, Math.min(12, Math.ceil((a.fullMs || 0) / BAND_MS))) }; bdBand(a);
+  }
+  // A big canvas (4K) takes ~50 ms to draw in one go, which is three dropped frames every tenth of a second. It is drawn in bands of rows
+  // instead, a band per frame, each about BAND_MS: the same picture a few frames later, and no frame holds the page for long.
+  const BAND_MS = 10;
+  function bdBand(a) {
+    const rows = Math.ceil(a.rows / a.band.n), y0 = a.band.y, t0 = performance.now();
+    bdDraw(y0, y0 + rows); a.band.y = y0 + rows;
+    a.bandMs = (a.bandMs || 0) + performance.now() - t0;
+    if (a.band.y >= a.rows) { a.fullMs = a.fullMs ? a.fullMs * .5 + a.bandMs * .5 : a.bandMs; a.bandMs = 0; a.band = null; }
   }
   function bdStart(item) {
     bdStop();
     const c = document.createElement('canvas'); c.id = 'mega-bd'; c.setAttribute('aria-hidden', 'true'); mainEl.prepend(c);
-    const a = BD = { c, g: c.getContext('2d'), gid: item.gid, fx: item.chatFx ?? item.fx, fxAuto: item.fxAuto, dim: item.dim ?? 100, f: fieldOf(item), h: hiOf(item), heat: Math.max(HEAT_FLOOR, HEAT.get(item.gid) ?? 0), t: H(item.gid) % 90, rip: [], last: performance.now(), raf: 0, nextRip: 5 + Math.random() * 6 };
+    const a = BD = { c, g: c.getContext('2d'), gid: item.gid, fx: item.chatFx ?? item.fx, fxAuto: item.fxAuto, dim: item.dim ?? 100, f: (item.back || item.theme)[0], h: (item.back || item.theme)[1], heat: Math.max(HEAT_FLOOR, HEAT.get(item.gid) ?? 0), t: H(item.gid) % 90, rip: [], last: performance.now(), raf: 0, nextRip: 5 + Math.random() * 6 };
     a.ro = new ResizeObserver(() => { clearTimeout(a.rz); a.rz = setTimeout(() => { if (BD === a) { bdSize(); focusFrame(); } }, 120); }); a.ro.observe(mainEl);
     bdSize(); if (!still()) a.raf = requestAnimationFrame(bdLoop);
   }
+  const bdWake = () => { const a = BD; if (a && !a.raf && !document.hidden && !still()) a.raf = requestAnimationFrame(bdLoop); };
+  document.addEventListener('visibilitychange', bdWake); window.addEventListener('mega-fx', bdWake);
   function bdStop() {
     const a = BD; if (!a) return; BD = null; HEAT.set(a.gid, a.heat);
     cancelAnimationFrame(a.raf); clearTimeout(a.rz); a.ro.disconnect(); a.c.remove();
@@ -1153,18 +1223,37 @@
     for (const [el, d] of ops) { el.style.transform = d ? `scale(${(1 - .2 * d).toFixed(3)})` : ''; el.style.opacity = d ? (1 - .55 * d).toFixed(3) : ''; if (d) touched.add(el); else touched.delete(el); }
     touched.forEach(e => { if (!seen.has(e)) { e.style.transform = ''; e.style.opacity = ''; touched.delete(e); } });   // scrolled far away: back to normal
   }
+  // The cards have landed: look at the page once (the words' rectangles), then the backdrop paints itself in bands.
+  function landed() {
+    if (!roomOn()) return;
+    if (!BD || BD.dim === 0 || still()) { dirty(false); return; }
+    if (!BD.drawn) fade(BD.c);   // its first picture eases in
+    focusFrame(); bdMask(); BD.last = 0;
+  }
   let flushRaf = 0, flushT = 0;
+  const touchy = () => root.classList.contains('mg-touch');
+  let scrollAt = 0, scrollT = 0, bdAt = 0, bdRaf = 0;
+  const backdropNow = () => { if (BD) { if (BD.dim === 0) { if (window.__megaWall) __megaWall.remask(); } else { bdMask(); bdDraw(); } } };
   function dirty(trail) {
-    if (!flushRaf) flushRaf = requestAnimationFrame(() => { flushRaf = 0; if (!roomOn()) return; focusFrame(); if (BD) { if (BD.dim === 0) { if (window.__megaWall) __megaWall.remask(); } else { bdMask(); bdDraw(); } } });   // drawn in the same frame as the move, so the space around the words keeps up with them
+    if (!flushRaf) flushRaf = requestAnimationFrame(() => { flushRaf = 0; if (!roomOn()) return; if (M.flying) { M.flyDirty = true; return; }   // mid-flight: one look at the page when it lands
+      if (!(touchy() && scrollAt)) focusFrame();   // a finger is scrolling: the rows wait (below)
+      backdropNow(); });   // drawn in the same frame as the move, so the space around the words keeps up with them
     if (trail !== false) { clearTimeout(flushT); flushT = setTimeout(() => dirty(false), 300); }   // the rows ease into their new size, so look again once they have
   }
   document.addEventListener('selectionchange', () => { if (roomOn() && !atEnd($('#stream'))) dirty(false); });
   document.addEventListener('input', e => { if (e.target && e.target.id === 'input') dirty(); }, true);
   addEventListener('resize', () => dirty());
+  // On a phone (html.mg-touch, mega-touch.js) a finger scroll must not restyle the rows or redraw the backdrop on every frame: WebKit then
+  // re-rasterises the whole screen each frame and the scroll stutters (iPhone WebKit, 2000 messages: 60 ms a frame; 19 ms with neither).
+  // While the scroll runs the reading focus waits, and the backdrop follows the words at about 12 fps; the moment it pauses, one full look,
+  // and the rows ease into the focus band as they always did. A computer's wheel keeps every frame.
   $('#stream').addEventListener('scroll', () => {
-    dirty();
     // something new arrived while reading back: the existing "back to latest" button must be there (app.js hides it under 260px)
     if (S.below > 0 && !S.pinned) $('#jump').hidden = false;
+    if (!touchy()) { dirty(); return; }
+    const now = performance.now(); scrollAt = now;
+    if (now - bdAt >= 80 && !bdRaf) { bdAt = now; bdRaf = requestAnimationFrame(() => { bdRaf = 0; if (roomOn() && !M.flying) backdropNow(); }); }
+    clearTimeout(scrollT); scrollT = setTimeout(() => { scrollAt = 0; dirty(false); }, 90);
   }, { passive: true });
 
   // ---- ascii arrival: a new message resolves out of scrambled glyphs
@@ -1382,7 +1471,9 @@
   M.drawChip = drawChip; M.fx = FX; M.fxNames = FXNAMES;
   M.bdInfo = () => (BD ? { gid: BD.gid, fx: BD.fx, fxAuto: BD.fxAuto, dim: BD.dim, heat: BD.heat, at: H(BD.at.toDataURL()), draws: ST.bdDraws } : null);
   window.__megaTheme = { colours(gid) { const c = comm(M.cid), x = c && roomItems(c).find(i => i.gid === gid && i.kind === 'text'); return x ? [lift(fieldOf(x), 5), lift(hiOf(x), 6)] : null; } };
-  M.api = { faceColor, comms, comm, roomItems, dotOf, hiOf, fieldOf, lift, mix, contrast, bestInk, cardVars, ti, letters, toChat, openRail, themeOf, dirty, DEF };
+  M.api = { faceColor, comms, comm, roomItems, dotOf, hiOf, fieldOf, lift, mix, contrast, bestInk, cardVars, ti, letters, toChat, openRail, themeOf, dirty, DEF,
+    // the levels and the floats, for the touch gestures (mega-touch.js): the same paths a click or Esc takes
+    showHome, showServer, openFromDots, enterCommunity, enterRoom, enterCurrent, modalOpen, popAt, closePops, burst, paintOpen: () => PT.open };
   M.admExit = () => { M.adm = false; showOpts(); drawRail(); };   // mega-admin.js: no longer an admin, so back to the plain options room
   M.prev = PREV; M.cp = CP; M.shown = SHOWN; M.canPaint = canPaint;
   M.callTheme = gid => { const c = comms().find(x => x.channels.some(ch => ch.gid === gid)); return c ? targetOf(c.id, gid) : null; };

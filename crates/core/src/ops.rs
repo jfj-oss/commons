@@ -498,10 +498,10 @@ impl Client {
     /// backdrop strength. `None` for `look` (or one with no part set) puts everything back to automatic. Nothing is published when nothing changes.
     pub fn set_look(&mut self, cid: &str, room: Option<&str>, look: Option<Look>) -> Result<()> {
         if self.my_role(cid) != Role::Owner { bail!("only the owner can change the look"); }
-        let look = look.map(|mut l| { l.oracle_quiet = l.oracle_quiet.filter(|q| *q); l.oracle_draw = l.oracle_draw.filter(|q| *q); l }).filter(|l| !l.is_empty());
-        if look.as_ref().is_some_and(|l| !l.valid()) { bail!("a look has patterns 0 to {MAX_LOOK_PATTERN} and a strength of 0 to {MAX_LOOK_DIM} percent"); }
+        let look = look.map(|mut l| { l.oracle_quiet = l.oracle_quiet.filter(|q| *q); l.oracle_draw = l.oracle_draw.filter(|q| *q); l.back = l.back.map(|d| d.lower()); l }).filter(|l| !l.is_empty());
+        if look.as_ref().is_some_and(|l| !l.valid()) { bail!("a look has patterns 0 to {MAX_LOOK_PATTERN}, a strength of 0 to {MAX_LOOK_DIM} percent and backdrop colours like #rrggbb"); }
         if let Some(r) = room { if !self.has_room(cid, r) { bail!("unknown room"); } }
-        if room.is_none() && look.as_ref().is_some_and(|l| l.chat.is_some() || l.dim.is_some() || l.oracle_quiet.is_some() || l.oracle_draw.is_some()) { bail!("the community card has a card pattern only"); }
+        if room.is_none() && look.as_ref().is_some_and(|l| l.chat.is_some() || l.dim.is_some() || l.oracle_quiet.is_some() || l.oracle_draw.is_some() || l.back.is_some()) { bail!("the community card has a card pattern only"); }
         let mut doc = self.style_base(cid)?;
         let key = room.unwrap_or(cid).to_string();
         let cur = self.st.communities.get(cid).and_then(|c| c.style.as_ref()).and_then(|d| d.looks.get(&key)).cloned();
@@ -546,6 +546,7 @@ impl Client {
 
     fn publish_style(&mut self, cid: &str, mut doc: StyleDoc, label: &str) -> Result<()> {
         doc.ver = self.st.communities.get(cid).and_then(|c| c.style.as_ref()).map_or(0, |s| s.ver) + 1;
+        if doc.ver > (1 << 53) { bail!("the colour settings of this community have reached their version limit and cannot change any more"); }
         doc.ts = now_secs();
         let signed = sign_style(&self.acct_key()?, cid, &doc).map_err(|e| anyhow!(e))?;
         let mut t = self.ctl_ext(cid)?;
@@ -570,7 +571,7 @@ impl Client {
                         else if avatar.is_some() { p.avatar = avatar.clone(); }
                     }
                 }
-                Envelope::Leave | Envelope::Revoked { .. } => {}
+                Envelope::Leave | Envelope::Revoked { .. } | Envelope::Read { .. } => {}
                 _ => self.apply_chat(gid, 0, &cert, env.clone(), true),
             }
         }
@@ -616,6 +617,9 @@ impl Client {
     }
     /// Everything about a file message that can go wrong before any bytes move. Encrypts the file (no network).
     pub fn file_prepare(&self, gid: &str, name: &str, mime: &str, data: &[u8], caption: &str) -> Result<OutFile> {
+        self.file_prepare_voice(gid, name, mime, data, caption, None)
+    }
+    pub fn file_prepare_voice(&self, gid: &str, name: &str, mime: &str, data: &[u8], caption: &str, voice: Option<crate::envelope::Voice>) -> Result<OutFile> {
         self.check_chan(gid)?;
         if data.len() > MAX_BLOB_BYTES - 64 { bail!("file is larger than the {} MB limit", MAX_BLOB_BYTES / 1024 / 1024); }
         if caption.len() > MAX_TEXT { bail!("the caption is longer than {MAX_TEXT} bytes"); }
@@ -624,7 +628,7 @@ impl Client {
         let ct = ChaCha20Poly1305::new((&key).into()).encrypt(Nonce::from_slice(&nonce), data).map_err(|_| anyhow!("encrypt"))?;
         let safe: String = name.chars().filter(|c| !c.is_control()).collect();
         let safe = cut_name(safe.trim(), 200);
-        let env = Envelope::File { id: rand_hex(16), name: if safe.is_empty() { "file".into() } else { safe }, mime: clean_mime(mime), size: data.len() as u64, blob: rand_hex(16), key: hex::encode(key), nonce: hex::encode(nonce), caption: caption.into(), reply: None, ts: now_secs(), large: None };
+        let env = Envelope::File { id: rand_hex(16), name: if safe.is_empty() { "file".into() } else { safe }, mime: clean_mime(mime), size: data.len() as u64, blob: rand_hex(16), key: hex::encode(key), nonce: hex::encode(nonce), caption: caption.into(), reply: None, ts: now_secs(), large: None, voice };
         env.validate().map_err(|e| anyhow!("{e}"))?;
         Ok(OutFile { gid: gid.into(), env, ct })
     }
@@ -1229,6 +1233,22 @@ impl Client {
                         }
                     }
                 }
+            } else if let (Some(held), GroupExt::Control { style, .. }) = (self.st.communities.get(&c.id).and_then(|x| x.held_style()), &mut t) {
+                // An admin that holds a newer owner-signed document than the table shows (a member put an older one back, an older app
+                // dropped the field) carries its exact copy forward, under the same backoff as the owner's repair (audit M1). Only a
+                // document the current owner signed is carried, and never anything this device signed itself. Newcomers this admin
+                // lets in then read the right document at once, whether or not the owner is online.
+                if let Ok(mine) = verify_style(&c.owner, &c.id, &held) {
+                    let in_force = style.as_ref().and_then(|s| verify_style(&c.owner, &c.id, s).ok()).is_some_and(|d| (d.ver, d.ts) >= (mine.ver, mine.ts));
+                    let (last, gap) = self.st.communities.get(&c.id).map(|x| (x.style_repub, x.style_repub_gap)).unwrap_or((0, 0));
+                    if !in_force && now_secs() >= last + gap {
+                        *style = Some(held); changed = true;
+                        if let Some(x) = self.st.communities.get_mut(&c.id) {
+                            x.style_repub_gap = if now_secs() < last + 600 { (gap * 2).clamp(30, 600) } else { 30 };
+                            x.style_repub = now_secs();
+                        }
+                    }
+                }
             }
             if changed { plan.gce = Some(t); descs.push("update table".into()); }
         }
@@ -1308,14 +1328,15 @@ impl Client {
 
     // ------------------------------------------------------------------ what rune is playing
     /// Where rune answers on this device (the default until the person changes it).
-    pub fn rune_url(&self) -> String { if self.st.rune_url.is_empty() { crate::rune::DEFAULT_URL.into() } else { self.st.rune_url.clone() } }
+    pub fn rune_url(&self) -> String { if self.st.rune_url.is_empty() { crate::rune::default_url() } else { self.st.rune_url.clone() } }
 
     /// Turn sharing on or off. Turning it off tells friends at once, so nothing lingers for the TTL.
     pub fn set_listening_sharing(&mut self, on: bool, url: &str) -> Result<()> {
-        let url = if url.trim().is_empty() { crate::rune::DEFAULT_URL.to_string() } else { crate::rune::clean_url(url).map_err(|e| anyhow!(e))? };
+        let url = if url.trim().is_empty() { crate::rune::default_url() } else { crate::rune::clean_url(url).map_err(|e| anyhow!(e))? };
         self.st.rune_url = url;
         if self.st.share_listening == on { return self.save(); }
         self.st.share_listening = on;
+        self.st.share_listening_chosen = true;   // the person's own choice from here on: no default changes it
         if !on {
             self.st.listening.remove(&self.my_account());
             if self.st.listening_sent.is_some() { self.send_listening(None); }
@@ -1330,14 +1351,29 @@ impl Client {
     /// the background poll calls this every few seconds, so nothing may be sent per poll.
     pub fn update_listening(&mut self, current: Option<NowPlaying>) -> Result<()> {
         if !self.st.share_listening { return Ok(()); }
-        let current = current.filter(|n| !n.title.is_empty());
+        let mut current = current.filter(|n| !n.title.is_empty());
+        // A paused Spotify song is shown only as the end of a song that was playing, and only for a couple of minutes: the
+        // pause is news for someone listening along, not a reason to claim "listening to" for an hour.
+        if let Some(sp) = current.as_ref().and_then(|n| n.spotify.as_ref()).filter(|s| s.paused) {
+            let prev = self.st.listening_sent.as_ref().and_then(|l| l.spotify.as_ref()).filter(|p| p.id == sp.id);
+            let keep = match prev { Some(p) if !p.paused => true, Some(_) => now_secs() < self.st.listening_sent_ts.saturating_add(PAUSED_SHOW_SECS), None => false };
+            if !keep { current = None; }
+        }
         let me = self.my_account();
         match &current {
-            Some(n) => { self.st.listening.insert(me, Heard { what: n.clone(), ts: now_secs() }); }
+            Some(n) => {
+                let rx_ms = crate::spotify::now_ms();
+                self.st.listening.insert(me, Heard { what: n.clone(), ts: now_secs(), rx_ms });
+            }
             None => { self.st.listening.remove(&me); }
         }
-        let changed = current.as_ref() != self.st.listening_sent.as_ref();
-        let renew = current.is_some() && now_secs() >= self.st.listening_sent_ts.saturating_add(LISTENING_REFRESH_SECS);
+        let changed = match (&current, &self.st.listening_sent) {
+            (Some(c), Some(p)) => c.is_news_after(p),
+            (None, None) => false,
+            _ => true,
+        };
+        let paused = current.as_ref().and_then(|n| n.spotify.as_ref()).is_some_and(|s| s.paused);
+        let renew = current.is_some() && !paused && now_secs() >= self.st.listening_sent_ts.saturating_add(LISTENING_REFRESH_SECS);
         if changed || renew { self.send_listening(current); }
         self.save()
     }
@@ -1351,7 +1387,7 @@ impl Client {
         let ts = now_secs();
         // the picture rides along too, so a status refresh never looks like "no picture" to a device that missed one
         let avatar = self.st.profiles.get(&self.my_account()).and_then(|p| p.avatar.clone());
-        for gid in &ctls { self.queue_env(gid, Envelope::Profile { name: name.clone(), ts, listen: value.clone(), avatar: avatar.clone(), avatar_cleared: false, direct: true }); }
+        for gid in &ctls { self.queue_env(gid, Envelope::Profile { name: name.clone(), ts, listen: value.clone(), avatar: avatar.clone(), avatar_cleared: false, direct: true, direct_sealed: true }); }
         if ctls.is_empty() { return false; }
         self.st.listening_sent = value;
         self.st.listening_sent_ts = ts;
@@ -1361,6 +1397,10 @@ impl Client {
     /// What this account is listening to, if it was heard recently enough to still be true.
     pub fn listening_of(&self, acct: &str) -> Option<&NowPlaying> {
         self.st.listening.get(acct).filter(|h| now_secs() < h.ts.saturating_add(LISTENING_TTL_SECS)).map(|h| &h.what)
+    }
+    /// A friend's Spotify report and when it reached this device, if it is recent and names a Spotify song.
+    pub fn listening_sample(&self, acct: &str) -> Option<(NowPlaying, u64)> {
+        self.st.listening.get(acct).filter(|h| now_secs() < h.ts.saturating_add(LISTENING_TTL_SECS)).map(|h| (h.what.clone(), h.rx_ms))
     }
     pub fn typing_now(&self, gid: &str) -> Vec<String> {
         let now = now_secs();
@@ -1477,6 +1517,22 @@ impl Client {
         plan.gce = Some(t);
         self.run_commit(cid, plan).map(|_| ())
     }
+    /// Found a community under a nonce of the caller's choosing, as a changed app could (test builds only).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_create_community_nonce(&mut self, name: &str, nonce: &str, room: &str, room_kind: &str) -> Result<String> { self.create_community_with(name, nonce.to_string(), room, room_kind) }
+    /// Forget the per-sender offer rate, as a minute passing would (test builds only).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_clear_direct_rate(&mut self) { self.direct_rate.clear(); }
+    /// Put any bytes in another device's inbox, as a hostile account could (test builds only).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_post_inbox(&mut self, device: &str, data: &[u8]) -> Result<()> { self.st.welcome_out.push(WelcomeOut { id: rand_hex(16), device: device.into(), data: b64(data), gid: "debug".into() }); self.save() }
+    /// This device's certificate (test builds only).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn cert_public(&self) -> DeviceCert { self.cert().expect("identity") }
     /// Send any envelope as this device, as a hostile member would (test builds only).
     #[cfg(feature = "test-hooks")]
     #[doc(hidden)]

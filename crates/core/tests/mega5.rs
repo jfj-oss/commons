@@ -13,7 +13,7 @@ fn trio() -> (Net, Peer, Peer, Peer, String, String) {
     let (cid, gen) = community_with(&net, &mut a, &mut [&mut b, &mut c]);
     (net, a, b, c, cid, gen)
 }
-fn look(card: Option<u8>, chat: Option<u8>, dim: Option<u16>) -> Look { Look { card, chat, dim, oracle_quiet: None, oracle_draw: None } }
+fn look(card: Option<u8>, chat: Option<u8>, dim: Option<u16>) -> Look { Look { card, chat, dim, oracle_quiet: None, oracle_draw: None, back: None } }
 fn looks_of(p: &Peer, cid: &str) -> std::collections::BTreeMap<String, Look> { p.c.st.communities[cid].style.as_ref().map(|s| s.looks.clone()).unwrap_or_default() }
 fn cglyphs(p: &Peer, cid: &str) -> Vec<(u16, u8)> { p.c.wall_view(&format!("{CWALL_PREFIX}{cid}")).cells.into_iter().filter(|c| c.1 != 0).map(|c| (c.0, c.1)).collect() }
 fn rglyphs(p: &Peer, gid: &str) -> Vec<(u16, u8)> { p.c.wall_view(gid).cells.into_iter().filter(|c| c.1 != 0).map(|c| (c.0, c.1)).collect() }
@@ -211,7 +211,7 @@ fn a_community_wall_reaches_everyone_and_never_a_rooms_wall() {
     let send = |p: &mut Peer, kind: &str, data: String| p.c.debug_send_envelope(&texts[1], Envelope::Live { kind: kind.into(), data, ts: me }).unwrap();
     let before = sorted(cglyphs(&c, &cid));
     send(&mut b, "cwall.d", format!("{{\"g\":0,\"k\":9,\"c\":[[1,2],[{},2]]}}", WALL_CELLS));
-    send(&mut b, "cwall.d", "{\"g\":0,\"k\":9,\"c\":[[1,2],[2,99]]}".into());
+    send(&mut b, "cwall.d", "{\"g\":0,\"k\":9,\"c\":[[1,2],[2,200]]}".into());
     send(&mut b, "cwall.d", "{\"g\":0,\"k\":0,\"c\":[[1,2]]}".into());
     send(&mut b, "cwall.d", "{\"g\":4,\"k\":9,\"c\":[[1,2]]}".into());
     settle(&mut [&mut a, &mut b, &mut c]);
@@ -310,4 +310,122 @@ fn a_030_document_with_a_community_wall_lock_still_verifies_and_the_carrier_may_
     a.c.debug_send_envelope(&other, Envelope::Live { kind: "cwall.d".into(), data: format!("{{\"g\":1,\"k\":900,\"c\":[[{},3]]}}", 2 * WALL_COLS), ts: now_secs() }).unwrap();
     settle(&mut [&mut a, &mut b, &mut c]);
     assert!(cglyphs(&c, &cid).contains(&(2 * WALL_COLS as u16, 1)) && cglyphs(&b, &cid).contains(&(2 * WALL_COLS as u16, 1)), "an event from any room of the community counts");
+}
+
+/// Regression: the owner changing colours or the look of a room or card must never touch what is drawn on the walls, on any device,
+/// at generation 0 and after a clear, for a room's wall and for the community card's wall.
+#[test]
+fn colour_and_look_changes_keep_every_wall() {
+    let (_net, mut a, mut b, mut c, cid, gid) = trio();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    let cw = format!("{CWALL_PREFIX}{cid}");
+    let duo = |m: &str, h: &str| Duo { main: m.into(), hi: h.into() };
+    for round in 0..2 {
+        if round == 1 {   // after a clear: generation 1 in the document
+            a.c.set_wall(&cid, &gid, None, true).unwrap();
+            a.c.set_wall(&cid, &cid, None, true).unwrap();
+            settle(&mut [&mut a, &mut b, &mut c]);
+        }
+        a.c.wall_draw(&gid, &[(1, 1, 1, 0), (2, 1, 2, 1), (3, 1, 3, 0)]).unwrap();
+        b.c.wall_draw(&cw, &[(5, 5, 2, 0), (6, 5, 4, 1)]).unwrap();
+        settle(&mut [&mut a, &mut b, &mut c]);
+        let (room0, card0) = (rglyphs(&a, &gid), cglyphs(&a, &cid));
+        assert_eq!((room0.len(), card0.len()), (3, 2), "round {round}: drawn");
+        let steps: Vec<Box<dyn Fn(&mut Peer)>> = vec![
+            Box::new(|p| p.c.set_style(&cid, Some(&gid), Some(duo("#2288cc", "#ffee00"))).unwrap()),
+            Box::new(|p| p.c.set_style(&cid, None, Some(duo("#33aa55", "#ffffff"))).unwrap()),
+            Box::new(|p| p.c.set_look(&cid, Some(&gid), Some(look(Some(3), Some(5), Some(55)))).unwrap()),
+            Box::new(|p| p.c.set_look(&cid, None, Some(look(Some(4), None, None))).unwrap()),
+            Box::new(|p| p.c.set_look(&cid, Some(&gid), None).unwrap()),
+            Box::new(|p| p.c.set_style(&cid, Some(&gid), None).unwrap()),
+        ];
+        for (i, step) in steps.iter().enumerate() {
+            step(&mut a);
+            settle(&mut [&mut a, &mut b, &mut c]);
+            for p in [&a, &b, &c] {
+                assert_eq!(rglyphs(p, &gid), room0, "round {round} step {i}: {} lost the room wall", p.name);
+                assert_eq!(cglyphs(p, &cid), card0, "round {round} step {i}: {} lost the card wall", p.name);
+            }
+        }
+    }
+}
+
+/// Palette colours: they reach every device, in strokes and in snapshots, and what goes on the wire can never trip an older device's check.
+/// An older device (0.3.0 on) drops a whole event if any value is `>= glyphs * 2`, so events must be all-old-form or all-palette-form.
+#[test]
+fn palette_colours_travel_and_never_mix_forms_on_the_wire() {
+    let (_net, mut a, mut b, mut c, cid, gid) = trio();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    let cols = |p: &Peer, g: &str| -> Vec<(u16, u8, u8)> { p.c.wall_view(g).cells.into_iter().map(|c| (c.0, c.1, c.2)).collect() };
+    a.c.wall_draw(&gid, &[(1, 1, 1, 0), (2, 1, 2, 1)]).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    a.c.wall_draw(&gid, &[(3, 1, 3, 5), (4, 1, 4, 11), (5, 1, 0, 7)]).unwrap();   // the erase has no colour
+    settle(&mut [&mut a, &mut b, &mut c]);
+    let want = vec![(WALL_COLS as u16 + 1, 1, 0), (WALL_COLS as u16 + 2, 2, 1), (WALL_COLS as u16 + 3, 3, 5), (WALL_COLS as u16 + 4, 4, 11), (WALL_COLS as u16 + 5, 0, 0)];
+    for p in [&a, &b, &c] { assert_eq!(cols(p, &gid), want, "{}", p.name); }
+    assert!(a.c.wall_draw(&gid, &[(1, 1, 1, 12)]).is_err(), "a colour past the palette is refused");
+    // the same on a community card
+    let cw = format!("{CWALL_PREFIX}{cid}");
+    b.c.wall_draw(&cw, &[(9, 9, 2, 10)]).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    for p in [&a, &b, &c] { assert_eq!(cols(p, &cw), vec![(9 * WALL_COLS as u16 + 9, 2, 10)], "{}", p.name); }
+    // snapshots: each chunk is one form (an old device drops a chunk it cannot read, and must not lose old-form cells with it), and a late device gets all
+    let chunks = a.c.wall_snapshot(&gid).unwrap();
+    assert!(chunks.len() >= 2, "{chunks:?}");
+    for ch in &chunks {
+        let v: serde_json::Value = serde_json::from_str(ch).unwrap();
+        let vals: Vec<u64> = v["c"].as_array().unwrap().iter().map(|x| x[1].as_u64().unwrap()).collect();
+        assert!(vals.iter().all(|&x| x < 24) || vals.iter().all(|&x| x >= 24), "mixed forms in one chunk: {vals:?}");
+    }
+    assert!(chunks.iter().any(|ch| serde_json::from_str::<serde_json::Value>(ch).unwrap()["c"].as_array().unwrap().iter().all(|x| x[1].as_u64().unwrap() < 24)), "the old-colour cells have a chunk of their own");
+}
+
+// ------------------------------------------------------------------------------------------------ backdrop colours
+#[test]
+fn backdrop_colours_are_signed_owner_only_kept_by_other_edits_and_ignored_by_a_030_reader() {
+    let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+    let owner = hex::encode(key.verifying_key().to_bytes());
+    let room = "abcdef0123456789".to_string();
+    let cid = "cc0011cc0011cc00";
+    let duo = |m: &str, h: &str| Duo { main: m.into(), hi: h.into() };
+    let with_back = |b: Option<Duo>| Look { dim: Some(80), back: b, ..Default::default() };
+    let doc = StyleDoc { ver: 2, ts: 1, rooms: [(room.clone(), duo("#112233", "#445566"))].into(), looks: [(room.clone(), with_back(Some(duo("#0a1b2c", "#fedcba"))))].into(), ..Default::default() };
+    let s = sign_style(&key, cid, &doc).unwrap();
+    assert!(s.doc.contains("\"back\":{\"main\":\"#0a1b2c\",\"hi\":\"#fedcba\"}"), "{}", s.doc);
+    assert_eq!(verify_style(&owner, cid, &s).unwrap(), doc);
+    // a look without backdrop colours prints exactly as before
+    let plain = StyleDoc { ver: 2, ts: 1, looks: [(room.clone(), with_back(None))].into(), ..Default::default() };
+    assert!(!sign_style(&key, cid, &plain).unwrap().doc.contains("back"));
+    // the old reader verifies the same signed text, still gets the card colours, and ignores the new part
+    let old = v030_verify(&owner, cid, &s).unwrap();
+    assert_eq!((old.ver, old.rooms[&room].main.as_str(), old.rooms[&room].hi.as_str()), (2, "#112233", "#445566"));
+    // a bad colour, or a look holding only a bad backdrop, is refused
+    for b in [duo("red", "#445566"), duo("#112233", "#44556"), duo("#11223g", "#445566")] {
+        assert!(sign_style(&key, cid, &StyleDoc { ver: 1, looks: [(room.clone(), with_back(Some(b)))].into(), ..Default::default() }).is_err());
+    }
+    assert!(sign_style(&key, cid, &StyleDoc { ver: 1, looks: [(room.clone(), Look { back: Some(duo("#112233", "#445566")), ..Default::default() })].into(), ..Default::default() }).is_ok());
+
+    // over the wire
+    let (_net, mut a, mut b, mut c, cid, gen) = trio();
+    a.c.set_role(&cid, &b.acct(), Role::Admin).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    let mine = Look { chat: Some(2), back: Some(duo("#ABCDEF", "#123456")), ..Default::default() };
+    assert!(b.c.set_look(&cid, Some(&gen), Some(mine.clone())).is_err() && c.c.set_look(&cid, Some(&gen), Some(mine.clone())).is_err(), "only the owner");
+    assert!(a.c.set_look(&cid, None, Some(Look { back: Some(duo("#abcdef", "#123456")), ..Default::default() })).is_err(), "rooms only");
+    assert!(a.c.set_look(&cid, Some(&gen), Some(Look { back: Some(duo("nope", "#123456")), ..Default::default() })).is_err());
+    a.c.set_look(&cid, Some(&gen), Some(mine)).unwrap();
+    // colours, lock, oracle switches keep it
+    a.c.set_style(&cid, Some(&gen), Some(duo("#111111", "#222222"))).unwrap();
+    a.c.set_wall(&cid, &gen, Some(true), true).unwrap();
+    a.c.set_oracle_quiet(&cid, &gen, true).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    for p in [&a, &b, &c] {
+        let l = p.c.look_of(&cid, Some(&gen)).unwrap();
+        assert_eq!((l.chat, l.back.clone(), l.oracle_quiet), (Some(2), Some(duo("#abcdef", "#123456")), Some(true)), "{}", p.name);
+    }
+    // "same as card": clearing the backdrop keeps the rest of the look
+    a.c.set_look(&cid, Some(&gen), Some(Look { chat: Some(2), oracle_quiet: Some(true), ..Default::default() })).unwrap();
+    settle(&mut [&mut a, &mut b, &mut c]);
+    let l = b.c.look_of(&cid, Some(&gen)).unwrap();
+    assert!(l.back.is_none() && l.chat == Some(2));
 }

@@ -18,8 +18,21 @@ use crate::client::Client;
 use crate::state::*;
 use anyhow::{anyhow, bail, Result};
 use crate::envelope::*;
-use commons_proto::sha256;
+use commons_proto::{b64, sha256, unb64, unhex32};
 use std::collections::BTreeSet;
+
+/// The invite's secret key, sealed so that only `peer`'s account can read it (audit M8). The offer travels in a room other people share:
+/// without this they could sign a join with the secret and an admin device from before `admits` would let them in. See `seal.rs`.
+pub fn seal_for(peer: &str, sk_hex: &str) -> Result<String> {
+    let secret = unhex32(sk_hex).map_err(|_| anyhow!("bad invite key"))?;
+    Ok(b64(&crate::seal::seal_to(peer, &seal_aad(peer), &secret)?))
+}
+/// Open a sealed invite secret with this account's key. None when it is not for this account, or damaged.
+pub fn open_sealed(acct_key: &ed25519_dalek::SigningKey, me: &str, blob: &str) -> Option<String> {
+    let pt = crate::seal::open_with(acct_key, &seal_aad(me), &unb64(blob).ok()?)?;
+    (pt.len() == 32).then(|| hex::encode(pt))
+}
+fn seal_aad(peer: &str) -> Vec<u8> { sha256(&[b"commons/direct-seal/aad/v1", peer.as_bytes()]).to_vec() }
 
 /// What an older app calls the community: it has no notion of "direct", and must not look like a stray server that means nothing.
 pub const DIRECT_NAME: &str = "Direct call (open in a newer Megatron)";
@@ -31,6 +44,8 @@ pub const DIRECT_INVITE_TTL: u64 = 600;
 pub const DIRECT_PER_MIN: usize = 2;
 pub const DIRECT_JOINS_PER_HOUR: usize = 6;
 pub const DIRECT_MAX: usize = 16;
+/// Most direct communities held that one founder made: a stranger sharing a room cannot fill the slots with offers (audit M8).
+pub const DIRECT_MAX_PER_FOUNDER: usize = 2;
 /// How long a caller waits for the other person to show up in the room before the ring is given up (then it rings no one).
 pub const DIRECT_WAIT: u64 = 45;
 
@@ -83,8 +98,9 @@ pub struct Offer<'a> {
     pub sender: &'a str, pub sender_is_member: bool,
     pub me: &'a str, pub to: &'a str,
     pub nonce: &'a str, pub link: &'a InviteLink, pub relay: &'a str,
-    /// Offers already taken from this sender in the last minute (times), automatic joins in the last hour, direct communities held.
-    pub recent: &'a [u64], pub joins_last_hour: usize, pub held: usize,
+    /// Offers already taken from this sender in the last minute (times), automatic joins in the last hour, direct communities held,
+    /// and how many of those this sender founded.
+    pub recent: &'a [u64], pub joins_last_hour: usize, pub held: usize, pub held_from_sender: usize,
     /// We already belong to this community, or the person has told us to refuse this sender, or an earlier join to it was refused.
     pub already_in: bool, pub sender_refused: bool, pub join_was_refused: bool,
 }
@@ -102,7 +118,7 @@ pub fn offer_check(o: &Offer) -> DirectVerdict {
     if community_id(&l.owner, o.nonce) != l.community || !binds(&l.owner, o.nonce, o.me) { return NotDirect; }
     if o.already_in { return Already; }
     if o.recent.iter().filter(|t| **t + 60 > o.now).count() >= DIRECT_PER_MIN { return TooMany; }
-    if o.joins_last_hour >= DIRECT_JOINS_PER_HOUR || o.held >= DIRECT_MAX { return TooManyHeld; }
+    if o.joins_last_hour >= DIRECT_JOINS_PER_HOUR || o.held >= DIRECT_MAX || o.held_from_sender >= DIRECT_MAX_PER_FOUNDER { return TooManyHeld; }
     Go
 }
 
@@ -215,11 +231,18 @@ impl Client {
         let room = room.ok_or_else(|| anyhow!("the call room is not ready yet; try again in a moment"))?;
         let made = self.create_invite_checked(&cid, Some(2), DIRECT_INVITE_TTL)?;
         // The offer is readable by everyone in the room it travels in. It is built for the one person it names, and carries
-        // no more than they need: the relay's sign-up secret stays out (they are on this relay already).
+        // no more than they need: the relay's sign-up secret stays out (they are on this relay already), and the invite's secret
+        // key is sealed to the peer's account, with a throwaway key in the link, so that nobody else in the room can use the invite.
+        // A peer whose app predates sealing (its profile does not say `direct_sealed`) gets the key in the link as before.
         let mut link = InviteLink::decode(&made.link)?;
         link.secret.clear();
+        let sealed = if self.st.profiles.get(peer).is_some_and(|p| p.direct_sealed) {
+            let s = seal_for(peer, &link.sk)?;
+            link.sk = crate::client::rand_hex(32);
+            Some(s)
+        } else { None };
         self.ring_sent.insert(key, now);
-        self.queue_env(&carrier, Envelope::Direct { id: crate::client::rand_hex(16), ts: now, to: peer.into(), nonce, link: link.encode() });
+        self.queue_env(&carrier, Envelope::Direct { id: crate::client::rand_hex(16), ts: now, to: peer.into(), nonce, link: link.encode(), sealed });
         self.st.direct_last.insert(cid.clone(), now);
         self.direct_out.push(DirectOut { cid: cid.clone(), room: room.clone(), peer: peer.into(), started: now });
         self.save()?;
@@ -271,10 +294,22 @@ impl Client {
 
     /// An offer to call, from a member of a room we share. Joins the community in it only if everything in [`offer_check`] holds.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn take_direct(&mut self, gid: &str, acct: &str, id: String, ts: u64, to: String, nonce: String, link: String) {
+    pub(crate) fn take_direct(&mut self, gid: &str, acct: &str, id: String, ts: u64, to: String, nonce: String, link: String, sealed: Option<String>) {
         let now = now_secs();
         let me = self.my_account();
-        let Ok(l) = InviteLink::decode(&link) else { return };
+        #[cfg(feature = "test-hooks")]
+        self.debug_offers.push((link.clone(), sealed.clone()));
+        let Ok(mut l) = InviteLink::decode(&link) else { return };
+        // A sealed secret is for one account: ours, or the offer is not ours to take (and the link's key is a throwaway).
+        let link = match sealed {
+            Some(s) => {
+                if to != me { return; }
+                let Some(sk) = self.acct_key().ok().and_then(|k| open_sealed(&k, &me, &s)) else { log::info!("call offer: sealed secret not for this account"); return };
+                l.sk = sk;
+                l.encode()
+            }
+            None => link,
+        };
         // Only from a room of an ordinary community: a direct community's own room is not a place to be offered another.
         let Some(g) = self.st.groups.get(gid) else { return };
         let member = !g.removed && g.accounts.contains(acct);
@@ -282,9 +317,10 @@ impl Client {
         let recent: Vec<u64> = self.direct_rate.get(acct).map(|q| q.iter().copied().collect()).unwrap_or_default();
         self.direct_joined.retain(|t| *t + 3600 > now);
         let held = self.st.communities.values().filter(|c| !c.removed && c.direct.is_some()).count();
+        let held_from_sender = self.st.communities.values().filter(|c| !c.removed && c.direct.is_some() && c.founder == acct).count();
         let already_in = self.st.communities.get(&l.community).is_some_and(|c| !c.removed) || self.st.joining.contains_key(&l.community);
         let offer = Offer { now, ts, sender: acct, sender_is_member: member, me: &me, to: &to, nonce: &nonce, link: &l, relay: &self.st.relay,
-            recent: &recent, joins_last_hour: self.direct_joined.len(), held, already_in,
+            recent: &recent, joins_last_hour: self.direct_joined.len(), held, held_from_sender, already_in,
             sender_refused: self.st.direct_refused.contains(acct) || self.st.direct_refused.contains(&format!("c:{}", l.community)), join_was_refused: self.st.join_refused.contains_key(&l.community) };
         let verdict = offer_check(&offer);
         if verdict != DirectVerdict::Go { log::info!("call offer from {} not taken: {verdict:?}", &acct[..6.min(acct.len())]); return; }
@@ -359,7 +395,7 @@ mod tests {
         assert_eq!(admits("friends", false, &a, &crate::client::rand_hex(16), &c), None, "an ordinary community keeps its ordinary rules");
     }
     fn offer<'a>(l: &'a InviteLink, nonce: &'a str, me: &'a str, recent: &'a [u64]) -> Offer<'a> {
-        Offer { now: 1000, ts: 1000, sender: &l.owner, sender_is_member: true, me, to: me, nonce, link: l, relay: "http://r/", recent, joins_last_hour: 0, held: 0, already_in: false, sender_refused: false, join_was_refused: false }
+        Offer { now: 1000, ts: 1000, sender: &l.owner, sender_is_member: true, me, to: me, nonce, link: l, relay: "http://r/", recent, joins_last_hour: 0, held: 0, held_from_sender: 0, already_in: false, sender_refused: false, join_was_refused: false }
     }
     #[test]
     fn an_offer_is_taken_only_when_everything_checks_out() {
@@ -403,20 +439,46 @@ mod tests {
         assert_eq!(offer_check(&offer(&l, &n, &b, &old)), Go, "a minute later it is open again");
         assert_eq!(offer_check(&Offer { joins_last_hour: DIRECT_JOINS_PER_HOUR, ..offer(&l, &n, &b, &[]) }), TooManyHeld);
         assert_eq!(offer_check(&Offer { held: DIRECT_MAX, ..offer(&l, &n, &b, &[]) }), TooManyHeld);
+        // audit M8: one founder cannot fill the slots by offering again and again
+        assert_eq!(offer_check(&Offer { held: 2, held_from_sender: DIRECT_MAX_PER_FOUNDER, ..offer(&l, &n, &b, &[]) }), TooManyHeld);
+        assert_eq!(offer_check(&Offer { held: 2, held_from_sender: 1, ..offer(&l, &n, &b, &[]) }), Go);
         let _ = F;
+    }
+    /// Audit M8: the invite's secret travels sealed to the one person the offer names; nobody else in the room can open it.
+    #[test]
+    fn the_invite_secret_opens_only_for_the_named_account() {
+        let bob = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+        let carol = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+        let (b, c) = (hex::encode(bob.verifying_key().to_bytes()), hex::encode(carol.verifying_key().to_bytes()));
+        let sk = "ab".repeat(32);
+        let sealed = seal_for(&b, &sk).unwrap();
+        assert_eq!(open_sealed(&bob, &b, &sealed).as_deref(), Some(sk.as_str()));
+        assert_eq!(open_sealed(&carol, &c, &sealed), None, "another member of the room gets nothing");
+        assert_eq!(open_sealed(&bob, &c, &sealed), None, "bound to the account it was sealed for");
+        assert_ne!(seal_for(&b, &sk).unwrap(), sealed, "fresh ephemeral key and nonce every time");
+        let mut t = unb64(&sealed).unwrap(); let n = t.len(); t[n - 1] ^= 1;
+        assert_eq!(open_sealed(&bob, &b, &b64(&t)), None);
+        assert!(seal_for("not-an-account", &sk).is_err());
+        // and an offer that carries one still parses, while an app from before does not see the field at all
+        let n = new_nonce(&c, &b);
+        let e = Envelope::Direct { id: "1".repeat(32), ts: 5, to: b.clone(), nonce: n.clone(), link: link(&c, &n).encode(), sealed: Some(sealed) };
+        assert_eq!(Envelope::parse(&e.to_bytes()).unwrap(), e);
+        let too_long = Envelope::Direct { id: "1".repeat(32), ts: 5, to: b.clone(), nonce: n.clone(), link: link(&c, &n).encode(), sealed: Some("x".repeat(300)) };
+        assert!(Envelope::parse(&too_long.to_bytes()).is_err());
     }
     #[test]
     fn the_offer_envelope_parses_and_an_old_app_skips_it() {
         let (a, b) = (k(1), k(2));
         let n = new_nonce(&a, &b);
-        let e = Envelope::Direct { id: "1".repeat(32), ts: 5, to: b.clone(), nonce: n.clone(), link: link(&a, &n).encode() };
+        let e = Envelope::Direct { id: "1".repeat(32), ts: 5, to: b.clone(), nonce: n.clone(), link: link(&a, &n).encode(), sealed: None };
         assert_eq!(Envelope::parse(&e.to_bytes()).unwrap(), e);
+        assert!(!String::from_utf8_lossy(&e.to_bytes()).contains("sealed"), "an offer without a sealed secret is spelled as before");
         let bad = |x: Envelope| assert!(Envelope::parse(&x.to_bytes()).is_err());
-        bad(Envelope::Direct { id: "x".into(), ts: 5, to: b.clone(), nonce: n.clone(), link: link(&a, &n).encode() });
-        bad(Envelope::Direct { id: "1".repeat(32), ts: 5, to: "nope".into(), nonce: n.clone(), link: link(&a, &n).encode() });
-        bad(Envelope::Direct { id: "1".repeat(32), ts: 5, to: b.clone(), nonce: "short".into(), link: link(&a, &n).encode() });
-        bad(Envelope::Direct { id: "1".repeat(32), ts: 5, to: b.clone(), nonce: n.clone(), link: "commons://join/garbage".into() });
-        bad(Envelope::Direct { id: "1".repeat(32), ts: 5, to: b, nonce: n, link: "x".repeat(4000) });
+        bad(Envelope::Direct { id: "x".into(), ts: 5, to: b.clone(), nonce: n.clone(), link: link(&a, &n).encode(), sealed: None });
+        bad(Envelope::Direct { id: "1".repeat(32), ts: 5, to: "nope".into(), nonce: n.clone(), link: link(&a, &n).encode(), sealed: None });
+        bad(Envelope::Direct { id: "1".repeat(32), ts: 5, to: b.clone(), nonce: "short".into(), link: link(&a, &n).encode(), sealed: None });
+        bad(Envelope::Direct { id: "1".repeat(32), ts: 5, to: b.clone(), nonce: n.clone(), link: "commons://join/garbage".into(), sealed: None });
+        bad(Envelope::Direct { id: "1".repeat(32), ts: 5, to: b, nonce: n, link: "x".repeat(4000), sealed: None });
         #[derive(serde::Deserialize, Debug, PartialEq)]
         #[serde(tag = "t")]
         enum Old { Typing, #[serde(other)] Unknown }

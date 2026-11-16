@@ -58,6 +58,10 @@ pub fn without_mention(text: &str, name: &str) -> String {
     out
 }
 
+/// [`reason`] for a person's own request to the bot called `name`: the "@name" that addresses the bot is not a person
+/// being named. Every place that reads a request goes through this, so the bot's own mention can never trip the rule.
+pub fn reason_asked(text: &str, name: &str) -> Option<Why> { reason(&without_mention(text, name)) }
+
 /// The short line posted when the hard block refuses something. It never repeats or describes the request.
 pub const REFUSAL: &str = "I can't make that one.";
 
@@ -414,7 +418,18 @@ fn cap_words(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn upper_start(w: &str) -> bool { w.chars().next().is_some_and(|c| c.is_uppercase()) }
+/// A word written the way a name is written: a capital first, lowercase after it, with room for one more capital
+/// inside ("McDonald", "DiCaprio", "O'Neal"). Shouting ("MEGA", "LOUDNESS") and odd casing ("BEllY") are not names:
+/// people shout at a chat bot all the time, and a shouted request names nobody. Known names stay known whatever
+/// their case, because the word lists are compared lowercased.
+fn name_shaped(w: &str) -> bool {
+    let mut chars = w.chars();
+    if !chars.next().is_some_and(|c| c.is_uppercase()) { return false; }
+    let rest: Vec<char> = chars.collect();
+    let lower = rest.iter().filter(|c| c.is_lowercase()).count();
+    let upper = rest.iter().filter(|c| c.is_uppercase()).count();
+    lower > 0 && upper <= 1
+}
 
 fn common_cap(w: &str) -> bool {
     let low = w.to_lowercase();
@@ -422,15 +437,16 @@ fn common_cap(w: &str) -> bool {
 }
 
 /// A name the model or the person wrote: "Taylor Swift", "Sarah Jones", "a portrait of Sarah", "nude Sarah".
-/// Sentences that merely start with a capital ("Nude woman on a beach") are not names.
+/// Sentences that merely start with a capital ("Nude woman on a beach") are not names, and neither are shouted
+/// words ("MEGA BELLY BLASTING BASS").
 fn capitalised_name(text: &str) -> bool {
     let ws = cap_words(text);
     for i in 0..ws.len() {
         let w = &ws[i];
-        if !upper_start(w) || common_cap(w) { continue; }
+        if !name_shaped(w) || common_cap(w) { continue; }
         // Two capitalised non-furniture words in a row.
         if let Some(next) = ws.get(i + 1) {
-            if upper_start(next) && !common_cap(next) { return true; }
+            if name_shaped(next) && !common_cap(next) { return true; }
         }
         // A name after "named", "of", "looks like" and friends.
         if i > 0 {
@@ -591,6 +607,34 @@ mod tests {
         allowed("nude 18 year old");
         // The same number with an age context is refused.
         minors("nude 3 year old");
+    }
+
+    /// The requests that were wrongly refused in the live room on 2026-11-11, word for word. Shouting is not a name,
+    /// and the bot's own mention is not a person.
+    #[test]
+    fn shouted_requests_to_the_bot_are_not_about_a_person() {
+        let live = "@Oracle make cum fart sound MEGA BEllY BLASTING BASS LOUDNESS 10 seconds";
+        assert_eq!(reason_asked(live, "Oracle"), None);
+        assert_eq!(reason(&without_mention(live, "Oracle")), None);
+        allowed("make cum fart sound MEGA BEllY BLASTING BASS LOUDNESS 10 seconds");
+        allowed("a massive, earth-shaking, MEGA BELLY BLASTING bass fart, 10 seconds long");
+        allowed("make a cum fart sound, LOUD AS HELL");
+        allowed("MAKE A SEXY SONG ABOUT ASS SHAKING RIGHT NOW");
+        allowed("make a nude painting, DRAMATIC LIGHTING, Cinematic Mood");
+        assert_eq!(reason_asked("@Oracle make a sexy reggae banger", "Oracle"), None);
+        assert_eq!(reason_asked("@oracle sing about ass", "Oracle"), None);
+        // Real names and other people's mentions still refuse, shouted or not.
+        person("NUDE TAYLOR SWIFT");
+        person("nude Taylor Swift SHOUTED LOUD");
+        person("a nude picture of @sam");
+        assert_eq!(reason_asked("@Oracle a nude picture of @sam", "Oracle"), Some(Why::RealPerson));
+        assert_eq!(reason_asked("@Oracle NUDE PIC OF @Alice NOW", "Oracle"), Some(Why::RealPerson));
+        person("a nude portrait of Sarah Jones");
+        person("nude pic of my girlfriend, MAKE IT LOUD");
+        assert_eq!(reason_asked("@Oracle nude 14 year old", "Oracle"), Some(Why::Minor));
+        // Names with one inner capital are still names; shouted or mixed-case words are not.
+        assert!(name_shaped("Taylor") && name_shaped("McDonald") && name_shaped("O'Neal"));
+        assert!(!name_shaped("MEGA") && !name_shaped("BEllY") && !name_shaped("loud") && !name_shaped("4K"));
     }
 
     #[test]

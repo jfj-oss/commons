@@ -13,6 +13,17 @@ const BRIDGE = (() => {
     try { sessionStorage.setItem('mega.bridge', s); } catch { }
     try { history.replaceState(null, '', location.pathname + location.search); } catch { }
   }
+  // A tab in the person's everyday browser arrives with /#t=<ticket> instead: that browser keeps every address in its history,
+  // so the address holds only a one-time ticket, which the bridge swaps for the secret here (it works once, for two minutes).
+  // Every call waits for that swap.
+  let ready = Promise.resolve();
+  const t = /(?:^#|&)t=([0-9A-Za-z]{32,256})(?:&|$)/.exec(location.hash);
+  if (t) {
+    try { history.replaceState(null, '', location.pathname + location.search); } catch { }
+    ready = fetch('/session', { method: 'POST', body: t[1] }).then(r => r.ok ? r.json() : null).then(j => {
+      if (j && j.secret) { s = j.secret; try { sessionStorage.setItem('mega.bridge', s); } catch { } }
+    }).catch(() => { });
+  }
   const headers = (h = {}) => (s ? { ...h, 'X-Megatron-Secret': s } : h);
   let shown = false;
   const refused = () => {
@@ -23,7 +34,7 @@ const BRIDGE = (() => {
     d.textContent = 'This window is not connected to mega\u2019s background part any more (it was restarted, or this window was opened another way). Close this window and open mega again from your app menu.';
     document.body.appendChild(d);
   };
-  return { headers, refused, fetch: (u, o = {}) => fetch(u, { ...o, headers: headers(o.headers) }).then(r => { if (r.status === 403) refused(); return r; }) };
+  return { headers, refused, fetch: (u, o = {}) => ready.then(() => fetch(u, { ...o, headers: headers(o.headers) })).then(r => { if (r.status === 403) refused(); return r; }) };
 })();
 window.__bridgeFetch = BRIDGE.fetch;
 async function rpc(method, args = {}) {
@@ -167,7 +178,7 @@ const quiet = x => x.kind === 'notice' || x.kind === 'member';   // lines nobody
 const S = {
   snap: null, cid: null, gid: null, msgs: null, reply: null, edit: null, people: false, last: '', lastMsgs: '', imgs: new Map(), limit: 200,
   members: [], membersFor: null, membersKey: '',
-  mention: new Map(), mentionSig: new Map(),   // gid -> unread messages that name me, gid -> unread count it was computed for
+  mention: new Map(), mentionSig: new Map(), mentionWin: new Map(),   // gid -> unread messages that name me, gid -> unread count it was computed for, gid -> the window looked at
   outgoing: [],   // sent but not yet back from the core: shown at once, so pressing Send never looks like nothing happened
   first: true, painted: 0, firstNew: null, newCount: 0, jumpTo: null, pinned: true, below: 0, drafts: new Map(),
   presence: new Map(), presenceCid: null, presenceSig: '', presenceAt: 0, presenceBackoff: 0,   // gid -> people in that room's call (from the relay)
@@ -357,6 +368,26 @@ document.addEventListener('click', e => { if (e.target.closest('#cp')) copy($('.
 
 // ---- something new came in: the count in the window title, and a soft chime (Settings: all, mentions only, or off) ----
 const soundPref = () => pref.get('sound') || 'all';
+// Battery saver: holds the moving backgrounds still and drops the glass blur (html.fx-lite, the look Linux's WebKitGTK
+// always has) and the small endless animations (html.fx-saver). "auto", the default, turns it on while the device runs
+// on battery, which the core reads once a minute; a desktop never reports a battery, so there it stays off.
+const saverPref = () => pref.get('saver') || 'auto';
+const SAVER = { battery: false, ownLite: false, nativeLite: /Linux/.test(navigator.userAgent) && !/Android|Chrome|Firefox/.test(navigator.userAgent) };
+function applySaver() {
+  const root = document.documentElement, p = saverPref();
+  const on = p === 'on' || (p === 'auto' && SAVER.battery);
+  if (on === root.classList.contains('fx-saver')) return;
+  root.classList.toggle('fx-saver', on);
+  if (on && !root.classList.contains('fx-lite')) { root.classList.add('fx-lite'); SAVER.ownLite = true; }
+  if (!on && SAVER.ownLite && !SAVER.nativeLite) root.classList.remove('fx-lite');
+  if (!on) SAVER.ownLite = false;
+  window.dispatchEvent(new Event('mega-fx'));
+}
+async function powerTick() {
+  if (saverPref() === 'auto') { const r = await rpc('power_status').catch(() => null); SAVER.battery = !!(r && r.battery); }
+  applySaver();
+}
+applySaver(); powerTick(); setInterval(powerTick, 60000);
 let chimeCtx = null, chimeAt = 0;
 // Browsers only allow sound after the person has touched the page, so the audio is set up on the first click or key.
 const unlockAudio = () => { try { chimeCtx = chimeCtx || new (window.AudioContext || window.webkitAudioContext)(); if (chimeCtx.state === 'suspended') chimeCtx.resume().catch(() => { }); } catch { } };
@@ -376,7 +407,8 @@ let seenUnread = null, titleNow = '';
 function news(sn) {
   const now = new Map(); let total = 0;
   for (const c of sn.communities) if (!c.removed) for (const ch of c.channels) { now.set(ch.gid, ch.unread); total += ch.unread; }
-  const fresh = seenUnread && [...now].some(([g, n]) => n > (seenUnread.get(g) || 0) && (away() || g !== S.gid));
+  const quietRoom = g => !!(window.__megaNotify && !__megaNotify.soundOk(g, false));   // muted, or mentions only: a plain message is silent (mentions have their own chime)
+  const fresh = seenUnread && [...now].some(([g, n]) => n > (seenUnread.get(g) || 0) && (away() || g !== S.gid) && !quietRoom(g));
   seenUnread = now;
   if (fresh && soundPref() === 'all') chime();
   const t = (total ? `(${total > 99 ? '99+' : total}) ` : '') + 'mega';
@@ -384,7 +416,7 @@ function news(sn) {
 }
 let seenMentions = 0;
 function mentionNews() {
-  const n = [...S.mention].filter(([g]) => g !== S.gid || away()).reduce((a, [, b]) => a + b, 0);
+  const n = [...S.mention].filter(([g]) => (g !== S.gid || away()) && !(window.__megaNotify && !__megaNotify.soundOk(g, true))).reduce((a, [, b]) => a + b, 0);
   if (n > seenMentions) {
     if (soundPref() !== 'off') chime();
     if (away()) try { T && T.window && T.window.getCurrentWindow().requestUserAttention(2).catch(() => { }); } catch { }
@@ -416,16 +448,47 @@ async function tickOnce() {
     refreshAvatars(changed);   // small read call; downloads only pictures whose version changed
     const gid = S.gid;
     if (gid) {
-      const m = await rpc('messages', { gid, limit: S.limit, around: S.jumpTo || '', ...(S.lastMsgs ? { if: S.lastMsgs } : {}) });
+      const h = await fetchMessages({ gid, limit: S.limit, around: S.jumpTo || '' }, S.msgs && S.lastMsgs ? { m: S.msgs, hash: S.lastMsgs } : null);
       if (gid !== S.gid) return;
-      if (!m.same) {
-        if (S.jumpTo) S.limit = Math.max(S.limit, m.messages.length);
-        S.lastMsgs = m.hash || ''; S.msgs = m; renderStream();
+      if (h.m !== S.msgs) {
+        if (S.jumpTo) S.limit = Math.max(S.limit, h.m.messages.length);
+        S.lastMsgs = h.hash; S.msgs = h.m; renderStream();
       }
       const ch = currentChannel();
-      if (ch && ch.unread > 0 && document.visibilityState === 'visible' && !(window.__megaIdle && window.__megaIdle())) { await rpc('mark_read', { gid }); }   // mega: nothing is read while the cards are showing
+      if (ch && document.visibilityState === 'visible' && !(window.__megaIdle && window.__megaIdle())) {   // mega: nothing is read while the cards are showing
+        // `seen` is for the read receipt: a window that is open behind another one clears its unread count as before, but tells
+        // nobody "read" until the reader is back at it. A phone's page is in front whenever it is visible.
+        const seen = document.hasFocus() || matchMedia('(pointer: coarse)').matches;
+        if (ch.unread > 0) { await rpc('mark_read', { gid, seen }); S.unseen = seen ? null : gid; }
+        else if (seen && S.unseen === gid) { S.unseen = null; await rpc('mark_read', { gid, seen: true }); }
+      }
     }
   } catch (e) { const st = $('#sync-status'); st.textContent = 'Not reachable: ' + e.message; st.className = 'sync bad down'; }
+}
+// A room's messages, asked for cheaply: `held` is what the last call for the same `args` returned (or null), and goes
+// back to the core as the hash of the answer this page holds, with `delta: 1` to say the page can take only what changed
+// since it (api.rs messages_answer). Nothing changed: `held` itself comes back. A difference: merged into a new answer.
+// The whole window (a first look, or an answer the core no longer remembers) is taken as it is. Returns { m, hash }.
+async function fetchMessages(args, held) {
+  const r = await rpc('messages', { ...args, delta: 1, ...(held && held.hash ? { if: held.hash } : {}) });
+  if (r.same && held) return held;
+  if (r.delta) {
+    const m = mergeMessages(held && held.m, held && held.hash, r);
+    return m ? { m, hash: m.hash } : fetchMessages(args, null);   // a difference to an answer this page no longer holds
+  }
+  return { m: r, hash: r.hash || '' };
+}
+// The full answer the core would have sent, built from the one this page holds (`have`, with hash `hash`) and the
+// difference `d`: rows that are new or changed replace or append, `drop` names the ids that left the window, and `order`
+// is there only when appending did not give the right order. Null when the page does not hold what the difference is to.
+function mergeMessages(have, hash, d) {
+  if (!have || !hash || have.hash !== hash || !Array.isArray(have.messages)) return null;
+  const gone = new Set(d.drop || []);
+  const list = have.messages.filter(x => !gone.has(x.id));
+  const at = new Map(list.map((x, i) => [x.id, i]));
+  for (const x of d.rows || []) { const i = at.get(x.id); if (i == null) { at.set(x.id, list.length); list.push(x); } else list[i] = x; }
+  const messages = d.order ? d.order.map(id => list[at.get(id)]).filter(Boolean) : list;
+  return { messages, more: d.more, typing: d.typing || [], status: d.status, hash: d.hash };
 }
 const currentCommunity = () => S.snap && S.snap.communities.find(c => c.id === S.cid);
 const currentChannel = () => { const c = currentCommunity(); return c && c.channels.find(x => x.gid === S.gid); };
@@ -505,6 +568,7 @@ $('#rooms').addEventListener('click', async e => {
   }
   const x = e.target.closest('[data-join]');
   if (x) { try { await rpc('cancel_join', { id: x.dataset.join }); tick(); } catch (er) { toast(er.message); } return; }
+  if (e.target.closest('[data-hist]')) { try { await rpc('history_dismiss', {}); S.last = ''; tick(); } catch (er) { toast(er.message); } return; }
   const b = e.target.closest('.room');
   if (b) {
     const ch = ((currentCommunity() || {}).channels || []).find(x => x.gid === b.dataset.g);
@@ -577,7 +641,7 @@ function renderRail() {
       ? '<svg class="kh speaker" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-speaker"/></svg>'
       : '<svg class="kh" viewBox="0 0 12 14" aria-hidden="true"><use href="#i-keyhole"/></svg>';
     const speaker = inCall && !voice ? '<svg class="ic live-ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-wave"/></svg>' : '';
-    return { k: ch.gid, h: `<div class="room-wrap"><button class="room ${inCall ? 'live' : ''} ${active ? 'active' : ''} ${ch.joined ? '' : 'pending'} ${un ? 'unread' : ''} ${at ? 'mention' : ''}" data-g="${esc(ch.gid)}" aria-label="${esc(said)}"${active ? ' aria-current="true"' : ''}>${icon}<span class="nm">${esc(ch.name)}</span>${speaker}${at ? '<span class="at-mark">@</span>' : ''}${un ? `<span class="pill">${un}</span>` : ''}</button>${liveRow(ch)}</div>` };
+    return { k: ch.gid, h: `<div class="room-wrap"><button class="room ${inCall ? 'live' : ''} ${active ? 'active' : ''} ${ch.joined ? '' : 'pending'} ${un ? 'unread' : ''} ${at ? 'mention' : ''}" data-g="${esc(ch.gid)}" aria-label="${esc(said)}"${active ? ' aria-current="true"' : ''}>${icon}<span class="nm">${esc(ch.name)}</span>${speaker}${at ? '<span class="at-mark">@</span>' : ''}${un ? `<span class="pill">${un}</span>` : ''}${!voice && window.__megaNotify ? __megaNotify.mark({ kind: 'text', gid: ch.gid }) : ''}</button>${liveRow(ch)}</div>` };
   };
   const chans = c ? c.channels : [];
   const voice = chans.filter(ch => ch.kind === 'voice');
@@ -620,7 +684,17 @@ function renderRail() {
   if (window.__megaRender) window.__megaRender();
 }
 // Joins live outside any community, so they show whichever community is open. A refusal stays until it is read.
+// History arriving on a new device (docs/history-transfer.md): one note in the room list while it fills, and when it is done.
+const historyNote = sn => {
+  const h = sn.history && sn.history.incoming; if (!h || h.state === 'none') return [];
+  const text = h.state === 'receiving' ? `Your other device is sending this device's message history: ${h.got} of ${h.total} parts.`
+    : h.state === 'done' ? `History from your other device arrived: ${h.msgs} messages.${h.omitted ? ` The oldest ${h.omitted} stayed on the other device.` : ''} <button type="button" class="linkish" data-hist="1">Dismiss</button>`
+    : h.state === 'waiting' ? `No other device has answered yet about your message history. Open mega on a device you already use and press Send under Devices. <button type="button" class="linkish" data-hist="1">Dismiss</button>`
+    : `Asking your other devices for your message history…`;
+  return [{ k: 'hist:' + h.state + ':' + (h.got || 0), h: `<div class="room-note hist-note">${text}</div>` }];
+};
 const joinNotes = sn => [
+  ...historyNote(sn),
   ...sn.refused.map(j => ({ k: 'r' + j.id, h: `<div class="room-note">Could not join “${esc(j.name)}”: ${esc(j.reason)}. <button type="button" class="linkish" data-join="${esc(j.id)}">Dismiss</button></div>` })),
   ...sn.joining.map(j => ({ k: 'j' + j.id, h: `<div class="room-note">Asked to join “${esc(j.name)}”. An admin has to let you in; this can take a while if nobody is online. <button type="button" class="linkish" data-join="${esc(j.id)}">Stop waiting</button></div>` })),
 ];
@@ -687,7 +761,11 @@ async function refreshMentions() {
     for (const c of S.snap.communities) for (const ch of c.channels) {
       if (!ch.unread) { S.mentionSig.delete(ch.gid); if (S.mention.delete(ch.gid)) dirty = true; continue; }
       if (S.mentionSig.get(ch.gid) === ch.unread) continue;
-      const list = (await rpc('messages', { gid: ch.gid, limit: ch.unread + 50 })).messages;
+      // only what changed since the last look (fetchMessages); the window grows in steps so the core can keep answering with differences
+      const limit = Math.max(60, Math.ceil((ch.unread + 50) / 50) * 50), held = S.mentionWin.get(ch.gid);
+      const h = await fetchMessages({ gid: ch.gid, limit }, held && held.limit === limit ? held : null);
+      S.mentionWin.set(ch.gid, { ...h, limit });
+      const list = h.m.messages;
       let left = ch.unread, n = 0;
       for (let i = list.length - 1; i >= 0 && left > 0; i--) { const x = list[i]; if (x.mine || x.deleted || quiet(x)) continue; left--; if (mentionsMe(x.text) || repliesToMe(x, list)) n++; }
       S.mentionSig.set(ch.gid, ch.unread);
@@ -724,6 +802,17 @@ function openGap(m) {
 }
 // Who this really is, when the name alone cannot say: the same six characters on everyone's screen.
 const nameMarks = x => (x.same_name ? `<span class="tag" title="Someone else here has this name. This is the start of this person's account id.">${esc(x.tag)}</span>` : '') + (x.role === 'owner' || x.role === 'admin' ? `<span class="chip ok">${esc(x.role)}</span>` : '');
+// Read receipts: a small double check after the time of the newest message somebody else has read up to. Its names open beside
+// it when it is pointed at, or tapped (S.rrOpen is the message whose list a tap opened; a re-drawn row keeps it open).
+const RR_SHOW = 4;
+const RR_ICON = '<svg viewBox="0 0 15 10" aria-hidden="true"><path d="M1 5.4 4 8.4 9.6 1.4M7.4 8.4 13.9 1.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+function readMark(x) {
+  const all = x.read_by || []; if (!all.length) return '';
+  const shown = all.slice(0, RR_SHOW), more = all.length - shown.length, open = S.rrOpen === x.id;
+  return `<button type="button" class="rr${open ? ' open' : ''}" data-a="rr" data-id="${esc(x.id)}" title="" aria-expanded="${open}" aria-label="${esc('Read by ' + all.join(', '))}">${RR_ICON}<span class="rr-names" aria-hidden="true">${shown.map(n => `<span>${esc(n)}</span>`).join('')}${more > 0 ? `<span class="rr-more">+${more}</span>` : ''}</span></button>`;
+}
+function closeReadMark() { S.rrOpen = null; for (const b of $$('#stream .rr.open')) { b.classList.remove('open'); b.setAttribute('aria-expanded', 'false'); } }
+document.addEventListener('click', e => { if (S.rrOpen && !(e.target.closest && e.target.closest('.rr'))) closeReadMark(); }, true);
 function msgRow(x, cont, m, byId, admin) {
   const mention = !x.mine && !x.deleted && (mentionsMe(x.text) || !!(x.reply && byId.get(x.reply.id) && byId.get(x.reply.id).mine));
   const person = S.members.find(p => p.account === x.sender);
@@ -743,19 +832,21 @@ function msgRow(x, cont, m, byId, admin) {
           : `<button type="button" class="dl xget" data-a="get" data-id="${esc(x.id)}" title="Download ${esc(x.file.name)}">${icon('download')}<span>Download</span></button>`)
       : `<a href="#" class="dl" data-id="${esc(x.id)}" title="Download ${esc(x.file.name)}">${icon('download')}<span>Download</span></a>`;
     const progress = live ? `<div class="xfer-inline"><div id="xdl-${esc(x.id)}">${xferBody(live)}</div></div>` : '';
-    body = (img ? `<div class="imgslot" data-id="${esc(x.id)}"></div><div class="file photo" data-file="${esc(x.id)}"><span class="fname">${esc(x.file.name)}</span>${meta}${dl}</div>`
+    const vo = x.file.voice && !L && window.MegaVoice ? MegaVoice.row(x) : '';   // a voice message gets its own player (mega-voice.js)
+    body = vo ? vo : (img ? `<div class="imgslot" data-id="${esc(x.id)}"></div><div class="file photo" data-file="${esc(x.id)}"><span class="fname">${esc(x.file.name)}</span>${meta}${dl}</div>`
       : `<div class="file" data-file="${esc(x.id)}">${icon('file', 'fi')}<div class="fbody"><div class="fname">${esc(x.file.name)}</div>${meta}</div>${dl}</div>${progress}`
         + (media ? `<div class="mediaslot ${media}" data-id="${esc(x.id)}" data-kind="${media}"><button type="button" class="btn ghost slim media-play">${icon('play')}<span>Play ${media}</span></button></div>` : ''))
       + (x.text ? `<div class="body">${fmt(x.text)}</div>` : '');
     if (saved) body += `<div class="small saved-line">${icon('check')} Saved to ${esc(x.file.download.save_name || x.file.name)}</div>`;
   } else body = `<div class="body${onlyEmoji(x.text) ? ' jumbo' : ''}">${fmt(x.text)}${x.edited ? '<span class="edited">(edited)</span>' : ''}</div>`;
   const src = x.reply && byId.get(x.reply.id);
-  const quote = x.reply ? `<button type="button" class="quote" data-a="goto" data-id="${esc(x.reply.id)}" title="Go to this message">${seal(src ? src.sender : x.reply.name, x.reply.name, 'tiny')}<b>${esc(x.reply.name)}</b><span>${esc(plain(x.reply.text))}</span></button>` : '';
+  const quote = x.reply && !(src && src.deleted) ? `<button type="button" class="quote" data-a="goto" data-id="${esc(x.reply.id)}" title="Go to this message">${seal(src ? src.sender : x.reply.name, x.reply.name, 'tiny')}<b>${esc(x.reply.name)}</b><span>${esc(plain(x.reply.text))}</span></button>` : '';
   const state = x.status === 'sending' ? `<span class="state">${icon('clock')}sending…</span>` : '';
+  const rr = readMark(x);
   const acts = x.deleted || x.tmp ? '' : `<div class="actions"><button data-a="reply" data-id="${esc(x.id)}" title="Reply" aria-label="Reply">${icon('reply')}</button><button data-a="react" data-id="${esc(x.id)}" title="React" aria-label="React">${icon('smile')}</button>${x.mine && x.kind === 'text' ? `<button data-a="edit" data-id="${esc(x.id)}" title="Edit" aria-label="Edit">${icon('pencil')}</button>` : ''}${x.mine || admin ? `<button data-a="del" data-id="${esc(x.id)}" title="Delete" aria-label="Delete">${icon('trash')}</button>` : ''}</div>`;
   const who = cont ? `<div class="who"><span class="sr">${esc(x.name)}</span></div>`
     : `<div class="who"><span class="name">${esc(x.name)}${nameMarks(x)}${person && person.verified ? `<span class="vf" title="Safety number verified">${icon('check')}</span>` : ''}</span>${seal(x.sender, x.name)}</div>`;
-  return `<article class="msg ${cont ? 'cont' : ''} ${x.mine ? 'mine' : ''} ${mention ? 'mention' : ''} ${x.deleted ? 'deleted' : ''} ${x.status === 'sending' ? 'sending' : ''}" style="--wax:${wax(x.sender)}" data-id="${esc(x.id)}">${who}<div class="txt">${quote}${body}${reacts}</div><time class="when" title="${esc(fmtFull(x.ts))}">${fmtTime(x.ts)}${state}</time>${acts}</article>`;
+  return `<article class="msg ${cont ? 'cont' : ''} ${x.mine ? 'mine' : ''} ${mention ? 'mention' : ''} ${x.deleted ? 'deleted' : ''} ${x.status === 'sending' ? 'sending' : ''} ${rr ? 'has-rr' : ''}" style="--wax:${wax(x.sender)}" data-id="${esc(x.id)}">${who}<div class="txt">${quote}${body}${reacts}</div><time class="when" title="${esc(fmtFull(x.ts))}">${fmtTime(x.ts)}${state}${rr}</time>${acts}</article>`;
 }
 function renderStream() {
   const st = $('#stream'), m = S.msgs; if (!m) return;
@@ -768,6 +859,7 @@ function renderStream() {
   const byId = new Map(m.messages.map(x => [x.id, x]));
   const rows = m.more ? [{ k: 'e:older', h: `<div class="day"><button type="button" class="linkish" data-a="older">Show earlier messages</button></div>` }] : []; let lastDay = '', prev = null, known = 0;
   for (const x of m.messages) {
+    if (x.deleted) continue;   // a deleted message leaves nothing behind: no row, no "message deleted" line
     if (x.ts && dayKey(x.ts) !== lastDay) { lastDay = dayKey(x.ts); rows.push({ k: 'd' + lastDay, h: `<div class="day"><span>${esc(fmtDay(x.ts))}</span></div>` }); prev = null; }
     if (x.id === S.firstNew) { rows.push({ k: 'new', h: `<div class="newline" role="separator"><span>${S.newCount} new</span></div>` }); prev = null; }
     if (x.kind === 'notice') { rows.push({ k: x.id, h: sysRow(x) }); prev = null; continue; }
@@ -804,11 +896,12 @@ function renderStream() {
   });
   const t = m.typing.length ? m.typing.join(', ') + (m.typing.length > 1 ? ' are typing' : ' is typing') : '';
   const ty = $('#typing'); ty.innerHTML = t ? `<span>${esc(t)}</span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>` : ''; $('#hint').hidden = !!t;
-  fillImages(); fillMedia();
+  fillImages(); fillMedia(); if (window.MegaVoice) MegaVoice.hydrate();
   if (S.jumpTo) { const el = $(`.msg[data-id="${CSS.escape(S.jumpTo)}"]`, st); S.jumpTo = null; if (el) flashTo(el); }
   else if (S.first) {
     const nl = $('.newline', st);
-    if (nl && nl.offsetTop > st.clientHeight * .4) st.scrollTop = nl.offsetTop - st.clientHeight * .3; else st.scrollTop = st.scrollHeight;
+    const place = () => { const n = $('.newline', st); if (n && n.offsetTop > st.clientHeight * .4) st.scrollTop = n.offsetTop - st.clientHeight * .3; else st.scrollTop = st.scrollHeight; };
+    place(); holdPlace(st, place);
     st.classList.remove('swap'); void st.offsetWidth; st.classList.add('swap');
   }
   else if (near) st.scrollTop = st.scrollHeight;
@@ -816,6 +909,18 @@ function renderStream() {
   if (S.keep != null) { st.scrollTop = st.scrollHeight - S.keep; S.keep = null; }
   S.first = false; S.painted = Date.now(); st.setAttribute('aria-busy', false); onScroll();
   fillAvatars();
+}
+// A room just opened is placed (at the newest message, or at the first unread), but the rows keep growing for a moment:
+// pictures get their size, fonts and avatars arrive, the open animation settles. Put it back in place on every frame until
+// the reader touches the room or about two seconds pass, so a late change in height never leaves it short of the place.
+let holdT = 0;
+function holdPlace(st, place) {
+  cancelAnimationFrame(holdT);
+  const t0 = performance.now(), gid = S.gid; let done = false;
+  const stop = () => { done = true; for (const ev of ['wheel', 'touchstart', 'pointerdown', 'keydown']) st.removeEventListener(ev, stop, true); };
+  for (const ev of ['wheel', 'touchstart', 'pointerdown', 'keydown']) st.addEventListener(ev, stop, { capture: true, passive: true });
+  const step = () => { if (done || gid !== S.gid || S.jumpTo || performance.now() - t0 > 2000) { stop(); return; } place(); holdT = requestAnimationFrame(step); };
+  holdT = requestAnimationFrame(step);
 }
 function flashTo(el) {
   el.scrollIntoView({ block: 'center', behavior: calm() ? 'auto' : 'smooth' });
@@ -865,6 +970,7 @@ $('#stream').addEventListener('click', async e => {
   if (b) {
     e.stopPropagation();
     const a = b.dataset.a, id = b.dataset.id, m = byId(id);
+    if (a === 'rr') { const was = S.rrOpen === id; closeReadMark(); if (!was) { S.rrOpen = id; b.classList.add('open'); b.setAttribute('aria-expanded', 'true'); } return; }
     if (a === 'log') showActivity();
     else if (a === 'older') { const st = $('#stream'); S.keep = st.scrollHeight - st.scrollTop; S.limit += 200; S.lastMsgs = ''; tick(); }
     else if (a === 'invite') $('#btn-invite').click();
@@ -1328,7 +1434,7 @@ async function renderPeople() {
   const iAmOwner = c.role === 'owner', iAmAdmin = iAmOwner || c.role === 'admin';
   const others = ms.filter(m => !m.me), done = others.filter(m => m.verified).length;
   const rank = m => m.role === 'owner' ? 0 : m.role === 'admin' ? 1 : 2;
-  const row = m => `<div class="person"><span class="pseal">${seal(m.account, m.name)}${m.verified ? `<span class="vf-badge" title="Safety number verified">${icon('check')}</span>` : ''}</span><div class="nm"><b><span>${esc(m.name)}</span>${m.me ? '<span class="you">you</span>' : ''}${m.role !== 'member' ? `<span class="chip ok">${m.role}</span>` : ''}</b><span class="small">${m.same_name ? `<span class="tag" title="Someone else here has this name.">${esc(m.tag)}</span> · ` : ''}${m.devices} device${m.devices === 1 ? '' : 's'}${m.me ? '' : m.verified ? ' · <span class="ok">verified</span>' : ' · not verified'}</span>${m.listening ? `<span class="listen" title="${esc(listenLine(m.listening))}">${esc(listenLine(m.listening))}</span>` : ''}</div><span class="p-acts">${window.__megaDirect ? __megaDirect.rowButton(m) : ''}${window.__megaRing ? __megaRing.rowButton(m) : ''}${m.me ? '' : `<button class="mini" data-a="verify" data-acct="${esc(m.account)}" title="Verify safety number" aria-label="Verify safety number of ${esc(m.name)}">${icon('key')}</button>`}${(iAmOwner && !m.me && m.role !== 'owner') ? `<button class="mini" data-a="role" data-acct="${esc(m.account)}" data-r="${m.role}" title="Change role" aria-label="Change role of ${esc(m.name)}">${icon('star')}</button>` : ''}${(!m.me && m.role !== 'owner' && (iAmOwner || (iAmAdmin && m.role === 'member'))) ? `<button class="mini" data-a="kick" data-acct="${esc(m.account)}" data-n="${esc(m.name)}" title="Remove from community" aria-label="Remove ${esc(m.name)}">${icon('x')}</button>` : ''}</span></div>`;
+  const row = m => `<div class="person"><span class="pseal">${seal(m.account, m.name)}${window.__megaListen ? __megaListen.noteHtml(m) : ''}${m.verified ? `<span class="vf-badge" title="Safety number verified">${icon('check')}</span>` : ''}</span><div class="nm"><b><span>${esc(m.name)}</span>${m.me ? '<span class="you">you</span>' : ''}${m.role !== 'member' ? `<span class="chip ok">${m.role}</span>` : ''}</b><span class="small">${m.same_name ? `<span class="tag" title="Someone else here has this name.">${esc(m.tag)}</span> · ` : ''}${m.devices} device${m.devices === 1 ? '' : 's'}${m.me ? '' : m.verified ? ' · <span class="ok">verified</span>' : ' · not verified'}</span>${m.listening ? `<span class="listen" title="${esc(listenLine(m.listening))}">${esc(listenLine(m.listening))}</span>` : ''}</div><span class="p-acts">${window.__megaDirect ? __megaDirect.rowButton(m) : ''}${window.__megaRing ? __megaRing.rowButton(m) : ''}${m.me ? '' : `<button class="mini" data-a="verify" data-acct="${esc(m.account)}" title="Verify safety number" aria-label="Verify safety number of ${esc(m.name)}">${icon('key')}</button>`}${(iAmOwner && !m.me && m.role !== 'owner') ? `<button class="mini" data-a="role" data-acct="${esc(m.account)}" data-r="${m.role}" title="Change role" aria-label="Change role of ${esc(m.name)}">${icon('star')}</button>` : ''}${(!m.me && m.role !== 'owner' && (iAmOwner || (iAmAdmin && m.role === 'member'))) ? `<button class="mini" data-a="kick" data-acct="${esc(m.account)}" data-n="${esc(m.name)}" title="Remove from community" aria-label="Remove ${esc(m.name)}">${icon('x')}</button>` : ''}</span></div>`;
   el.innerHTML = `<div class="p-head"><h2>People <span class="count">${ms.length}</span></h2><button class="mini" id="people-close" aria-label="Close people" title="Close">${icon('x')}</button></div>
     ${others.length ? `<div class="p-trust"><div class="meter" aria-hidden="true"><i style="width:${others.length ? done / others.length * 100 : 0}%"></i></div><span>${done ? `You have verified ${done} of ${others.length}` : `Nobody verified yet. Compare safety numbers with the ${icon('key', 'inline')}`}</span></div>` : ''}
     <div class="p-list">${[...ms].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)).map(row).join('')}</div>` +
@@ -1437,14 +1543,24 @@ $('#search-pop').addEventListener('click', e => {
 $('#btn-devices').onclick = async () => {
   const render = async w => {
     const ds = await rpc('devices');
-    $('#mb', w).innerHTML = `<p class="muted small">Every device holds its own keys. A lost device must be revoked: it is then removed from every room and cannot read anything new.</p>` +
+    // History for a new device (docs/history-transfer.md): a device that asks waits here for a yes; what is being sent shows here too.
+    const h = (S.snap && S.snap.history) || { requests: [], sending: [], here: {} };
+    const reqs = h.requests.map(r => `<div class="room-note hist-req" data-hist-dev="${esc(r.device)}">Your new device <b class="mono">${esc(r.device.slice(0, 12))}</b> asks for this device's message history (${h.here.msgs} messages in ${h.here.rooms} rooms). <button type="button" class="btn slim" data-hs="${esc(r.device)}">Send</button> <button type="button" class="btn ghost slim" data-hd="${esc(r.device)}">Not now</button></div>`).join('');
+    const sending = h.sending.map(x => `<div class="muted small hist-sending">${x.done ? `History sent to <b class="mono">${esc(x.device.slice(0, 12))}</b>.` : `Sending history to <b class="mono">${esc(x.device.slice(0, 12))}</b>: ${x.sent} of ${x.total} parts.`}</div>`).join('');
+    $('#mb', w).innerHTML = reqs + sending + `<p class="muted small">Every device holds its own keys. A lost device must be revoked: it is then removed from every room and cannot read anything new.</p>` +
       ds.map(d => `<div class="person device">${icon('devices', 'big')}<div class="nm"><b class="mono">${d.device.slice(0, 12)}</b><span class="small">added ${new Date(d.created * 1000).toLocaleDateString()}${d.this ? ' · this device' : ''}</span></div>${d.revoked ? '<span class="chip">revoked</span>' : (d.this ? '' : `<button class="btn ghost slim" data-r="${d.device}">Revoke</button>`)}</div>`).join('');
     $('#mb', w).querySelectorAll('[data-r]').forEach(b => b.onclick = async () => { try { await rpc('revoke_device', { device: b.dataset.r }); render(w); } catch (e) { toast(e.message); } });
+    $('#mb', w).querySelectorAll('[data-hs]').forEach(b => b.onclick = async () => { try { await rpc('history_send', { device: b.dataset.hs }); S.last = ''; await tick(); render(w); } catch (e) { toast(e.message); } });
+    $('#mb', w).querySelectorAll('[data-hd]').forEach(b => b.onclick = async () => { try { await rpc('history_decline', { device: b.dataset.hd }); S.last = ''; await tick(); render(w); } catch (e) { toast(e.message); } });
   };
   const p = modal('Devices and recovery', `<div id="mb"></div><label for="code">Add a device</label><input type="text" id="code" placeholder="Paste the code shown on the new device (commons-pair:…)" spellcheck="false"><div class="muted small" id="chk"></div>
+    <label class="small hist-auto"><input type="checkbox" id="hist-auto" checked> Also send this device's message history to it</label>
     <label>Recovery key</label><button class="btn ghost slim" id="showkey">Show my recovery key</button><div id="key"></div>`,
-    [{ label: 'Close', primary: false }, { label: 'Approve new device', run: async w => { const r = await rpc('approve_pairing', { code: val(w, 'code') }); $('#chk', w).textContent = 'Approved. The new device will join your rooms within a few seconds. Check code: ' + r.check; return false; } }]);
-  setTimeout(() => { const w = document.querySelector('.modal'); if (!w) return; render(w); $('#code', w).oninput = async e => { try { const r = await rpc('pairing_preview', { code: e.target.value }); $('#chk', w).textContent = `Check code ${r.check}. It must match the new device before you approve.`; } catch (er) { $('#chk', w).textContent = ''; } }; $('#showkey', w).onclick = () => { $('#key', w).innerHTML = `<label for="keypp">Your passphrase</label><input type="password" id="keypp" autocomplete="current-password"><button class="btn ghost slim" id="keygo">Show</button><div class="muted small" id="keyerr" role="alert"></div>`; $('#keygo', w).onclick = async () => { try { $('#key', w).innerHTML = `<div class="code key-code">${esc((await rpc('recovery_key', { passphrase: $('#keypp', w).value })).key)}</div>`; } catch (er) { $('#keyerr', w).textContent = 'Wrong passphrase.'; } }; }; }, 30);
+    [{ label: 'Close', primary: false }, { label: 'Approve new device', run: async w => { const r = await rpc('approve_pairing', { code: val(w, 'code'), send_history: !!$('#hist-auto', w).checked }); $('#chk', w).textContent = 'Approved. The new device will join your rooms within a few seconds. Check code: ' + r.check; return false; } }]);
+  // requests and progress change while the screen is open
+  const refresh = setInterval(() => { const w = document.querySelector('.modal'); if (!w || !$('#mb', w)) return clearInterval(refresh); render(w); }, 2500);   // only #mb is redrawn, so typing in the code field is never disturbed
+  // The dialog is in the page already (modal() appends it before it waits), so it is wired at once: a code pasted straight away must show its check code.
+  (() => { const w = document.querySelector('.modal'); if (!w) return; render(w); $('#code', w).oninput = async e => { try { const r = await rpc('pairing_preview', { code: e.target.value }); $('#chk', w).textContent = `Check code ${r.check}. It must match the new device before you approve.`; } catch (er) { $('#chk', w).textContent = ''; } }; $('#showkey', w).onclick = () => { $('#key', w).innerHTML = `<label for="keypp">Your passphrase</label><input type="password" id="keypp" autocomplete="current-password"><button class="btn ghost slim" id="keygo">Show</button><div class="muted small" id="keyerr" role="alert"></div>`; $('#keygo', w).onclick = async () => { try { $('#key', w).innerHTML = `<div class="code key-code">${esc((await rpc('recovery_key', { passphrase: $('#keypp', w).value })).key)}</div>`; } catch (er) { $('#keyerr', w).textContent = 'Wrong passphrase.'; } }; }; })();
   await p;
 };
 $('#btn-activity').onclick = async () => {
@@ -1514,24 +1630,39 @@ $('#btn-settings').onclick = () => {
   ${document.documentElement.classList.contains('mega') ? `<h3 class="set-h">Chat</h3>
   <label>Chat font</label>${seg('cf', [['', 'Bellefair'], ['raster', 'Raster']], pref.get('chatFont') || '')}<p class="muted small">For messages and the message box on this device. Names and menus keep their font.</p>` : ''}
   <h3 class="set-h">Sound</h3>
-  <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when mega is in the background or the message is in another room.</p>
+  <label>Sound for new messages</label>${seg('snd', [['all', 'All messages'], ['mentions', 'Mentions and replies'], ['off', 'Off']], soundPref())}<p class="muted small">Plays when mega is in the background or the message is in another room. A room you mute is silent here too.</p>
+  <h3 class="set-h">Battery</h3>
+  <label>Battery saver</label>${mobileApp() ? seg('sav', [['auto', 'Off'], ['on', 'On']], saverPref() === 'on' ? 'on' : 'auto') : seg('sav', [['auto', 'On battery'], ['on', 'Always'], ['off', 'Off']], saverPref())}<p class="muted small">Holds the moving backgrounds still and turns off the glass blur and small animations, so mega uses less power. This device only.</p>
+  ${window.__megaNotify ? __megaNotify.settingsHTML() : ''}
   <h3 class="set-h">Advanced</h3>
   <label class="check"><input type="checkbox" id="ty" ${S.snap.typing_enabled ? 'checked' : ''}><span>Send “typing…” hints — the relay can see that a message-sized packet was sent at that moment</span></label>
+  <label class="check"><input type="checkbox" id="rrs" ${S.snap.read_receipts !== false ? 'checked' : ''}><span>Send read receipts — people in a room see how far you have read, and you see how far they have. Off: you send none and see none. The relay can see that a message-sized packet was sent at that moment</span></label>
   <label class="check"><input type="checkbox" id="lstr" ${S.snap.share_listening ? 'checked' : ''}><span>Share what I'm listening to</span></label>
   <label for="rune">rune address</label><input type="text" id="rune" value="${esc(S.snap.rune_url)}" spellcheck="false"><p class="muted small">Song title and artist go to your communities, end to end encrypted. Nothing else is read or sent.</p>
+  <div id="sp-row"></div>
   ${mobileApp() ? '' : `<label for="dl-dir">Large-file downloads folder</label><input type="text" id="dl-dir" value="${esc(S.snap.download_dir || '')}" spellcheck="false"><p class="muted small">Written here as they arrive, one verified piece at a time. Leave empty for your usual Downloads folder.</p>`}
+  ${window.__TAURI__ ? '' : '<div id="open-as-row" hidden></div>'}
   ${window.__TAURI__ ? '' : '<label>Updates</label><button type="button" class="btn ghost" id="set-update">Check for updates</button>'}
   ${mobileApp() ? '' : '<label>Calls</label><button type="button" class="btn ghost" id="set-gamekeys">Game keys…</button><p class="muted small">Mute yourself in mega while you talk to your game team.</p>'}
   <label for="rl">Relay address</label><input type="text" id="rl" value="${esc(S.snap.relay)}" spellcheck="false"><p class="muted small">Change this only if your relay moved. A different relay does not have your communities.<br>Your account id: <span class="mono">${esc(S.snap.me.account.slice(0, 16))}…</span></p>
   <label for="rs">This server's sign-up secret</label><input type="password" id="rs" value="" spellcheck="false" autocomplete="off" placeholder="${S.snap.relay_secret ? 'Saved on this device — leave empty to keep it' : 'Not saved on this device — paste it here if you have it'}"><p class="muted small">A device added by pairing may not have it; without it, invite links from this device only work for people who already have an account here. It is checked with the relay and never shown again once saved.</p>`,
   [{ label: 'Cancel', primary: false }, { label: 'Save', run: async w => {
+    const oa = $('#oa', w);   // browser version only: how the launcher shows mega next time
+    if (oa && oa.value !== oa.dataset.was) { const r = await BRIDGE.fetch('/open-as?v=' + encodeURIComponent(oa.value), { method: 'POST' }).then(x => x.json()).catch(() => null); if (!r || r.error) toast('Could not save how mega opens.'); }
     if (val(w, 'rl').trim() !== S.snap.relay) await rpc('set_relay', { relay: val(w, 'rl') });
     const secret = val(w, 'rs').trim();
     if (secret) await rpc('set_relay_invite', { secret });
     if (!mobileApp() && val(w, 'dl-dir').trim() !== (S.snap.download_dir || '')) await rpc('set_download_dir', { dir: val(w, 'dl-dir') });
-    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('wavePalette', val(w, 'wave-pal')); pref.set('theme', val(w, 'th')); if (document.documentElement.classList.contains('mega')) pref.set('chatFont', val(w, 'cf')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh();
+    await rpc('set_name', { name: val(w, 'n') }); await rpc('set_typing_enabled', { on: $('#ty', w).checked }); if ($('#rrs', w).checked !== (S.snap.read_receipts !== false)) await rpc('set_read_receipts', { on: $('#rrs', w).checked }); await rpc('set_listening_sharing', { on: $('#lstr', w).checked, rune: val(w, 'rune') }); pref.set('wavePalette', val(w, 'wave-pal')); pref.set('theme', val(w, 'th')); if (document.documentElement.classList.contains('mega')) pref.set('chatFont', val(w, 'cf')); pref.set('sound', val(w, 'snd') === 'all' ? '' : val(w, 'snd')); pref.set('saver', val(w, 'sav') === 'auto' ? '' : val(w, 'sav')); powerTick(); if (window.__megaNotify) await __megaNotify.save(w); applyPrefs(); if (window.__waveDither) window.__waveDither.refresh();
   } }]);
   fillAvatars();
+  if (window.__megaListen) __megaListen.fillSettings($('#modal-root'));
+  if (!window.__TAURI__) BRIDGE.fetch('/open-as').then(r => r.json()).then(j => {
+    // Only the installed browser version has a launcher that can honour this.
+    const row = $('#open-as-row'); if (!row || !j || !j.packaged || !j.open_as) return;
+    row.innerHTML = `<label>Open mega as</label>${seg('oa', [['window', 'Its own window'], ['tab', 'A tab in my browser']], j.open_as)}<p class="muted small">Takes effect the next time you open mega from its icon. A window of its own keeps mega apart from your browser's extensions; a tab uses your everyday browser and profile, where its extensions can see the page.${j.forced ? ' The MEGATRON_OPEN setting of this computer overrides this choice.' : ''}</p>`;
+    $('#oa', row).dataset.was = j.open_as; row.hidden = false;
+  }).catch(() => { });
   p.then(tick);
 };
 

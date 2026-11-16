@@ -11,7 +11,7 @@ import path from 'node:path';
 const out = process.argv[2] || '/tmp/commons-ui';
 fs.mkdirSync(out, { recursive: true });
 const root = path.resolve(new URL('..', import.meta.url).pathname);
-const bin = p => path.join(root, 'target/debug', p);
+const bin = p => path.join(process.env.COMMONS_UI_TARGET || path.join(root, 'target'), 'debug', p);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const procs = [];
 // Every bridge here runs the way the browser version's launcher starts it: with a per-start secret that the page gets in the
@@ -27,8 +27,10 @@ const runeSong = { status: 'playing', index: 0, queue: [{ track: { title: 'Detec
 const runeSrv = http.createServer((req, res) => {
   const body = req.url === '/api/zones' ? JSON.stringify([{ id: 'pc', name: 'Linux PC speakers', kind: 'pc' }]) : req.url === '/api/player/pc' ? JSON.stringify(runeSong) : null;
   if (!body) { res.writeHead(404); res.end('{}'); return; }
+  if (req.method === 'POST') { let b = ''; req.on('data', d => b += d); req.on('end', () => { try { runePosts.push(JSON.parse(b)); } catch { } res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}'); }); return; }
   res.writeHead(200, { 'content-type': 'application/json' }); res.end(body);
 });
+const runePosts = [];
 await new Promise(r => runeSrv.listen(0, '127.0.0.1', r));
 const runeUrl = `http://127.0.0.1:${runeSrv.address().port}`;
 
@@ -49,14 +51,20 @@ fs.writeFileSync(path.join(fakeBin, 'xdg-open'), '#!/bin/sh\nprintf "%s\\n" "$1"
 const startRelay = () => run(bin('commons-relay'), ['--bind', `127.0.0.1:${RELAY_PORT}`, '--data', path.join(out, 'data/relay')]);
 let relayProc = startRelay();
 for (const [n, port] of [['alice', A_PORT], ['bob', B_PORT]]) {
-  const env = { COMMONS_DATA: path.join(out, 'data', n), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(port) };
+  // COMMONS_NOTIFY_LOG: what the background part would have shown as a system notification goes to a file, never to a screen.
+  const env = { COMMONS_DATA: path.join(out, 'data', n), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(port), COMMONS_NOTIFY_LOG: path.join(out, `notify-${n}.log`), COMMONS_RUNE: 'http://127.0.0.1:1' };   // COMMONS_RUNE: sharing is on by default, and a test must never ask the real rune on 4545
   if (n === 'bob') Object.assign(env, { PATH: fakeBin + ':' + process.env.PATH, COMMONS_XDG_MARKER: xdgMarker, COMMONS_PICKED: path.join(out, 'downloads-bob') });
   run(bin('dev_bridge'), [String(port), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], env);
 }
 await sleep(1500);
 
+// A known sound for the fake microphone: a 440 Hz tone for 0.4 s, then 0.4 s of silence, over and over (48 kHz mono, 16 bit).
+const beepWav = path.join(out, 'beeps.wav');
+{ const rate = 48000, n = rate * 3.2, pcm = Buffer.alloc(n * 2); for (let i = 0; i < n; i++) pcm.writeInt16LE(Math.floor(i / (rate * .4)) % 2 === 0 ? Math.round(Math.sin(2 * Math.PI * 440 * i / rate) * 14000) : 0, i * 2);
+  const h = Buffer.alloc(44); h.write('RIFF', 0); h.writeUInt32LE(36 + pcm.length, 4); h.write('WAVEfmt ', 8); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22); h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * 2, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34); h.write('data', 36); h.writeUInt32LE(pcm.length, 40);
+  fs.writeFileSync(beepWav, Buffer.concat([h, pcm])); }
 const chrome = run(process.env.COMMONS_UI_BROWSER || 'chromium', ['--headless=new', '--password-store=basic', '--use-mock-keychain', `--remote-debugging-port=${CDP_PORT}`, '--user-data-dir=' + path.join(out, 'chrome'), '--use-gl=angle', '--use-angle=vulkan',
-  '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu', '--ozone-platform=headless', '--disable-software-rasterizer', '--mute-audio', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', '--disable-audio-output', '--no-first-run', '--window-size=1280,800', 'about:blank']);
+  '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu', '--ozone-platform=headless', '--disable-software-rasterizer', '--mute-audio', '--autoplay-policy=no-user-gesture-required', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', `--use-file-for-fake-audio-capture=${beepWav}`, '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', '--disable-audio-output', '--no-first-run', '--window-size=1280,800', 'about:blank']);
 let ver; for (let i = 0; i < 50; i++) { try { ver = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)).json(); break; } catch { await sleep(200); } }
 if (!ver) throw new Error('chromium did not start');
 
@@ -81,7 +89,9 @@ class Page {
 async function open(url) {
   const t = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/new?` + encodeURIComponent(url), { method: 'PUT' })).json();
   const ws = new WebSocket(t.webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
-  const p = new Page(ws); await p.send('Page.enable'); await p.send('Runtime.enable'); await p.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+  const p = new Page(ws); await p.send('Page.enable'); await p.send('Runtime.enable');
+  // the first-run tour would sit over every other check; it is marked as seen on each load unless the tour check has asked for it
+  await p.send('Page.addScriptToEvaluateOnNewDocument', { source: `try { if (!sessionStorage.getItem('tourtest')) localStorage.setItem('commons.tour', '1'); } catch {}` }); await p.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
   // COMMONS_UI_RPC_TRACE=1: how long each call to the core takes from the page's side (window.__rpcTrace, printed when the check ends).
   if (process.env.COMMONS_UI_RPC_TRACE) {
     const source = `(() => { if (window.__rpcTrace) return; const T = window.__rpcTrace = { m: {}, slow: [] }; const w = () => { if (typeof window.rpc !== 'function') return setTimeout(w, 20); const r0 = window.rpc; window.rpc = async (m, a) => { const t = performance.now(); try { return await r0(m, a); } finally { const d = performance.now() - t, e = T.m[m] || (T.m[m] = { n: 0, max: 0, sum: 0, over: 0 }); e.n++; e.sum += d; if (d > e.max) e.max = d; if (d > 400) { e.over++; T.slow.push([new Date().toISOString().slice(11, 23), m, Math.round(d)]); if (T.slow.length > 300) T.slow.shift(); } } }; }; w(); })()`;
@@ -151,7 +161,7 @@ try {
   await click(A, '#switcher'); await click(A, '#mk-new'); await type(A, '#n', 'Book club'); await click(A, '.modal .acts button:last-child');
   await A.waitFor(`document.querySelector('.room')`);
   await click(A, '#btn-invite');
-  await A.waitFor(`document.querySelector('#mi-pw') && document.querySelector('#mi-pw').value.split('-').length === 4`);   // a suggestion is already there
+  await A.waitFor(`document.querySelector('#mi-pw') && document.querySelector('#mi-pw').value.split('-').length === 6`);   // a suggestion (five words and a number) is already there
   const pwd = await A.ev(`document.querySelector('#mi-pw').value`); await A.shot('03-invite-form');
   await A.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(500);
   if (!await A.ev(`document.documentElement.scrollWidth <= innerWidth + 1 && document.querySelector('.mi-modal').getBoundingClientRect().right <= innerWidth + 1`)) throw new Error('invite: the invite screen is wider than a phone');
@@ -210,15 +220,63 @@ try {
   await A.waitFor(`document.querySelector('#set-update').textContent==='Update to 9.9.9'&&!!document.querySelector('#upd [data-u=install]')&&!document.querySelector('#upd').hidden`);
   await click(A, '.modal .acts button'); await sleep(300); await A.shot('08b-update-bar');
   await A.ev(`(()=>{window.fetch=window.__realFetch;window.__commonsBrowserUpdate.offer=null;const b=document.querySelector('#upd');b.hidden=true;b.innerHTML='';})()`);
-  // "Listening to" from rune: one switch in Settings, the account strip, and under the name in the People drawer.
+  // "Listening to" from rune: on for everyone until they turn it off, one switch in Settings, the account strip, and under the name in the People drawer.
+  for (const [n, P] of [['alice', A], ['bob', B]]) if (!await P.ev(`S.snap.share_listening === true`)) throw new Error(`listening: sharing should be on for a new account (${n})`);
   await click(A, '#btn-settings'); await A.waitFor(`document.querySelector('#lstr')`);
+  if (!await A.ev(`document.querySelector('#lstr').checked`)) throw new Error('listening: the Settings switch should be on already');
   await type(A, '#rune', runeUrl);
-  await A.ev(`(()=>{document.querySelector('#lstr').checked=true;})()`);
   await click(A, '.modal .acts button:last-child');
   await A.waitFor(`(()=>{const e=document.querySelector('#me-listen');return !!e&&!e.hidden&&e.innerText.includes('Detective Arriving on the Scene')&&e.innerText.includes('Sea Power')})()`, 20000);
   await B.ev(`(()=>{ if (!S.people) document.querySelector('#btn-people').click(); })()`);
   await B.waitFor(`[...document.querySelectorAll('.person .listen')].some(e=>e.innerText.includes('Detective Arriving on the Scene')&&e.innerText.includes('Sea Power'))`, 20000);
   await A.shot('09-listening-own'); await B.shot('10-listening-people');
+  const nd = (c, w) => { if (!c) throw new Error(w); };
+  // Listen along: one small note under the picture of a friend whose Spotify song can be joined. A plain song has none. A click joins on
+  // B's own (fake) rune, picked without asking; the note is then filled, and a second click leaves. B's rune address is pointed at the fake
+  // first, so this can never reach a real rune. Nothing else of it is on the page: no button in the row, no menu of players, no strip.
+  const note = () => B.ev(`(() => { const b = document.querySelector('#people .person .pseal .ml-note'); if (!b) return null; const k = b.getBoundingClientRect(), a = b.closest('.pseal').querySelector('.seal').getBoundingClientRect(), row = b.closest('.person').getBoundingClientRect(), nx = b.closest('.person').nextElementSibling, nr = nx ? nx.getBoundingClientRect() : null; return { on: b.classList.contains('on'), pressed: b.getAttribute('aria-pressed'), title: b.title, label: b.getAttribute('aria-label'), k: [k.left, k.top, k.right, k.bottom].map(Math.round), av: [a.left, a.top, a.right, a.bottom].map(Math.round), row: [row.left, row.top, row.right, row.bottom].map(Math.round), next: nr ? Math.round(nr.top) : null, n: document.querySelectorAll('#people .ml-note').length, old: document.querySelectorAll('#ml-strip, #ml-menu, .ml-btn, .ml-link, [data-ml="join"], [data-ml="leave"]').length, w: innerWidth, sw: document.documentElement.scrollWidth }; })()`);
+  nd(await note() === null, 'listen along: a local song must not offer the note');
+  await B.ev(`rpc('set_listening_sharing', { on: false, rune: ${JSON.stringify(runeUrl)} }).then(() => 1)`);
+  const sp = { id: 'sp:4uLU6hMCjMI75M1A2tKUQC', source: 'spotify', spotifyUri: 'spotify:track:4uLU6hMCjMI75M1A2tKUQC', title: 'Detective Arriving on the Scene', artists: [{ name: 'Sea Power' }] };
+  runeSong.queue = [{ track: sp }]; runeSong.positionMs = 30000; runeSong.updatedAt = Date.now();
+  await B.waitFor(`!!document.querySelector('#people .person .pseal .ml-note')`, 30000);
+  let nt = await note();
+  nd(nt.n === 1 && !nt.on && nt.pressed === 'false' && nt.title === 'Sea Power – Detective Arriving on the Scene' && nt.label === 'Listen along with Alice: Sea Power – Detective Arriving on the Scene', 'listen along: the note is not as it should be: ' + JSON.stringify(nt));
+  nd(nt.k[1] >= nt.av[3] - 1 && nt.k[1] - nt.av[3] <= 8 && Math.abs((nt.k[0] + nt.k[2]) / 2 - (nt.av[0] + nt.av[2]) / 2) <= 3 && nt.k[3] <= nt.row[3] + 1 && (nt.next === null || nt.k[3] <= nt.next + 1) && (nt.k[2] - nt.k[0]) <= 24, 'listen along: the note is not a small mark under the picture: ' + JSON.stringify(nt));
+  nd(nt.old === 0 && !/Listen along|Open in Spotify/.test(await B.ev(`document.querySelector('#people').innerText`)), 'listen along: the old button, menu or strip is still on the page: ' + JSON.stringify(nt));
+  await B.send('Page.bringToFront'); await B.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: (nt.k[0] + nt.k[2]) / 2, y: (nt.k[1] + nt.k[3]) / 2 }); await sleep(300);
+  await B.shot('10b-listen-note');
+  await B.ev(`document.querySelector('#people .ml-note').click()`);
+  await B.waitFor(`(()=>{const b=document.querySelector('#people .ml-note');const s=__megaListen.state();return !!b&&b.classList.contains('on')&&b.getAttribute('aria-pressed')==='true'&&s.state==='on'&&s.target==='rune (Linux PC speakers)'})()`, 15000).catch(async e => { throw new Error('listen along: a click on the note did not join on rune: ' + await B.ev(`JSON.stringify([__megaListen.state(), document.querySelector('#toast').innerText])`)); });
+  await new Promise(r => setTimeout(r, 2500));
+  nd(runePosts.some(c => c.type === 'play' && c.trackIds[0] === 'sp:4uLU6hMCjMI75M1A2tKUQC'), 'listen along: the joiner\'s rune was not told to play the song ' + JSON.stringify(runePosts));
+  nt = await note();
+  nd(nt.on && nt.label === 'Stop listening along with Alice: Sea Power – Detective Arriving on the Scene' && nt.old === 0, 'listen along: while listening along the note is not filled, or something else appeared: ' + JSON.stringify(nt));
+  await B.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 600, y: 400 }); await sleep(200);
+  await B.shot('10c-listening-along');
+  // the phone's width: the same note in the same list, inside the screen, and a tap is a click
+  await B.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(900);
+  await B.ev(`(()=>{ if (!S.people) document.querySelector('#btn-people').click(); })()`); await sleep(600);
+  nt = await note();
+  nd(nt && nt.on && nt.k[0] >= 0 && nt.k[2] <= nt.w && nt.k[1] >= nt.av[3] - 1 && nt.sw <= nt.w + 1, 'listen along: at a phone\'s width the note is not under the picture, inside the screen: ' + JSON.stringify(nt));
+  await B.shot('10d-listening-along-390');
+  await B.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 2 });
+  await B.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: (nt.k[0] + nt.k[2]) / 2, y: (nt.k[1] + nt.k[3]) / 2 }] }); await sleep(40); await B.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await B.waitFor(`(()=>{const b=document.querySelector('#people .ml-note');return !!b&&!b.classList.contains('on')&&__megaListen.state().state==='off'})()`, 8000).catch(() => { throw new Error('listen along: a tap on the filled note did not leave'); });
+  await B.shot('10e-listen-note-390');
+  await B.send('Emulation.setTouchEmulationEnabled', { enabled: false }); await B.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }); await sleep(900);
+  await B.ev(`(()=>{ if (!S.people) document.querySelector('#btn-people').click(); })()`); await sleep(400);
+  nd(await B.ev(`rpc('listen_status').then(s => s.state === 'off')`), 'listen along: leaving did not reach the core');
+  // no rune that answers and no Spotify login: one short notice says why, and nothing is left on
+  await B.ev(`rpc('set_listening_sharing', { on: false, rune: 'http://127.0.0.1:1' }).then(() => 1)`);
+  await B.ev(`document.querySelector('#people .ml-note').click()`);
+  await B.waitFor(`/^Could not listen along: rune is not answering and Spotify is not (set up|logged in)/.test(document.querySelector('#toast').innerText) && !document.querySelector('#toast').hidden`, 8000).catch(async () => { throw new Error('listen along: with no player there was no notice saying why: ' + await B.ev(`document.querySelector('#toast').innerText`)); });
+  await sleep(600);
+  nt = await note();
+  nd(nt && !nt.on && nt.old === 0 && await B.ev(`rpc('listen_status').then(s => s.state === 'off')`), 'listen along: a join that could not play left something on: ' + JSON.stringify(nt));
+  await B.ev(`rpc('set_listening_sharing', { on: false, rune: ${JSON.stringify(runeUrl)} }).then(() => 1)`);
+  if (process.env.COMMONS_UI_STOP_AFTER === 'listen') { console.log('UI check stopped after the listen-along check (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
+  runeSong.queue = [{ track: { title: 'Detective Arriving on the Scene', artists: [{ name: 'Sea Power' }] } }]; delete runeSong.positionMs;
   // Playback stops in rune: friends stop seeing it at once, not when the ten-minute TTL runs out.
   runeSong.status = 'stopped'; runeSong.index = -1; runeSong.queue = [];
   await B.waitFor(`![...document.querySelectorAll('.person .listen')].some(e=>e.innerText.includes('Detective'))`, 90000).catch(async () => {
@@ -413,6 +471,103 @@ try {
   await A.ev(`[...document.querySelectorAll('#rooms .room')].find(r => r.dataset.g === ${JSON.stringify(textGid)}).click()`);
   await sleep(200);
 
+  // ---- voice messages (mega-voice.js): alice records, bob plays ----
+  {
+    const tj = JSON.stringify(textGid);
+    const open = P => P.ev(`[...document.querySelectorAll('#rooms .room')].find(r => r.dataset.g === ${tj}).click()`);
+    for (const P of [A, B]) await P.ev(`S.people && document.querySelector('#btn-people').click()`);
+    await open(B); await open(A); await sleep(1200);
+    const vneed = (c, why) => { if (!c) throw new Error('voice: ' + why); };
+    vneed(await A.ev(`!document.querySelector('#mic').hidden`), 'no mic button in a text room');
+    const centre = async (P, sel) => { const r = await P.ev(`(() => { const b = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return [b.x + b.width / 2, b.y + b.height / 2]; })()`); return r; };
+    const mouse = (P, type, [x, y]) => P.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
+    const voices = P => P.ev(`S.msgs.messages.filter(m => m.file && m.file.voice).map(m => ({ id: m.id, ms: m.file.voice.ms, peaks: m.file.voice.peaks, mime: m.file.mime, name: m.file.name }))`);
+    const v0 = (await voices(B)).length;
+    // 1. press and hold about 2 s, let go: sent. The bar shows while it records.
+    let mic = await centre(A, '#mic');
+    vneed(await A.ev(`(() => { const r = document.querySelector('#mic').getBoundingClientRect(); const e = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return e && e.closest('#mic') ? true : (e ? e.outerHTML.slice(0, 120) : 'nothing'); })()`) === true, 'something covers the mic button: ' + await A.ev(`(() => { const r = document.querySelector('#mic').getBoundingClientRect(); const e = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return JSON.stringify([r, e && e.outerHTML.slice(0, 120), S.gid, document.querySelector('#composer').hidden]); })()`));
+    await mouse(A, 'mousePressed', mic); await sleep(2200);
+    const bar = await A.ev(`({ hidden: document.querySelector('#vrec').hidden, st: MegaVoice.state.st, mode: MegaVoice.state.mode, recording: document.querySelector('.slip').classList.contains('recording'), timer: document.querySelector('.vtimer').textContent })`);
+    vneed(!bar.hidden && bar.recording && bar.st === 'recording' && bar.mode === 'hold', 'the recording bar is not showing while the button is held: ' + JSON.stringify(bar));
+    await A.shot('voice-1-recording');
+    await mouse(A, 'mouseReleased', mic);
+    await B.waitFor(`S.msgs.messages.filter(m => m.file && m.file.voice).length >= ${v0 + 1}`, 20000);
+    let vs = await voices(B); const c1 = vs[vs.length - 1];
+    vneed(c1.ms >= 1800 && c1.ms <= 3500, 'wrong length: ' + c1.ms);
+    vneed(/^audio\//.test(c1.mime) && c1.peaks.length === 128, 'wrong type or waveform size: ' + JSON.stringify(c1));
+    const pk = c1.peaks.match(/../g).map(h => parseInt(h, 16)); vneed(Math.max(...pk) - Math.min(...pk) > 100, 'the waveform does not follow the sound: ' + c1.peaks);
+    vneed(await A.ev(`MegaVoice.state.st === 'idle' && document.querySelector('#vrec').hidden && !document.querySelector('.slip').classList.contains('recording')`), 'the bar stayed after sending');
+    // 2. bob sees a player with the right duration and plays it
+    await B.waitFor(`document.querySelector('.vmsg[data-vid="${c1.id}"]')`, 8000);
+    const pv = await B.ev(`(() => { const e = document.querySelector('.vmsg[data-vid="${c1.id}"]'); return { tot: e.querySelector('.vtot').textContent, bars: e.querySelectorAll('.vbars:not(.vfill) i').length, play: !!e.querySelector('.vplay'), speed: e.querySelector('.vspeed').textContent, dl: !!e.querySelector('.vdl') }; })()`);
+    vneed(pv.bars === 64 && pv.play && pv.dl && pv.speed === '1×' && pv.tot === (sec => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`)(Math.round(c1.ms / 1000)), 'player is incomplete: ' + JSON.stringify(pv));
+    vneed(await B.ev(`!document.querySelector('#stream audio, #stream video') && ![...document.querySelectorAll('audio')].length`), 'a clip is on the page before anyone pressed play');
+    await B.shot('voice-2-player');
+    await B.ev(`document.querySelector('.vmsg[data-vid="${c1.id}"] .vplay').click()`);
+    await B.waitFor(`(MegaVoice.audio('${c1.id}') || {}).currentTime > 0.3`, 8000).catch(async er => { throw new Error(er.message + ' :: ' + await B.ev(`(() => { const a = MegaVoice.audio('${c1.id}'); return a ? JSON.stringify({ t: a.currentTime, d: a.duration, paused: a.paused, rs: a.readyState, ns: a.networkState, err: a.error && a.error.message, src: a.src.slice(0, 30), type: a.canPlayType('audio/webm; codecs=opus') }) : 'no audio'; })()`)); });
+    vneed(await B.ev(`document.querySelector('.vmsg[data-vid="${c1.id}"]').classList.contains('playing')`), 'the player does not show playing');
+    // seek by clicking the waveform, then change speed
+    const wv = await B.ev(`(() => { const b = document.querySelector('.vmsg[data-vid="${c1.id}"] .vwave').getBoundingClientRect(); return [b.x, b.y + b.height / 2, b.width]; })()`);
+    await B.ev(`MegaVoice.audio('${c1.id}').pause()`);
+    await mouse(B, 'mousePressed', [wv[0] + wv[2] * .75, wv[1]]); await mouse(B, 'mouseReleased', [wv[0] + wv[2] * .75, wv[1]]); await sleep(500);
+    const at = await B.ev(`MegaVoice.audio('${c1.id}').currentTime`);
+    vneed(Math.abs(at - c1.ms * .00075) < .35, `seek landed at ${at}s, wanted ${c1.ms * .00075}`);
+    await B.ev(`document.querySelector('.vmsg[data-vid="${c1.id}"] .vspeed').click()`);
+    vneed(await B.ev(`MegaVoice.audio('${c1.id}').playbackRate === 1.5 && document.querySelector('.vmsg[data-vid="${c1.id}"] .vspeed').textContent === '1.5×'`), 'speed did not change to 1.5');
+    await B.ev(`document.querySelector('.vmsg[data-vid="${c1.id}"] .vspeed').click()`);
+    vneed(await B.ev(`MegaVoice.audio('${c1.id}').playbackRate === 2`), 'speed did not change to 2');
+    await B.ev(`document.querySelector('.vmsg[data-vid="${c1.id}"] .vspeed').click()`);
+    // 3. a click (not a hold) keeps recording with buttons; send it, and only one clip plays at a time
+    mic = await centre(A, '#mic');
+    await mouse(A, 'mousePressed', mic); await mouse(A, 'mouseReleased', mic); await sleep(1800);
+    const lock = await A.ev(`({ mode: MegaVoice.state.mode, send: getComputedStyle(document.querySelector('.vsend')).display, cancel: getComputedStyle(document.querySelector('.vcancel')).display, t: document.querySelector('.vtimer').textContent })`);
+    vneed(lock.mode === 'lock' && lock.send !== 'none' && lock.cancel !== 'none' && lock.t !== '0:00', 'a click did not start a recording with buttons: ' + JSON.stringify(lock));
+    await A.shot('voice-3-locked');
+    await click(A, '.vsend');
+    await B.waitFor(`S.msgs.messages.filter(m => m.file && m.file.voice).length >= ${v0 + 2}`, 20000);
+    vs = await voices(B); const c2 = vs[vs.length - 1];
+    await B.waitFor(`document.querySelector('.vmsg[data-vid="${c2.id}"]')`, 8000);
+    await B.ev(`MegaVoice.audio('${c1.id}').play()`); await sleep(300);
+    await B.ev(`document.querySelector('.vmsg[data-vid="${c2.id}"] .vplay').click()`);
+    await B.waitFor(`(MegaVoice.audio('${c2.id}') || {}).currentTime > 0.2`, 8000);
+    vneed(await B.ev(`MegaVoice.audio('${c1.id}').paused`), 'two clips played at once');
+    await B.ev(`MegaVoice.audio('${c2.id}').pause()`);
+    // 4. cancel sends nothing, and the microphone is let go
+    const before = (await voices(B)).length, filesBefore = await B.ev(`S.msgs.messages.filter(m => m.kind === 'file').length`);
+    mic = await centre(A, '#mic');
+    await mouse(A, 'mousePressed', mic); await mouse(A, 'mouseReleased', mic); await sleep(1200);
+    await click(A, '.vcancel'); await sleep(2500);
+    vneed(await A.ev(`MegaVoice.state.st === 'idle' && document.querySelector('#vrec').hidden`), 'cancel left the bar open');
+    vneed((await voices(B)).length === before && await B.ev(`S.msgs.messages.filter(m => m.kind === 'file').length`) === filesBefore, 'cancelling sent something');
+    // sliding away while holding cancels too
+    await mouse(A, 'mousePressed', mic); await sleep(900);
+    await A.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: mic[0] - 220, y: mic[1], button: 'left', buttons: 1 });
+    vneed(await A.ev(`document.querySelector('#vrec').classList.contains('cancelling')`), 'sliding away does not mark the recording as cancelled');
+    await mouse(A, 'mouseReleased', [mic[0] - 220, mic[1]]); await sleep(2500);
+    vneed((await voices(B)).length === before, 'a recording slid away from was sent');
+    // 5. a browser with no MediaRecorder records raw sound and sends a WAV
+    await A.ev(`MegaVoice.forcePcm = true`);
+    mic = await centre(A, '#mic');
+    await mouse(A, 'mousePressed', mic); await mouse(A, 'mouseReleased', mic); await sleep(2000);
+    await click(A, '.vsend');
+    await B.waitFor(`S.msgs.messages.filter(m => m.file && m.file.voice).length >= ${v0 + 3}`, 20000);
+    vs = await voices(B); const c3 = vs[vs.length - 1];
+    await A.ev(`MegaVoice.forcePcm = false`);
+    vneed(c3.mime === 'audio/wav' && c3.ms >= 1500 && c3.ms <= 4000, 'the WAV fallback clip is wrong: ' + JSON.stringify(c3));
+    const pk3 = c3.peaks.match(/../g).map(h => parseInt(h, 16)); vneed(Math.max(...pk3) - Math.min(...pk3) > 100, 'the WAV fallback waveform is flat: ' + c3.peaks);
+    await B.waitFor(`document.querySelector('.vmsg[data-vid="${c3.id}"] .vplay')`, 8000);
+    await B.ev(`document.querySelector('.vmsg[data-vid="${c3.id}"] .vplay').click()`);
+    await B.waitFor(`(MegaVoice.audio('${c3.id}') || {}).currentTime > 0.3`, 8000);
+    await B.ev(`MegaVoice.audio('${c3.id}').pause()`);
+    const wavLen = await B.ev(`MegaVoice.audio('${c3.id}').duration`);
+    vneed(Math.abs(wavLen * 1000 - c3.ms) < 700, `the WAV is ${wavLen}s long but says ${c3.ms} ms`);
+    // 6. a clip nothing here can play shows a download link
+    const nope = await B.ev(`MegaVoice.row({ id: 'ab'.repeat(16), file: { mime: 'audio/x-nothing-real', name: 'v.xyz', voice: { ms: 4000, peaks: '' } } })`);
+    vneed(/vmsg nope/.test(nope) && /class="dl vdl"/.test(nope), 'an unplayable clip has no download link');
+    await B.shot('voice-4-after');
+  }
+  if (process.env.COMMONS_UI_STOP_AFTER === 'voice') { console.log('UI check stopped after the voice messages section (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
+
   // ---- mega: the navigation around the chat ----
   // The old rail is kept only for its dock; people move through home -> a community's rooms -> the chat with dots.
   const key = async (P, k, mods = 0, code) => {
@@ -430,6 +585,38 @@ try {
     const bright = await P.ev(`(async () => { const b = await createImageBitmap(new Blob([Uint8Array.from(atob('${shot.result.data}'), c => c.charCodeAt(0))], { type: 'image/png' })), c = new OffscreenCanvas(b.width, b.height), g = c.getContext('2d'); g.drawImage(b, 0, 0); const d = g.getImageData(0, 0, b.width, b.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 330) n++; return n; })()`);
     return { bright, ...r };
   };
+  // ---- the first-run tour: seen on a first visit, stepped through, gone after a reload, back from the options room ----
+  {
+    const keep = await A.ev(`({ c: __mega.cid, g: S.gid })`);
+    const pres = await A.ev(`JSON.stringify([...S.presence])`);   // the reloads below drop the stubs the earlier checks put in; they are put back at the end
+    const reload = async () => { await A.ev(`location.reload(); 1`).catch(() => { }); await sleep(1500); await A.waitFor(`window.__megaTour && document.querySelector('#mega:not([hidden]) .mcard')`, 60000); };
+    await A.send('Page.bringToFront'); await A.ev(`sessionStorage.setItem('tourtest', '1'); localStorage.removeItem('commons.tour'); 1`); await reload();
+    await A.waitFor(`document.querySelector('#mega-tour.on .mt-t')`, 20000).catch(async () => { throw new Error('mega: tour: it did not appear on a first visit: ' + await A.ev(`JSON.stringify({ st: __megaTour.state(), mega: document.documentElement.classList.contains('mega'), card: !!document.querySelector('#mega:not([hidden]) .mcard'), blockers: [...document.querySelectorAll('#modal-root > .scrim, #mega-pal, .mpop, #mega-hint')].map(e => e.id + '.' + e.className), vis: document.visibilityState, ls: localStorage.getItem('commons.tour'), p: String(pref.get('tour')) })`).catch(e => String(e))); });
+    await sleep(500);
+    const t0 = await A.ev(`(() => { const t = document.querySelector('#mega-tour'); return { text: t.querySelector('.mt-t').innerText, n: t.querySelector('.mt-n').innerText, live: t.querySelector('[aria-live]').textContent, ring: getComputedStyle(t.querySelector('.mt-ring')).opacity }; })()`);
+    need(/communities/.test(t0.text) && /1 of 5/.test(t0.n) && /step 1 of 5/.test(t0.live) && t0.ring === '1', 'tour: first step is wrong: ' + JSON.stringify(t0));
+    await A.shot('mega-tour-1');
+    for (let i = 2; i <= 5; i++) { await key(A, 'Enter'); await sleep(350); need(await A.ev(`document.querySelector('#mega-tour .mt-n').innerText === '${i} of 5'`), 'tour: Enter did not go to step ' + i); }
+    need(await A.ev(`document.querySelector('#mega-tour .mt-skip').hidden && document.querySelector('#mega-tour .mt-next').innerText === 'done'`), 'tour: the last step should say done');
+    await key(A, 'Enter'); await sleep(600);
+    need(await A.ev(`!document.querySelector('#mega-tour') && localStorage.getItem('commons.tour') === '1'`), 'tour: it did not close and remember at the end');
+    await reload(); await sleep(3500);
+    need(await A.ev(`!document.querySelector('#mega-tour')`), 'tour: it came back after a reload');
+    // Esc skips
+    await A.ev(`__megaTour.start(); 1`); await sleep(500); need(await A.ev(`!!document.querySelector('#mega-tour')`), 'tour: start() did not open it');
+    await key(A, 'Escape'); await sleep(600); need(await A.ev(`!document.querySelector('#mega-tour')`), 'tour: Esc did not skip: ' + await A.ev(`JSON.stringify({ t: document.querySelectorAll('#mega-tour').length, st: __megaTour.state(), ae: document.activeElement.className, ls: localStorage.getItem('commons.tour') })`));
+    // the options room offers it again
+    await A.ev(`__mega.api.toChat(${JSON.stringify(keep.c)}, null); 1`);
+    await A.waitFor(`document.querySelector('#mega-opts:not([hidden]) #m-tour-again')`, 15000).catch(() => { throw new Error('mega: tour: the options room has no "show the tour again"'); });
+    await click(A, '#m-tour-again'); await sleep(600);
+    need(await A.ev(`!!document.querySelector('#mega-tour.on') && document.querySelector('#mega-tour .mt-n').innerText === '1 of 5'`), 'tour: the options button did not reopen it');
+    await A.shot('mega-tour-again'); await key(A, 'Escape'); await sleep(500);
+    await A.ev(`sessionStorage.removeItem('tourtest'); localStorage.setItem('commons.tour', '1'); 1`); await reload();
+    await A.ev(`(() => { window.__joined = null; window.__callUI.joinRoom = (g, n) => { window.__joined = [g, n]; }; S.presence = new Map(${pres}); S.presenceCid = S.cid; S.presenceSig = 'stub'; renderRail(); return 1; })()`);
+    await A.ev(`__mega.api.toChat(${JSON.stringify(keep.c)}, ${JSON.stringify(keep.g)}); 1`); await sleep(800);
+  }
+  if (process.env.COMMONS_UI_STOP_AFTER === 'tour') { console.log('UI check stopped after the tour (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
+
   // entering a room shows the dots and the existing stream
   need(await lvl(A) === 'chat', 'a chat should be open, level is ' + await lvl(A));
   const chat = await A.ev(`(() => { const r = document.querySelector('#mega-rail'), s = document.querySelector('#stream').getBoundingClientRect(), d = [...document.querySelectorAll('#mega-rail .mitem')];
@@ -462,6 +649,12 @@ try {
   await A.waitFor(`S.snap.typing_enabled === false`, 8000).catch(() => { throw new Error('mega: the typing switch in options did not reach the core'); });
   await A.ev(`document.querySelector('#mega-opts #ty').click()`);
   await A.waitFor(`S.snap.typing_enabled === true`, 8000).catch(() => { throw new Error('mega: the typing switch in options did not turn on again'); });
+  // read receipts are on for everyone until they turn them off; the switch reaches the core both ways
+  need(await A.ev(`S.snap.read_receipts === true && document.querySelector('#mega-opts #rrs').checked`), 'read receipts should be on unless turned off');
+  await A.ev(`document.querySelector('#mega-opts #rrs').click()`);
+  await A.waitFor(`S.snap.read_receipts === false`, 8000).catch(() => { throw new Error('mega: the read receipts switch in options did not reach the core'); });
+  await A.ev(`document.querySelector('#mega-opts #rrs').click()`);
+  await A.waitFor(`S.snap.read_receipts === true`, 8000).catch(() => { throw new Error('mega: the read receipts switch in options did not turn on again'); });
   await A.shot('mega-3-options');
   // Esc from chat -> the community's rooms; resting on the voice card never joins, Enter does
   await key(A, 'Escape'); await sleep(900);
@@ -477,7 +670,7 @@ try {
   await A.ev(`document.querySelector('.mslot.settled .mcard').dispatchEvent(new MouseEvent('click', { bubbles: true }))`); await sleep(300);
   need(await A.ev(`window.__joined === null`), 'clicking the body of a voice card joined its call');
   await key(A, 'Enter'); await sleep(300);
-  need(await A.ev(`!!window.__joined && window.__joined[0] === ${JSON.stringify(vgid)}`), 'Enter on a voice card did not join it');
+  need(await A.ev(`!!window.__joined && window.__joined[0] === ${JSON.stringify(vgid)}`), 'Enter on a voice card did not join it: ' + await A.ev(`JSON.stringify({ j: window.__joined, ae: document.activeElement && (document.activeElement.id || document.activeElement.className || document.activeElement.tagName), tour: !!document.querySelector('#mega-tour'), pops: [...document.querySelectorAll('.mpop,#mega-pal,#modal-root > .scrim')].length, item: __mega.list.item.kind, lk: __mega.list.item.locked, here: __mega.list.item.here, cc: window.__commonsCall && [window.__commonsCall.gid, window.__commonsCall.phase], idx: __mega.list.i, closers: __mega.closers.length, busy: __mega.busy, pal: !!__mega.pal, modal: !!document.querySelector('#modal-root > .scrim') })`));
   // jump to: picking a voice room focuses its card but never joins
   await A.ev(`window.__joined = null`);
   await key(A, 'k', 2, 'KeyK'); await sleep(400);
@@ -766,6 +959,158 @@ try {
     await A.ev(`__megaMusic._sources(null); window.AudioContext = window.__realAC; 1`);
   }
 
+  // ---- notifications: the rules, the room menu, the marks, and who shows what (mega-notify.js, crates/core/src/notify.rs) ----
+  {
+    const tj = JSON.stringify(textGid);
+    const cid = await A.ev(`S.snap.communities.find(c => c.channels.some(x => x.gid === ${tj})).id`), cj = JSON.stringify(cid);
+    const roomName = await A.ev(`S.snap.communities.flatMap(c => c.channels).find(x => x.gid === ${tj}).name`);
+    const bobName = await B.ev(`S.snap.me.name`), aliceName = await A.ev(`S.snap.me.name`);
+    const nget = () => A.ev(`rpc('notify_get')`);
+    const alog = path.join(out, 'notify-alice.log');
+    const nlog = () => (fs.existsSync(alog) ? fs.readFileSync(alog, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
+    const NO = 'notify: ';
+    const bsay = t => B.ev(`rpc('send_text', { gid: ${tj}, text: ${JSON.stringify(t)}, reply: null }).then(() => 1)`);
+    const toChatRoom = async gid => { await A.ev(`__mega.api.toChat(${cj}, ${gid ? JSON.stringify(gid) : 'null'}); 1`); await sleep(900); };
+    // defaults, kept on the device
+    let n0 = await nget();
+    need(n0.mode === 'all' && n0.show_text === false && Object.keys(n0.rooms).length === 0, NO + 'defaults wrong: ' + JSON.stringify(n0));
+    // the options room: next to the sound setting, applies at once
+    await toChatRoom(null);
+    const ui0 = await A.ev(`(() => { const o = document.querySelector('#mega-opts'); return { snd: !!o.querySelector('#snd'), ntf: !!o.querySelector('#ntf'), txt: !!o.querySelector('#ntf-text'), perm: !!o.querySelector('#ntf-perm'), labels: [...o.querySelectorAll('#ntf ~ .seg button')].map(b => b.textContent), order: o.innerHTML.indexOf('id="snd"') < o.innerHTML.indexOf('id="ntf"') }; })()`);
+    need(ui0.snd && ui0.ntf && ui0.txt && ui0.perm && ui0.order && ui0.labels.join('|') === 'All messages|Only @mentions and replies|Off', NO + 'the options room lacks the notification controls: ' + JSON.stringify(ui0));
+    await A.ev(`document.querySelector('#mega-opts .seg[data-for="ntf"] button[data-v="mentions"]').click()`); await sleep(500);
+    need((await nget()).mode === 'mentions', NO + 'the options room did not save the mode');
+    await A.ev(`(() => { const c = document.querySelector('#mega-opts #ntf-text'); c.checked = true; c.dispatchEvent(new Event('change', { bubbles: true })); })()`); await sleep(500);
+    need((await nget()).show_text === true, NO + 'the options room did not save the text switch');
+    await A.shot('notify-1-options');
+    // Settings (the dialog) shows the same state and saves too
+    await click(A, '#btn-settings'); await A.waitFor(`document.querySelector('.modal #ntf')`);
+    const md = await A.ev(`(() => ({ mode: document.querySelector('.modal #ntf').value, text: document.querySelector('.modal #ntf-text').checked, near: document.querySelector('.modal').innerHTML.indexOf('id="snd"') < document.querySelector('.modal').innerHTML.indexOf('id="ntf"') }))()`);
+    need(md.mode === 'mentions' && md.text === true && md.near, NO + 'Settings does not show the saved state: ' + JSON.stringify(md));
+    await A.ev(`document.querySelector('.modal .seg[data-for="ntf"] button[data-v="off"]').click(); document.querySelector('.modal #ntf-text').checked = false; 1`);
+    await A.ev(`[...document.querySelectorAll('.modal .acts button')].find(b => b.textContent === 'Save').click()`); await sleep(900);
+    let n1 = await nget(); need(n1.mode === 'off' && n1.show_text === false, NO + 'Settings did not save: ' + JSON.stringify(n1));
+    await A.ev(`rpc('notify_set', { mode: 'all' }).then(() => 1)`);
+    // the room menu on a dot of the sidebar
+    await toChatRoom(textGid);
+    await A.waitFor(`document.querySelector('#mega-rail .mitem[data-key=${tj}]')`);
+    const ctx = (sel, x = 90, y = 160) => A.ev(`document.querySelector(${JSON.stringify(sel)}).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: ${x}, clientY: ${y} })); 1`);
+    const dot = `#mega-rail .mitem[data-key=${tj}]`;
+    await ctx(dot); await sleep(300);
+    const mn = await A.ev(`(() => { const m = document.querySelector('.nm-menu'); return m && { labels: [...m.querySelectorAll('button')].map(b => b.textContent), role: m.getAttribute('role'), on: m.getBoundingClientRect().left >= 0 && m.getBoundingClientRect().right <= innerWidth }; })()`);
+    need(mn && mn.role === 'menu' && mn.on && ['Mute for 1 hour', 'Mute for 8 hours', 'Mute until I unmute', 'Mentions only'].every(l => mn.labels.includes(l)), NO + 'the room menu is wrong: ' + JSON.stringify(mn));
+    need(mn.labels.includes('Colours…') && !mn.labels.includes('Unmute'), NO + 'owner sees Colours… and nothing to unmute yet: ' + JSON.stringify(mn.labels));
+    await A.shot('notify-2-menu');
+    await A.ev(`[...document.querySelectorAll('.nm-menu button')].find(b => b.textContent === 'Mute for 1 hour').click()`); await sleep(600);
+    let n2 = await nget(); const r2 = n2.rooms[textGid];
+    need(r2 && r2.kind === 'muted' && Math.abs(r2.until - (n2.now + 3600)) < 30 && !(await A.ev(`!!document.querySelector('.nm-menu')`)), NO + 'one hour mute: ' + JSON.stringify(n2.rooms));
+    const mk = await A.ev(`(() => { const d = document.querySelector(${JSON.stringify(dot)}); return { mark: !!d.querySelector('.mmute svg'), cls: d.classList.contains('is-muted'), snd: __megaNotify.soundOk(${tj}, false), sndAt: __megaNotify.soundOk(${tj}, true) }; })()`);
+    need(mk.mark && mk.cls && mk.snd === false && mk.sndAt === false, NO + 'a muted room shows its mark and is silent: ' + JSON.stringify(mk));
+    await A.shot('notify-3-muted-dot');
+    await ctx(dot); await sleep(300);
+    need(await A.ev(`[...document.querySelectorAll('.nm-menu button')].some(b => b.textContent === 'Unmute')`), NO + 'a muted room offers Unmute');
+    await A.ev(`[...document.querySelectorAll('.nm-menu button')].find(b => b.textContent === 'Mentions only').click()`); await sleep(500);
+    const r3 = (await nget()).rooms[textGid]; const mk3 = await A.ev(`(() => ({ at: !!document.querySelector(${JSON.stringify(dot)} + ' .mmute.at'), snd: __megaNotify.soundOk(${tj}, false), sndAt: __megaNotify.soundOk(${tj}, true) }))()`);
+    need(r3 && r3.kind === 'mentions' && mk3.at && mk3.snd === false && mk3.sndAt === true, NO + 'mentions only: ' + JSON.stringify([r3, mk3]));
+    await ctx(dot); await sleep(300);
+    await A.ev(`[...document.querySelectorAll('.nm-menu button')].find(b => b.textContent === 'Unmute').click()`); await sleep(500);
+    need(Object.keys((await nget()).rooms).length === 0 && await A.ev(`!document.querySelector(${JSON.stringify(dot)} + ' .mmute')`), NO + 'unmute left a rule or a mark');
+    // Escape and a click elsewhere close it; the keyboard moves through it
+    const esc_ = () => A.ev(`(document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); 1`);
+    await ctx(dot); await sleep(250);
+    await A.ev(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })); 1`);
+    need(await A.ev(`document.activeElement.closest('.nm-menu') && document.activeElement.textContent === 'Mute for 8 hours'`), NO + 'the arrow keys leave the menu');
+    await esc_(); await sleep(250);
+    need(await A.ev(`!document.querySelector('.nm-menu')`), NO + 'Escape did not close the menu');
+    await ctx(dot); await sleep(250); await A.ev(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); 1`); await sleep(250);
+    need(await A.ev(`!document.querySelector('.nm-menu')`), NO + 'a click elsewhere did not close the menu');
+    // Colours… still reaches the owner's picker (the right-click that used to open it directly)
+    await ctx(dot); await sleep(250);
+    await A.ev(`[...document.querySelectorAll('.nm-menu button')].find(b => b.textContent === 'Colours…').click()`); await sleep(700);
+    need(await A.ev(`!!document.querySelector('#mega-paint') && !document.querySelector('.nm-menu')`), NO + 'Colours… did not open the picker');
+    await A.ev(`document.querySelector('#mp-done').click(); 1`); await sleep(500);
+    need(await A.ev(`!document.querySelector('#mega-paint')`), NO + 'the picker did not close');
+    // touch: holding a room opens the menu, and the click that ends the hold does not open the room
+    await A.ev(`document.querySelector(${JSON.stringify(dot)}).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch', clientX: 90, clientY: 160 })); 1`); await sleep(800);
+    need(await A.ev(`!!document.querySelector('.nm-menu')`), NO + 'holding a room did not open the menu');
+    await esc_(); await sleep(250);
+    // a card at the room list
+    for (let i = 0; i < 6 && await lvl(A) === 'chat'; i++) { await A.ev(`document.activeElement && document.activeElement.blur && document.activeElement.blur()`); await key(A, 'Escape'); await sleep(900); }
+    need(await lvl(A) === 'server', NO + 'could not reach the room cards');
+    const slot = `#mega .mslot[data-i="${await A.ev(`__mega.list.items.findIndex(x => x.key === ${tj})`)}"]`;
+    await ctx(slot + ' .mcard', 400, 300); await sleep(300);
+    need(await A.ev(`!!document.querySelector('.nm-menu')`) && !(await A.ev(`[...document.querySelectorAll('.nm-menu button')].some(b => b.textContent === 'Colours…')`)), NO + 'a card has the mute menu');
+    await A.ev(`[...document.querySelectorAll('.nm-menu button')].find(b => b.textContent === 'Mute until I unmute').click()`); await sleep(600);
+    need(await A.ev(`!!document.querySelector(${JSON.stringify(slot + ' .msq > .mmute')})`) && (await nget()).rooms[textGid].until == null, NO + 'a muted card shows its mark');
+    await A.shot('notify-4-muted-card');
+    await ctx(slot + ' .mcard', 400, 300); await sleep(300);
+    await A.ev(`[...document.querySelectorAll('.nm-menu button')].find(b => b.textContent === 'Unmute').click()`); await sleep(500);
+    need(await A.ev(`!document.querySelector(${JSON.stringify(slot + ' .msq > .mmute')})`), NO + 'the card kept its mark after Unmute');
+
+    // ---- who shows what. A's page pretends to be hidden (and may use the browser's notifications); A's background part writes to a file.
+    await A.send('Browser.grantPermissions', { permissions: ['notifications'], origin: `http://127.0.0.1:${A_PORT}` }).catch(() => { });
+    await A.ev(`(() => {
+      window.__ntfs = []; window.__realNotification = window.Notification;
+      window.Notification = class { constructor(t, o) { __ntfs.push({ title: t, body: o && o.body, tag: o && o.tag }); } close() { } static get permission() { return 'granted'; } static requestPermission() { return Promise.resolve('granted'); } };
+      Object.defineProperty(document, 'visibilityState', { get: () => window.__vis || 'visible', configurable: true });
+      window.__vis = 'hidden'; document.hasFocus = () => window.__vis === 'visible';
+      window.__realRpc = window.rpc; return 1; })()`);
+    await A.ev(`__megaNotify.beat(); 1`); await sleep(800);
+    const before = nlog().length;
+    const waitNtf = async (n, ms) => { try { await A.waitFor(`window.__ntfs.length >= ${n}`, ms); return true; } catch { return false; } };
+    // 1. a hidden page that may notify shows it itself, once, saying who and where but not what; the background part is silent
+    await bsay('the secret plan is at noon');
+    need(await waitNtf(1, 12000), NO + 'a hidden page did not show a notification');
+    const w1 = await A.ev(`window.__ntfs[0]`);
+    need(w1.title === 'mega' && w1.body === `New message from ${bobName} in #${roomName}` && w1.tag === 'mega-' + textGid && !JSON.stringify(w1).includes('secret'), NO + 'the page note is wrong: ' + JSON.stringify(w1));
+    await sleep(2500);
+    need(nlog().length === before, NO + 'both the page and the background part showed a notification: ' + JSON.stringify(nlog().slice(before)));
+    // 2. a muted room shows nothing
+    await A.ev(`rpc('notify_room', { gid: ${tj}, kind: 'mute', secs: 0 }).then(() => 1)`);
+    await sleep(5500);   // past the one-note-per-room window
+    await bsay('muted words'); await sleep(7000);
+    need((await A.ev(`window.__ntfs.length`)) === 1 && nlog().length === before, NO + 'a muted room notified');
+    await A.ev(`rpc('notify_room', { gid: ${tj}, kind: 'none' }).then(() => 1)`);
+    // 3. with the text switched on the text is in it (cut), and a burst is one note
+    await A.ev(`rpc('notify_set', { show_text: true }).then(() => 1)`);
+    await sleep(5500);
+    for (const t of ['one', 'two', 'three']) await bsay(t + ' ' + 'x'.repeat(150));
+    need(await waitNtf(2, 12000), NO + 'the burst gave no notification');
+    await sleep(6500);
+    const got = await A.ev(`window.__ntfs.slice(1)`);
+    need(got.length >= 1 && got.length <= 2 && got.every(g => g.title.includes(bobName)) && got.some(g => g.body.length <= 100 + 12 && g.body.includes('x')), NO + 'a burst should be one or two notes with the text: ' + JSON.stringify(got));
+    await A.ev(`rpc('notify_set', { show_text: false }).then(() => 1)`);
+    // 4. only mentions: a plain message is silent, a mention and a reply are not
+    await A.ev(`rpc('notify_set', { mode: 'mentions' }).then(() => 1)`);
+    await sleep(5500);
+    const c4 = await A.ev(`window.__ntfs.length`);
+    await bsay('just chatting'); await sleep(6500);
+    need((await A.ev(`window.__ntfs.length`)) === c4, NO + 'mentions-only mode notified for a plain message');
+    await bsay(`hey @${aliceName.split(/\s+/)[0]} are you there`);
+    need(await waitNtf(c4 + 1, 12000), NO + 'mentions-only mode missed a mention');
+    need((await A.ev(`window.__ntfs[window.__ntfs.length - 1].body`)) === `${bobName} mentioned you in #${roomName}`, NO + 'the mention note: ' + await A.ev(`window.__ntfs[window.__ntfs.length - 1].body`));
+    await A.ev(`rpc('notify_set', { mode: 'all' }).then(() => 1)`);
+    // 5. the page goes quiet (closed, asleep): ten seconds on, the background part shows it, the page does not
+    await A.ev(`window.rpc = async (m, a) => { if (m === 'notify_beat') throw new Error('page asleep'); return window.__realRpc(m, a); }; 1`);
+    await sleep(11500);
+    const c5 = await A.ev(`window.__ntfs.length`), l5 = nlog().length;
+    await bsay('are you still there'); await sleep(8000);
+    const nl = nlog().slice(l5);
+    need(nl.length === 1 && nl[0].body === `New message from ${bobName} in #${roomName}` && nl[0].title === 'mega' && (await A.ev(`window.__ntfs.length`)) === c5, NO + 'with no page the background part should show it once: ' + JSON.stringify(nl));
+    // 6. the page is back and being looked at: nobody notifies
+    await A.ev(`window.rpc = window.__realRpc; window.__vis = 'visible'; __megaNotify.beat(); 1`); await sleep(1500);
+    const l6 = nlog().length, c6 = await A.ev(`window.__ntfs.length`);
+    await sleep(5500); await bsay('while you look'); await sleep(7000);
+    need(nlog().length === l6 && (await A.ev(`window.__ntfs.length`)) === c6, NO + 'a page being looked at must be left alone');
+    // a click on the page's own note opens its room: the helper the click handler uses
+    await A.ev(`delete document.hasFocus; delete document.visibilityState; window.Notification = window.__realNotification; 1`);
+    await A.send('Browser.resetPermissions').catch(() => { });
+    await A.ev(`rpc('notify_set', { mode: 'all', show_text: false }).then(() => 1)`);
+    need(Object.keys((await nget()).rooms).length === 0, NO + 'left a rule behind');
+    await toChatRoom(textGid);
+  }
+  if (process.env.COMMONS_UI_STOP_AFTER === 'notify') { console.log('UI check stopped after the notification checks (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
+
   if (!process.env.COMMONS_UI_ONLY6) {   // COMMONS_UI_ONLY6=1 skips phases 3 to 5 while working on phase 6
   // ---- mega phase 3: owner colours (through the encrypted core) and the live channel ----
   {
@@ -802,18 +1147,18 @@ try {
     need(await col(A) === '#12ab34' && await col(B) === '#12ab34', 'colours: the colour did not hold');
     // a client that joins later gets the colours out of the table
     const C_PORT = Number(process.env.COMMONS_UI_C_PORT || 7103);
-    run(bin('dev_bridge'), [String(C_PORT), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], { COMMONS_DATA: path.join(out, 'data', 'carol'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(C_PORT) });
+    run(bin('dev_bridge'), [String(C_PORT), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], { COMMONS_DATA: path.join(out, 'data', 'carol'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(C_PORT), COMMONS_RUNE: 'http://127.0.0.1:1' });
     await sleep(1500);
     const C = await open(pageUrl(C_PORT));
     // Carol is new: the invite password, her name and one password for her device are all she types.
     await C.waitFor(`!!document.querySelector('#ipw')`);
-    const cpw = await A.ev(`rpc('create_invite', { cid: ${JSON.stringify(cid)}, uses: 1, password: 'maple-otter-kayak-31' }).then(r => r.password && 'maple-otter-kayak-31')`);
-    need(cpw === 'maple-otter-kayak-31', 'invite: the core did not make a password invite');
+    const cpw = await A.ev(`rpc('create_invite', { cid: ${JSON.stringify(cid)}, uses: 1, password: 'maple-otter-kayak-cobalt-ember-31' }).then(r => r.password && 'maple-otter-kayak-cobalt-ember-31')`);
+    need(cpw === 'maple-otter-kayak-cobalt-ember-31', 'invite: the core did not make a password invite');
     await C.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(500);
     need(await C.ev(`document.documentElement.scrollWidth <= innerWidth + 1`), 'invite: the first screen is wider than a phone');
     await C.shot('mega-invite-first-390');
     await C.send('Emulation.clearDeviceMetricsOverride'); await sleep(400);
-    await type(C, '#ipw', 'Maple Otter  kayak 31'); await type(C, '#nm', 'Carol'); await type(C, '#pp', 'correct horse battery'); await C.shot('mega-invite-first');
+    await type(C, '#ipw', 'Maple Otter  kayak Cobalt EMBER 31'); await type(C, '#nm', 'Carol'); await type(C, '#pp', 'correct horse battery'); await C.shot('mega-invite-first');
     await click(C, '#go');
     await C.waitFor(`!document.querySelector('#app').hidden`, 30000);
     need(!(await C.ev(`!!document.querySelector('.modal')`)), 'invite: the recovery key blocked joining');
@@ -1154,6 +1499,52 @@ try {
     const wst = P => P.ev(`__megaWall.state()`);
     // wall_get answers "busy" with no cells while the core is occupied, which is not the same as an empty wall
     const roomCells = (P, gid) => P.ev(`(async () => { for (;;) { const r = await rpc('wall_get', { gid: ${JSON.stringify(gid)} }); if (!r.busy) return r.cells.length; await new Promise(z => setTimeout(z, 200)); } })()`);
+    // The owner's colours panel must never touch the drawings: after every change, on both clients, the wall is still there (cache, core and pixels).
+    const wallKeep = async (label, key, n, openPanel, changes, bobInRoom, burst) => {
+      const kj = JSON.stringify(key);
+      const inkOf = P => P.ev(`(() => { const c = ${bobInRoom && P === B ? "document.querySelector('#mega-wall')" : "__mega.list.sq().querySelector('canvas.mwallc')"}; if (!c) return -1; const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let k = 0; for (let i = 3; i < d.length; i += 20) if (d[i] > 40) k++; return k; })()`);
+      const here = async P => ({ cache: await P.ev(`__megaWall.cellsOf(${kj}).length`), core: await roomCells(P, key), ink: await inkOf(P) });
+      const fits = P => P.ev(`(() => { const sq = __mega.list.sq(), c = sq.querySelector('canvas.mwallc'); if (!c) return 'no canvas'; const dpr = Math.min(devicePixelRatio || 1, 2); return Math.abs(c.offsetWidth - sq.offsetWidth) <= 2 && Math.abs(c.offsetHeight - sq.offsetHeight) <= 2 && Math.abs(c.width - Math.round(sq.offsetWidth * dpr)) <= 2 ? 'ok' : JSON.stringify([c.offsetWidth, c.offsetHeight, c.width, c.height, sq.offsetWidth, sq.offsetHeight, dpr]); })()`);
+      const bad = async () => JSON.stringify([await here(A), await here(B), await wst(A), await wst(B)]);
+      need(openPanel, 'keep: no panel');
+      if (bobInRoom) { await enterFocused(B); await wf(B, `__megaWall.state().marks === ${n}`, 30000); }
+      if (!bobInRoom) { await A.send('Page.bringToFront'); await wf(A, `__megaWall.cellsOf(${kj}).length === ${n}`, 30000); }
+      await A.ev(`document.querySelector('#mega [data-m="paint"]').click()`); await sleep(500);
+      if (burst) {   // everything at once, as a person does when trying colours: the commits queue behind each other
+        let stop = false, worst = null;
+        const sampler = (async () => { while (!stop) { const a = await here(A), b = await here(B); if (!(a.cache === n && a.core === n && b.cache === n && b.core === n && a.ink > 20 && b.ink > 20) && !worst) worst = JSON.stringify([a, b]); await sleep(150); } })();
+        const v0 = await styleVer(B);
+        for (const [, run] of changes) { await A.ev(run); await sleep(120); }
+        await wf(B, `((S.snap.communities.find(c => c.id === ${cidj}).style || {}).ver || 0) > ${v0}`, 60000);
+        await sleep(6000); stop = true; await sampler;
+        need(!worst, `wall-keep: ${label}: during a burst of changes the drawing went missing (want ${n}): ` + worst + ' ' + await bad());
+        await A.ev(`document.querySelector('#mega-paint #mp-done').click()`); await sleep(300);
+        return;
+      }
+      for (const [name, run] of changes) {
+        const v0 = await styleVer(B);
+        await A.ev(run); await sleep(200);
+        await wf(B, `((S.snap.communities.find(c => c.id === ${cidj}).style || {}).ver || 0) > ${v0}`, 60000).catch(() => { throw new Error(`mega: wall-keep: ${label}: ${name} never reached bob`); });
+        await A.shot('wallkeep-' + label.replace(/\W+/g, '-') + '-' + name.replace(/\W+/g, '-'));
+        for (let i = 0; i < 12; i++) {   // the change settles (tween, repaint, snapshot refresh): the drawing must be there the whole time
+          const a = await here(A), b = await here(B);
+          if (!bobInRoom) need(await fits(A) === 'ok' && await fits(B) === 'ok', `wall-keep: ${label}: after "${name}" the card's drawing canvas does not fit the card: ` + await fits(A) + ' / ' + await fits(B));
+          need(a.cache === n && a.core === n && b.cache === n && b.core === n && a.ink > 20 && b.ink > 20, `wall-keep: ${label}: after "${name}" the drawing is gone/changed (want ${n}): ` + await bad());
+          await sleep(350);
+        }
+      }
+      await A.ev(`document.querySelector('#mega-paint #mp-done').click()`); await sleep(300);
+      if (bobInRoom) { await toServer(B); await focusCard(B, g); }
+      if (!key.startsWith('cw:')) {   // and walking into the room afterwards shows the drawing too, for the owner and for the member
+        for (const P of [A, B]) {
+          await enterFocused(P);
+          await wf(P, `__megaWall.state().marks === ${n}`, 20000).catch(async () => { throw new Error(`mega: wall-keep: ${label}: the room shows no drawing after the changes: ` + await bad()); });
+          need(await P.ev(`(() => { const c = document.querySelector('#mega-wall'); if (!c) return 0; const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let k = 0; for (let i = 3; i < d.length; i += 20) if (d[i] > 40) k++; return k; })()`) > 20, `wall-keep: ${label}: no drawing pixels in the room`);
+          await toServer(P); await focusCard(P, g);
+          if (P === A) await A.ev(`S.gid = null; resetRoom(); 1`);   // alice has no room open afterwards (an open room reads its messages as they come)
+        }
+      }
+    };
     const chip = P => P.ev(`(() => { const b = document.querySelector('#mega [data-m="draw"]'); return !!b && !b.hidden; })()`);
     await toServer(A); await toServer(B);
     await focusCard(A, g); await focusCard(B, g);
@@ -1179,7 +1570,7 @@ try {
     const w1 = await stat(A), sent5 = (w1.kinds['wall.d'] || 0) - (w0.kinds['wall.d'] || 0);
     need(sent5 >= 1 && sent5 <= 10, 'cards: a 4 second scribble on a card produced ' + sent5 + ' wall.d events (budget 10)');
     need((w1.sent - w0.sent) <= 12, 'cards: a card scribble sent too many live events in all: ' + (w1.sent - w0.sent));
-    const nCard = (await wst(A)).marks;
+    let nCard = (await wst(A)).marks;
     need(nCard > 30, 'cards: the scribble left only ' + nCard + ' marks');
     await wf(B, `__megaWall.state().cards.some(c => c.key === ${g} && c.marks === ${nCard})`, 30000).catch(async () => { throw new Error('mega: cards: the stroke did not appear on bob\'s card: ' + JSON.stringify([nCard, await wst(B)])); });
     need(JSON.stringify(await A.ev(`__megaWall.cellsOf(${g}).sort((a, b) => a[0] - b[0])`)) === JSON.stringify(await B.ev(`__megaWall.cellsOf(${g}).sort((a, b) => a[0] - b[0])`)), 'cards: the two cards show different drawings');
@@ -1203,6 +1594,50 @@ try {
     await wf(B, `!document.querySelector('#mega [data-m="draw"]').hidden`, 60000).catch(() => { throw new Error('mega: cards: unlock did not bring the chip back'); });
     await A.ev(`document.querySelector('#mw-done').click()`); await sleep(400);
     need(await A.ev(`!document.querySelector('#mega-wallhit-card') && !document.documentElement.classList.contains('mg-drawing-card')`), 'cards: done did not leave the pen');
+    // ---- palette: draw in several colours; the other client sees the same colours (and the stored colours are the palette's)
+    { await A.ev(`document.querySelector('#mega [data-m="draw"]').click()`); await sleep(500);
+      const sw = await A.ev(`[...document.querySelectorAll('#mw-cols button')].map(b => [b.dataset.c, b.getAttribute('aria-label'), b.getAttribute('aria-pressed'), b.offsetWidth])`);
+      need(sw.length === 12 && sw[0][1] === 'room colour' && sw[1][1] === 'room highlight' && sw.every(x => x[3] >= 28) && sw.filter(x => x[2] === 'true').length === 1, 'palette: the toolbar swatches are wrong: ' + JSON.stringify(sw));
+      const stroke = (P, c, row) => P.ev(`(async () => {
+        document.querySelector('#mw-cols [data-c="${c}"]').click(); document.querySelector('#mw-glyphs [data-g="1"]').click();
+        const hit = document.querySelector('#mega-wallhit-card'), G = __megaWall.state().geo, px = x => ({ clientX: G.b.left + (G.ox + (x + .5) * G.cw) / G.u, clientY: G.b.top + (G.oy + (${row} + .5) * G.ch) / G.u, pointerId: 9, bubbles: true, button: 0 });
+        hit.dispatchEvent(new PointerEvent('pointerdown', px(96))); for (let x = 97; x <= 110; x++) hit.dispatchEvent(new PointerEvent('pointermove', px(x))); hit.dispatchEvent(new PointerEvent('pointerup', px(110))); return true; })()`);
+      const picks = [[2, 3], [4, 4], [7, 5], [11, 6], [0, 7]];   // the right-hand side of the card, clear of the scribble and of the words
+      for (const [c, row] of picks) { await stroke(A, c, row); await sleep(700); }
+      need(await A.ev(`document.querySelector('#mw-cols [data-c="0"]').getAttribute('aria-pressed') === 'true' && document.querySelector('#mw-cols [data-c="11"]').getAttribute('aria-pressed') === 'false'`), 'palette: the selected swatch is not marked');
+      // the keyboard walks the colours
+      await A.ev(`document.querySelector('#mw-cols [data-c="0"]').focus()`); await key(A, 'ArrowRight'); await key(A, 'ArrowRight');
+      need(await A.ev(`document.querySelector('#mw-cols [aria-pressed="true"]').dataset.c`) === '2', 'palette: arrow keys did not move the colour');
+      const rowCols = P => P.ev(`(() => { const o = {}; for (const [p, g, c] of __megaWall.cellsOf(${g})) { const y = (p / 120) | 0; if (y < 10 && p % 120 >= 95) (o[y] = o[y] || new Set()).add(c); } return Object.fromEntries(Object.entries(o).map(([y, s]) => [y, [...s]])); })()`);
+      const want = JSON.stringify({ 3: [2], 4: [4], 5: [7], 6: [11], 7: [0] });
+      await wf(B, `JSON.stringify((() => { const o = {}; for (const [p, g, c] of __megaWall.cellsOf(${g})) { const y = (p / 120) | 0; if (y < 10 && p % 120 >= 95) (o[y] = o[y] || new Set()).add(c); } return Object.fromEntries(Object.entries(o).map(([y, s]) => [y, [...s]])); })()) === ${JSON.stringify(want)}`, 30000).catch(async () => { throw new Error('mega: palette: bob does not see the colours: ' + JSON.stringify([await rowCols(A), await rowCols(B)])); });
+      need(JSON.stringify(await rowCols(A)) === want, 'palette: alice\'s colours are wrong: ' + JSON.stringify(await rowCols(A)));
+      // real pixels: bob's card canvas holds the palette's red (#ff5a5f), green (#5fe08a) and pink (#ff7ac8)
+      const has = (P, r, gg, b) => P.ev(`(() => { const c = document.querySelector('.msq canvas.mwallc'); if (!c) return -1; const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 60 && Math.abs(d[i] - ${r}) < 40 && Math.abs(d[i + 1] - ${gg}) < 40 && Math.abs(d[i + 2] - ${b}) < 40) n++; return n; })()`);
+      await B.shot('mega5-palette-bob');
+      need(await has(B, 255, 90, 95) > 5 && await has(B, 95, 224, 138) > 5 && await has(B, 255, 122, 200) > 5, 'palette: bob\'s card lacks the red/green/pink pixels: ' + [await has(B, 255, 90, 95), await has(B, 95, 224, 138), await has(B, 255, 122, 200)]);
+      await A.shot('mega5-palette-alice'); await B.shot('mega5-palette-bob');
+      await A.ev(`document.querySelector('#mw-done').click()`); await sleep(400);
+      nCard = (await wst(A)).marks; await wf(B, `__megaWall.state().cards.some(c => c.key === ${g} && c.marks === ${nCard})`, 30000);
+      if (process.env.COMMONS_UI_STOP_AFTER === 'palette') { console.log('UI check stopped after the palette slice (COMMONS_UI_STOP_AFTER)'); process.exit(0); } }
+    const hexSet = c => `(() => { const h = document.querySelector('#mp-hex'); h.value = '${c}'; h.dispatchEvent(new Event('input', { bubbles: true })); })()`;
+    const tile = (k, n) => `document.querySelector('#mp-looks .mp-t[data-k="${k}"][data-n="${n}"]').click()`;
+    const slide = v => `(() => { const s = document.querySelector('#mp-dim'); s.value = ${v}; s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); })()`;
+    await wallKeep('room', textGid, nCard, true, [['colour', hexSet('#2288cc')], ['card pattern', tile('card', 3)], ['chat pattern', tile('chat', 5)], ['backdrop strength', slide(55)], ['colour again', hexSet('#cc4488')]]);
+    await wallKeep('room, burst', textGid, nCard, true, [['colour', hexSet('#ee7711')], ['card pattern', tile('card', 1)], ['chat pattern', tile('chat', 2)], ['backdrop strength', slide(80)], ['colour', hexSet('#7711ee')], ['card pattern', tile('card', 7)], ['backdrop strength', slide(30)]], false, true);
+    // changing a NEIGHBOUR card (another room) leaves this room's drawing alone, on its card too
+    { const og = (await A.ev(`S.snap.communities.find(c => c.id === ${cidj}).channels.map(x => x.gid)`)).find(x => x !== textGid);
+      const slotInk = P => P.ev(`(() => { const i = __mega.list.items.findIndex(x => x.key === ${g}); const c = document.querySelectorAll('.mslot')[i] && document.querySelectorAll('.mslot')[i].querySelector('canvas.mwallc'); if (!c) return -1; const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let k = 0; for (let i = 3; i < d.length; i += 20) if (d[i] > 40) k++; return k; })()`);
+      need(og, 'wall-keep: no second room');
+      await A.send('Page.bringToFront'); await focusCard(A, JSON.stringify(og));
+      await A.ev(`document.querySelector('#mega [data-m="paint"]').click()`); await sleep(500);
+      for (const [name, run] of [['colour', hexSet('#99aa22')], ['card pattern', tile('card', 8)]]) {
+        const v0 = await styleVer(B); await A.ev(run);
+        await wf(B, `((S.snap.communities.find(c => c.id === ${cidj}).style || {}).ver || 0) > ${v0}`, 60000);
+        for (let i = 0; i < 8; i++) { const c = await A.ev(`__megaWall.cellsOf(${g}).length`), k = await slotInk(A); need(c === nCard && k > 20, `wall-keep: neighbour: after changing the next room's ${name}, this room's drawing is gone (cache ${c}/${nCard}, card ink ${k})`); await sleep(350); }
+      }
+      await A.ev(`document.querySelector('#mega-paint #mp-done').click()`); await sleep(300); await focusCard(A, g); }
+    await wallKeep('room, bob inside', textGid, nCard, true, [['colour', hexSet('#118855')], ['card pattern', tile('card', 2)], ['chat pattern', tile('chat', 6)], ['backdrop strength', slide(120)], ['backdrop strength off', slide(0)], ['backdrop strength back', slide(100)]], true);
 
     // ---- 3. the community card has a wall of its own, carried in a room and never drawn in any room
     // a room's own wall may still be arriving from the other device: the baseline is taken once both agree
@@ -1231,6 +1666,9 @@ try {
     need(await A.ev(`__megaWall.state().carrier`) !== null, 'cards: no carrier room for the community wall');
     await A.shot('mega5-10-community-drawn-alice'); await B.shot('mega5-11-community-drawn-bob');
     need(await roomCells(A, textGid) === roomBefore && await roomCells(B, textGid) === roomBeforeB, 'cards: the community drawing reached a room wall: ' + JSON.stringify([roomBefore, roomBeforeB, await roomCells(A, textGid), await roomCells(B, textGid)]));
+    await A.ev(`document.querySelector('#mw-done').click()`); await sleep(400);
+    await wallKeep('community card', 'cw:' + cid, nComm, true, [['colour', hexSet('#33aa55')], ['card pattern', tile('card', 4)]]);
+    await A.ev(`document.querySelector('#mega [data-m="draw"]').click()`); await sleep(500);
     const otherGids = await A.ev(`S.snap.communities.find(c => c.id === ${cidj}).channels.map(x => x.gid).filter(g => g !== ${JSON.stringify(textGid)})`);
     const otherRooms = []; for (const g of otherGids) otherRooms.push(await roomCells(A, g));
     need(otherRooms.reduce((a, b) => a + b, 0) === 0, 'cards: a room other than the drawn one holds marks: ' + JSON.stringify(otherRooms));
@@ -1245,15 +1683,253 @@ try {
     need((await wst(A)).marks === 0, 'cards: the owner\'s community wall did not clear');
     await A.ev(`document.querySelector('#mw-done').click()`); await sleep(400);
     need(await roomCells(A, textGid) === roomBefore, 'cards: clearing the community wall touched a room wall');
+    // after a clear (generation 1) a new drawing must survive the owner's colour changes too
+    { const key = 'cw:' + cid, cl = Array.from({ length: 40 }, (_, i) => [10 + i, 20, 2, i % 2]);
+      await A.ev(`rpc('wall_draw', { gid: ${JSON.stringify(key)}, cells: ${JSON.stringify(cl)}, share: true }).then(() => 1)`);
+      await wf(B, `__megaWall.state().cards.some(c => c.key === ${JSON.stringify(key)} && c.marks === 40)`, 40000).catch(async () => { throw new Error('mega: wall-keep: bob never got the post-clear drawing: ' + JSON.stringify(await wst(B))); });
+      await wallKeep('community card after a clear', key, 40, true, [['colour', hexSet('#aa5533')], ['card pattern', tile('card', 6)]]); }
     need((await A.ev(`rpc('messages', { gid: ${g}, limit: 300 }).then(m => m.messages.filter(x => x.kind === 'text').map(x => x.text).join('|'))`)).indexOf('cwall') < 0, 'cards: wall data appeared in the history');
     await toServer(A); await toServer(B);
     // back to the chat for what follows
     await focusCard(A, g); await enterFocused(A);
     need(await lvl(A) === 'chat', 'cards: could not get back to the chat');
   }
+  // ---- mega: the chat backdrop has its own two colours (owner picks, everyone's open chat follows, "same as card" resets, text stays readable) ----
+  {
+    const cid = await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`);
+    const g = JSON.stringify(textGid), cidj = JSON.stringify(cid);
+    const wf = async (P, expr, ms) => { await P.send('Page.bringToFront'); await sleep(250); return P.waitFor(expr, ms); };
+    const look = P => P.ev(`JSON.stringify(((S.snap.communities.find(c => c.id === ${cidj}).style || {}).looks || {})[${g}] || null)`).then(JSON.parse);
+    const rooms = P => P.ev(`JSON.stringify(((S.snap.communities.find(c => c.id === ${cidj}).style || {}).rooms || {})[${g}] || null)`).then(JSON.parse);
+    const rgbOf = s => (String(s).match(/\d+/g) || [0, 0, 0]).slice(0, 3).map(Number);
+    const hexOf = a => '#' + a.map(v => v.toString(16).padStart(2, '0')).join('');
+    const wash = P => P.ev(`getComputedStyle(document.querySelector('#mega-bd')).backgroundColor`).then(rgbOf);
+    const washIs = (P, want) => wf(P, `getComputedStyle(document.querySelector('#mega-bd')).backgroundColor === ${JSON.stringify('rgb(' + want.join(', ') + ')')}`, 20000);
+    const lum = a => { const [r, g2, b] = a.map(v => { v /= 255; return v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }); return .2126 * r + .7152 * g2 + .0722 * b; };
+    const cr = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + .05) / (Math.min(x, y) + .05); };
+    const cidOpen = async P => { await P.send('Page.bringToFront'); await P.ev(`__mega.api.toChat(${cidj}, ${g})`); await wf(P, `__mega.level === 'chat' && !!document.querySelector('#mega-bd') && document.querySelectorAll('#stream .msg').length > 3`, 20000); await sleep(900); };
+    const toCards = async P => {
+      await P.send('Page.bringToFront');
+      for (let i = 0; i < 4 && await lvl(P) !== 'server'; i++) { await P.ev(`document.activeElement && document.activeElement.blur && document.activeElement.blur()`); await key(P, 'Escape'); await sleep(1000); }
+      need(await lvl(P) === 'server', 'backdrop: could not reach the rooms level');
+      await P.ev(`__mega.list.go(__mega.list.items.findIndex(x => x.key === ${g}), true)`); await wf(P, `__mega.list.settled && __mega.list.item.key === ${g}`, 20000);
+    };
+    await cidOpen(B);
+    const card0 = await rooms(A), wash0 = await wash(B);
+    await B.shot('backdrop-1-before');
+    // a member can not set it
+    const refused = await B.ev(`rpc('set_look', { cid: ${cidj}, room: ${g}, back: { main: '#1f6f4a', hi: '#ffd23f' } }).then(() => 'accepted', e => 'refused: ' + e.message)`);
+    need(/^refused/.test(refused), 'backdrop: the core took backdrop colours from a member: ' + refused);
+    // the owner opens the colours panel and switches to the backdrop
+    await toCards(A);
+    await A.ev(`document.querySelector('#mega [data-m="paint"]').click()`); await wf(A, `!!document.querySelector('#mega-paint .mp-m')`, 8000);
+    need(await A.ev(`(() => { const p = document.querySelector('#mega-paint'); return !p.querySelector('#mp-mode').hidden && p.querySelector('.mp-m[data-mode="card"]').getAttribute('aria-pressed') === 'true' && p.querySelector('#mp-same').hidden; })()`), 'backdrop: the panel should start on the card with no "same as card"');
+    await A.ev(`document.querySelector('#mega-paint .mp-m[data-mode="back"]').click()`); await sleep(300);
+    need(await A.ev(`document.querySelector('#mega-paint .mp-m[data-mode="back"]').getAttribute('aria-pressed') === 'true' && document.querySelector('#mp-same').hidden`), 'backdrop: the switch did not move');
+    await A.ev(`(()=>{const e=document.querySelector('#mp-hex');e.value='#1f6f4a';e.dispatchEvent(new Event('input',{bubbles:true}));})()`); await sleep(200);
+    await A.ev(`document.querySelector('.mp-well[data-w="1"]').click()`);
+    await A.ev(`(()=>{const e=document.querySelector('#mp-hex');e.value='#ffd23f';e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+    await wf(B, `getComputedStyle(document.querySelector('#mega-bd')).backgroundColor !== ${JSON.stringify('rgb(' + wash0.join(', ') + ')')}`, 40000).catch(async () => { throw new Error('mega: backdrop: bob\'s open chat did not take the new backdrop colours: ' + JSON.stringify([await look(B), await look(A), await wash(B), wash0, await B.ev(`JSON.stringify({ lvl: __mega.level, bd: __mega.bdInfo(), bg: document.querySelector('#mega-bd') && document.querySelector('#mega-bd').style.backgroundColor })`)])); });
+    await wf(B, `(((S.snap.communities.find(c => c.id === ${cidj}).style || {}).looks || {})[${g}] || {}).back`, 30000);
+    const lb = await look(B);
+    need(lb.back.main === '#1f6f4a' && lb.back.hi === '#ffd23f', 'backdrop: stored colours wrong: ' + JSON.stringify(lb));
+    need(JSON.stringify(await rooms(B)) === JSON.stringify(card0), 'backdrop: the card colours changed too: ' + JSON.stringify([card0, await rooms(B)]));
+    await sleep(900);
+    const w1 = await wash(B);
+    need(w1[1] > w1[0] && w1[1] > w1[2] && Math.max(...w1) >= 28, 'backdrop: the wash is not a visible green: ' + w1);
+    // the message text stays readable over the wash (WCAG contrast)
+    const ink = await B.ev(`JSON.stringify(['#stream .msg .body', '#stream .msg .who .name', '#stream time.when', '#chan-title'].map(s => { const e = document.querySelector(s); return e ? getComputedStyle(e).color : null; }))`).then(JSON.parse);
+    const ratios = ink.map(c => (c ? cr(rgbOf(c), w1) : 99));
+    need(ratios[0] >= 7 && ratios[1] >= 4.5 && ratios[3] >= 7, 'backdrop: text contrast over the wash too low: ' + JSON.stringify([ink, ratios, w1]));
+    need((await B.ev(`__mega.bdInfo().draws`)) > 0, 'backdrop: nothing drawn');
+    await B.shot('backdrop-2-after');
+    // the strength slider: 0 = off (plain dark), and the colours are kept
+    await A.ev(`(()=>{const e=document.querySelector('#mp-dim');e.value='0';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await washIs(B, [5, 4, 7]).catch(() => { throw new Error('mega: backdrop: strength 0 did not switch the wash off for bob'); });
+    need((await look(B)).back && (await look(B)).dim === 0, 'backdrop: strength 0 lost the backdrop colours: ' + JSON.stringify(await look(B)));
+    await A.ev(`(()=>{const e=document.querySelector('#mp-dim');e.value='100';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await washIs(B, w1).catch(() => { throw new Error('mega: backdrop: strength 100 did not bring the wash back'); });
+    // same as card
+    need(await A.ev(`!document.querySelector('#mp-same').hidden`), 'backdrop: no "same as card" while the backdrop has its own colours');
+    await A.ev(`document.querySelector('#mp-same').click()`);
+    await wf(B, `!(((S.snap.communities.find(c => c.id === ${cidj}).style || {}).looks || {})[${g}] || {}).back`, 40000).catch(() => { throw new Error('mega: backdrop: "same as card" did not reach bob'); });
+    await sleep(900);
+    const w2 = await wash(B);
+    need(JSON.stringify(w2) !== JSON.stringify(w1), 'backdrop: the wash did not return to the card colours: ' + JSON.stringify([w1, w2]));
+    need(await A.ev(`document.querySelector('#mp-same').hidden`), 'backdrop: "same as card" stays after use');
+    await A.ev(`document.querySelector('#mp-done').click()`); await sleep(300);
+    await toCards(A); await cidOpen(A);
+  }
   if (process.env.COMMONS_UI_STOP_AFTER === 'mega5') { console.log('UI check stopped after mega phase 5 (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
 
   }
+  // ---- opening a room lands at the last read message: the newest when all is read, else the first unread in view ----
+  if (!process.env.COMMONS_UI_SKIP_LASTREAD) {
+    const cid = await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`), cidj = JSON.stringify(cid);
+    const rooms = await A.ev(`S.snap.communities.find(c => c.id === ${cidj}).channels.filter(x => x.kind !== 'voice').map(x => x.gid)`);
+    const roomX = textGid, roomY = rooms.find(r => r !== textGid);
+    need(!!roomY, 'lastread: the club needs a second text room');
+    const sendBx = (gid, t) => B.ev(`rpc('send_text', { gid: ${JSON.stringify(gid)}, text: ${JSON.stringify(t)}, reply: null }).then(() => 1)`);
+    const lrState = () => A.ev(`(() => { const s = document.querySelector('#stream'), r = s.getBoundingClientRect(), msgs = [...s.querySelectorAll('.msg')], last = msgs[msgs.length - 1], nl = s.querySelector('.newline'); const vis = e => { if (!e) return null; const b = e.getBoundingClientRect(); return b.bottom > r.top + 1 && b.top < r.bottom - 1; }; return { gid: S.gid, first: S.first, gap: Math.round(s.scrollHeight - s.scrollTop - s.clientHeight), max: s.scrollHeight - s.clientHeight, n: msgs.length, lastVisible: vis(last), nl: !!nl, nlVisible: vis(nl), nlTop: nl ? Math.round(nl.getBoundingClientRect().top - r.top) : null, h: Math.round(r.height) }; })()`);
+    const settle = async () => { let prev = ''; for (let i = 0; i < 40; i++) { await sleep(250); const st = JSON.stringify(await lrState()); if (st === prev && !JSON.parse(st).first) { await sleep(500); return lrState(); } prev = st; } return lrState(); };
+    const readAll = async (gid) => { await A.waitFor(`S.gid === ${JSON.stringify(gid)} && !S.first`, 20000); await A.waitFor(`S.snap.communities.every(c => c.channels.filter(x => x.gid === ${JSON.stringify(gid)}).every(x => !x.unread))`, 20000); };
+    const openA = async gid => { await A.send('Page.bringToFront'); await A.ev(`openRoom(${JSON.stringify(gid)}); 1`); };
+    // enough lines in both rooms that each is taller than the screen
+    for (let i = 0; i < 40; i++) { await sendBx(roomX, 'lastread X ' + i + ' ' + 'word '.repeat(i % 7 * 3)); if (i % 8 === 0) await sendBx(roomY, 'lastread Y ' + i); }
+    await sleep(1500);
+    for (const [label, w, h] of [['desktop', 0, 0], ['phone', 390, 844]]) {
+      if (w) { await A.send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 2, mobile: true }); await sleep(900); }
+      await openA(roomX); await readAll(roomX);
+      let s = await settle(); need(s.n > 15, `lastread ${label}: the room is too short to test: ` + JSON.stringify(s));
+      await openA(roomY); await readAll(roomY); await settle();
+      await openA(roomX); s = await settle();
+      need(s.gap <= 4 && s.lastVisible, `lastread ${label}: back in a fully read room it is not at the newest message: ` + JSON.stringify(s));
+      // and once more, quickly, with no wait between the switches
+      await openA(roomY); await sleep(150); await openA(roomX); s = await settle();
+      need(s.gap <= 4 && s.lastVisible, `lastread ${label}: after a quick switch it is not at the newest message: ` + JSON.stringify(s));
+      // unread: the room is away, bob writes 25 lines, alice opens it: the first unread is in view, with its marker, and the end is reachable
+      await openA(roomY); await readAll(roomY); await settle();
+      for (let i = 0; i < 25; i++) await sendBx(roomX, `lastread ${label} new ${i} ` + 'more '.repeat(i % 5 * 2));
+      await A.waitFor(`S.snap.communities.flatMap(c => c.channels).some(x => x.gid === ${JSON.stringify(roomX)} && x.unread >= 25)`, 40000);
+      await A.ev(`document.visibilityState; 1`);
+      await openA(roomX); await A.waitFor(`S.gid === ${JSON.stringify(roomX)} && !S.first`, 20000);
+      let u = null; for (let i = 0; i < 20; i++) { await sleep(150); u = await lrState(); if (u.nl) break; }
+      need(u.nl && u.nlVisible, `lastread ${label}: the first unread message is not in view: ` + JSON.stringify(u));
+      need(!u.lastVisible || u.n < 4, `lastread ${label}: a room with 25 unread should not open at the very bottom: ` + JSON.stringify(u));
+      await A.shot(`lastread-${label}-unread`);
+      await sleep(2300);   // the room keeps its place for about two seconds unless the reader touches it
+      await A.ev(`(() => { const s = document.querySelector('#stream'); s.scrollTop = s.scrollHeight; })()`); await sleep(500);
+      s = await lrState(); need(s.gap <= 4 && s.lastVisible, `lastread ${label}: scrolling down does not reach the newest: ` + JSON.stringify(s));
+      await A.waitFor(`S.snap.communities.flatMap(c => c.channels).filter(x => x.gid === ${JSON.stringify(roomX)}).every(x => !x.unread)`, 20000);
+      await openA(roomY); await readAll(roomY); await A.waitFor(`!document.querySelector('#stream .newline')`, 8000);   // leave no first-unread line behind for the checks after this one
+      if (w) { await A.send('Emulation.clearDeviceMetricsOverride'); await sleep(900); }
+    }
+  }
+  if (process.env.COMMONS_UI_STOP_AFTER === 'lastread') { console.log('UI check stopped after the last-read check (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
+  // ---- read receipts: a ✓✓ beside the time of the newest message the other person has read, their names beside it on hover or tap ----
+  if (!process.env.COMMONS_UI_SKIP_RECEIPTS) {
+    const room = textGid, rj = JSON.stringify(room);
+    const sendP = (P, t) => P.ev(`rpc('send_text', { gid: ${rj}, text: ${JSON.stringify(t)}, reply: null }).then(() => 1)`);
+    // a page counts as looked at only while it has the focus; in this headless browser that is said, not guessed
+    const look = async (P, on) => { await P.send('Emulation.setFocusEmulationEnabled', { enabled: on }); if (on) await P.send('Page.bringToFront'); };
+    const openP = async P => { await P.ev(`openRoom(${rj}); 1`); await P.waitFor(`S.gid === ${rj} && !S.first`, 20000); };
+    // every mark in the stream: the message it is on, whose names, and where it sits against that row's time and words
+    const marks = P => P.ev(`(() => [...document.querySelectorAll('#stream .msg .rr')].map(b => { const row = b.closest('.msg'), w = row.querySelector('.when'), r = document.createRange(); r.selectNodeContents(w.firstChild); const t = r.getBoundingClientRect(), k = b.getBoundingClientRect(), rr = row.getBoundingClientRect(), body = row.querySelector('.body'), bb = body ? body.getBoundingClientRect() : null, st = document.querySelector('#stream').getBoundingClientRect(), n = b.querySelector('.rr-names'), nb = n.getBoundingClientRect(), cs = getComputedStyle(n);
+      return { text: body ? body.innerText : '', cont: row.classList.contains('cont'), label: b.getAttribute('aria-label'), names: [...n.children].map(x => x.innerText), open: cs.display !== 'none', k: [k.left, k.top, k.right, k.bottom].map(Math.round), time: [t.left, t.top, t.right, t.bottom].map(Math.round), timeShown: getComputedStyle(w).opacity !== '0' && cs.display !== 'none' && t.width > 0, row: [rr.left, rr.top, rr.right, rr.bottom].map(Math.round), body: bb ? [bb.left, bb.top, bb.right, bb.bottom].map(Math.round) : null, stream: [st.left, st.right].map(Math.round), list: [nb.left, nb.top, nb.right, nb.bottom].map(Math.round), tops: [...n.children].map(x => Math.round(x.getBoundingClientRect().top)), w: innerWidth, sw: document.documentElement.scrollWidth }; }))()`);
+    const markOn = async (P, text, who, why, ms = 25000) => {
+      const t0 = Date.now(); let m = [];
+      while (Date.now() - t0 < ms) { m = await marks(P); if (m.some(x => x.text.includes(text) && x.label === 'Read by ' + who) && m.filter(x => x.label.includes(who)).length === 1) return m.find(x => x.text.includes(text)); await sleep(250); }
+      throw new Error(`mega: receipts: ${why}: ` + JSON.stringify(m.map(x => [x.text.slice(0, 30), x.label])));
+    };
+    // where the mark is: on the row, after the time (to its right, on its line), small, and inside the stream
+    const placed = (m, why) => need(m.k[0] >= m.time[2] - 1 && m.k[1] >= m.row[1] - 1 && m.k[3] <= m.row[3] + 1 && (m.k[2] - m.k[0]) <= 24 && m.k[0] >= m.stream[0] && m.k[2] <= m.stream[1] + 1
+      && (m.time[3] <= m.time[1] || (m.k[1] < m.time[3] && m.k[3] > m.time[1])) && (m.cont || m.k[0] - m.time[2] <= 12), `receipts: ${why}: the mark is not just to the right of the time: ` + JSON.stringify(m));
+    for (const P of [A, B]) { await P.send('Emulation.clearDeviceMetricsOverride'); await P.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }); await look(P, true); await openP(P); }
+    await sleep(1500);
+    // bob writes, alice (looking at the room) reads: bob sees ✓✓ on that message, and only there
+    await look(B, true);
+    await sendP(B, 'receipt one from bob');
+    let m = await markOn(B, 'receipt one from bob', 'Alice', 'bob does not see that alice read his message');
+    placed(m, 'bob, first message');
+    need(!m.open, 'receipts: the names should be closed until the mark is pointed at: ' + JSON.stringify(m));
+    // the next message: the mark moves to it (after the pause between two receipts) and leaves the old row
+    await sendP(B, 'receipt two from bob');
+    m = await markOn(B, 'receipt two from bob', 'Alice', 'the mark did not move on to the newest message alice read');
+    placed(m, 'bob, second message');
+    // alice writes, bob reads: alice sees bob's ✓✓ on her message; her own reading shows on nobody's screen as her own
+    await sendP(A, 'receipt three from alice');
+    m = await markOn(A, 'receipt three from alice', 'Bob', 'alice does not see that bob read her message');
+    placed(m, 'alice, her own message');
+    need((await marks(A)).every(x => !x.label.includes('Alice')) && (await marks(B)).every(x => !x.label.includes('Bob')), 'receipts: nobody is shown their own place');
+    // a window that is open but not the one being looked at reads nothing out: the unread count clears, no receipt goes
+    // (a headless page behind another one is hidden, not just unfocused, so the focus is taken away by hand)
+    await look(A, true); await A.ev(`document.hasFocus = () => false; 1`);
+    need(await A.ev(`document.hasFocus() === false && document.visibilityState === 'visible'`), 'receipts: the test could not take the focus away from alice');
+    await sendP(B, 'receipt four from bob');
+    await A.waitFor(`S.msgs.messages.some(x => x.text === 'receipt four from bob') && S.snap.communities.flatMap(c => c.channels).filter(x => x.gid === ${rj}).every(x => !x.unread)`, 20000);
+    await sleep(4500);
+    m = await marks(B);
+    need(m.some(x => x.text.includes('receipt two from bob') && x.label === 'Read by Alice') && !m.some(x => x.text.includes('receipt four')), 'receipts: a window in the background said "read": ' + JSON.stringify(m.map(x => [x.text.slice(0, 30), x.label])));
+    await A.ev(`delete document.hasFocus; 1`);
+    need(await A.ev(`document.hasFocus()`), 'receipts: alice did not get the focus back');
+    m = await markOn(B, 'receipt four from bob', 'Alice', 'coming back to the window did not send the receipt');
+    // pointing at the mark opens the names beside it, on the same line, to the right; pointing away closes them
+    await look(A, true);
+    await sendP(A, 'receipt five from alice'); await look(B, true);
+    await look(A, true);
+    m = await markOn(A, 'receipt five from alice', 'Bob', 'alice does not see bob on her newest message');
+    placed(m, 'alice, before the hover');
+    await A.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: (m.k[0] + m.k[2]) / 2, y: (m.k[1] + m.k[3]) / 2 }); await sleep(400);
+    m = (await marks(A)).find(x => x.text.includes('receipt five'));
+    need(m.open && m.names.join() === 'Bob', 'receipts: pointing at the mark does not show the names: ' + JSON.stringify(m));
+    need(m.list[0] >= m.k[2] && Math.abs((m.list[1] + m.list[3]) / 2 - (m.k[1] + m.k[3]) / 2) <= 4 && m.list[2] <= m.w, 'receipts: the names do not open to the right of the mark, on its line: ' + JSON.stringify(m));
+    await A.shot('receipts-1-desktop-names');
+    await A.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 900, y: 40 }); await sleep(300);
+    need(!(await marks(A)).some(x => x.open), 'receipts: the names stay open after the pointer left');
+    await A.shot('receipts-2-desktop');
+    // a long list is cut: the first four names and how many more, still on one line and inside the window
+    const many = `(() => { const x = S.msgs.messages.find(x => x.text === 'receipt five from alice'); x.read_by = ['Bob', 'Carol', 'Dan', 'Erin', 'Frank', 'Grace', 'Heidi']; S.rrOpen = x.id; renderStream(); })()`;
+    await A.ev(many); await sleep(300);
+    m = (await marks(A)).find(x => x.text.includes('receipt five'));
+    need(m.open && m.names.join() === 'Bob,Carol,Dan,Erin,+3' && new Set(m.tops).size === 1 && m.list[2] <= m.w && m.label === 'Read by Bob, Carol, Dan, Erin, Frank, Grace, Heidi', 'receipts: a long list is not cut to four names and a count on one line: ' + JSON.stringify(m));
+    await A.shot('receipts-3-desktop-many');
+    await A.ev(`S.rrOpen = null; S.lastMsgs = ''; tick(); 1`); await sleep(1200);
+    // the phone: the mark is there on a row with its time and on a continued row; a tap opens the names, inside the screen; a tap elsewhere closes them
+    await B.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await B.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 2 }); await sleep(900);
+    await B.ev(`__mega.touch.mark(); 1`);
+    need(await B.ev(`document.documentElement.classList.contains('mg-touch')`), 'receipts: the phone did not get its gestures (html.mg-touch)');
+    await look(B, true);
+    const bottom = async P => { await P.ev(`(() => { const s = document.querySelector('#stream'); s.scrollTop = s.scrollHeight; })()`); await sleep(500); };
+    await bottom(B);
+    m = (await marks(B)).find(x => x.label === 'Read by Alice');
+    need(m && m.text.includes('receipt four') && !m.cont, 'receipts: the phone lost the mark: ' + JSON.stringify(m));
+    placed(m, 'the phone, a row with its time');
+    need(m.k[2] <= m.w && m.sw <= m.w + 1 && m.k[1] >= 0 && m.k[3] <= 844, 'receipts: on the phone the mark is not inside the screen: ' + JSON.stringify(m));
+    const hearts = () => B.ev(`document.querySelectorAll('#stream .react').length`);
+    const tapB = async (x, y) => { await B.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] }); await sleep(40); await B.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await sleep(450); };
+    const h0 = await hearts();
+    await tapB((m.k[0] + m.k[2]) / 2, (m.k[1] + m.k[3]) / 2);
+    m = (await marks(B)).find(x => x.label === 'Read by Alice');
+    need(m.open && m.names.join() === 'Alice', 'receipts: a tap on the mark does not show the names: ' + JSON.stringify(m));
+    need(m.list[0] >= 0 && m.list[2] <= m.w && m.sw <= m.w + 1 && Math.abs((m.list[1] + m.list[3]) / 2 - (m.k[1] + m.k[3]) / 2) <= 4, 'receipts: on the phone the names are not beside the mark, inside the screen: ' + JSON.stringify(m));
+    await B.shot('receipts-4-phone-names');
+    // a tap somewhere else (the words of another message) closes them, and none of this was a double tap
+    const away = await B.ev(`(() => { const s = document.querySelector('#stream').getBoundingClientRect(); const b = [...document.querySelectorAll('#stream .msg:not(.has-rr) .body')].map(x => x.getBoundingClientRect()).filter(r => r.top > s.top + 20 && r.bottom < s.bottom - 20).at(-1); return [b.left + 30, b.top + b.height / 2]; })()`);
+    await tapB(away[0], away[1]);
+    need(!(await marks(B)).some(x => x.open), 'receipts: a tap elsewhere does not close the names');
+    await sleep(500);
+    need(await hearts() === h0, 'receipts: tapping the mark gave a message a heart');
+    need(await B.ev(`S.msgs.messages.some(x => x.text === 'receipt four from bob' && !x.deleted)`), 'receipts: tapping the mark pressed one of the row\'s buttons');
+    // two messages in a row: the second is a continued row, which on a phone has no time; the mark still shows, in the time's place
+    await sendP(B, 'receipt six from bob'); await sendP(B, 'receipt seven from bob'); await look(A, true);
+    m = await markOn(B, 'receipt seven from bob', 'Alice', 'the phone does not get a new receipt');
+    need(m.cont && m.k[0] >= 0 && m.k[2] <= m.w && m.k[1] >= m.row[1] - 1 && m.k[3] <= m.row[3] + 1 && m.k[0] >= m.body[0] && m.sw <= m.w + 1, 'receipts: on the phone the mark of a continued row is not on its row, inside the screen: ' + JSON.stringify(m));
+    await look(B, true); await bottom(B);
+    m = (await marks(B)).find(x => x.label === 'Read by Alice');
+    need(m.k[1] >= 0 && m.k[3] <= 844, 'receipts: the newest mark is not on the phone\'s screen: ' + JSON.stringify(m));
+    await B.shot('receipts-5-phone');
+    await B.send('Emulation.setTouchEmulationEnabled', { enabled: false }); await B.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }); await sleep(900);
+    await B.ev(`__mega.touch.mark(); 1`);
+    // bob turns receipts off: he is shown nobody's, and what he reads from now on is told to nobody
+    await look(B, true);
+    await B.ev(`rpc('set_read_receipts', { on: false }).then(() => tick())`);
+    await B.waitFor(`S.snap.read_receipts === false && !document.querySelector('#stream .rr')`, 15000).catch(() => { throw new Error('mega: receipts: turned off, bob still sees marks'); });
+    const before = (await marks(A)).filter(x => x.label.includes('Bob')).map(x => x.text);
+    await sendP(A, 'receipt nine from alice');
+    await B.waitFor(`S.msgs.messages.some(x => x.text === 'receipt nine from alice') && S.snap.communities.flatMap(c => c.channels).filter(x => x.gid === ${rj}).every(x => !x.unread)`, 20000);
+    await sleep(4500);
+    need(JSON.stringify((await marks(A)).filter(x => x.label.includes('Bob')).map(x => x.text)) === JSON.stringify(before), 'receipts: bob turned them off and alice still saw him read: ' + JSON.stringify(await marks(A)));
+    // and on again: he sees alice's place again, and his next reading is told
+    await B.ev(`rpc('set_read_receipts', { on: true }).then(() => tick())`);
+    await B.waitFor(`S.snap.read_receipts === true && !!document.querySelector('#stream .rr')`, 15000).catch(() => { throw new Error('mega: receipts: turned on again, bob sees no marks'); });
+    await sendP(A, 'receipt ten from alice');
+    await markOn(A, 'receipt ten from alice', 'Bob', 'turned on again, bob\'s reading is not told');
+    // receipts are not messages: nobody got an unread count or a "newer version" note out of them
+    for (const [n, P] of [['alice', A], ['bob', B]]) need(!(await P.ev(`rpc('notices').then(n => n.some(x => x.kind === 'newer'))`)), `receipts: ${n} has a note about a message of an unknown kind`);
+    for (const P of [A, B]) await P.send('Emulation.setFocusEmulationEnabled', { enabled: false });
+    await A.send('Page.bringToFront');
+  }
+  if (process.env.COMMONS_UI_STOP_AFTER === 'receipts') { console.log('UI check stopped after the read receipts check (COMMONS_UI_STOP_AFTER)'); process.exit(0); }
   // ---- mega phase 6: the "what's new" card, unread marks on the dots, and chat density per room ----
   {
     const cid = await A.ev(`S.snap.communities.find(c => c.name === 'Book club').id`), cidj = JSON.stringify(cid);
@@ -1888,7 +2564,7 @@ try {
   // The uploader's transfer bar hides before its next message refresh lands; wait for the row here too.
   await A.waitFor(`!!(${row(picName)})`, 30000);
   await A.ev(`(${row(picName)}).querySelector('[data-a=del]').click()`);
-  await B.waitFor(`(() => { const m = document.querySelector('.msg[data-id="' + ${JSON.stringify(picId)} + '"]'); return !!m && m.classList.contains('deleted'); })()`, 30000);
+  await B.waitFor(`(() => { const m = document.querySelector('.msg[data-id="' + ${JSON.stringify(picId)} + '"]'); return !m; })()`, 30000);   // a deleted message leaves no row at all (a19ff5d)
 
   // Old apps must see ordinary File messages, never an unknown kind.
   for (const P of [A, B]) {
@@ -1985,6 +2661,132 @@ try {
   for (const [sel, why] of [['#main', 'main'], ['#composer', 'composer'], ['#head', 'header']]) {
     const box = await P.ev(`(() => { const b = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { l: b.left, r: b.right, w: innerWidth }; })()`);
     if (box.l < -1 || box.r > box.w + 1) throw new Error(`${why} overflows the phone screen: ${JSON.stringify(box)}`);
+  }
+  // ---- the phone's gestures (mega-touch.js): swipes between the levels, swipe a row to reply, hold for the menu, two taps for a heart, the picture viewer
+  {
+    await P.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 2 });
+    await P.ev(`__mega.touch.mark(); 1`);
+    need(await P.ev(`document.documentElement.classList.contains('mg-touch')`), 'touch: the phone did not get its gestures (html.mg-touch)');
+    const touch = async (pts, ms = 16) => {   // one finger: start, moves, end
+      await P.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: pts[0][0], y: pts[0][1] }] });
+      for (const [x, y] of pts.slice(1)) { await P.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] }); await sleep(ms); }
+      await P.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    };
+    const line = (x0, x1, y, n = 8) => Array.from({ length: n + 1 }, (_, i) => [x0 + (x1 - x0) * i / n, y]);
+    const rowY = () => P.ev(`(() => { const r = [...document.querySelectorAll('#stream .msg')].at(-1).getBoundingClientRect(); return r.top + r.height / 2; })()`);
+    const lastId = () => P.ev(`[...document.querySelectorAll('#stream .msg')].at(-1).dataset.id`);
+    need(await lvl(P) === 'chat', 'touch: expected to start in a chat, not ' + await lvl(P));
+    // a swipe to the right that starts off the rows (the header) slides the chat out and opens the rooms
+    await touch(line(120, 330, 40)); await sleep(1600);
+    need(await lvl(P) === 'server', 'touch: a swipe to the right in a chat did not open the rooms: ' + await lvl(P));
+    need(await P.ev(`!document.querySelector('#main').style.transform && !document.querySelector('#main').style.willChange`), 'touch: the chat was left transformed after the swipe');
+    await P.shot('11-touch-rooms');
+    // a swipe to the right on the rooms: all communities when there are several, otherwise a rubber band and nothing else
+    const many = await P.ev(`__mega.api.comms().length > 1`);
+    await touch(line(80, 330, 420)); await sleep(1600);
+    need(await lvl(P) === (many ? 'home' : 'server'), `touch: a swipe to the right on the rooms should ${many ? 'open all communities' : 'stay on the rooms'}: ` + await lvl(P));
+    need(await P.ev(`!document.querySelector('.mlist').style.transform`), 'touch: the cards were left transformed after a swipe');
+    if (many) { await touch(line(330, 60, 420)); await sleep(1600); need(await lvl(P) === 'server', 'touch: a swipe to the left on a community card did not open its rooms: ' + await lvl(P)); }
+    // a swipe to the left on the room in focus opens its chat
+    await P.ev(`(() => { const i = __mega.list.items.findIndex(x => x.kind === 'text' && !x.locked); __mega.list.go(i, true); })()`); await sleep(900);
+    const wantGid = await P.ev(`__mega.list.item.gid`);
+    await touch(line(330, 60, 420)); await sleep(1800);
+    need(await lvl(P) === 'chat' && await P.ev(`S.gid`) === wantGid, 'touch: a swipe to the left on a room card did not open it: ' + await lvl(P));
+    // a short swipe to the right on a row replies to that message; up and down on it is the scroll
+    const id = await lastId(); let y = await rowY();
+    await touch(line(200, 200, y).map(([x, yy], i) => [x, yy - i * 10])); await sleep(300);
+    need(await P.ev(`!S.reply`), 'touch: a vertical drag on a row started a reply');
+    y = await rowY(); await touch(line(200, 290, y, 6)); await sleep(500);
+    need(await P.ev(`S.reply && String(S.reply.id)`) === String(id), 'touch: a short swipe on a row did not reply to it');
+    need(await P.ev(`!document.querySelector('#replybar').hidden && !document.querySelector('#stream .msg.mswp')`), 'touch: the reply bar is missing or the row is still held');
+    await P.shot('11-touch-reply');
+    await click(P, '#cancel'); await sleep(200);
+    // a swipe on a row that goes on across the screen is the page's: the rooms open and nothing is replied to
+    y = await rowY(); await touch(line(80, 360, y, 10)); await sleep(1600);
+    need(await lvl(P) === 'server' && await P.ev(`!S.reply`), 'touch: a long swipe on a row should open the rooms, not reply: ' + await lvl(P));
+    await touch(line(330, 60, 420)); await sleep(1800); need(await lvl(P) === 'chat', 'touch: back into the chat');
+    // holding a row opens its menu, and the tap that ends the hold does not open the row's tools
+    y = await rowY();
+    await P.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 200, y }] }); await sleep(700);
+    need(await P.ev(`!!document.querySelector('.mpop.mtouch')`), 'touch: holding a message did not open its menu');
+    await P.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await sleep(300);
+    const menu = await P.ev(`(() => { const p = document.querySelector('.mpop.mtouch'); return p && { e: p.querAll ? 0 : p.querySelectorAll('.mtm-e button').length, acts: [...p.querySelectorAll('[data-k]')].map(b => b.dataset.k), held: !!document.querySelector('#stream .msg.mheld'), open: !!document.querySelector('#stream .msg.open') }; })()`);
+    need(menu && menu.e >= 6 && menu.acts.includes('reply') && menu.acts.includes('copy') && menu.acts.includes('edit') && menu.acts.includes('del') && menu.held && !menu.open, 'touch: the held message\'s menu is wrong: ' + JSON.stringify(menu));
+    await P.shot('11-touch-menu');
+    await P.ev(`document.querySelector('.mpop.mtouch [data-k="reply"]').click()`); await sleep(300);
+    need(await P.ev(`S.reply && String(S.reply.id) === ${JSON.stringify(String(id))} && !document.querySelector('.mpop.mtouch') && !document.querySelector('#stream .msg.mheld')`), 'touch: reply from the menu did not take, or the menu stayed');
+    await click(P, '#cancel'); await sleep(200);
+    // two taps on a row: a heart (and no second click on the row)
+    y = await rowY();
+    for (let i = 0; i < 2; i++) { await P.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 220, y }] }); await sleep(40); await P.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await sleep(110); }
+    await P.waitFor(`!![...document.querySelectorAll('#stream .msg')].at(-1).querySelector('.react[data-e="❤️"].mine')`, 8000);
+    await P.shot('11-touch-heart');
+    // a picture: tap for the viewer, pinch to zoom, pull down to close
+    await P.ev(`(async () => { const c = document.createElement('canvas'); c.width = 120; c.height = 80; const x = c.getContext('2d'); x.fillStyle = '#4af'; x.fillRect(0, 0, 120, 80); x.fillStyle = '#fff'; x.fillRect(20, 20, 80, 40);
+      const d = c.toDataURL('image/png').split(',')[1].replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, ''); await rpc('send_file', { gid: S.gid, name: 'blue.png', mime: 'image/png', data: d, caption: '' }); S.lastMsgs = ''; tick(); })()`);
+    await P.waitFor(`!!document.querySelector('#stream .imgslot img') && document.querySelector('#stream .imgslot img').naturalWidth > 0`, 15000); await sleep(300);
+    await P.ev(`document.querySelector('#stream .imgslot img').click()`); await sleep(400);
+    need(await P.ev(`!!document.querySelector('#mega-view img') && !document.querySelector('.lightbox')`), 'touch: tapping a picture did not open the viewer');
+    const two = (a, b) => ({ touchPoints: [{ x: a[0], y: a[1], id: 1 }, { x: b[0], y: b[1], id: 2 }] });
+    await P.send('Input.dispatchTouchEvent', { type: 'touchStart', ...two([170, 420], [220, 420]) });
+    for (let i = 1; i <= 5; i++) { await P.send('Input.dispatchTouchEvent', { type: 'touchMove', ...two([170 - i * 16, 420], [220 + i * 16, 420]) }); await sleep(16); }
+    await P.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await sleep(400);
+    const zoom = await P.ev(`(() => { const m = new DOMMatrix(getComputedStyle(document.querySelector('#mega-view img')).transform); return { s: m.a, open: !!document.querySelector('#mega-view') }; })()`);
+    need(zoom.open && zoom.s > 2.5 && zoom.s < 5.01, 'touch: the pinch did not zoom the picture: ' + JSON.stringify(zoom));
+    const vdom = await P.ev(`(() => { const v = document.querySelector('#mega-view'), top = document.elementsFromPoint(195, 205).slice(0, 3).map(e => e.tagName + '.' + e.className); return { views: document.querySelectorAll('#mega-view').length, caps: document.querySelectorAll('.mv-cap').length, text: v.innerText.replace(/\\s+/g, ' ').trim(), bg: getComputedStyle(v).backgroundColor, top, html: v.outerHTML.slice(0, 400) }; })()`);
+    console.log('touch viewer:', JSON.stringify(vdom));
+    need(vdom.views === 1 && vdom.caps === 1, 'touch: more than one viewer or caption: ' + JSON.stringify(vdom));
+    await P.shot('11-touch-viewer');
+    await touch(line(195, 195, 300).map(([x, yy], i) => [x, yy + i * 30]), 12); await sleep(500);
+    need(await P.ev(`!!document.querySelector('#mega-view')`), 'touch: a pull down on a zoomed picture should pan, not close');
+    for (let i = 0; i < 2; i++) { await P.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 195, y: 420 }] }); await sleep(40); await P.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await sleep(100); }
+    await sleep(400);
+    need(await P.ev(`(() => { const m = new DOMMatrix(getComputedStyle(document.querySelector('#mega-view img')).transform); return Math.abs(m.a - 1) < .01; })()`), 'touch: two taps did not zoom the picture back out');
+    await touch(line(195, 195, 300).map(([x, yy], i) => [x, yy + i * 30]), 12); await sleep(600);
+    need(await P.ev(`!document.querySelector('#mega-view')`), 'touch: pulling a picture down did not close the viewer');
+    await P.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  }
+  // ---- history on a new device (docs/history-transfer.md): alice pairs a second device with "also send my history" on (the default),
+  // the rooms' messages land on it sealed through the inbox, the new device shows one note while it fills, the old one says it was sent.
+  {
+    const D_PORT = Number(process.env.COMMONS_UI_D_PORT || 7104);
+    run(bin('dev_bridge'), [String(D_PORT), (process.env.COMMONS_UI_DIR || path.join(root, 'app/ui'))], { COMMONS_DATA: path.join(out, 'data', 'alice2'), COMMONS_RELAY: RELAY, COMMONS_FAST_KDF: '1', MEGATRON_SECRET: secretFor(D_PORT), COMMONS_RUNE: 'http://127.0.0.1:1' });
+    await sleep(1500);
+    const D = await open(pageUrl(D_PORT));
+    await D.waitFor(`!!document.querySelector('#l-pair')`, 15000);
+    await click(D, '#l-pair');
+    await D.waitFor(`!!document.querySelector('#pp') && !!document.querySelector('#pp2')`, 8000);
+    await type(D, '#pp', 'laptop pass 1234'); await type(D, '#pp2', 'laptop pass 1234');
+    await click(D, '#go');
+    await D.waitFor(`!!document.querySelector('.small-code')`, 20000);
+    const code = (await textOf(D, '.small-code')).trim();
+    if (!code.startsWith('commons-pair:')) throw new Error('history: no pairing code on the new device: ' + code.slice(0, 40));
+    await D.shot('10-history-pair-code');
+    // alice approves on her device; the history box is on by default
+    await A.ev(`document.querySelector('#btn-devices').click()`);
+    await A.waitFor(`!!document.querySelector('.modal #code')`, 8000);
+    if (!await A.ev(`document.querySelector('#hist-auto').checked`)) throw new Error('history: the "also send my history" box is not on by default');
+    await sleep(600);   // the screen wires its fields a moment after it opens
+    await type(A, '#code', code);
+    await A.waitFor(`/Check code/.test(document.querySelector('#chk').textContent)`, 8000);
+    await A.ev(`[...document.querySelectorAll('.modal .acts button')].find(b => b.textContent.includes('Approve')).click()`);
+    await A.waitFor(`/Approved/.test(document.querySelector('#chk').textContent)`, 15000);
+    await A.shot('10-history-approved');
+    // the new device starts, and the history arrives with a note in the room list
+    await D.waitFor(`!document.querySelector('#app').hidden`, 90000);
+    await D.waitFor(`!!document.querySelector('.hist-note') && /arrived/.test(document.querySelector('.hist-note').textContent)`, 90000);
+    const note = await textOf(D, '.hist-note');
+    if (!/\d+ messages/.test(note)) throw new Error('history: the note does not say how many messages arrived: ' + note);
+    await D.shot('10-history-arrived');
+    const count = p => p.ev(`(async () => { const c = (S.snap.communities || []).find(c => c.name === 'Book club'); if (!c || !c.channels.length) return -1; const m = await rpc('messages', { gid: c.channels[0].gid, limit: 500 }); return m.messages.length; })()`);
+    const have = await count(A);
+    let got = -1; for (let i = 0; i < 40 && got !== have; i++) { got = await count(D); if (got !== have) await sleep(500); }
+    if (!(got > 0 && got === have)) throw new Error(`history: the new device has ${got} messages in the first room, the old one ${have}`);
+    // the old device's screen says it was sent; dismissing the note on the new device clears it
+    await A.waitFor(`/History sent to/.test(document.querySelector('#mb').textContent)`, 20000);
+    await A.shot('10-history-sent'); await click(A, '.modal .acts button');
+    await D.ev(`document.querySelector('.hist-note [data-hist]').click()`);
+    await D.waitFor(`!document.querySelector('.hist-note')`, 8000);
   }
   console.log('UI check OK; screenshots in', out);
   await dumpTrace();

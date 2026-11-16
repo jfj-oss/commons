@@ -17,8 +17,12 @@ const VER: u8 = 1;
 const PAD: usize = 1024;
 /// Most letters, digits and symbols the relay would take for a password: bounds the work of one derivation.
 const MAX_PASSWORD: usize = 200;
-pub const MIN_BITS: f64 = 35.0;
-pub const GOOD_BITS: f64 = 50.0;
+/// The relay's operator, or anyone with a copy of its database, can test guesses offline at one Argon2id run each, so the floor is set
+/// where a well-equipped guesser needs centuries, not weeks (docs/security-0.3.6.md, M4). Apps before 0.3.6 accepted 35.
+pub const MIN_BITS: f64 = 50.0;
+pub const GOOD_BITS: f64 = 60.0;
+/// Words in one suggestion.
+pub const SUGGEST_WORDS: usize = 5;
 
 pub const WORDS: &str = include_str!("pwwords.txt");
 fn words() -> Vec<&'static str> { WORDS.split_whitespace().collect() }
@@ -28,25 +32,57 @@ pub fn normalize(pw: &str) -> String {
     pw.trim().to_lowercase().split(|c: char| c.is_whitespace() || c == '-' || c == '_').filter(|t| !t.is_empty()).collect::<Vec<_>>().join("-")
 }
 
-/// A fresh suggestion: three random words and a two digit number, e.g. "amber-fox-teal-47" (about 37 bits).
+/// A fresh suggestion: five random words and a two digit number, e.g. "amber-fox-teal-moss-rain-47" (about 56 bits).
 pub fn suggest() -> String {
     let w = words();
     let mut r = rand::rngs::OsRng;
-    loop {
-        let (a, b, c) = (w[r.gen_range(0..w.len())], w[r.gen_range(0..w.len())], w[r.gen_range(0..w.len())]);
-        if a != b && b != c && a != c { return format!("{a}-{b}-{c}-{:02}", r.gen_range(0..100)); }
+    let mut picked: Vec<&str> = vec![];
+    while picked.len() < SUGGEST_WORDS {
+        let x = w[r.gen_range(0..w.len())];
+        if !picked.contains(&x) { picked.push(x); }
     }
+    format!("{}-{:02}", picked.join("-"), r.gen_range(0..100))
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Strength { pub bits: f64, pub ok: bool, pub warn: bool }
 
-/// A deliberately cautious estimate of how many guesses a password takes, in bits. People pick short, patterned
-/// passwords, so letters count for much less than a random draw would, and the worst-known ones count for nothing.
+/// A word that is not in the small built-in list is still a word: a guesser's dictionary of common words of this length. Short words are
+/// cheap; a long one is worth a little more, never what the same letters drawn at random would be.
+fn word_bits(len: usize) -> f64 { (10.0 + 0.8 * len.saturating_sub(4) as f64).min(16.0) }
+
+/// The same letters drawn at random (an upper bound for any token, and all a token of mixed characters is worth).
+fn random_bits(chars: &[char]) -> f64 {
+    let mut distinct = chars.to_vec(); distinct.sort(); distinct.dedup();
+    let (digits, lower, other) = (chars.iter().filter(|c| c.is_ascii_digit()).count(), chars.iter().filter(|c| c.is_alphabetic()).count(), chars.iter().filter(|c| !c.is_ascii_digit() && !c.is_alphabetic()).count());
+    let pool: f64 = (if digits > 0 { 10.0 } else { 0.0 }) + (if lower > 0 { 26.0 } else { 0.0 }) + (if other > 0 { 32.0 } else { 0.0 });
+    let eff = distinct.len() as f64 + (chars.len() - distinct.len()) as f64 * 0.3;
+    // Counting up or down ("abcdef", "123456") is not random.
+    let run = chars.windows(2).filter(|w| (w[1] as i64 - w[0] as i64).abs() == 1).count();
+    let eff = (eff - run as f64 * 0.8).max(0.0);
+    eff * pool.max(2.0).log2() * 0.6
+}
+
+/// One run of letters, digits or other characters inside a token ("blue", "2024", "!").
+fn piece_bits(chars: &[char]) -> f64 {
+    if chars.iter().all(|c| c.is_ascii_digit()) {
+        // A one or two digit number drawn at random is worth what it looks like; a longer one is most likely a year, a date or a pattern.
+        return if chars.len() <= 2 { chars.len() as f64 * 10f64.log2() } else { (3.0 + chars.len() as f64).min(random_bits(chars)) };
+    }
+    if chars.iter().all(|c| c.is_alphabetic()) { return word_bits(chars.len()).min(random_bits(chars)); }
+    random_bits(chars)
+}
+
+/// A deliberately cautious estimate of how many guesses a password takes, in bits. People pick words, names, years and patterns, so
+/// every run of letters counts as a dictionary word (a few bits per word, whatever its letters), digits as a short number or a date,
+/// a word said twice as nothing, and the worst-known passwords and passphrases as nothing at all.
 pub fn strength(pw: &str) -> Strength {
     let n = normalize(pw);
     let list = words();
     let bad = ["password", "passwort", "qwerty", "letmein", "welcome", "admin", "megatron", "mega", "invite", "friend", "friends", "secret", "chat", "hello", "monkey", "dragon", "football", "iloveyou", "abc123", "123456", "12345678", "111111"];
+    // Famous passphrases: every guesser's list starts with them.
+    let bad_phrases = ["correct-horse-battery-staple", "the-quick-brown-fox", "to-be-or-not-to-be", "mary-had-a-little-lamb", "all-your-base-are-belong-to-us", "open-sesame"];
+    if bad_phrases.iter().any(|p| n.contains(p)) { return Strength { bits: 0.0, ok: false, warn: true }; }
     let mut bits = 0.0;
     let mut seen: Vec<&str> = vec![];
     for tok in n.split('-') {
@@ -55,16 +91,19 @@ pub fn strength(pw: &str) -> Strength {
         if bad.contains(&tok) { continue; }
         if list.binary_search(&tok).is_ok() { bits += (list.len() as f64).log2(); continue; }
         let chars: Vec<char> = tok.chars().collect();
-        // A short number drawn at random is worth what it looks like; a long one is more likely a date or a pattern.
-        if chars.len() <= 2 && chars.iter().all(|c| c.is_ascii_digit()) { bits += chars.len() as f64 * 10f64.log2(); continue; }
-        let mut distinct = chars.clone(); distinct.sort(); distinct.dedup();
-        let (digits, lower, other) = (chars.iter().filter(|c| c.is_ascii_digit()).count(), chars.iter().filter(|c| c.is_alphabetic()).count(), chars.iter().filter(|c| !c.is_ascii_digit() && !c.is_alphabetic()).count());
-        let pool: f64 = (if digits > 0 { 10.0 } else { 0.0 }) + (if lower > 0 { 26.0 } else { 0.0 }) + (if other > 0 { 32.0 } else { 0.0 });
-        let eff = distinct.len() as f64 + (chars.len() - distinct.len()) as f64 * 0.3;
-        // Counting up or down ("abcdef", "123456") is not random.
-        let run = chars.windows(2).filter(|w| (w[1] as i64 - w[0] as i64).abs() == 1).count();
-        let eff = (eff - run as f64 * 0.8).max(0.0);
-        bits += eff * pool.max(2.0).log2() * 0.6;
+        // "bluefish2024" is a word and a year, not twelve random characters: each run is scored on its own, plus a little for the mix.
+        let mut pieces: Vec<&[char]> = vec![];
+        let mut start = 0;
+        let class = |c: char| if c.is_ascii_digit() { 0 } else if c.is_alphabetic() { 1 } else { 2 };
+        for i in 1..=chars.len() {
+            if i == chars.len() || class(chars[i]) != class(chars[start]) { pieces.push(&chars[start..i]); start = i; }
+        }
+        // Four or more runs ("xq7!Lp2#") is not a word with a number on it; that is what a random draw looks like.
+        bits += match pieces.len() {
+            1 => piece_bits(&chars),
+            n if n >= 4 => random_bits(&chars),
+            n => (pieces.iter().map(|p| piece_bits(p)).sum::<f64>() + (n as f64 - 1.0)).min(random_bits(&chars)),
+        };
     }
     let ok = bits >= MIN_BITS && pw.chars().count() >= 8 && pw.chars().count() <= MAX_PASSWORD;
     Strength { bits, ok, warn: bits < GOOD_BITS }
@@ -247,11 +286,23 @@ mod tests {
     }
     #[test]
     fn suggestions_pass_and_short_or_known_bad_ones_do_not() {
-        for _ in 0..200 { let s = suggest(); assert!(check(&s).is_ok(), "{s}"); assert_eq!(s.split('-').count(), 4); }
+        for _ in 0..200 { let s = suggest(); assert!(check(&s).is_ok(), "{s}"); assert_eq!(s.split('-').count(), SUGGEST_WORDS + 1); assert!(strength(&s).bits >= 55.0, "{s}"); }
         for bad in ["", "hunter2", "password", "Password1", "12345678", "qwertyuiop", "abcdefgh", "letmein123", "bluefish2024", "aaaaaaaaaaaa", "mega-mega-mega", "friend friend"] { assert!(check(bad).is_err(), "{bad} should be refused"); }
-        for good in ["correct horse battery staple", "amber-fox-teal-47", "my dog ate the red couch twice"] { assert!(check(good).is_ok(), "{good} should pass"); }
-        assert!(strength("amber-fox-teal-47").warn, "a suggestion is fine but not strong enough to call good");
-        assert!(!strength("correct horse battery staple extra words").warn);
+        for good in ["amber-fox-teal-moss-rain-47", "my dog ate the red couch twice", "seven green parrots argue over lunch", "Kettle Window Marble Thunder Pencil 9"] { assert!(check(good).is_ok(), "{good} should pass ({} bits)", strength(good).bits); }
+        assert!(strength("amber-fox-teal-moss-rain-47").warn, "a suggestion is fine but not strong enough to call good");
+        assert!(!strength("my dog ate the red couch twice and then slept").warn);
+    }
+    /// Audit M4: ordinary words outside the built-in list were scored as random letters, so two common words passed as 37 bits.
+    #[test]
+    fn ordinary_words_count_as_words_not_random_letters() {
+        for weak in ["sunshine-princess", "sunshine princess 2024", "correct horse battery staple", "amber-fox-teal-47", "football-sunshine-1987", "Kathmandu-Elephant", "ThisIsMyPassword", "london-paris-berlin-rome"] {
+            let s = strength(weak);
+            assert!(!s.ok, "{weak} passed with {} bits", s.bits);
+        }
+        assert!(strength("sunshine-princess").bits < 32.0, "two common words are worth about two dictionary draws: {}", strength("sunshine-princess").bits);
+        // The old three-word suggestion is below the floor, so every app from 0.3.6 on asks for more; a random string is still credited.
+        assert!(strength("amber-fox-teal-47").bits < MIN_BITS);
+        assert!(strength("xq7!Lp2#vB9wR4z&").ok, "{}", strength("xq7!Lp2#vB9wR4z&").bits);
     }
     #[test]
     fn wordlist_is_sorted_unique() {

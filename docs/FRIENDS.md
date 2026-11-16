@@ -101,13 +101,15 @@ When you open a text room, the cards shrink into a column of **dots** on the lef
 
 Along the top: **people** shows who is in the community, **more** has **settings**, **devices and recovery** and the **activity log**. Admins also see **invite** and **new room**.
 
-Two special cards: **options** (sound, typing hints and the downloads folder; only on this device) and, for admins, **server settings**.
+Two special cards: **options** (sound, typing hints, read receipts and the downloads folder; only on this device) and, for admins, **server settings**.
 
 ### Text rooms
 
 Type and press **Enter**; **Shift+Enter** makes a new line. The paper clip attaches a file. Hover over a message for reply and reaction buttons. The card for a room shows its last line and how many messages you have not read; **@** marks a mention of you.
 
 You see messages from the moment you joined. What was said before stays with the people who were there; that is how the encryption works, not a fault.
+
+**Notifications (Windows, Mac and Linux).** Your own computer tells you about new messages, even after you close the window, as long as mega keeps running in the background (it does, until you quit it or restart the computer). Nothing goes through a server for this. By default a notification says who wrote and in which room, not what; **options** (or Settings) can show the text, send only **@mentions and replies**, or turn them off. To mute one room, right-click its dot or card (hold it on a touch screen): an hour, eight hours, until you unmute, or mentions only. Do Not Disturb on your computer is respected.
 
 ### Voice rooms
 
@@ -129,7 +131,7 @@ Being rung: a card appears with **join** and **decline**. It rings for 30 second
 
 The camera button in the dock turns your camera on. **Share your screen** opens your browser's own picker: a whole screen, a window or a tab. Everyone's cameras and shares appear as tiles in a stack on the left (across the top on a phone). Drag a tile to reorder the stack for everyone; **hide** hides the stack for you only.
 
-In **Call settings** you can choose the camera quality (**720p, 30 fps** or **1080p, 30 fps**) and what a screen share is tuned for: **Sharp text**, **Smooth motion** or **Fast motion**. People watching pick their own picture quality under each tile (**Quality: auto**, High, Medium, Low) and can go **Fullscreen**. On a Mac, sharing a screen also needs **Screen Recording** allowed for Brave in **System Settings**, **Privacy & Security**.
+In **Call settings** you can choose the camera quality (**720p, 30 fps** or **1080p, 30 fps**) and what a screen share is tuned for: **Sharp text**, **Smooth motion** or **Fast motion**. People watching pick their own picture quality under each tile (**Quality: auto**, High, Medium, Low) and can go **Fullscreen**. To make the cameras and screens bigger, drag the right edge of their column (on a phone, the lower edge of the strip); double-click the edge to put it back. On a Mac, sharing a screen also needs **Screen Recording** allowed for Brave in **System Settings**, **Privacy & Security**.
 
 **Play a video into the call** plays a video file from your computer to everyone, or music, or the sound of another browser tab (**Sound from this computer**, then **A browser tab**; tick **Share tab audio** in the picker). On Linux it can also take the sound of one app that is playing.
 

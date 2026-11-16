@@ -73,11 +73,14 @@ cp packaging/macos-browser/README.txt "$Z/"
 xattr -cr "$Z" 2>/dev/null || true
 ditto -c -k --norsrc "$Z" dist/Megatron-macos-browser.zip
 rm -rf "$Z"
-# The update carries the bridge and ui/ only: they live in Contents/Resources, while the launcher (Contents/MacOS)
-# stays as it is, exactly like the Linux shell launcher, which is not in the tarball either.
+# The update carries the bridge, ui/ and the launcher. The launcher lives in Contents/MacOS, where an older bridge (the one that
+# installs the update) cannot put a file: it would refuse an update that has a top-level `launcher` it has no place for. So it
+# travels inside ui/ as `.launcher-macos`, and the new bridge moves it to Contents/MacOS/launcher, then signs the app again,
+# when it starts (browser_update::refresh_mac_launcher). The Linux shell launcher is refreshed by the bridge as well.
 U=dist/.mac-browser-update; rm -rf "$U"; mkdir -p "$U/megatron-browser"
 cp "$A/Contents/Resources/bridge" "$U/megatron-browser/"
 cp -r "$A/Contents/Resources/ui" "$U/megatron-browser/ui"
+cp "$A/Contents/MacOS/launcher" "$U/megatron-browser/ui/.launcher-macos"
 COPYFILE_DISABLE=1 tar -C "$U" -czf dist/Megatron-macos-browser.tar.gz megatron-browser
 rm -rf "$U" "$STAGE"
 ls -la dist/Megatron-macos-browser.zip dist/Megatron-macos-browser.tar.gz

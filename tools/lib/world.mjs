@@ -30,7 +30,7 @@ export async function makeWorld(out, names, { tones = {}, extraChrome = [], ui =
 export async function openApps(w, names, opts = {}) {
   for (const n of names) {
     const p = w.people[n];
-    p.page = await openPage(p.chrome, `http://127.0.0.1:${p.port}/`, n, { before: toneScript(p.tone) + (opts.before || '') });
+    p.page = await openPage(p.chrome, `http://127.0.0.1:${p.port}/`, n, { before: toneScript(p.tone) + "try { localStorage.setItem('commons.tour', '1'); } catch {}\n" + (opts.before || '') });
     await p.page.waitFor(`!!window.__commonsCall && !document.querySelector("#app").hidden && !!S.gid`, 30000, "app ready").catch(async e => { console.log(p.page.console, (p.page.net || []).filter(x => !x.includes('/rpc')).join('\n'), await p.page.ev(`JSON.stringify({cc: !!window.__commonsCall, hid: document.querySelector("#app").hidden, boot: document.querySelector("#boot").innerText.slice(0,100), url: location.href, scripts: [...document.scripts].map(s => s.src.split("/").pop()).join(), ccl: typeof CommonsCall, lk: typeof LivekitClient, res: performance.getEntriesByType("resource").map(r => r.name.split("/").pop() + ":" + r.responseStatus + ":" + Math.round(r.duration)).join(), gid: typeof S !== "undefined" && S.gid})`).catch(x => String(x))); throw e; });
   }
 }
