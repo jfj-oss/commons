@@ -1124,6 +1124,8 @@ impl Actor {
                     RemoteTrack::Video(_) => None,
                 };
                 // a camera or a screen: read it into the window's tile (the track's sid is the tile's id)
+                // the best layer: "auto" is High, as call.js `setViewQuality` (the server still lowers it when the network cannot carry it)
+                if track_v.is_some() { publication.set_video_quality(livekit::track::VideoQuality::High); }
                 let sink = match (&track_v, &self.opts.frames) {
                     (Some(v), Some(f)) => Some(Sink::start(f.clone(), publication.sid().to_string(), v.clone())),
                     _ => None,

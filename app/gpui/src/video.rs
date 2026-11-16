@@ -63,6 +63,17 @@ impl Frames {
         if hidden { self.hidden.lock().insert(sid.to_string()); self.slots.lock().remove(sid); } else { self.hidden.lock().remove(sid); }
     }
     pub fn is_hidden(&self, sid: &str) -> bool { self.hidden.lock().contains(sid) }
+    /// The newest picture's pixel at (`fx`, `fy`) as fractions of its width and height, in the picture's own byte order
+    /// (B, G, R, A). Tests use it to see that the picture really is the other side's.
+    pub fn sample(&self, sid: &str, fx: f32, fy: f32) -> Option<[u8; 4]> {
+        let img = self.slots.lock().get(sid)?.clone();
+        let sz = img.size(0);
+        let (w, h) = (sz.width.0 as usize, sz.height.0 as usize);
+        let b = img.as_bytes(0)?;
+        let (x, y) = (((fx * w as f32) as usize).min(w.saturating_sub(1)), ((fy * h as f32) as usize).min(h.saturating_sub(1)));
+        let i = (y * w + x) * 4;
+        Some([*b.get(i)?, *b.get(i + 1)?, *b.get(i + 2)?, *b.get(i + 3)?])
+    }
     /// Counters per tile since it appeared (tests).
     pub fn stats(&self) -> HashMap<String, TileStat> { self.stats.lock().clone() }
     /// The window saw the wake-up; the next push wakes it again.

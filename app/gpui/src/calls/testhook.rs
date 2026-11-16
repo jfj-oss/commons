@@ -9,9 +9,9 @@
 //!   {"cmd":"share_switch","source","w","h","speed"} {"cmd":"share_profile","profile"} {"cmd":"share_end"} {"cmd":"share_stats"}
 //!   {"cmd":"share_apps"} {"cmd":"share_audio","stream"} {"cmd":"share_audio_stop"}
 //!   {"cmd":"ptt_mode","on"} {"cmd":"ptt","down"} {"cmd":"shortcut","id","down"} {"cmd":"rebind"} {"cmd":"plout","identity","ms"} {"cmd":"mic_options"}
-//!   {"cmd":"cameras"} {"cmd":"camera","source":"test|device","id","profile":"720p|1080p"} {"cmd":"camera_stop"} {"cmd":"camera_switch","source","id"}
+//!   {"cmd":"cameras"} {"cmd":"camera","source":"test|device","dev","profile":"720p|1080p"} {"cmd":"camera_stop"} {"cmd":"camera_switch","source","dev"}
 //!   {"cmd":"camera_profile","profile"} {"cmd":"camera_end"}
-//!   {"cmd":"frames"} (per tile: count, w, h, and frames per second over the last `ms`) {"cmd":"frames_hide","sid","on"}
+//!   {"cmd":"frame_px","sid","fx","fy"} (the newest picture's BGRA pixel there)  {"cmd":"frames"} (per tile: count, w, h, and frames per second over the last `ms`) {"cmd":"frames_hide","sid","on"}
 //!   {"cmd":"core","method","args"} {"cmd":"call_active"} {"cmd":"quit"}
 use super::audio::Processing;
 use super::capture::{ShareSource, TestPattern};
@@ -127,6 +127,10 @@ async fn handle(e: &Arc<CallEngine>, c: &Value, quit: &tokio::sync::mpsc::Unboun
                 json!({"tiles": tiles})
             }
         },
+        "frame_px" => match &e.frames {
+            Some(f) => json!({"bgra": f.sample(&s("sid"), c["fx"].as_f64().unwrap_or(0.5) as f32, c["fy"].as_f64().unwrap_or(0.5) as f32)}),
+            None => json!({"error": "no frames sink"}),
+        },
         "frames_hide" => { if let Some(f) = &e.frames { f.set_hidden(&s("sid"), on); } json!({"ok": true}) }
         "snapshot" => serde_json::to_value(e.snapshot()).unwrap_or(Value::Null),
         "hear" => e.taps.hear(&s("identity"), c["hz"].as_f64().unwrap_or(500.), c["ms"].as_u64().unwrap_or(1500)).await,
@@ -150,7 +154,7 @@ fn source(c: &Value) -> ShareSource {
 }
 
 fn cam_source(c: &Value) -> CameraSource {
-    if c["source"].as_str() == Some("test") { CameraSource::Test } else { CameraSource::Device(c["id"].as_str().map(String::from)) }
+    if c["source"].as_str() == Some("test") { CameraSource::Test } else { CameraSource::Device(c["dev"].as_str().map(String::from)) }
 }
 
 async fn devices(e: &Arc<CallEngine>) -> Value {
