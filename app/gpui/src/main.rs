@@ -16,6 +16,8 @@ mod fonts;
 mod linen;
 mod model;
 mod prefs;
+mod update;
+mod updateui;
 mod presence;
 mod views;
 mod look;
@@ -26,6 +28,8 @@ use gpui_kit::*;
 
 fn main() {
     bench::mark("main");
+    // a new version that keeps failing to start is replaced by the previous one (update.rs)
+    update::guard_start(&core::data_dir());
     #[cfg(feature = "calls")]
     if calls::headless::wanted() { calls::headless::run(); return; }
     gpui_kit::application().run(|cx: &mut App| {

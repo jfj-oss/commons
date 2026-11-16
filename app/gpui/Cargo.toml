@@ -17,6 +17,10 @@ path = "src/main.rs"
 [dependencies]
 commons-core = { path = "../../crates/core" }
 serde_json = "1"
+# the updater (src/update.rs): the same download, archive and signature crates the core already uses
+ureq = "2"
+flate2 = "1"
+tar = "0.4"
 # GPUI pinned exactly: see SPIKE.md ("GPUI version"). gpui-kit 0.9.1 pins gpui-pre =0.3.12 (the crates.io snapshot of
 # zed's gpui), its platform crate and gpui-component; the workspace Cargo.lock holds every checksum.
 gpui-kit = "=0.9.1"
@@ -53,3 +57,10 @@ required-features = ["calls"]
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 wayland-client = "0.31"
 wayland-protocols-plasma = { version = "0.3", features = ["client"] }
+
+[dev-dependencies]
+# update.rs tests: a throwaway signing key made in the test (never the real one), as crates/core/src/browser_update.rs does
+ed25519-dalek = "2"
+blake2 = "0.10"
+base64 = "0.22"
+minisign-verify = "0.3"

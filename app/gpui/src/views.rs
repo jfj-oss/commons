@@ -85,6 +85,7 @@ impl Mega {
     fn render_home(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let snap = self.snap.clone().unwrap_or_default();
         let mut col = v_flex().id("home").flex_1().min_h_0().w_full().overflow_y_scroll().px_6().pb_6().gap_4();
+        for card in self.update_cards(cx) { col = col.child(card); }
         for c in snap.communities.iter().filter(|c| !c.removed) {
             let here: Vec<String> = c.channels.iter().filter(|x| x.kind == "voice").filter_map(|x| self.pres.calls.get(&x.gid)).flatten().cloned().collect();
             let card = Card { key: c.id.clone(), cid: c.id.clone(), room: String::new(), title: c.name.clone(), sub: format!("{} rooms · {} people", c.channels.len(), c.members), unread: c.unread,
