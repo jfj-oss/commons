@@ -52,8 +52,8 @@ async fn handle(e: &Arc<CallEngine>, c: &Value, quit: &tokio::sync::mpsc::Unboun
         "game" => { e.send(Command::TestGame(c["muted"].as_bool())); json!({"ok": true}) }
         "trust_all" => { e.send(Command::TestTrustAll(on)); json!({"ok": true}) }
         "devices" => devices(e).await,
-        "mic" => { e.send(Command::SetMicDevice { id: s("id") }); json!({"ok": true}) }
-        "out" => { e.send(Command::SetOutDevice { id: s("id") }); json!({"ok": true}) }
+        "mic" => { e.send(Command::SetMicDevice { id: s("device") }); json!({"ok": true}) }
+        "out" => { e.send(Command::SetOutDevice { id: s("device") }); json!({"ok": true}) }
         "processing" => {
             let cur = e.snapshot();
             let p = Processing {

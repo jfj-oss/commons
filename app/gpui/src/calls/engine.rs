@@ -273,6 +273,18 @@ struct MicSlot {
     realized: AudioWish,
 }
 
+/// Runs a blocking audio-device-module call on the blocking pool, so a slow or stuck ADM (PulseAudio/PipeWire) can
+/// never starve the engine's two tokio workers (the plan's rule: blocking calls never run on the actor or its workers).
+/// A stuck call is abandoned after [`ADM_TIMEOUT`] so it can never hold the microphone slot open for ever.
+const ADM_TIMEOUT: Duration = Duration::from_secs(5);
+async fn adms<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+    match tokio::time::timeout(ADM_TIMEOUT, tokio::task::spawn_blocking(f)).await {
+        Ok(Ok(t)) => Ok(t),
+        Ok(Err(e)) => Err(format!("audio device thread: {e}")),
+        Err(_) => Err("the audio device did not answer in time".into()),
+    }
+}
+
 /// Makes the microphone and the platform's devices match `wish`. Device switches are hot-swaps on the SDK's device
 /// module (no republish, so the call is never dropped); a processing change republishes the microphone, because
 /// libwebrtc bakes the software AEC/NS/AGC into the source when it is created. Muting keeps the track but turns
@@ -284,11 +296,21 @@ async fn realize_mic(slot: Arc<tokio::sync::Mutex<MicSlot>>, mode: AudioMode, wi
 
     // device changes: switch on the device module in place
     if w.out_id != s.realized.out_id {
-        if let (Some(p), Some(id)) = (&s.platform, &w.out_id) { p.switch_playout_device(&audio::playout_id(id)).map_err(|e| format!("speaker device: {e}"))?; }
+        if let Some(id) = &w.out_id {
+            if let Some(p) = &s.platform {
+                let (p, id) = (p.clone(), audio::playout_id(id));
+                adms(move || p.switch_playout_device(&id)).await?.map_err(|e| format!("speaker device: {e}"))?;
+            }
+        }
         s.realized.out_id = w.out_id.clone();
     }
     if w.mic_id != s.realized.mic_id {
-        if let (Some(p), Some(id)) = (&s.platform, &w.mic_id) { p.switch_recording_device(&audio::recording_id(id)).map_err(|e| format!("microphone device: {e}"))?; }
+        if let Some(id) = &w.mic_id {
+            if let Some(p) = &s.platform {
+                let (p, id) = (p.clone(), audio::recording_id(id));
+                adms(move || p.switch_recording_device(&id)).await?.map_err(|e| format!("microphone device: {e}"))?;
+            }
+        }
         s.realized.mic_id = w.mic_id.clone();
     }
 
@@ -304,12 +326,12 @@ async fn realize_mic(slot: Arc<tokio::sync::Mutex<MicSlot>>, mode: AudioMode, wi
 
     if !w.on {
         if let Some(p) = &s.publication { p.mute(); }
-        if let Some(p) = &s.platform { let _ = p.stop_recording(); }
+        if let Some(p) = &s.platform { let p = p.clone(); let _ = adms(move || p.stop_recording()).await; }
         return Ok(());
     }
     if let Some(p) = &s.publication {
         p.unmute();
-        if let Some(p) = &s.platform { let _ = p.start_recording(); }
+        if let Some(p) = &s.platform { let p = p.clone(); let _ = adms(move || p.start_recording()).await; }
         return Ok(());
     }
 
@@ -321,10 +343,10 @@ async fn realize_mic(slot: Arc<tokio::sync::Mutex<MicSlot>>, mode: AudioMode, wi
         }
         AudioMode::Platform => {
             if s.platform.is_none() {
-                let p = livekit::PlatformAudio::new().map_err(|e| format!("microphone: {e}"))?;
-                // apply the remembered devices before the first publish
-                if let Some(id) = &w.out_id { if p.playout_devices().any(|d| d.id.as_str() == id) { p.set_playout_device(&audio::playout_id(id)).map_err(|e| format!("speaker device: {e}"))?; } }
-                if let Some(id) = &w.mic_id { if p.recording_devices().any(|d| d.id.as_str() == id) { p.set_recording_device(&audio::recording_id(id)).map_err(|e| format!("microphone device: {e}"))?; } }
+                let p = adms(livekit::PlatformAudio::new).await?.map_err(|e| format!("microphone: {e}"))?;
+                // apply the remembered devices before the first publish; an id that is gone falls back to the default
+                if let Some(id) = &w.out_id { let (p2, id) = (p.clone(), audio::playout_id(id)); let _ = adms(move || p2.set_playout_device(&id)).await; }
+                if let Some(id) = &w.mic_id { let (p2, id) = (p.clone(), audio::recording_id(id)); let _ = adms(move || p2.set_recording_device(&id)).await; }
                 s.platform = Some(p);
             }
             let p = s.platform.as_ref().unwrap();
@@ -349,7 +371,7 @@ async fn realize_mic(slot: Arc<tokio::sync::Mutex<MicSlot>>, mode: AudioMode, wi
             loop { t.tick().await; let d = tone::sine(tone_hz, &mut n, 12000.); let _ = src.capture_frame(&AudioFrame { data: d.into(), sample_rate: 48000, num_channels: 1, samples_per_channel: 480 }).await; }
         }));
     }
-    if let Some(p) = &s.platform { let _ = p.start_recording(); }
+    if let Some(p) = &s.platform { let p = p.clone(); let _ = adms(move || p.start_recording()).await; }
     s.realized = w;
     s.publication = Some(p);
     Ok(())
@@ -569,12 +591,18 @@ impl Actor {
         let mic = self.mic.clone();
         tokio::spawn(async move {
             let m = mic.lock().await;
-            let v = match m.publication.as_ref().and_then(|p| p.track()) {
-                Some(LocalTrack::Audio(a)) => {
-                    let o = a.rtc_source().audio_options();
-                    json!({"present": true, "echoCancellation": o.echo_cancellation, "noiseSuppression": o.noise_suppression, "autoGainControl": o.auto_gain_control})
+            let v = match m.publication.as_ref() {
+                Some(p) => {
+                    let sid = p.sid().to_string();
+                    match p.track() {
+                        Some(LocalTrack::Audio(a)) => {
+                            let o = a.rtc_source().audio_options();
+                            json!({"present": true, "sid": sid, "echoCancellation": o.echo_cancellation, "noiseSuppression": o.noise_suppression, "autoGainControl": o.auto_gain_control})
+                        }
+                        _ => json!({"present": true, "sid": sid}),
+                    }
                 }
-                _ => json!({"present": false}),
+                None => json!({"present": false}),
             };
             let _ = reply.send(v);
         });

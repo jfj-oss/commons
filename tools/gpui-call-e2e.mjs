@@ -103,6 +103,54 @@ try {
   check('A5 join again: all four directions work again', ways2.ok, ways2);
   res.leftAt = tLeft;
 
+  // ---------------------------------------------------------------- V. step 3 voice: PTT, per-person volume, processing
+  const micOpts = () => nat.cmd('mic_options');
+  const waitOpts = pred => until(async () => { const o = await micOpts(); return pred(o) ? o : null; }, 8000, 'mic options');
+
+  // V1 push-to-talk: mode mutes, press talks, release mutes again
+  await nat.cmd('ptt_mode', { on: true });
+  const sPtt = await soft(until(async () => { const s = await nat.snap(); return s.pushToTalk && s.muted ? s : null; }, 5000, 'ptt mode'));
+  const pttSilent = await silent(() => hearsNat(A));
+  await nat.cmd('ptt', { down: true });
+  const sHeld = await soft(until(async () => { const s = await nat.snap(); return s.pttHeld && !s.muted ? s : null; }, 5000, 'ptt held'));
+  const pttTalk = await pass(() => hearsNat(A));
+  await nat.cmd('ptt', { down: false });
+  const sUp = await soft(until(async () => { const s = await nat.snap(); return !s.pttHeld && s.muted ? s : null; }, 5000, 'ptt up'));
+  await nat.cmd('ptt_mode', { on: false });
+  await nat.cmd('mute', { on: false });
+  const pttBack = await pass(() => hearsNat(A));
+  check('V1 push-to-talk: mode mutes, press talks, release mutes again', sPtt.pushToTalk && sPtt.muted && quiet(pttSilent) && sHeld.pttHeld && !sHeld.muted && ok(pttTalk) && sUp.muted && !sUp.pttHeld && ok(pttBack),
+    { inMode: sPtt.muted, whilePressed: pttTalk.toneShare, afterRelease: pttSilent.toneShare, restored: pttBack.toneShare });
+
+  // V2 per-person volume 0 silences only that person, measured on the receiver's playout energy (patch W1)
+  const energy = async (p, ms = 1500) => (await nat.cmd('plout', { identity: p.device, ms })).energy;
+  const eAlice0 = await energy(A), eBob0 = await energy(B);
+  await nat.cmd('volume', { account: A.account, v: 0 }); await sleep(800);
+  const eAliceM = await energy(A), eBobM = await energy(B);
+  await nat.cmd('volume', { account: A.account, v: 1 }); await sleep(500);
+  const eAliceR = await energy(A);
+  check('V2 per-person volume 0 silences only that person (the receiver\'s playout energy)', eAlice0 > 1e-3 && eBob0 > 1e-3 && eAliceM < 1e-4 && eBobM > 1e-3 && eAliceR > 1e-3,
+    { alice: [eAlice0, eAliceM, eAliceR], bob: [eBob0, eBobM] });
+
+  // V3 the processing switches reach the microphone source, all on by default, no rejoin
+  const sProc0 = await nat.snap();
+  const mo0 = await micOpts();
+  await nat.cmd('processing', { noise: false });
+  const moNoiseOff = await waitOpts(o => o.present && o.noiseSuppression === false);
+  const sProc1 = await nat.snap();
+  check('V3 processing: all three on by default, noise off reaches the mic source without a rejoin',
+    sProc0.echoCancellation && sProc0.noiseSuppression && sProc0.autoGainControl && mo0.present && mo0.noiseSuppression === true &&
+    moNoiseOff.noiseSuppression === false && moNoiseOff.echoCancellation === true && sProc1.phase === 'connected' && sProc1.encryption.active && sProc1.attempt === 0,
+    { default: mo0, noiseOff: moNoiseOff, phase: sProc1.phase });
+
+  // V4 turning noise suppression on forces echo cancellation on (call.js setNoiseSuppression)
+  await nat.cmd('processing', { echo: false, noise: false, gain: true });
+  await waitOpts(o => o.present && o.echoCancellation === false && o.noiseSuppression === false);
+  await nat.cmd('processing', { noise: true });
+  const moCoupled = await waitOpts(o => o.present && o.noiseSuppression === true && o.echoCancellation === true);
+  await nat.cmd('processing', { echo: true, noise: true, gain: true });
+  check('V4 turning noise suppression on forces echo cancellation on', moCoupled.noiseSuppression && moCoupled.echoCancellation, moCoupled);
+
   // ---------------------------------------------------------------- B. who may be heard
   const roomName = (await rpc(A.port, 'call_token', { gid })).room;
   const spy = await openPage(A.chrome, `http://127.0.0.1:${A.port}/vendor/README.txt`, 'spy'); await spy.ev(UMD);
