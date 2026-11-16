@@ -12,6 +12,10 @@
 //! - **Wait for changes**: [`CallEngine::changes`] is a `watch` channel bumped (at most once per 60 ms) whenever the
 //!   snapshot changed. Poll `snapshot()` after each bump; do not poll on a timer.
 //! - **Device lists** are on demand: send [`Command::ListDevices`], wait for the change, read `snapshot().devices`.
+//! - **Screen share and one app's sound** (step 5): `Command::StartShare` / `StopShare` / `SwitchShareSource` /
+//!   `SetShareProfile` / `ListShareApps` / `StartShareAudio` / `StopShareAudio`, read from `Snapshot.share` and
+//!   `Snapshot.share_apps`. What every field and event means, and how it is published, is at the top of
+//!   [`crate::calls::share`].
 //! - **Tests only**: [`CallEngine::plout`] (the receiver's playout energy, the W1 measure) and
 //!   [`CallEngine::mic_options`] (what the published microphone source actually runs).
 //!
@@ -28,6 +32,9 @@ use super::gate::{MicGate, Publish};
 use super::keys::{self, KeyBook};
 use super::reconnect::{self as rc, MediaWatch};
 use super::settings::CallSettings;
+use super::appaudio::AppStream;
+use super::capture::ShareSource;
+use super::share::{self, Profile, Report, Sess, ShareCmd, ShareHandle, ShareView};
 use super::{ice, review, tone};
 use futures::StreamExt;
 use livekit::e2ee::{E2eeOptions, EncryptionType};
@@ -119,6 +126,22 @@ pub enum Command {
     PushToTalk(bool),
     /// Tests: a game key as the core's `game_mute_wait` would report it; `None` hands the mic back to the real watcher.
     TestGame(Option<bool>),
+    /// Share a screen (the system's picker opens for [`ShareSource::Portal`]), optionally with one app's sound (an id from
+    /// `Snapshot.share_apps`). Refused outside a call. Starting again replaces the running share.
+    StartShare { profile: Profile, source: ShareSource, audio: Option<u32> },
+    /// End the share (and its sound, if it was started with it).
+    StopShare,
+    /// Pick another screen or window; the old share keeps running until a new one is chosen.
+    SwitchShareSource(ShareSource),
+    /// Change the profile of the running share (republishes; the capture is not touched).
+    SetShareProfile(Profile),
+    /// Fill `Snapshot.share_apps` with the apps playing sound now, then raise the change.
+    ListShareApps,
+    /// Publish one app's sound (a stream id from `share_apps`) as a second audio track, with or without a share.
+    StartShareAudio { stream: u32 },
+    StopShareAudio,
+    /// Tests: the running capture ends as if the system had closed it.
+    TestShareEnd,
     /// Tests: play every encrypted track whoever sends it, so a test can show the cryptography alone keeps a removed member out.
     TestTrustAll(bool),
 }
@@ -156,6 +179,10 @@ pub struct Snapshot {
     #[serde(rename = "autoGainControl")] pub auto_gain_control: bool,
     #[serde(rename = "pushToTalk")] pub push_to_talk: bool,
     #[serde(rename = "pttHeld")] pub ptt_held: bool,
+    /// The screen share and the shared app's sound; see [`crate::calls::share`].
+    pub share: ShareView,
+    /// The apps playing sound, filled on [`Command::ListShareApps`].
+    #[serde(rename = "shareApps")] pub share_apps: Vec<AppStream>,
 }
 
 /// Tests: tone meters on the subscribed microphones.
@@ -211,6 +238,13 @@ impl CallEngine {
         rx.await.unwrap_or_else(|_| json!({"error": "the engine is gone"}))
     }
 
+    /// Tests: the encoder's numbers per layer of the shared picture (rid, size, frames encoded and sent, quality limit).
+    pub async fn share_stats(&self) -> Value {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.tx.send(Msg::ShareStats { reply: tx }).is_err() { return json!({"layers": []}); }
+        rx.await.unwrap_or_else(|_| json!({"error": "the engine is gone"}))
+    }
+
     /// Tests: what the published microphone source actually runs (its `AudioSourceOptions`). In the silent test mode
     /// the source follows the processing switches, so this shows a switch reaching the SDK.
     pub async fn mic_options(&self) -> Value {
@@ -248,7 +282,10 @@ enum Msg {
     Device { call: u64, result: Result<(), String> },
     Plout { identity: String, ms: u64, reply: tokio::sync::oneshot::Sender<Value> },
     MicOptions { reply: tokio::sync::oneshot::Sender<Value> },
+    ShareStats { reply: tokio::sync::oneshot::Sender<Value> },
     Room { gen: u64, ev: RoomEvent },
+    Share(Report),
+    ShareApps(Result<Vec<AppStream>, String>),
 }
 
 struct Session { room: Arc<Room>, book: Arc<Mutex<KeyBook>>, gen: u64 }
@@ -420,6 +457,9 @@ struct Actor {
     trust_all: bool,
     ptt_held: bool,
     devices: Devices,
+    share: Option<ShareHandle>,
+    share_view: ShareView,
+    share_apps: Vec<AppStream>,
     settings: CallSettings,
     settings_path: Option<PathBuf>,
     gate: Arc<MicGate>,
@@ -450,7 +490,7 @@ impl Actor {
             attempt: 0, retry_at: None, rejoin_started: None, reconnecting_since: None, media: MediaWatch::default(), polling: false, me: String::new(),
             members: BTreeMap::new(), blocked: BTreeMap::new(), tracks: BTreeMap::new(), speaking: HashSet::new(), want_speaking: false, speaking_sent: None,
             speak_at: Instant::now() - Duration::from_secs(5), speak_due: None, decrypt_fail: HashMap::new(), rekeyed: HashMap::new(),
-            muted: false, deafened: false, game_muted: false, game_injected: false, trust_all: false, ptt_held: false, devices: Devices::default(),
+            muted: false, deafened: false, game_muted: false, game_injected: false, trust_all: false, ptt_held: false, devices: Devices::default(), share: None, share_view: ShareView { state: "idle".into(), ..Default::default() }, share_apps: vec![],
             settings, settings_path, gate: Arc::new(MicGate::new(publish)), mic, wish, game_watch: None, dirty: true, published_at: Instant::now(), v: 0,
         }
     }
@@ -491,6 +531,12 @@ impl Actor {
             Msg::Device { call, result } => { if call == self.call { self.on_device(result); } }
             Msg::Plout { identity, ms, reply } => self.on_plout(identity, ms, reply),
             Msg::MicOptions { reply } => self.on_mic_options(reply),
+            Msg::ShareStats { reply } => match &self.share { Some(h) => h.send(ShareCmd::Stats(reply)), None => { let _ = reply.send(json!({"layers": []})); } },
+            Msg::Share(r) => self.on_share_report(r),
+            Msg::ShareApps(r) => match r {
+                Ok(v) => { self.log(format!("{} apps playing sound", v.len())); self.share_apps = v; self.dirty = true; }
+                Err(e) => { self.log(format!("app list unavailable: {e}")); self.share_apps.clear(); self.dirty = true; }
+            },
             Msg::Room { gen, ev } => { if self.session.as_ref().is_some_and(|s| s.gen == gen) { self.on_room(ev); } }
         }
     }
@@ -520,11 +566,42 @@ impl Actor {
             Command::SetProcessing(p) => { self.set_processing(p); }
             Command::SetPushToTalk(p) => { self.settings.push_to_talk = p; self.save_settings(); if p { self.ptt_held = false; self.set_muted(true); } self.dirty = true; }
             Command::PushToTalk(down) => self.push_to_talk(down),
+            Command::StartShare { profile, source, audio } => self.share_cmd(ShareCmd::Start { profile, source, audio }, true),
+            Command::StopShare => self.share_cmd(ShareCmd::Stop, false),
+            Command::SwitchShareSource(s) => self.share_cmd(ShareCmd::Switch(s), true),
+            Command::SetShareProfile(p) => self.share_cmd(ShareCmd::Profile(p), false),
+            Command::ListShareApps => {
+                let tx = self.tx.clone();
+                tokio::task::spawn_blocking(move || { let _ = tx.send(Msg::ShareApps(super::appaudio::list())); });
+            }
+            Command::StartShareAudio { stream } => self.share_cmd(ShareCmd::AudioStart(stream), true),
+            Command::StopShareAudio => self.share_cmd(ShareCmd::AudioStop, false),
+            Command::TestShareEnd => self.share_cmd(ShareCmd::TestEnd, false),
             Command::TestGame(g) => match g {
                 Some(m) => { self.game_injected = true; self.on_game_state(m, Some("test".into())); }
                 None => { self.game_injected = false; self.on_game_state(false, None); }
             },
             Command::TestTrustAll(t) => { self.trust_all = t; self.review_all(); }
+        }
+    }
+
+    /// The share task is made on first use. Starting anything needs a call (`needs_call`), as in call.js `startShare`.
+    fn share_cmd(&mut self, c: ShareCmd, needs_call: bool) {
+        if needs_call && self.session.is_none() { self.fail(CallError::new(Kind::Screen, "Join the call first.")); return; }
+        if self.share.is_none() {
+            let (tx, rt) = (self.tx.clone(), tokio::runtime::Handle::current());
+            let h = share::spawn(&rt, Arc::new(move |r| { let _ = tx.send(Msg::Share(r)); }));
+            if let Some(s) = &self.session { h.send(ShareCmd::Session(Some(Sess { room: s.room.clone(), book: s.book.clone() }))); }
+            self.share = Some(h);
+        }
+        if let Some(h) = &self.share { h.send(c); }
+    }
+
+    fn on_share_report(&mut self, r: Report) {
+        match r {
+            Report::View(v) => { self.share_view = v; self.dirty = true; }
+            Report::Log(m) => self.log(m),
+            Report::Fail(m) => self.fail(CallError::new(Kind::Screen, m)),
         }
     }
 
@@ -641,6 +718,7 @@ impl Actor {
         self.retry_at = None;
         self.rejoin_started = None;
         self.teardown();
+        if let Some(h) = &self.share { h.send(ShareCmd::Stop); h.send(ShareCmd::AudioStop); }
         self.gid = None;
         self.reset();
         self.muted = false; self.deafened = false; self.ptt_held = false;
@@ -650,6 +728,7 @@ impl Actor {
     /// Ends the current session (not the call): mic, room, tracks.
     fn teardown(&mut self) {
         self.gate.close();
+        if let Some(h) = &self.share { h.send(ShareCmd::Session(None)); }
         self.speak_due = None; self.speaking_sent = None;
         let mic = self.mic.clone();
         let old = self.session.take().map(|s| (s.room, s.gen));
@@ -755,6 +834,7 @@ impl Actor {
         self.members = st.members.iter().map(|m| (m.device.clone(), m.clone())).collect();
         let book = Arc::new(Mutex::new(book));
         self.session = Some(Session { room: room.clone(), book: book.clone(), gen });
+        if let Some(h) = &self.share { h.send(ShareCmd::Session(Some(Sess { room: room.clone(), book: book.clone() }))); }
         self.phase = "connected";
         self.reconnecting_since = None;
         self.media.reset();
@@ -1074,6 +1154,7 @@ impl Actor {
             devices: self.devices.clone(), mic_id: self.settings.mic_id.clone(), out_id: self.settings.out_id.clone(),
             echo_cancellation: self.settings.processing.echo_cancellation, noise_suppression: self.settings.processing.noise_suppression,
             auto_gain_control: self.settings.processing.auto_gain_control, push_to_talk: self.settings.push_to_talk, ptt_held: self.ptt_held,
+            share: self.share_view.clone(), share_apps: self.share_apps.clone(),
         }
     }
 }

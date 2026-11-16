@@ -12,3 +12,8 @@ pub mod headless;
 pub mod reconnect;
 pub mod review;
 pub mod testhook;
+pub mod appaudio;
+pub mod capture;
+#[cfg(target_os = "linux")]
+pub mod capture_linux;
+pub mod share;

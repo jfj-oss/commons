@@ -5,9 +5,14 @@
 //!   {"cmd":"snapshot"} {"cmd":"hear","identity","hz","ms"} {"cmd":"game","muted":true|false|null} {"cmd":"trust_all","on"}
 //!   {"cmd":"devices"} {"cmd":"mic","id"} {"cmd":"out","id"} {"cmd":"processing","echo","noise","gain"}
 //!   {"cmd":"ptt_mode","on"} {"cmd":"ptt","down"} {"cmd":"plout","identity","ms"} {"cmd":"mic_options"}
+//!   {"cmd":"share","profile":"text|motion|motion60","source":"test|portal","w","h","speed","audio":<stream id>}  {"cmd":"share_stop"}
+//!   {"cmd":"share_switch","source","w","h","speed"} {"cmd":"share_profile","profile"} {"cmd":"share_end"} {"cmd":"share_stats"}
+//!   {"cmd":"share_apps"} {"cmd":"share_audio","stream"} {"cmd":"share_audio_stop"}
 //!   {"cmd":"core","method","args"} {"cmd":"call_active"} {"cmd":"quit"}
 use super::audio::Processing;
+use super::capture::{ShareSource, TestPattern};
 use super::engine::{CallEngine, Command};
+use super::share::Profile;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -65,6 +70,25 @@ async fn handle(e: &Arc<CallEngine>, c: &Value, quit: &tokio::sync::mpsc::Unboun
         }
         "ptt_mode" => { e.send(Command::SetPushToTalk(on)); json!({"ok": true}) }
         "ptt" => { e.send(Command::PushToTalk(c["down"].as_bool().unwrap_or(on))); json!({"ok": true}) }
+        "share" => {
+            let Some(profile) = Profile::parse(c["profile"].as_str().unwrap_or("text")) else { return json!({"error": "unknown profile"}) };
+            e.send(Command::StartShare { profile, source: source(c), audio: c["audio"].as_u64().map(|n| n as u32) }); json!({"ok": true})
+        }
+        "share_stop" => { e.send(Command::StopShare); json!({"ok": true}) }
+        "share_switch" => { e.send(Command::SwitchShareSource(source(c))); json!({"ok": true}) }
+        "share_profile" => {
+            let Some(profile) = Profile::parse(c["profile"].as_str().unwrap_or("")) else { return json!({"error": "unknown profile"}) };
+            e.send(Command::SetShareProfile(profile)); json!({"ok": true})
+        }
+        "share_stats" => e.share_stats().await,
+        "share_end" => { e.send(Command::TestShareEnd); json!({"ok": true}) }
+        "share_apps" => {
+            e.send(Command::ListShareApps);
+            tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+            json!({"apps": e.snapshot().share_apps})
+        }
+        "share_audio" => { e.send(Command::StartShareAudio { stream: c["stream"].as_u64().unwrap_or(0) as u32 }); json!({"ok": true}) }
+        "share_audio_stop" => { e.send(Command::StopShareAudio); json!({"ok": true}) }
         "snapshot" => serde_json::to_value(e.snapshot()).unwrap_or(Value::Null),
         "hear" => e.taps.hear(&s("identity"), c["hz"].as_f64().unwrap_or(500.), c["ms"].as_u64().unwrap_or(1500)).await,
         "plout" => e.plout(&s("identity"), c["ms"].as_u64().unwrap_or(1500)).await,
@@ -77,6 +101,13 @@ async fn handle(e: &Arc<CallEngine>, c: &Value, quit: &tokio::sync::mpsc::Unboun
         "quit" => { e.send(Command::Leave); let _ = quit.send(()); json!({"ok": true}) }
         other => json!({"error": format!("unknown command {other}")}),
     }
+}
+
+/// `source: "portal"` opens the system's picker (never in the automated tests); the default is the synthetic test source.
+fn source(c: &Value) -> ShareSource {
+    if c["source"].as_str() == Some("portal") { return ShareSource::Portal; }
+    let d = TestPattern::default();
+    ShareSource::Test(TestPattern { width: c["w"].as_u64().map(|n| n as u32).unwrap_or(d.width), height: c["h"].as_u64().map(|n| n as u32).unwrap_or(d.height), speed: c["speed"].as_u64().map(|n| n as u32).unwrap_or(d.speed) })
 }
 
 async fn devices(e: &Arc<CallEngine>) -> Value {

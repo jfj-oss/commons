@@ -21,6 +21,19 @@ Steps 0, 1 and 2 are done; step 3 waits for a person (echo check).
   binary: +27.5 MB stripped (53.0 to 80.5 MB).
 - Step 2: `calls/{engine,keys,gate,review,reconnect,errors,ice,testhook,headless}.rs`, `mega-gpui --call-headless`,
   `tools/gpui-call-e2e.mjs`, 18 checks, two runs, all pass; 25 unit tests.
+- Step 5, engine part (branch `gpui-share`; no UI): `calls/{share,capture,capture_linux,appaudio}.rs`, the commands and
+  snapshot fields documented at the top of `calls/share.rs`, `tools/gpui-call-share.mjs` (24 checks, all pass) and
+  `tools/gpui-call-share-portal.mjs` (the real portal, for a person). The portal capturer is built but was never run
+  against a real portal: it needs a person to pick a screen. The tests use a synthetic scrolling 1440p text source
+  through the same fit, convert and publish path. Measured in headless Chromium on a loaded 16-thread machine: sharp
+  text 2560x1440 at about 29 fps on HIGH and 960x540 on LOW; smooth motion 1920x1080 at about 29 fps; fast motion
+  1920x1080 at 45 to 59 fps (viewer side). `is_screencast: true` with VP8 simulcast kept the two-layer layout, so the
+  `is_screencast: false` fallback was not needed. Switching to a source of the same size keeps the track, another size
+  republishes, a profile change republishes without touching the capture, and a LiveKit restart puts the same capture
+  and sound back into the new session within 4 s. One app's sound is `parec --monitor-stream` on that stream (nothing
+  is moved, nothing else on the sink is heard), published as `music-audio` / `ScreenshareAudio`; Chromium hears the
+  chosen app's tone (share 0.47 to 0.51) and not the other's (below 0.00002). Not measured: stereo (still the open
+  question of section 7), the real portal, 60 fps from the portal, the 3 Mbit/s sender cap.
 
 Corrections to this plan found on the way:
 
@@ -35,6 +48,14 @@ Corrections to this plan found on the way:
 - The vendored sources are committed (about 9 MB, mostly webrtc-sys), not only the patch files: a `[patch]` path that
   does not exist breaks every cargo command in the workspace.
 - The engine sets `join_retries: 0` so that call.js's retry timings are the only ones in play.
+- The single 540p layer's rids are `h` (the full picture, listed first) and `q` (the 540p layer), not `f` and `q`; the
+  viewer's HIGH and LOW map to them. With a dense full-screen scrolling page the encoder drops that layer to 1 or 2
+  frames per second (350 to 600 kbit/s cannot hold more); with calm content it holds 14.5 of the 15 asked for.
+- A private PipeWire needs a WirePlumber to link streams to sinks (without one `parec --monitor-stream` has nothing to
+  tee). Its config must disable the hardware monitors (`hardware.audio = disabled`, see `tools/gpui-call-share.mjs`)
+  and it must run without the session bus: with the session bus it probes the real sound cards.
+- `parec` does not end when the app closes its stream (the sink's monitor goes on, silent), so the engine looks the
+  stream up every 2 s.
 
 ## Summary
 
