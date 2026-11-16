@@ -13,6 +13,8 @@ mod prefs;
 mod presence;
 mod views;
 mod look;
+#[cfg(feature = "calls")]
+mod videobench;
 
 use gpui_kit::*;
 
@@ -25,6 +27,14 @@ fn main() {
         look::apply_theme(cx);
         cx.on_window_closed(|cx, _| { if cx.windows().is_empty() { cx.quit(); } }).detach();
 
+        #[cfg(feature = "calls")]
+        if let Some(secs) = videobench::wanted() {
+            let bounds = Bounds::centered(None, size(px(1280.), px(720.)), cx);
+            let opts = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), app_id: Some("app.commons.chat.gpui.videobench".into()), ..Default::default() };
+            gpui_kit::open_window(opts, cx, |window, cx| cx.new(|cx| videobench::VideoBench::new(secs, window, cx))).expect("window");
+            cx.activate(true);
+            return;
+        }
         let core = core::Core::open();
         let quit_core = core.clone();
         cx.on_app_quit(move |_| { let c = quit_core.clone(); async move { c.app.shutdown(); } }).detach();

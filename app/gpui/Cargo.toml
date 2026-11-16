@@ -8,7 +8,7 @@ description = "mega desktop on GPUI (spike; not part of any release)"
 [features]
 default = ["calls"]
 # Calls inside the app. Off, the rest of the app builds without libwebrtc.
-calls = ["dep:livekit", "dep:libwebrtc", "dep:webrtc-sys", "dep:tokio", "dep:base64", "dep:parking_lot", "dep:getrandom"]
+calls = ["dep:livekit", "dep:libwebrtc", "dep:webrtc-sys", "dep:tokio", "dep:base64", "dep:parking_lot", "dep:getrandom", "dep:image", "dep:smallvec"]
 
 [[bin]]
 name = "mega-gpui"
@@ -33,6 +33,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 base64 = { version = "0.22", optional = true }
 parking_lot = { version = "0.12", optional = true }
 getrandom = { version = "0.2", optional = true }
+# remote video drawn as images on Linux (videobench.rs now, calls/video.rs later): the versions GPUI already uses
+image = { version = "0.25", default-features = false, optional = true }
+smallvec = { version = "1", optional = true }
 
 # CALLS-PLAN.md step 0: a Rust participant driven by tools/gpui-call-interop.mjs.
 [[example]]
