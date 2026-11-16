@@ -3,3 +3,10 @@
 pub mod ice;
 pub mod keys;
 pub mod tone;
+pub mod gate;
+pub mod engine;
+pub mod errors;
+pub mod headless;
+pub mod reconnect;
+pub mod review;
+pub mod testhook;

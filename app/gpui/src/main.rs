@@ -20,6 +20,8 @@ use gpui_kit::*;
 
 fn main() {
     bench::mark("main");
+    #[cfg(feature = "calls")]
+    if calls::headless::wanted() { calls::headless::run(); return; }
     gpui_kit::application().run(|cx: &mut App| {
         gpui_kit::init(cx);
         if let Err(e) = cx.text_system().add_fonts(fonts::all()) { eprintln!("fonts: {e}"); }
