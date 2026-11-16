@@ -8,6 +8,34 @@ Decisions this plan takes as given: the browser edition is ending and mega deskt
 are the top priority of the port; the iPhone app keeps its web UI, so **nothing on the wire may change**. Web and
 iOS clients must keep working in the same call as a native one.
 
+## Progress (2026-11-15, branch `gpui-calls`)
+
+Steps 0, 1 and 2 are done; step 3 waits for a person (echo check).
+
+- Step 0: `examples/call_probe.rs` + `tools/gpui-call-interop.mjs`, 15 checks, two runs, all pass (all eight items
+  below plus L1, L2 and W1).
+- Step 1: `livekit =0.11.0` with L1, L2 and W1 in `app/gpui/vendor` (`refresh.sh --check` verifies them against
+  crates.io). No runtime crate of any other workspace member changed (`cargo tree` with features is identical), so
+  `app/gpui` stays in the workspace, and the Tauri app builds `--locked`. Render bench (`MEGA_GPUI_VIDEO_BENCH`):
+  2560x1440 at 30 fps for 5 minutes, 10 to 15 % of one core, p99 33.7 ms, +15 MB from minute 1 to 5. Release
+  binary: +27.5 MB stripped (53.0 to 80.5 MB).
+- Step 2: `calls/{engine,keys,gate,review,reconnect,errors,ice,testhook,headless}.rs`, `mega-gpui --call-headless`,
+  `tools/gpui-call-e2e.mjs`, 18 checks, two runs, all pass; 25 unit tests.
+
+Corrections to this plan found on the way:
+
+- `call_active` goes false 20 s after the last `call_state` (the core's `CALL_QUIET`), not 5 s. The core was not
+  changed; the test checks 25 s.
+- Core calls use two dedicated threads, not one: `game_mute_wait` is a 4 s long poll and would hold up the 1.5 s
+  heartbeat.
+- W1's gain is applied in the playout mix, after a `NativeAudioStream` tap, so a tap does not show it. The receiver's
+  `inbound-rtp` `totalAudioEnergy` does (volume 0: 1e-7, volume 1: 0.23), with no PipeWire needed.
+- The local LiveKit 1.13.11 sends `stun:stun.l.google.com`, `stun:stun1.l.google.com` and
+  `stun:global.stun.twilio.com` in its join response, so L1 is needed exactly as described.
+- The vendored sources are committed (about 9 MB, mostly webrtc-sys), not only the patch files: a `[patch]` path that
+  does not exist breaks every cargo command in the workspace.
+- The engine sets `join_retries: 0` so that call.js's retry timings are the only ones in play.
+
 ## Summary
 
 - **Go.** A Rust LiveKit participant and the real `call.js` in headless Chromium were put in one local LiveKit room
