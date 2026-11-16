@@ -24,7 +24,7 @@ pub fn run() {
     let Some(port) = testhook::port() else { eprintln!("--call-headless needs MEGA_GPUI_CALL_TEST=<port>"); std::process::exit(2) };
     let Ok(pass) = std::env::var("MEGA_GPUI_PASS") else { eprintln!("--call-headless needs MEGA_GPUI_PASS (a throwaway account)"); std::process::exit(2) };
     // no system notifications from a test run, ever
-    if std::env::var_os("MEGA_GPUI_NOTIFY_FILE").is_none() { std::env::set_var("MEGA_GPUI_NOTIFY_FILE", crate::core::data_dir().join("notes.jsonl")); }
+    if std::env::var_os("MEGA_GPUI_NOTIFY_FILE").is_none() && std::env::var_os("MEGA_GPUI_NOTIFY_BUS").is_none() { std::env::set_var("MEGA_GPUI_NOTIFY_FILE", crate::core::data_dir().join("notes.jsonl")); }
     let core = Core::open();
     if let Err(e) = core.call("unlock", serde_json::json!({"passphrase": pass})) { eprintln!("unlock: {e}"); std::process::exit(1); }
     let settings_path = core.dir.join("gpui-call-prefs.json");

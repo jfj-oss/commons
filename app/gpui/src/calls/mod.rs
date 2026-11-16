@@ -22,3 +22,4 @@ pub mod camera;
 #[cfg(target_os = "linux")]
 pub mod camera_linux;
 pub mod shortcuts;
+pub mod ring;
