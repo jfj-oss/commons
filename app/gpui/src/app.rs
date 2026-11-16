@@ -62,6 +62,12 @@ pub struct Mega {
     pub call: crate::callui::CallUi,
     /// The owner's colour presets are showing in the open room's header.
     pub colours_open: bool,
+    /// Checks only (`dmunread=N` step): pretend this many unread messages in every direct conversation, for the core reports none yet.
+    pub fake_dm_unread: usize,
+    /// A direct conversation's unread messages when it was opened: the last few rows carry a small star until it is left.
+    pub dm_marks: (String, usize),
+    /// A backdrop picture per direct-conversation row on the home screen.
+    pub dm_caches: std::collections::HashMap<String, crate::backdrop::Shared>,
     _tasks: Vec<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -88,7 +94,7 @@ impl Mega {
         let prefs = Prefs::load(&core.dir);
         let call = crate::callui::CallUi::new(prefs.deck_w, window, cx);
         let mut this = Mega {
-            call, colours_open: false,
+            call, colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), dm_caches: Default::default(),
             level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., waves: vec![], bd_clock: 0., bd_cache: Default::default(), holes: Default::default(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
@@ -151,7 +157,7 @@ impl Mega {
     }
     /// Activity in the open room: a wave leaves from where the newest line is and the speckle organises into bands around it.
     pub fn stir(&mut self, n: usize) {
-        if self.still() { return; }
+        if self.still() || self.gid.as_deref().and_then(|g| self.channel(g)).is_some_and(|(c, _)| c.direct) { return; }
         if self.waves.len() > 3 { self.waves.remove(0); }
         let strength = (0.7 + 0.1 * n as f64).min(1.);
         self.waves.push(crate::backdrop::Wave { x: 0.12, y: 0.86, t0: self.bd_clock, s: strength });
@@ -319,6 +325,8 @@ impl Mega {
         self.level = Level::Chat;
         if self.gid.as_deref() == Some(gid.as_str()) { cx.notify(); return; }
         self.waves.clear();
+        let unread = self.channel(&gid).filter(|(c, _)| c.direct).map(|(_, ch)| ch.unread as usize).unwrap_or(0).max(if self.channel(&gid).is_some_and(|(c, _)| c.direct) { self.fake_dm_unread } else { 0 });
+        self.dm_marks = (gid.clone(), unread);
         self.cid = Some(cid);
         self.gid = Some(gid.clone());
         self.win = MsgWindow { key: gid, ..Default::default() };

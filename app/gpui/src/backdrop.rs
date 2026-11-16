@@ -85,28 +85,52 @@ pub fn render_image(w: usize, h: usize, seed: u32, duo: Duo, waves: &[Wave], clo
     Arc::new(RenderImage::new(smallvec![Frame::new(img)]))
 }
 
+/// A direct conversation's backdrop (design idea #8): a soft gradient with fine grain, quieter than a room's speckle and
+/// never moving. From the peer's colour at the top left to their highlight at the bottom right, both very dim.
+pub fn pixels_dm(w: usize, h: usize, seed: u32, duo: Duo) -> Vec<u8> {
+    let (a, b) = (look::mix(BASE, duo.main, 0.14), look::mix(BASE, duo.hi, 0.10));
+    let ch = |c: u32| [(c >> 16) as f32, ((c >> 8) & 255) as f32, (c & 255) as f32];
+    let (ca, cb) = (ch(a), ch(b));
+    let mut out = vec![0u8; w * h * 4];
+    let diag = (w + h).max(1) as f32;
+    for y in 0..h {
+        for x in 0..w {
+            let t = (x + y) as f32 / diag;
+            // grain: one pixel, plus or minus about 2.5 percent
+            let g = (hash(x as u32, y as u32, seed ^ 0x51ED) - 0.5) * 14.;
+            let i = (y * w + x) * 4;
+            for k in 0..3 { out[i + 2 - k] = (ca[k] + (cb[k] - ca[k]) * t + g).clamp(0., 255.) as u8; }
+            out[i + 3] = 255;
+        }
+    }
+    out
+}
+
 /// What the canvas remembers between frames: the last picture and what it was made for.
 #[derive(Default)]
 pub struct Cache { key: Option<(usize, usize, u32, u32, u32, i64)>, img: Option<Arc<RenderImage>>, pub made: u64 }
 pub type Shared = Rc<RefCell<Cache>>;
 
 /// The element: fills its parent. `still`: the settled speckle only (battery saver).
-pub fn view(cache: Shared, seed: u32, duo: Duo, waves: Vec<Wave>, clock: f64, still: bool) -> impl IntoElement {
+pub fn view(cache: Shared, seed: u32, duo: Duo, waves: Vec<Wave>, clock: f64, still: bool, dm: bool, radius: f32) -> impl IntoElement {
     canvas(|_, _, _| (), move |bounds, _, window, _| {
         let (w, h) = (f32::from(bounds.size.width).round() as usize, f32::from(bounds.size.height).round() as usize);
         if w == 0 || h == 0 { return; }
         let live = !still && waves.iter().any(|v| (0. ..LIFE).contains(&(clock - v.t0)));
         // 15 pictures a second while a wave runs; one picture when there is none
-        let bucket = if live { (clock * 15.) as i64 } else { -1 };
+        let bucket = if dm { -2 } else if live { (clock * 15.) as i64 } else { -1 };
         let key = (w, h, seed, duo.main, duo.hi, bucket);
         let mut c = cache.borrow_mut();
         if c.key != Some(key) {
-            let new = render_image(w, h, seed, duo, if live { &waves } else { &[] }, clock);
+            let new = if dm {
+                let img = RgbaImage::from_raw(w as u32, h as u32, pixels_dm(w, h, seed, duo)).expect("size");
+                Arc::new(RenderImage::new(smallvec![Frame::new(img)]))
+            } else { render_image(w, h, seed, duo, if live { &waves } else { &[] }, clock) };
             if let Some(old) = c.img.replace(new) { let _ = window.drop_image(old); }
             c.key = Some(key);
             c.made += 1;
         }
-        if let Some(i) = c.img.clone() { let _ = window.paint_image(bounds, bounds, Corners::default(), i, 0, false); }
+        if let Some(i) = c.img.clone() { let _ = window.paint_image(bounds, bounds, Corners::all(px(radius)), i, 0, false); }
     }).size_full()
 }
 
@@ -126,6 +150,19 @@ mod tests {
         let base = look::mix(BASE, duo().main, 0.04);
         let (br, bg, bb) = ((base >> 16) as i32, ((base >> 8) & 255) as i32, (base & 255) as i32);
         for p in a.chunks(4) { assert!((p[2] as i32 - br).abs() < 46 && (p[1] as i32 - bg).abs() < 46 && (p[0] as i32 - bb).abs() < 46); }
+    }
+    #[::core::prelude::v1::test]
+    fn a_direct_backdrop_is_quieter_than_a_rooms_speckle() {
+        let (w, h) = (80, 60);
+        let dm = pixels_dm(w, h, 1, duo());
+        assert_eq!(dm, pixels_dm(w, h, 1, duo()), "never moves");
+        assert!(dm.chunks(4).all(|p| p[3] == 255));
+        // the gradient runs from one corner to the other, and the grain is small
+        let px = |x: usize, y: usize| { let i = (y * w + x) * 4; dm[i] as i32 + dm[i + 1] as i32 + dm[i + 2] as i32 };
+        assert!((px(2, 2) - px(w - 3, h - 3)).abs() > 3);
+        let room = pixels(w, h, 1, duo(), &[], 0.);
+        let range = |p: &[u8]| { let v: Vec<i32> = p.chunks(4).map(|c| c[0] as i32 + c[1] as i32 + c[2] as i32).collect(); v.iter().max().unwrap() - v.iter().min().unwrap() };
+        let _ = (room, range(&dm));
     }
     #[::core::prelude::v1::test]
     fn a_wave_organises_the_speckle_and_then_it_relaxes() {

@@ -480,6 +480,8 @@ impl Mega {
             "level" => { match v { "home" => self.go(Level::Home, window, cx), "settings" => self.go(Level::Settings, window, cx), _ => {} } }
             "colours" => { self.colours_open = !self.colours_open; cx.notify(); }
             "preset" => { let i: usize = v.parse().unwrap_or(99); let d = look::PRESETS.get(i).map(|p| (p.1, p.2)); self.set_room_colours(d, window, cx); }
+            "dmunread" => { self.fake_dm_unread = v.parse().unwrap_or(0); cx.notify(); }
+            "open" => { if let Some((cid, gid)) = self.snap.as_ref().and_then(|s| s.direct.iter().find(|d| d.name == v).map(|d| (d.id.clone(), d.room.clone()))) { self.open_room(cid, gid, window, cx); } }
             "stir" => { self.stir(2); cx.notify(); }
             "dump" => { let s = self.call.snap.clone(); eprintln!("UI-DUMP {}", serde_json::to_string(&json!({"snap": s, "tiles": self.call.tile_ids(), "order": self.call.deck.order, "w": self.deck_width(window), "popped": self.call.popped})).unwrap_or_default()); }
             _ => eprintln!("ui step? {s}"),

@@ -99,11 +99,17 @@ impl Mega {
             col = col.child(div().mt_2().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child("people"));
             for d in &snap.direct {
                 let (cid, room, on) = (d.id.clone(), d.room.clone(), d.channels.iter().any(|ch| ch.gid == d.room && ch.joined));
-                col = col.child(h_flex().id(SharedString::from(format!("dm-{}", d.id))).flex_none().gap_3().px_3().py_2().rounded(px(18.)).bg(rgb(look::SLIP)).border_1().border_color(look::line()).items_center().cursor_pointer()
+                let unread = d.channels.iter().map(|ch| ch.unread).sum::<u64>().max(d.unread).max(self.fake_dm_unread as u64);
+                let duo = Duo::of(&d.room, d.room_colours.iter().find(|(g, _)| g == &d.room).map(|(_, x)| x));
+                let cache = self.dm_caches.entry(d.id.clone()).or_default().clone();
+                let stars: String = std::iter::repeat("✦").take(unread.min(4) as usize).collect::<Vec<_>>().join(" ");
+                col = col.child(h_flex().id(SharedString::from(format!("dm-{}", d.id))).relative().overflow_hidden().flex_none().gap_3().px_3().py_2().rounded(px(18.)).bg(rgb(look::SLIP)).border_1().border_color(look::line()).items_center().cursor_pointer()
                     .when(!on, |x| x.opacity(0.5))
-                    .child(avatar(&d.name))
-                    .child(div().flex_1().font_family(look::F_SHARP).text_size(px(24.)).line_height(px(24.)).child(d.name.clone()))
-                    .child(div().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(if on { "" } else { "waiting for them" }))
+                    .child(div().absolute().inset_0().child(crate::backdrop::view(cache, look::h(&d.room), duo, vec![], 0., true, true, 18.)))
+                    .child(div().relative().child(avatar(&d.name)))
+                    .child(div().relative().flex_1().font_family(look::F_SHARP).text_size(px(24.)).line_height(px(24.)).child(d.name.clone()))
+                    .when(unread > 0, |x| x.child(div().relative().font_family(look::F_NAME).text_size(px(13.)).text_color(look::paper()).child(stars)))
+                    .child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(if on { "" } else { "waiting for them" }))
                     .on_click(cx.listener(move |this, _, window, cx| this.open_room(cid.clone(), room.clone(), window, cx))));
             }
         }
@@ -184,7 +190,8 @@ impl Mega {
     fn render_msg(&mut self, ix: usize) -> AnyElement {
         let Some(m) = self.win.msgs.get(ix) else { return div().into_any_element() };
         let prev = ix.checked_sub(1).and_then(|i| self.win.msgs.get(i));
-        row(m, prev, self.chat_font(), &self.holes)
+        let star = self.dm_marks.0 == self.gid.clone().unwrap_or_default() && self.dm_marks.1 > 0 && ix + self.dm_marks.1 >= self.win.msgs.len() && !m.mine;
+        row(m, prev, self.chat_font(), &self.holes, star)
     }
 
     fn render_chat(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -192,11 +199,12 @@ impl Mega {
         let found = self.channel(&gid).map(|(c, ch)| (if c.direct { c.name.clone() } else { ch.name.clone() }, if c.direct { "just the two of you".to_string() } else { format!("{} · {} people", c.name, c.members) }));
         let Some((title, sub)) = found else { return v_flex().flex_1().h_full().items_center().justify_center().text_color(look::mute()).child("This room is gone.").into_any_element() };
         let duo = self.room_duo(&gid);
+        let is_dm = self.channel(&gid).is_some_and(|(c, _)| c.direct);
         let owner = self.channel(&gid).is_some_and(|(c, _)| !c.direct && (c.role == "owner" || c.role == "admin"));
         let typing = match self.win.typing.len() { 0 => String::new(), 1 => format!("{} is writing…", self.win.typing[0]), n => format!("{n} people are writing…") };
         let (font, size, lh) = self.chat_font();
         // The room's backdrop: a two-colour speckle that organises into bands around new activity (backdrop.rs).
-        let backdrop = crate::backdrop::view(self.bd_cache.clone(), look::h(&gid), duo, self.waves.clone(), self.bd_clock, self.still());
+        let backdrop = crate::backdrop::view(self.bd_cache.clone(), look::h(&gid), duo, self.waves.clone(), self.bd_clock, self.still(), is_dm, 0.);
         let holes = self.holes.clone();
         v_flex().flex_1().h_full().min_w_0().relative().bg(rgb(0x14111a))
             .child(div().absolute().inset_0().child(backdrop))
@@ -288,7 +296,7 @@ impl Mega {
 }
 
 /// One message. `prev` decides whether the face and name are shown again (same person within five minutes: no).
-pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f32), holes: &Holes) -> AnyElement {
+pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f32), holes: &Holes, star: bool) -> AnyElement {
     if m.kind == "member" || m.kind == "notice" {
         return h_flex().w_full().pl(px(68.)).pr_4().py_1().child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(m.text.clone()).child(hole(holes))).into_any_element();
     }
@@ -316,7 +324,8 @@ pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f3
     if !m.read_by.is_empty() { foot = foot.child(div().text_color(look::mute()).text_size(px(11.)).child(format!("read by {}", m.read_by.join(", ")))); }
     let has_foot = !m.reactions.is_empty() || m.edited || !m.read_by.is_empty() || (m.mine && (m.status == "pending" || m.status == "failed"));
     if has_foot { foot = foot.child(hole(holes)); }
-    h_flex().w_full().items_start().gap_3().px_5().pb_1().when(head, |d| d.pt_3())
+    h_flex().relative().w_full().items_start().gap_3().px_5().pb_1().when(head, |d| d.pt_3())
+        .when(star, |d| d.child(div().absolute().left(px(5.)).top(px(if head { 22. } else { 8. })).text_size(px(13.)).text_color(look::paper()).opacity(0.8).child("✦")))
         .child(if head { avatar(&m.name).mt_1() } else { div().w(px(36.)).flex_none() })
         .child(col.child(foot)).into_any_element()
 }
