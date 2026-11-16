@@ -41,11 +41,11 @@ pub struct Mega {
     pub pres: crate::presence::Presence,
     /// The cards' clock and the open room's backdrop (ascii.rs).
     pub clock: f64,
-    pub bd_t: f64,
-    pub heat: f64,
-    pub ripples: Vec<crate::ascii::Ripple>,
+    /// The open room's backdrop (backdrop.rs): the waves of new activity, and its own clock, which only runs while one does.
+    pub waves: Vec<crate::backdrop::Wave>,
+    pub bd_clock: f64,
+    pub bd_cache: crate::backdrop::Shared,
     pub holes: crate::ascii::Holes,
-    next_ripple: f64,
     last_anim: Instant,
     pub notify_settings: Value,
     pub set_name: Entity<InputState>,
@@ -87,7 +87,7 @@ impl Mega {
         let call = crate::callui::CallUi::new(prefs.deck_w, window, cx);
         let mut this = Mega {
             call,
-            level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd_t: 0., heat: HEAT_FLOOR, ripples: vec![], holes: Default::default(), next_ripple: 8., last_anim: Instant::now(), notify_settings: Value::Null, set_name,
+            level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., waves: vec![], bd_clock: 0., bd_cache: Default::default(), holes: Default::default(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
             list: ListState::new(0, ListAlignment::Bottom, px(600.)), composer, typing_sent: None, ticking: false, again: false, first_frame_done: false,
@@ -135,29 +135,24 @@ impl Mega {
         match self.level {
             Level::Home | Level::Server(_) => { if dt < 0.05 { return; } self.clock += dt.min(0.1); }
             Level::Chat => {
-                if dt < if self.ripples.is_empty() { 0.1 } else { 0.04 } { return; }
+                // the backdrop moves only while a wave runs (about 15 pictures a second), never otherwise
+                if self.waves.is_empty() || dt < 0.066 { return; }
                 let dt = dt.min(0.25);
-                self.heat = (self.heat * 0.5f64.powf(dt / 18.)).max(HEAT_FLOOR);
-                self.bd_t += dt * (0.1 + self.heat * 1.5);
-                self.next_ripple -= dt;
-                if self.next_ripple <= 0. {   // now and then a gentle ring from somewhere in the room
-                    self.next_ripple = 14. + 14. * nh01(self.bd_t);
-                    self.ripples.push(crate::ascii::Ripple { x: 20. + 60. * nh01(self.bd_t * 3.1), y: 8. + 20. * nh01(self.bd_t * 7.7), r: 0., s: 0.5, v: 26., band: 8., fade: 0.3 });
-                }
-                for q in &mut self.ripples { q.r += q.v * dt; q.s *= q.fade.powf(dt); }
-                self.ripples.retain(|q| q.s > 0.04 && q.r < 220.);
+                self.bd_clock += dt;
+                let now = self.bd_clock;
+                self.waves.retain(|w| now - w.t0 < crate::backdrop::LIFE);
             }
             Level::Settings => return,
         }
         self.last_anim = Instant::now();
         cx.notify();
     }
-    /// Activity in the open room: the backdrop warms up and a ring leaves from where the newest line is.
-    fn stir(&mut self, n: usize) {
-        self.heat = (self.heat + 0.18 * n as f64).min(1.);
+    /// Activity in the open room: a wave leaves from where the newest line is and the speckle organises into bands around it.
+    pub fn stir(&mut self, n: usize) {
         if self.still() { return; }
-        if self.ripples.len() > 6 { self.ripples.remove(0); }
-        self.ripples.push(crate::ascii::Ripple { x: 14., y: 36., r: 0., s: 0.9, v: 44., band: 4., fade: 0.12 });
+        if self.waves.len() > 3 { self.waves.remove(0); }
+        let strength = (0.7 + 0.1 * n as f64).min(1.);
+        self.waves.push(crate::backdrop::Wave { x: 0.12, y: 0.86, t0: self.bd_clock, s: strength });
     }
 
     /// One call to the core off the UI thread, then `then` back on it.
@@ -321,7 +316,7 @@ impl Mega {
     pub fn open_room(&mut self, cid: String, gid: String, window: &mut Window, cx: &mut Context<Self>) {
         self.level = Level::Chat;
         if self.gid.as_deref() == Some(gid.as_str()) { cx.notify(); return; }
-        self.bd_t = (look::h(&gid) % 90) as f64; self.ripples.clear(); self.heat = HEAT_FLOOR;
+        self.waves.clear();
         self.cid = Some(cid);
         self.gid = Some(gid.clone());
         self.win = MsgWindow { key: gid, ..Default::default() };
@@ -375,8 +370,6 @@ pub fn clock(ts: u64) -> String {
     chrono::Local.timestamp_opt(ts as i64, 0).single().map(|t| t.format("%H:%M").to_string()).unwrap_or_default()
 }
 
-pub const HEAT_FLOOR: f64 = 0.12;
-fn nh01(x: f64) -> f64 { let s = (x * 127.1).sin() * 43758.5453; s - s.floor() }
 
 impl Mega {
     pub fn go(&mut self, level: Level, window: &mut Window, cx: &mut Context<Self>) {

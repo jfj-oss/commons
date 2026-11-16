@@ -1,5 +1,5 @@
 //! What is on screen: the community cards, a community's room cards, a room beside its colour dots, and settings.
-use crate::app::{clock, Level, Mega, Screen, HEAT_FLOOR};
+use crate::app::{clock, Level, Mega, Screen};
 use crate::ascii::{self, hole, Field, Holes};
 use crate::look::{self, Duo};
 use crate::model::Msg;
@@ -167,12 +167,11 @@ impl Mega {
         let duo = self.room_duo(&gid);
         let typing = match self.win.typing.len() { 0 => String::new(), 1 => format!("{} is writing…", self.win.typing[0]), n => format!("{n} people are writing…") };
         let (font, size, lh) = self.chat_font();
-        // The room's dim backdrop: its pattern in its two colours, warmer after activity, with rings travelling through it.
-        let backdrop = Field { fx: ascii::auto_fx(&title), seed: look::h(&gid), duo, t: self.bd_t, cell: (10., 17.), font_px: 14., gate: 0.46 - 0.26 * self.heat.max(HEAT_FLOOR), hi_t: 0.86, alpha: 0.42, radius: 0.,
-            ripples: if self.still() { vec![] } else { self.ripples.clone() }, holes: vec![], live_holes: Some(self.holes.clone()) };
+        // The room's backdrop: a two-colour speckle that organises into bands around new activity (backdrop.rs).
+        let backdrop = crate::backdrop::view(self.bd_cache.clone(), look::h(&gid), duo, self.waves.clone(), self.bd_clock, self.still());
         let holes = self.holes.clone();
         v_flex().flex_1().h_full().min_w_0().relative().bg(rgb(0x14111a))
-            .child(div().absolute().inset_0().child(ascii::field(backdrop)))
+            .child(div().absolute().inset_0().child(backdrop))
             .child(v_flex().flex_none().items_start().px_5().pt_3().pb_1()
                 .child(div().relative().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).child(title.clone()).child(hole(&holes)))
                 .child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(sub).child(hole(&holes))))

@@ -2,6 +2,7 @@
 //! `App::call(method, args)` JSON API as the Tauri shell and the browser bridge (see core.rs).
 mod app;
 mod ascii;
+mod backdrop;
 mod bench;
 #[cfg(feature = "calls")]
 #[allow(dead_code)]
