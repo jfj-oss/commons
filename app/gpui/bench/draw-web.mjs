@@ -41,6 +41,7 @@ for (const s of steps) {
   else if (k === 'tool') { await page.ev(`document.querySelector('#mw-glyphs [data-g="${a[0]}"]').click()`); await sleep(200); }
   else if (k === 'col') { await page.ev(`document.querySelector('#mw-cols [data-c="${a[0]}"]').click()`); await sleep(200); }
   else if (k === 'drag') { const [x1, y1, x2, y2] = a.map(Number); await mouse('mouseMoved', x1, y1); await mouse('mousePressed', x1, y1); for (let i = 1; i <= 24; i++) { await mouse('mouseMoved', x1 + (x2 - x1) * i / 24, y1 + (y2 - y1) * i / 24); await sleep(30); } await mouse('mouseReleased', x2, y2); await sleep(900); }
+  else if (k === 'text') { await page.ev(`[...document.querySelectorAll('button')].find(b => b.textContent.trim().startsWith(${JSON.stringify(a[0])}) && b.offsetParent).click()`); await sleep(700); }
   else if (k === 'eval') { console.log(JSON.stringify(await page.ev(process.env.EXPR))); }
 }
 stopAll(); process.exit(0);

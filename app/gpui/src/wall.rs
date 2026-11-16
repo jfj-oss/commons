@@ -448,10 +448,11 @@ impl Mega {
         let (w, h) = { let r = rect.get(); (r.2, r.3) };
         let marks_cells = Rc::new(self.wall.marks_of(gid));
         let ink = self.wall_inks(gid);
+        let live = Some((self.holes.clone(), 0., false));
         let grid = grid_in(w.max(1.), h.max(1.), false);
         div().absolute().inset_0()
             .child(canvas(move |b, _, _| rect.set((f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height))), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
-            .when(!marks_cells.is_empty(), |d| d.child(marks(Marks { cells: marks_cells, grid, ink, holes: Rc::new(vec![]) })))
+            .when(!marks_cells.is_empty(), |d| d.child(marks(Marks { cells: marks_cells, grid, ink, holes: Rc::new(vec![]), live })))
             .into_any_element()
     }
     /// The layer over the open room while drawing: catches the pen (and the wheel).
@@ -541,7 +542,7 @@ fn glyphs(window: &mut Window) -> Glyphs {
 
 /// What a marks layer paints.
 #[derive(Clone)]
-pub struct Marks { pub cells: Rc<Vec<(u16, u8, u8)>>, pub grid: Grid, pub ink: [u32; 2], /** boxes (relative to the layer) with words on them: marks under them are not painted */ pub holes: Rc<Vec<Bounds<Pixels>>> }
+pub struct Marks { pub cells: Rc<Vec<(u16, u8, u8)>>, pub grid: Grid, pub ink: [u32; 2], /** boxes (relative to the layer) with words on them: marks under them are not painted */ pub holes: Rc<Vec<Bounds<Pixels>>>, /** boxes in window coordinates gathered during layout (ascii::hole), widened by .1 each side, and whether a cell is under one by its centre (the cards, as the page maps its text mask) or by any overlap (a room) */ pub live: Option<(crate::ascii::Holes, f32, bool)> }
 
 /// The element: fills its parent, which is the box the grid was made for.
 pub fn marks(m: Marks) -> impl IntoElement {
@@ -550,16 +551,26 @@ pub fn marks(m: Marks) -> impl IntoElement {
         let gl = glyphs(window);
         let g = &m.grid;
         let (ox, oy) = ((g.cw - g.fs * 0.6) / 2., g.ch * 0.72);
+        let live: Vec<(f32, f32, f32, f32)> = m.live.as_ref().map(|(h, pad, _)| h.borrow().iter().map(|b| (f32::from(b.origin.x - bounds.origin.x) - pad, f32::from(b.origin.y - bounds.origin.y), f32::from(b.size.width) + 2. * pad, f32::from(b.size.height))).collect()).unwrap_or_default();
+        let by_centre = m.live.as_ref().is_some_and(|l| l.2);
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             for &(p, glyph, col) in m.cells.iter() {
                 let Some(Some(id)) = gl.ids.get(glyph as usize) else { continue };
                 let (l, t, w, h) = cell_rect(g, p);
                 if m.holes.iter().any(|b| { let (bx, by, bw, bh) = (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)); l + w / 2. > bx && l + w / 2. < bx + bw && t + h / 2. > by && t + h / 2. < by + bh }) { continue; }
+                if live.iter().any(|&(bx, by, bw, bh)| text_box_hides(by_centre, (l, t, w, h), (bx, by, bw, bh))) { continue; }
                 let c: Hsla = rgb(ink_of(m.ink, col)).into();
                 let _ = window.paint_glyph(point(bounds.origin.x + px(l + ox), bounds.origin.y + px(t + oy)), gl.font, *id, px(g.fs), c);
             }
         });
     }).absolute().top_0().left_0().size_full()
+}
+
+/// Is a mark's cell (l, t, w, h) under a text box? The page hides a card's mark when its centre is under the padded box,
+/// and a room's when any part of the cell is.
+pub fn text_box_hides(by_centre: bool, (l, t, w, h): (f32, f32, f32, f32), (bx, by, bw, bh): (f32, f32, f32, f32)) -> bool {
+    if by_centre { l + w / 2. > bx && l + w / 2. < bx + bw && t + h / 2. > by && t + h / 2. < by + bh }
+    else { l + w > bx && l < bx + bw && t + h > by && t < by + bh }
 }
 
 /// The two inks of the card the wall is on.
@@ -671,4 +682,19 @@ mod tests {
     }
     #[::core::prelude::v1::test]
     fn the_stroke_value_of_an_erase_has_no_colour() { assert_eq!(stroke_value(0, 7), (0, 0)); assert_eq!(stroke_value(3, 7), (3, 7)); }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+    #[::core::prelude::v1::test]
+    fn marks_under_words_are_hidden_by_centre_on_cards_and_by_overlap_in_rooms() {
+        let b = (100., 100., 50., 20.);
+        // a cell whose centre is outside the box but which overlaps it
+        let cell = (90., 100., 12., 10.);
+        assert!(!text_box_hides(true, cell, b));
+        assert!(text_box_hides(false, cell, b));
+        assert!(text_box_hides(true, (110., 105., 6., 6.), b));
+        assert!(!text_box_hides(false, (200., 100., 6., 6.), b));
+    }
 }

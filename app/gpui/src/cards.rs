@@ -341,37 +341,20 @@ impl Mega {
         let still = self.still();
         let small = g.cw < 560.;
         let (cell, fs) = if small { ((8., 13.), 11.) } else { ((10., 17.), 14.) };
-        let mut holes = vec![
-            Bounds::new(point(px(pad), px(h - pad - title_h - tpx * 0.1)), size(px((lines_w(&it.title, adv, title_w) + adv).min(inner_w)), px(title_h + tpx * 0.2))),
-            Bounds::new(point(px(pad), px(pad * 0.8)), size(px(it.sub.chars().count() as f32 * top_px * 0.58 + 12. * s), px(top_px * 1.6))),
-        ];
-        if !num_s.is_empty() { holes.push(Bounds::new(point(px(w - pad - num_w + 8. * s), px(h - pad - npx * 0.85)), size(px(num_w), px(npx * 0.9)))); }
+        // the words' boxes come from layout itself (ascii::hole), as the page cuts every text box out of the pattern
+        let live: crate::ascii::Holes = Default::default();
         let show_mid = g.settled || g.grow > 0.02;
         let mid_op = g.grow.min(1.);
         let mid_text: Option<(String, String)> = it.preview.clone().or_else(|| it.note.clone().map(|n| (String::new(), n)));
-        if show_mid { if let Some((who, text)) = &mid_text {
-            let mw = (inner_w).min(ppx * 34.);
-            let est = ((who.chars().count() + text.chars().count()) as f32 * belle * 0.46).min(mw * 3.).max(ppx * 4.);
-            let lines_n = (est / mw).ceil().clamp(1., 3.);
-            let hh = lines_n * ppx * 1.25 + ppx * 0.4;
-            let mid_c = (pad + top_px * 1.4 + (h - pad - title_h.max(npx * 0.78))) / 2.;
-            holes.push(Bounds::new(point(px(pad), px(mid_c - hh / 2.)), size(px(mw.min(est + ppx)), px(hh))));
-        } }
-        if !it.news.is_empty() && show_mid {
-            let fit = (((h - 2. * pad - tpx * lines as f32 * 0.95 - top_px * 2.5) / ((56. + 8.) * s)).floor().max(1.)) as usize;
-            let rows_h = it.news.len().min(fit) as f32 * 64. * s;
-            holes.push(Bounds::new(point(px(pad - 4.), px(pad + top_px * 2.5)), size(px(inner_w + 8.), px(rows_h + 8.))));
-        }
         let wall_key = card_wall(it);
         let marks_cells: Rc<Vec<(u16, u8, u8)>> = Rc::new(wall_key.as_ref().map(|k| self.wall.marks_of(k)).unwrap_or_default());
         let wall_grid = crate::wall::grid_in(g.cw, g.ch, true).scaled(s);
-        let holes_rc = Rc::new(holes.clone());
         let f = if g.live {
             let seed = look::h(&it.key);
             let t = if still || it.hi_t > 1.5 { 11.7 } else { g.t + (seed % 40) as f64 };
             let mut f = Field::card(it.fx, seed, it.duo, t, small);
             f.cell = (cell.0 * s, cell.1 * s); f.font_px = nav::q(fs * s); f.radius = r; f.emboss = still; if still { f.gate = 0.1; }
-            f.hi_t = it.hi_t; f.holes = holes;
+            f.hi_t = it.hi_t; f.live_holes = Some(live.clone());
             if !marks_cells.is_empty() { f.avoid = Some((wall_grid, marks_cells.clone())); }
             Some(f)
         } else { None };
@@ -382,14 +365,14 @@ impl Mega {
         let more = it.looking.len().saturating_sub(crate::presence::SHOW);
         let here_faces: Vec<AnyElement> = it.here.iter().take(5).map(|n| crate::views::face_dot(n, 22. * s).into_any_element()).collect();
         let top = h_flex().w_full().items_start().gap(px(12. * s)).font_family(look::F_UI).text_size(px(top_px)).line_height(px(top_px * 1.4)).text_color(ink)
-            .child(div().child(it.sub.clone())).child(div().flex_1()).children(looking).when(more > 0, |d| d.child(format!("+{more}")));
+            .child(div().relative().child(it.sub.clone()).child(ascii::hole(&live))).child(div().flex_1()).children(looking.into_iter().map(|f| div().relative().child(f).child(ascii::hole(&live)).into_any_element())).when(more > 0, |d| d.child(div().relative().child(format!("+{more}")).child(ascii::hole(&live))));
         // the "what's new" card holds a row per unread room instead of one line
         let news_rows: Vec<AnyElement> = if it.news.is_empty() || !show_mid { vec![] } else {
             let fit = (((h - 2. * pad - tpx * lines as f32 * 0.95 - top_px * 2.5) / ((56. + 8.) * s)).floor().max(1.)) as usize;
             it.news.iter().take(fit).enumerate().map(|(ri, r)| {
                 let (cid, gid) = (r.cid.clone(), r.gid.clone());
                 let name_px = nav::q(17. * s); let sm = nav::q(13. * s);
-                h_flex().id(("news-row", ri)).w_full().flex_none().items_center().gap(px(14. * s)).min_h(px(56. * s)).px(px(16. * s)).py(px(9. * s)).rounded(px(20. * s)).bg(it.duo.field().opacity(0.8)).text_color(ink).cursor_pointer()
+                h_flex().id(("news-row", ri)).w_full().flex_none().items_center().gap(px(14. * s)).min_h(px(56. * s)).px(px(16. * s)).py(px(9. * s)).rounded(px(20. * s)).bg(it.duo.field().opacity(0.8)).text_color(ink).cursor_pointer().relative().child(ascii::hole(&live))
                     .hover(|d| d.bg(it.duo.field().opacity(0.96)))
                     .child(div().size(px(12. * s)).flex_none().rounded_full().bg(r.col).border_2().border_color(ink))
                     .child(v_flex().flex_1().min_w_0().gap(px(2. * s))
@@ -405,29 +388,29 @@ impl Mega {
             }).collect()
         };
         let mid = v_flex().flex_1().min_h_0().justify_center().gap(px(12. * s)).opacity(if show_mid { mid_op } else { 0. })
-            .when(!it.here.is_empty() && it.voice, |d| d.child(h_flex().gap(px(10. * s)).items_center().font_family(look::F_SHARP).text_size(px(nav::snap_down((0.03 * g.cw).clamp(22., 42.), 12.) * s)).text_color(ink)
+            .when(!it.here.is_empty() && it.voice, |d| d.child(h_flex().relative().child(ascii::hole(&live)).gap(px(10. * s)).items_center().font_family(look::F_SHARP).text_size(px(nav::snap_down((0.03 * g.cw).clamp(22., 42.), 12.) * s)).text_color(ink)
                 .children(here_faces).child(it.here.join(", "))))
-            .when(!it.here.is_empty() && !it.voice, |d| d.child(h_flex().gap(px(10. * s)).items_center().font_family(look::F_UI).text_size(px(top_px * 1.2)).text_color(ink)
+            .when(!it.here.is_empty() && !it.voice, |d| d.child(h_flex().relative().child(ascii::hole(&live)).gap(px(10. * s)).items_center().font_family(look::F_UI).text_size(px(top_px * 1.2)).text_color(ink)
                 .children(it.here.iter().take(5).map(|n| crate::views::face_dot(n, 22. * s).into_any_element())).child(it.note.clone().unwrap_or_default())))
             .when_some(mid_text.clone().filter(|_| !(it.voice && !it.here.is_empty()) && !(!it.here.is_empty() && !it.voice)), |d, (who, text)| d.child(
-                h_flex().max_w(px(ppx * 34.)).items_baseline().gap(px(ppx * 0.3)).text_color(ink).overflow_hidden().max_h(px(ppx * 1.25 * 3.2))
+                h_flex().relative().child(ascii::hole(&live)).max_w(px(ppx * 34.)).items_baseline().gap(px(ppx * 0.3)).text_color(ink).overflow_hidden().max_h(px(ppx * 1.25 * 3.2))
                     .when(!who.is_empty(), |d| d.child(div().flex_none().font_family(look::F_UI).text_size(px(ppx * 0.82)).line_height(px(ppx * 1.25)).font_weight(FontWeight::SEMIBOLD).child(who.clone())))
                     .child(div().min_w_0().font_family(look::F_BELLEFAIR).text_size(px(belle)).line_height(px(ppx * 1.25)).child(text.replace('\n', " ")))));
         // a voice card has its own join button (a click on its body does nothing; Enter joins), like the page's `.mjoin`
         let me_in = it.voice && self.call.in_call() && self.call.snap.gid.as_deref() == Some(it.room.as_str());
         let mid = if it.voice && !it.locked && show_mid {
             let gid = it.room.clone();
-            mid.child(h_flex().child(div().id(("join", i)).flex().items_center().justify_center().h(px(44. * s)).px(px(22. * s)).rounded_full().bg(ink).text_color(it.duo.field()).font_family(look::F_UI).text_size(px(nav::q(15. * s))).font_weight(FontWeight::SEMIBOLD).cursor_pointer()
+            mid.child(h_flex().child(div().id(("join", i)).relative().child(ascii::hole(&live)).flex().items_center().justify_center().h(px(44. * s)).px(px(22. * s)).rounded_full().bg(ink).text_color(it.duo.field()).font_family(look::F_UI).text_size(px(nav::q(15. * s))).font_weight(FontWeight::SEMIBOLD).cursor_pointer()
                 .child(if me_in { "leave" } else { "join" })
                 .on_click(cx.listener(move |this, _, window, cx| { cx.stop_propagation(); if this.call.in_call() && this.call.snap.gid.as_deref() == Some(gid.as_str()) { this.leave_call(cx); } else { this.join_call(gid.clone(), window, cx); } }))))
         } else { mid };
         let mid = if news_rows.is_empty() { mid } else { v_flex().flex_1().min_h_0().gap(px(8. * s)).opacity(mid_op).children(news_rows) };
         let bottom = h_flex().w_full().items_end().gap(px(16. * s)).text_color(ink)
-            .child(div().flex_1().min_w_0().font_family(title_font).text_size(px(tpx)).line_height(px(tlh)).child(it.title.clone()))
-            .when(!num_s.is_empty(), |d| d.child(div().flex_none().font_family(look::F_SHARP).text_size(px(npx)).line_height(px(npx * 0.78)).opacity(0.85).pr(px(npx * 0.08)).child(num_s.clone())));
+            .child(v_flex().flex_1().min_w_0().items_start().child(div().relative().font_family(title_font).text_size(px(tpx)).line_height(px(tlh)).child(it.title.clone()).child(ascii::hole(&live))))
+            .when(!num_s.is_empty(), |d| d.child(div().relative().flex_none().font_family(look::F_SHARP).text_size(px(npx)).line_height(px(npx * 0.78)).opacity(0.85).pr(px(npx * 0.08)).child(num_s.clone()).child(ascii::hole(&live))));
         let slab = div().absolute().inset_0().overflow_hidden().bg(it.duo.field()).opacity(if it.locked { g.op * 0.55 } else { g.op })
             .when_some(f, |d, f| d.child(div().absolute().inset_0().child(ascii::field(f))))
-            .when(!marks_cells.is_empty(), |d| d.child(crate::wall::marks(crate::wall::Marks { cells: marks_cells.clone(), grid: wall_grid, ink: look::wall_ink(&it.duo), holes: holes_rc.clone() })))
+            .when(!marks_cells.is_empty(), |d| d.child(crate::wall::marks(crate::wall::Marks { cells: marks_cells.clone(), grid: wall_grid, ink: look::wall_ink(&it.duo), holes: Rc::new(vec![]), live: Some((live.clone(), nav::q(cell.0 * s), true)) })))
             .child(v_flex().absolute().inset_0().p(px(pad)).gap(px(12. * s)).child(top).child(mid).child(bottom));
         div().id(("card", i)).absolute().left(px(g.x)).top(px(g.y)).w(px(w)).h(px(h)).cursor_pointer()
             .child(slab)
