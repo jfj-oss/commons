@@ -283,6 +283,7 @@ impl Client {
                 key: key.clone(), nonce: nonce.clone(), expires: large.expires, dir: dir.display().to_string(), part: part.display().to_string(),
                 done: 0, hashes: vec![], finished: false, path: final_path.display().to_string(), paused: false,
             });
+            self.bump_chan(gid);
         }
         // The resume point is what was saved (each chunk is synced to disk before it is counted). Anything past the count
         // is thrown away and fetched again, and the last few counted chunks are read back below.
@@ -317,6 +318,7 @@ impl Client {
         d.paused = false;
         let all = d.done == d.chunks;
         let out = d.clone();
+        self.bump_chan(gid);   // a resumed download moved its progress
         self.save()?;
         if all { self.large_download_finalize(msg_id)?; return Ok(self.st.large_downloads[msg_id].clone()); }
         Ok(out)
@@ -338,12 +340,13 @@ impl Client {
             f.write_all(&plain)?;
             f.sync_data()?;   // a chunk is counted (and saved) only once it is on disk
         }
-        let (done, chunks, size, path) = {
+        let (done, chunks, size, path, room) = {
             let d = self.st.large_downloads.get_mut(msg_id).unwrap();
             d.done += 1;
             d.hashes.push(hex::encode(h));
-            (d.done, d.chunks, d.size, d.path.clone())
+            (d.done, d.chunks, d.size, d.path.clone(), d.gid.clone())
         };
+        self.bump_chan(&room);
         if done == chunks { return self.large_download_finalize(msg_id); }
         self.save()?;
         Ok(DownloadStep { done, chunks, size, finished: false, path })
@@ -359,6 +362,7 @@ impl Client {
         if !ok {
             // Every chunk passed authentication, so the bytes are almost certainly fine; never discard hours of download.
             let d = self.st.large_downloads.remove(msg_id).unwrap();
+            self.bump_chan(&d.gid);
             let kept = unique_path(Path::new(&d.dir), &format!("{}.unverified", d.save_name));
             let _ = std::fs::rename(&part, &kept);
             self.save()?;
@@ -370,7 +374,8 @@ impl Client {
             unique_path(Path::new(&d.dir), &d.save_name).display().to_string()
         } else { final_path };
         std::fs::rename(&part, &final_path)?;
-        if let Some(d) = self.st.large_downloads.get_mut(msg_id) { d.finished = true; d.path = final_path.clone(); }
+        let room = if let Some(d) = self.st.large_downloads.get_mut(msg_id) { d.finished = true; d.path = final_path.clone(); Some(d.gid.clone()) } else { None };
+        if let Some(g) = room { self.bump_chan(&g); }
         self.save()?;
         Ok(DownloadStep { done: chunks, chunks, size, finished: true, path: final_path })
     }
@@ -383,6 +388,7 @@ impl Client {
     pub fn large_download_cancel(&mut self, msg_id: &str) -> Result<()> {
         if let Some(d) = self.st.large_downloads.remove(msg_id) {
             if !d.finished { let _ = std::fs::remove_file(&d.part); }
+            self.bump_chan(&d.gid);
         }
         self.save()
     }

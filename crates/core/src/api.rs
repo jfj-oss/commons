@@ -35,6 +35,11 @@ pub struct App {
     /// Per `messages` key, the last few windows served: each answer's hash with the id and hash of every row in it, so a
     /// page that says which answer it holds can be sent only what changed (`messages_answer`).
     windows: Mutex<HashMap<String, std::collections::VecDeque<(String, Vec<(String, u64)>)>>>,
+    /// Per `messages` key, the room revision and typing list the last full answer was built from, and that answer's
+    /// hash. An unchanged room (same revision, same typing) is answered from this without rebuilding the window.
+    /// The `Instant` bounds how long a remembered answer is trusted (MSG_CACHE_TRUST): a change that forgot to bump the
+    /// room's revision can then show late, never forever.
+    msg_cache: Mutex<HashMap<String, (u64, Vec<String>, String, Instant)>>,
     files: Mutex<Vec<(String, Arc<Vec<u8>>)>>,
     /// loopback server for "open this call in my browser" (started on first use). Desktops only: a phone has no
     /// second browser to hand a call to.
@@ -144,7 +149,7 @@ impl App {
         let notify = Arc::new(crate::notify::Hub::new(Some(dir.clone())));
         Arc::new_cyclic(|me| App {
             along: Default::default(), notify, me: me.clone(), call_seen: Mutex::new(None), pw_link: Mutex::new(None), dir, default_relay: default_relay.into(), kdf, client: Mutex::new(None),
-            wake: (Mutex::new(false), Condvar::new()), live_wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), changes: AtomicU64::new(0), windows: Mutex::new(HashMap::new()), files: Mutex::new(vec![]),
+            wake: (Mutex::new(false), Condvar::new()), live_wake: (Mutex::new(false), Condvar::new()), stop: Mutex::new(false), seen: Mutex::new(HashMap::new()), changes: AtomicU64::new(0), windows: Mutex::new(HashMap::new()), msg_cache: Mutex::new(HashMap::new()), files: Mutex::new(vec![]),
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
             bridge: Mutex::new(None),
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
@@ -447,6 +452,7 @@ impl App {
     fn open_with(&self, f: impl FnOnce(Arc<dyn crate::transport::Transport>) -> anyhow::Result<Client>, relay: &str) -> R {
         let c = f(HttpTransport::new(relay).into_arc()).map_err(|x| format!("{x:#}"))?;
         *self.lock() = Some(c);
+        self.msg_cache.lock().unwrap().clear();   // a new client's room revisions start from zero
         Ok(json!({"ok": true}))
     }
 
@@ -540,6 +546,7 @@ impl App {
                 *self.lock() = None;
                 self.seen.lock().unwrap().clear();
                 self.windows.lock().unwrap().clear();
+                self.msg_cache.lock().unwrap().clear();
                 self.files.lock().unwrap().clear();
                 Ok(json!({"ok": true}))
             }
@@ -548,8 +555,14 @@ impl App {
                 let (gid, around) = (s(&a, "gid"), s(&a, "around"));
                 let limit = a.get("limit").and_then(|x| x.as_u64()).unwrap_or(200).clamp(1, 5000) as usize;
                 let key = format!("messages/{gid}/{limit}/{around}");
-                let v = self.read(key.clone(), |c| messages(c, &gid, limit, &around))?;
-                self.messages_answer(key, v, &a)
+                // Almost every poll finds an unchanged room: the page holds the current answer already, so only "same"
+                // goes back, and the window is neither rebuilt nor hashed.
+                if let Some(v) = self.messages_same(&key, &gid, &a) { return Ok(v); }
+                let mut stamp = None;
+                let v = self.read(key.clone(), |c| { stamp = Some((c.chan_rev(&gid), c.typing_now(&gid))); messages(c, &gid, limit, &around) })?;
+                let hash = format!("{:016x}", hash_of(&v));
+                if let Some((rev, typing)) = stamp { self.msg_cache.lock().unwrap().insert(key.clone(), (rev, typing, hash.clone(), Instant::now())); }
+                self.messages_answer(key, v, hash, &a)
             }
             // The page calls this only while the room is in view, so it is also what sends a read receipt (receipts.rs), unless the
             // page says the reader is not at it just now (`seen: false`: the window is open behind another one).
@@ -1039,9 +1052,34 @@ fn same_or(r: R, a: &Value) -> R {
 /// Windows remembered per `messages` key, and keys remembered at all (the open room, and the cards' one look at the
 /// newest line of every room, make a key per room and window size).
 const WINDOWS_PER_KEY: usize = 4;
+/// A remembered `messages` answer is rebuilt at least this often even when the room's revision says nothing changed.
+const MSG_CACHE_TRUST: std::time::Duration = std::time::Duration::from_secs(10);
 const WINDOW_KEYS: usize = 96;
 
 impl App {
+    /// The room's message revision and who is typing right now, without holding the client (a look, not a change).
+    /// None while the client is busy with a change: the caller rebuilds instead.
+    fn chan_stamp(&self, gid: &str) -> Option<(u64, Vec<String>)> {
+        let g = match self.client.try_lock() {
+            Ok(g) => g,
+            Err(TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        let c = g.as_ref()?;
+        Some((c.chan_rev(gid), c.typing_now(gid)))
+    }
+
+    /// The cheap path for a `messages` poll that found nothing changed: the room's revision and typing list are the
+    /// same as when the last answer was built and the caller already holds that answer, so only "same" goes back.
+    /// Everything else (a change, a caller holding some other answer, no remembered answer) falls through to a rebuild.
+    fn messages_same(&self, key: &str, gid: &str, a: &Value) -> Option<Value> {
+        let (rev, typing) = self.chan_stamp(gid)?;
+        let (c_rev, c_typing, hash, built) = self.msg_cache.lock().unwrap().get(key).cloned()?;
+        if c_rev != rev || c_typing != typing || built.elapsed() > MSG_CACHE_TRUST { return None; }
+        if a["if"].as_str() != Some(hash.as_str()) { return None; }
+        Some(json!({"same": true, "hash": hash}))
+    }
+
     /// The answer to `messages`, sized to what the page already holds. `if` names (by hash) the answer the page has: the
     /// same hash gets "same", as for every read. A page that can take a difference says so (`delta`); when the core
     /// still remembers the rows of the answer it names, it gets only the rows that are new or changed (an edit, a
@@ -1049,8 +1087,7 @@ impl App {
     /// appending the new rows does not give it; `more`, `typing` and `status` always, since they are small. Applied to
     /// what the page holds, that is exactly the full answer, hash included. A page that does not ask for a difference,
     /// or holds an answer the core no longer remembers, gets the whole window, exactly as before.
-    fn messages_answer(&self, key: String, mut v: Value, a: &Value) -> R {
-        let hash = format!("{:016x}", hash_of(&v));
+    fn messages_answer(&self, key: String, mut v: Value, hash: String, a: &Value) -> R {
         let have = a["if"].as_str();
         if have == Some(hash.as_str()) { return Ok(json!({"same": true, "hash": hash})); }
         let wants_delta = a["delta"].as_bool().unwrap_or(false) || a["delta"].as_u64().is_some_and(|n| n > 0);
@@ -1199,6 +1236,7 @@ mod messages_answer_tests {
         json!({"messages": list, "more": d["more"], "typing": d["typing"], "status": d["status"], "hash": d["hash"]})
     }
     fn full_with_hash(v: &Value) -> Value { let mut f = v.clone(); f["hash"] = json!(format!("{:016x}", hash_of(v))); f }
+    fn ans(app: &App, key: &str, v: Value, a: Value) -> Value { let hash = format!("{:016x}", hash_of(&v)); app.messages_answer(key.to_string(), v, hash, &a).unwrap() }
 
     #[test]
     fn a_page_from_before_gets_the_whole_window_and_a_new_page_only_the_difference() {
@@ -1206,16 +1244,16 @@ mod messages_answer_tests {
         let key = "messages/g/200/".to_string();
         let w1 = window(&[row("a", "one"), row("b", "two"), row("c", "three")], &[]);
         // An old page: never says `delta`, gets the window with its hash, then "same".
-        let full = app.messages_answer(key.clone(), w1.clone(), &json!({})).unwrap();
+        let full = ans(&app, &key, w1.clone(), json!({}));
         assert_eq!(full, full_with_hash(&w1));
         let h1 = full["hash"].as_str().unwrap().to_string();
-        assert_eq!(app.messages_answer(key.clone(), w1.clone(), &json!({"if": h1})).unwrap(), json!({"same": true, "hash": h1}));
+        assert_eq!(ans(&app, &key, w1.clone(), json!({"if": h1})), json!({"same": true, "hash": h1}));
         // The old page holds h1 but a change comes: the whole window, as always (nothing was remembered for it).
         let w2 = window(&[row("a", "one"), row("b", "two"), row("c", "three")], &["bob"]);
-        let full2 = app.messages_answer(key.clone(), w2.clone(), &json!({"if": h1})).unwrap();
+        let full2 = ans(&app, &key, w2.clone(), json!({"if": h1}));
         assert_eq!(full2, full_with_hash(&w2));
         // A new page: the first answer is the window; from then on differences, each of which rebuilds the full answer.
-        let page = app.messages_answer(key.clone(), w1.clone(), &json!({"delta": 1})).unwrap();
+        let page = ans(&app, &key, w1.clone(), json!({"delta": 1}));
         assert_eq!(page, full_with_hash(&w1));
         let mut have = page;
         let steps = [
@@ -1226,7 +1264,7 @@ mod messages_answer_tests {
             window(&[row("b", "TWO"), row("c", "three"), row("x", "late"), row("d", "four"), row("e", "five")], &[]), // decrypted later, in the middle
         ];
         for (i, w) in steps.iter().enumerate() {
-            let d = app.messages_answer(key.clone(), w.clone(), &json!({"delta": 1, "if": have["hash"]})).unwrap();
+            let d = ans(&app, &key, w.clone(), json!({"delta": 1, "if": have["hash"]}));
             assert_eq!(d["delta"], true, "step {i}: a difference, not the window");
             let rows = d["rows"].as_array().unwrap().len();
             assert!(rows <= 1, "step {i}: at most one row changed, got {rows}");
@@ -1235,9 +1273,73 @@ mod messages_answer_tests {
             assert_eq!(have, full_with_hash(w), "step {i}: the page holds exactly the full answer");
         }
         // An answer the core no longer remembers (another room was open meanwhile, many times): the whole window.
-        for k in 0..WINDOWS_PER_KEY + 1 { app.messages_answer(key.clone(), window(&[row("z", &k.to_string())], &[]), &json!({"delta": 1})).unwrap(); }
+        for k in 0..WINDOWS_PER_KEY + 1 { ans(&app, &key, window(&[row("z", &k.to_string())], &[]), json!({"delta": 1})); }
         let w = window(&[row("b", "TWO")], &[]);
-        assert_eq!(app.messages_answer(key.clone(), w.clone(), &json!({"delta": 1, "if": have["hash"]})).unwrap(), full_with_hash(&w));
+        assert_eq!(ans(&app, &key, w.clone(), json!({"delta": 1, "if": have["hash"]})), full_with_hash(&w));
+    }
+}
+
+#[cfg(test)]
+mod messages_perf_tests {
+    use super::*;
+
+    struct Offline;
+    impl crate::transport::Transport for Offline {
+        fn request(&self, _: Option<&ed25519_dalek::SigningKey>, _: &str, _: &str, _: &[u8], _: std::time::Duration) -> anyhow::Result<crate::transport::HttpResp> { Err(anyhow::anyhow!("offline")) }
+    }
+
+    /// An open app with one 5000-message room, no relay behind it: enough to measure what a poll costs.
+    fn seeded_app(rows: usize) -> (Arc<App>, tempfile::TempDir) {
+        let d = tempfile::tempdir().unwrap();
+        let (mut c, _) = Client::create_for_pairing(d.path(), "pw", "http://127.0.0.1:1", "", KdfParams::TEST, Arc::new(Offline)).unwrap();
+        c.st.name = "me".into();
+        c.st.communities.insert("cid".into(), Community { id: "cid".into(), name: "Test".into(), ..Default::default() });
+        c.st.groups.insert("cid".into(), GroupState::new("cid", "cid", Kind::Control));
+        c.st.groups.insert("gid".into(), GroupState::new("gid", "cid", Kind::Channel));
+        c.st.profiles.insert("acct-1".into(), Profile { name: "Alice".into(), ..Default::default() });
+        c.st.profiles.insert("acct-2".into(), Profile { name: "Bob".into(), ..Default::default() });
+        let msgs: Vec<Msg> = (0..rows).map(|i| {
+            let sender = if i % 2 == 0 { "acct-1" } else { "acct-2" };
+            let mut reactions = std::collections::BTreeMap::new();
+            if i % 5 == 0 { reactions.insert("👍".into(), std::collections::BTreeSet::from([sender.to_string()])); }
+            Msg { id: format!("m{i:06}"), sender: sender.into(), device: format!("dev-{sender}"), ts: 1_700_000_000 + i as u64, seq: i as u64 + 1,
+                body: MsgBody::Text(format!("message number {i}: a fairly long line of text so the window is a realistic size")),
+                reply: (i % 7 == 0).then(|| format!("m{:06}", i.saturating_sub(7))), edited: false, deleted: false, reactions, status: "received".into() }
+        }).collect();
+        c.st.chans.insert("gid".into(), ChannelLog { msgs, ..Default::default() });
+        let app = App::with_kdf(d.path().to_path_buf(), "", KdfParams::TEST);
+        *app.lock() = Some(c);
+        (app, d)
+    }
+
+    #[test]
+    fn messages_poll_on_an_unchanged_5000_message_room_is_cheap() {
+        let (app, _d) = seeded_app(5000);
+        // The old cost of every unchanged poll: rebuild the window and hash it.
+        let g = app.lock();
+        let c = g.as_ref().unwrap();
+        let t = Instant::now();
+        let v = messages(c, "gid", 5000, "");
+        let h = hash_of(&v);
+        let build = t.elapsed();
+        drop(g);
+        assert_eq!(h, hash_of(&v), "hash is deterministic for an unchanged room");
+
+        // First answer through the RPC: builds, hashes and remembers the window.
+        let full = app.call("messages", json!({"gid": "gid", "limit": 5000, "delta": 1})).unwrap();
+        let hash = full["hash"].as_str().unwrap().to_string();
+
+        // Now the unchanged poll: every later poll must be answered from the room's revision, without rebuilding.
+        for _ in 0..5 { assert_eq!(app.call("messages", json!({"gid": "gid", "limit": 5000, "delta": 1, "if": hash})).unwrap()["same"], true); }
+        let n = 2000u32;
+        let t = Instant::now();
+        for _ in 0..n {
+            assert_eq!(app.call("messages", json!({"gid": "gid", "limit": 5000, "delta": 1, "if": hash})).unwrap()["same"], true);
+        }
+        let per = t.elapsed() / n;
+
+        eprintln!("messages 5000-row unchanged poll: rebuild+hash {build:?}, unchanged answer {per:?} ({} ns/call)", per.as_nanos());
+        assert!(per < build, "an unchanged poll must not rebuild the window: rebuild {build:?}, unchanged {per:?}");
     }
 }
 

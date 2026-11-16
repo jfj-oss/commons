@@ -96,10 +96,12 @@ impl Client {
         for gid in &resp.denied {
             if self.st.groups.get(gid).is_some_and(|g| !g.removed && !g.denied) {
                 self.st.groups.get_mut(gid).unwrap().denied = true;
+                self.bump_chan(gid);
                 self.notice("relay", format!("the relay no longer lets this account read group {} (you were probably removed while offline, or the relay is misbehaving)", &gid[..8.min(gid.len())]));
             }
         }
-        for g in self.st.groups.values_mut() { if g.denied && !resp.denied.contains(&g.gid) { g.denied = false; } }
+        let undeny: Vec<String> = self.st.groups.values_mut().filter(|g| g.denied && !resp.denied.contains(&g.gid)).map(|g| { g.denied = false; g.gid.clone() }).collect();
+        for gid in undeny { self.bump_chan(&gid); }
     }
 
     /// Returns false if the log had a gap or processing could not complete (caller must not trust dependents this round).
@@ -371,6 +373,7 @@ impl Client {
         if g.kind != Kind::Channel { return; }
         let m = Msg { id: rand_hex(16), sender: String::new(), device: String::new(), ts: now_secs(), seq, body: MsgBody::Notice(text), reply: None, edited: false, deleted: false, reactions: Default::default(), status: "system".into() };
         self.st.chans.entry(gid.to_string()).or_default().msgs.push(m);
+        self.bump_chan(gid);
     }
 
     fn handle_processed(&mut self, gid: &str, seq: u64, id: &str, tag: u8, is_own: bool, group: &mut MlsGroup, p: ProcessedMessage) {
@@ -440,10 +443,11 @@ impl Client {
 
     pub(crate) fn drop_pending(&mut self, gid: &str, why: &str) {
         let g = self.st.groups.get_mut(gid).unwrap();
-        if let Some(p) = g.pending.take() { self.notice("commit", format!("group {}: our pending change ({}) was not applied: {why}; it will be re-evaluated", &gid[..8], p.desc)); }
+        if let Some(p) = g.pending.take() { self.notice("commit", format!("group {}: our pending change ({}) was not applied: {why}; it will be re-evaluated", &gid[..8], p.desc)); self.bump_chan(gid); }
     }
 
     fn finish_own_commit(&mut self, gid: &str, seq: u64) {
+        self.bump_chan(gid);   // pending → applied, and tainted clears: the room's status line changed
         let mut added = vec![];
         self.st.groups.get_mut(gid).unwrap().tainted = false; // a fresh epoch means fresh sender keys
         if let Some(p) = self.st.groups.get_mut(gid).unwrap().pending.take() {
@@ -529,6 +533,9 @@ impl Client {
             }
         }
         self.activity += 1;
+        // Membership, roles and the room's own status all show in the `messages` window.
+        self.bump_chan(gid);
+        self.bump_comm_chans(&comm);
     }
 
     // ------------------------------------------------------------------ authorization of membership changes
@@ -620,6 +627,8 @@ impl Client {
                 };
                 // A status is only as good as the profile it rode in on: an older one, arriving late, changes nothing.
                 if newer {
+                    // A name shows on every message of that person, in every room: bump them all.
+                    self.bump_all_chans();
                     match listen {
                         Some(l) => {
                             let now = crate::spotify::now_ms();
@@ -679,7 +688,7 @@ impl Client {
             (Kind::Channel, Envelope::Ring { id, ts, to, end }) => self.take_ring(gid, &acct, id, ts, to, end),
             (Kind::Channel, Envelope::Direct { id, ts, to, nonce, link, sealed }) => self.take_direct(gid, &acct, id, ts, to, nonce, link, sealed),
             (Kind::Channel, Envelope::Read { upto }) => self.take_read(gid, &acct, upto),
-            (Kind::Channel, Envelope::Typing) => { self.typing.insert(format!("{gid}|{acct}"), now_secs()); }
+            (Kind::Channel, Envelope::Typing) => { self.typing.insert(format!("{gid}|{acct}"), now_secs()); self.bump_chan(gid); }
             (Kind::Channel, env @ (Envelope::Text { .. } | Envelope::File { .. } | Envelope::Edit { .. } | Envelope::Delete { .. } | Envelope::React { .. })) => {
                 self.apply_chat(gid, seq, cert, env, false);
             }
@@ -746,6 +755,7 @@ impl Client {
     }
 
     pub(crate) fn apply_chat(&mut self, gid: &str, seq: u64, cert: &DeviceCert, env: Envelope, local: bool) {
+        self.bump_chan(gid);   // whatever this changes, the room's window is no longer what a page may have cached
         let comm = self.st.groups.get(gid).map(|g| g.community.clone()).unwrap_or_default();
         let is_admin = self.st.communities.get(&comm).and_then(|c| c.role_of(&cert.account)) >= Some(Role::Admin);
         let me = self.my_account();
