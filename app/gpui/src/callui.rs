@@ -271,6 +271,7 @@ impl Mega {
             return Some(bar.child(div().font_family(look::F_SHARP).text_size(px(24.)).child(name))
                 .child(div().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(if people.is_empty() { "nobody in the call".to_string() } else { format!("{} in the call", people.join(", ")) }))
                 .child(div().flex_1())
+                .child(pill("c-set", self.call.settings_open, "Settings").on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx))))
                 .when_some(snap.error.clone().filter(|_| snap.phase == "idle" || snap.phase == "error"), |d, e| d.child(div().text_size(px(12.)).text_color(rgb(look::DANGER)).child(e.msg)))
                 .child(Button::new("join").primary().label("Join call").on_click(cx.listener(move |this, _, window, cx| this.join_call(gid.clone(), window, cx)))).into_any_element());
         }
@@ -318,7 +319,7 @@ impl Mega {
     fn settings_panel(&mut self, snap: &engine::Snapshot, cx: &mut Context<Self>) -> impl IntoElement {
         let label = |t: &str| div().mt_2().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(t.to_string());
         let dev = |prefix: &'static str, list: &[crate::calls::audio::AudioDevice], current: Option<&String>, mic: bool, cx: &mut Context<Self>| {
-            let mut col = v_flex().gap_1();
+            let mut col = v_flex().id(SharedString::from(format!("{prefix}-list"))).gap_1().max_h(px(120.)).overflow_y_scroll();
             col = col.child(pill(SharedString::from(format!("{prefix}-default")), current.is_none(), "System default")
                 .on_click(cx.listener(move |this, _, _, cx| { this.call_cmd(if mic { Command::SetMicDevice { id: String::new() } } else { Command::SetOutDevice { id: String::new() } }); cx.notify(); })));
             for d in list {
@@ -438,3 +439,47 @@ impl Mega {
 }
 
 pub fn ping(_d: Duration) {}
+
+// ---- automation for checks: MEGA_GPUI_UI_STEPS="join;wait=4000;settings;wait=1000;..." ----
+impl Mega {
+    /// Runs the steps of `MEGA_GPUI_UI_STEPS` once, a little after sign-in, so a screenshot run needs no pointer.
+    pub fn start_ui_steps(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Ok(steps) = std::env::var("MEGA_GPUI_UI_STEPS") else { return };
+        static ONCE: AtomicBool = AtomicBool::new(false);
+        if ONCE.swap(true, Ordering::SeqCst) { return; }
+        let steps: Vec<String> = steps.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        let task = cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(2500)).await;
+            for s in steps {
+                if let Some(ms) = s.strip_prefix("wait=") { cx.background_executor().timer(Duration::from_millis(ms.parse().unwrap_or(500))).await; continue; }
+                let ok = this.update_in(cx, |this, window, cx| this.ui_step(&s, window, cx)).is_ok();
+                if !ok { break; }
+                cx.background_executor().timer(Duration::from_millis(400)).await;
+            }
+        });
+        self.call._tasks.push(task);
+    }
+    fn ui_step(&mut self, s: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let (k, v) = s.split_once('=').unwrap_or((s, ""));
+        match k {
+            "join" => { if let Some(g) = self.gid.clone() { self.join_call(g, window, cx); } }
+            "leave" => self.leave_call(cx),
+            "settings" => self.open_settings(window, cx),
+            "person" => { let p = self.call.snap.peers.iter().find(|p| !p.me && p.account.is_some()).cloned(); if let Some(p) = p { self.open_person(p.account.unwrap(), p.name, window, cx); } }
+            "close" => { self.call.menu = None; self.call.settings_open = false; cx.notify(); }
+            "pop" => self.pop_call(window, cx),
+            "poptile" => { if let Some(t) = self.call.tiles.first().cloned() { self.pop_tile(t.sid, window, cx); } }
+            "mini" => self.toggle_mini(window, cx),
+            "width" => { self.set_deck_width(v.parse().unwrap_or(0.), window, true); cx.notify(); }
+            "move" => { if let Some((sid, ix)) = v.split_once(':') { self.tile_to(sid, ix.parse().unwrap_or(0), true, window, cx); } }
+            "mute" => { let m = self.call.snap.muted; self.call_cmd(Command::SetMuted(!m)); }
+            "ptt" => self.call_cmd(Command::SetPushToTalk(v != "off")),
+            "pttdown" => self.call_cmd(Command::PushToTalk(true)),
+            "pttup" => self.call_cmd(Command::PushToTalk(false)),
+            "volume" => { if let Some(a) = self.call.snap.peers.iter().find(|p| !p.me).and_then(|p| p.account.clone()) { self.call_cmd(Command::SetVolume { account: a, volume: v.parse().unwrap_or(1.) }); } }
+            "level" => { match v { "home" => self.go(Level::Home, window, cx), "settings" => self.go(Level::Settings, window, cx), _ => {} } }
+            "dump" => { let s = self.call.snap.clone(); eprintln!("UI-DUMP {}", serde_json::to_string(&json!({"snap": s, "tiles": self.call.tile_ids(), "order": self.call.deck.order, "w": self.deck_width(window), "popped": self.call.popped})).unwrap_or_default()); }
+            _ => eprintln!("ui step? {s}"),
+        }
+    }
+}

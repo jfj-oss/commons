@@ -216,6 +216,7 @@ impl Mega {
         bench::mark("unlocked");
         self.rpc("notify_get", json!({}), window, cx, |this, r, _, _| { if let Ok(v) = r { this.notify_settings = v; } });
         self.tick(window, cx);
+        self.start_ui_steps(window, cx);
     }
 
     // ---- the look every half second ----

@@ -114,7 +114,7 @@ pub fn start_fake(frames: Arc<Frames>, n: usize, alive: Arc<AtomicBool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
+    #[::core::prelude::v1::test]
     fn tiles_come_from_the_subscribed_list() {
         let s = vec!["dev1/TR_a:Camera".to_string(), "dev2/TR_b:Screenshare".to_string(), "dev2/TR_c:Microphone".to_string(), "junk".to_string()];
         let t = tiles_from(&s, |id| format!("n-{id}"));
