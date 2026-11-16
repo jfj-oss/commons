@@ -391,7 +391,7 @@ impl Mega {
                 .child(if me_in { "leave" } else { "join" })
                 .on_click(cx.listener(move |this, _, window, cx| { cx.stop_propagation(); if this.call.in_call() && this.call.snap.gid.as_deref() == Some(gid.as_str()) { this.leave_call(cx); } else { this.join_call(gid.clone(), window, cx); } }))))
         } else { mid };
-        let mid = if news_rows.is_empty() { mid } else { v_flex().flex_1().min_h_0().justify_center().gap(px(8. * s)).opacity(mid_op).children(news_rows) };
+        let mid = if news_rows.is_empty() { mid } else { v_flex().flex_1().min_h_0().gap(px(8. * s)).opacity(mid_op).children(news_rows) };
         let bottom = h_flex().w_full().items_end().gap(px(16. * s)).text_color(ink)
             .child(div().flex_1().min_w_0().font_family(title_font).text_size(px(tpx)).line_height(px(tlh)).child(it.title.clone()))
             .when(!num_s.is_empty(), |d| d.child(div().flex_none().font_family(look::F_SHARP).text_size(px(npx)).line_height(px(npx * 0.78)).opacity(0.85).pr(px(npx * 0.08)).child(num_s.clone())));
