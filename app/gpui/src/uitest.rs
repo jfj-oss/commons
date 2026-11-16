@@ -8,7 +8,7 @@
 //!   {"cmd":"attend","on":false}               behave as a window nobody looks at (so notifications show)
 //!   {"cmd":"ring_all"}                          the ring button of the call bar
 //!   {"cmd":"join","name"}                       join the voice room with this name
-//!   {"cmd":"home"}                              back to the home screen
+//!   {"cmd":"home"}  {"cmd":"server","name"}  {"cmd":"settings"}   back to the home screen; a community's rooms; settings
 //!   {"cmd":"leave"}  {"cmd":"open","name"}      leave the call; open a room (or a direct conversation) by name
 //!   {"cmd":"rune","what":"pause|resume|next|prev"}  {"cmd":"along"}   the rune controls of the call bar
 //!   {"cmd":"core","method","args"}              a call to the core as this account
@@ -62,6 +62,12 @@ impl Mega {
                 "accept" => match self.ring.book.cards.first().map(|c| c.ring.clone()) { Some(r) => { self.ring_accept(&r, window, cx); json!({"ok": true}) } None => json!({"error": "no card"}) },
                 "decline" => match self.ring.book.cards.first().map(|c| c.ring.clone()) { Some(r) => { self.ring_decline(&r, cx); json!({"ok": true}) } None => json!({"error": "no card"}) },
                 "dial" => { self.dial(s("peer"), s("name"), window, cx); json!({"ok": true}) }
+                "server" => {
+                    let want = s("name");
+                    let c = self.snap.as_ref().and_then(|sn| sn.communities.iter().find(|c| c.name == want || want.is_empty()).map(|c| c.id.clone()));
+                    match c { Some(cid) => { self.go(crate::app::Level::Server(cid), window, cx); json!({"ok": true}) } None => json!({"error": "no such community"}) }
+                }
+                "settings" => { self.go(crate::app::Level::Settings, window, cx); json!({"ok": true}) }
                 "home" => { self.go(crate::app::Level::Home, window, cx); json!({"ok": true}) }
                 "attend" => { self.ring.unattended = cmd["on"].as_bool() == Some(false); json!({"ok": true}) }
                 "ring_all" => { self.ring_all(window, cx); json!({"ok": true}) }

@@ -1,6 +1,7 @@
 //! mega on GPUI: the desktop app without a web view. The core is linked directly and asked through the same
 //! `App::call(method, args)` JSON API as the Tauri shell and the browser bridge (see core.rs).
 mod app;
+mod arrive;
 mod ascii;
 mod backdrop;
 mod bench;
@@ -14,6 +15,7 @@ mod popout;
 mod video;
 mod fonts;
 mod linen;
+mod squircle;
 mod model;
 mod notifier;
 mod ringui;

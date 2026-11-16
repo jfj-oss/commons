@@ -4,6 +4,7 @@ use crate::ascii::{self, hole, Field, Holes};
 use crate::look::{self, Duo};
 use crate::model::Msg;
 use crate::prefs::{ChatFont, Saver};
+use crate::squircle as sq;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, Textarea};
 use gpui_kit::component::scroll::Scrollbar;
@@ -13,8 +14,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::json;
 
-/// Corner of a card (mega.css --m-sq). The web UI uses a true squircle where the browser has one; elsewhere this radius.
-const SQ: f32 = 46.;
+/// Corner of a card (mega.css --m-sq is 76 px on the web's big cards, a true squircle, which reads rounder at the same number than a circle does).
+const SQ: f32 = 60.;
 const RAIL: f32 = 72.;
 
 /// What a card shows.
@@ -25,8 +26,8 @@ fn face_dot(name: &str, size: f32) -> Div {
 }
 fn avatar(name: &str) -> Div {
     let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into());
-    div().size(px(36.)).flex_none().rounded(px(11.)).bg(look::face(name)).text_color(rgb(0x0c0d12)).font_family(look::F_SHARP).text_size(px(24.)).line_height(px(36.))
-        .flex().items_center().justify_center().child(initial)
+    div().relative().size(px(36.)).flex_none().text_color(rgb(0x0c0d12)).font_family(look::F_SHARP).text_size(px(24.)).line_height(px(36.))
+        .flex().items_center().justify_center().child(sq::back(11., look::face(name))).child(div().relative().child(initial))
 }
 
 impl Mega {
@@ -49,9 +50,13 @@ impl Mega {
         let focus = (c.cid.clone(), c.room.clone());
         let shown: Vec<&String> = c.people.iter().take(crate::presence::SHOW).collect();
         let more = c.people.len().saturating_sub(shown.len());
-        div().id(SharedString::from(format!("card-{key}"))).relative().w_full().h(px(h)).flex_none().rounded(px(SQ)).bg(c.duo.field()).overflow_hidden().cursor_pointer()
-            .when(c.dim, |d| d.opacity(0.55))
-            .child(div().absolute().inset_0().child(crate::linen::view(SQ)))
+        let spot = sq::spot();
+        let spot2 = spot.clone();
+        // the card is a square slab whose four corners are cut away on top, in the colour of the room around it (squircle.rs):
+        // its weave, its field and its words are all clipped to the squircle that way. A dimmed card dims the slab, not the cuts.
+        div().id(SharedString::from(format!("card-{key}"))).relative().w_full().h(px(h)).flex_none().cursor_pointer()
+            .child(div().absolute().inset_0().overflow_hidden().bg(c.duo.field()).when(c.dim, |d| d.opacity(0.55))
+            .child(div().absolute().inset_0().child(crate::linen::view(0.)))
             .child(div().absolute().inset_0().child(ascii::field(f)))
             .child(h_flex().absolute().top(px(14.)).left(px(24.)).right(px(24.)).gap_2().items_center().font_family(look::F_NAME).text_size(px(12.)).text_color(ink)
                 .child(div().child(c.sub.clone()))
@@ -65,15 +70,16 @@ impl Mega {
                         .children(c.here.iter().take(5).map(|n| face_dot(n, 14.))).child(format!("{} in the call", c.here.join(", ")))))
                     .child(div().font_family(look::F_SHARP).text_size(px(title_px)).line_height(px(title_lh)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(c.title.clone())))
                 .when(c.unread > 0, |d| d.child(div().flex_none().font_family(look::F_SHARP).text_size(px(if c.big { 120. } else { 72. })).line_height(px(if c.big { 96. } else { 60. })).opacity(0.85)
-                    .child(if c.unread > 99 { "99+".to_string() } else { c.unread.to_string() }))))
+                    .child(if c.unread > 99 { "99+".to_string() } else { c.unread.to_string() })))))
+            .child(sq::front(SQ, Some(rgb(look::VOID).into()), None, Some(spot)))
             .on_hover(cx.listener(move |this, hovered: &bool, _, _| { if *hovered { this.focus_card(Some(focus.clone())); } else if this.pres.cand.as_ref() == Some(&focus) { this.focus_card(None); } }))
-            .on_click(cx.listener(move |this, _, window, cx| { if room.is_empty() { this.go(Level::Server(cid.clone()), window, cx) } else { this.open_room(cid.clone(), room.clone(), window, cx) } }))
+            .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| { if !sq::clicked(&spot2, ev, SQ) { return; } if room.is_empty() { this.go(Level::Server(cid.clone()), window, cx) } else { this.open_room(cid.clone(), room.clone(), window, cx) } }))
     }
 
     fn top_bar(&mut self, title: String, back: Option<Level>, cx: &mut Context<Self>) -> impl IntoElement {
         let net = self.snap.as_ref().map(|s| s.net.clone()).unwrap_or_default();
         h_flex().flex_none().w_full().px_6().pt_5().pb_3().gap_3().items_end()
-            .when_some(back, |d, to| d.child(div().id("back").size(px(22.)).mb_2().rounded(px(6.)).bg(look::paper()).cursor_pointer()
+            .when_some(back, |d, to| d.child(div().id("back").relative().size(px(22.)).mb_2().cursor_pointer().child(sq::back(6., look::paper()))
                 .on_click(cx.listener(move |this, _, window, cx| this.go(to.clone(), window, cx)))))
             .child(div().font_family(look::F_SHARP).text_size(px(48.)).line_height(px(44.)).child(title))
             .child(div().flex_1())
@@ -103,15 +109,18 @@ impl Mega {
                 let unread = d.channels.iter().map(|ch| ch.unread).sum::<u64>().max(d.unread).max(self.fake_dm_unread as u64);
                 let duo = Duo::of(&d.room, d.room_colours.iter().find(|(g, _)| g == &d.room).map(|(_, x)| x));
                 let cache = self.dm_caches.entry(d.id.clone()).or_default().clone();
+                let spot = sq::spot();
                 let stars: String = std::iter::repeat("✦").take(unread.min(4) as usize).collect::<Vec<_>>().join(" ");
-                col = col.child(h_flex().id(SharedString::from(format!("dm-{}", d.id))).relative().overflow_hidden().flex_none().gap_3().px_3().py_2().rounded(px(18.)).bg(rgb(look::SLIP)).border_1().border_color(look::line()).items_center().cursor_pointer()
-                    .when(!on, |x| x.opacity(0.5))
-                    .child(div().absolute().inset_0().child(crate::backdrop::view(cache, look::h(&d.room), duo, vec![], 0., true, true, 18.)))
-                    .child(div().relative().child(avatar(&d.name)))
-                    .child(div().relative().flex_1().font_family(look::F_SHARP).text_size(px(24.)).line_height(px(24.)).child(d.name.clone()))
-                    .when(unread > 0, |x| x.child(div().relative().font_family(look::F_NAME).text_size(px(13.)).text_color(look::paper()).child(stars)))
-                    .child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(if on { "" } else { "waiting for them" }))
-                    .on_click(cx.listener(move |this, _, window, cx| this.open_room(cid.clone(), room.clone(), window, cx))));
+                let mut edge = look::line(); if !on { edge.a *= 0.5; }
+                col = col.child(div().id(SharedString::from(format!("dm-{}", d.id))).relative().flex_none().cursor_pointer()
+                    .child(h_flex().relative().gap_3().px_3().py_2().border_1().border_color(hsla(0., 0., 0., 0.)).items_center().bg(rgb(look::SLIP)).when(!on, |x| x.opacity(0.5))
+                        .child(div().absolute().inset_0().overflow_hidden().child(crate::backdrop::view(cache, look::h(&d.room), duo, vec![], 0., true, true, 0.)))
+                        .child(div().relative().child(avatar(&d.name)))
+                        .child(div().relative().flex_1().font_family(look::F_SHARP).text_size(px(24.)).line_height(px(24.)).child(d.name.clone()))
+                        .when(unread > 0, |x| x.child(div().relative().font_family(look::F_NAME).text_size(px(13.)).text_color(look::paper()).child(stars)))
+                        .child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(if on { "" } else { "waiting for them" })))
+                    .child(sq::front(18., Some(rgb(look::VOID).into()), Some((1., edge)), Some(spot.clone())))
+                    .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| { if sq::clicked(&spot, ev, 18.) { this.open_room(cid.clone(), room.clone(), window, cx) } })));
             }
         }
         let me = snap.me_name.clone();
@@ -144,11 +153,11 @@ impl Mega {
     /// the room's name set upright in big rounded type on its own colour. The open room's spine is wider and carries a ring.
     fn render_rail(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut col = v_flex().id("rail").w(px(RAIL)).h_full().flex_none().items_center().pt_5().pb_3().gap_3().bg(rgb(look::VOID)).overflow_y_scroll();
-        col = col.child(div().id("rail-home").flex_none().size(px(20.)).rounded(px(6.)).bg(look::paper()).cursor_pointer().on_click(cx.listener(|this, _, window, cx| this.go(Level::Home, window, cx))));
+        col = col.child(div().id("rail-home").relative().flex_none().size(px(20.)).cursor_pointer().child(sq::back(6., look::paper())).on_click(cx.listener(|this, _, window, cx| this.go(Level::Home, window, cx))));
         let Some(c) = self.cid.as_ref().and_then(|cid| self.snap.as_ref()?.community(cid)).cloned() else { return col };
         if !c.direct {
             let (cid, duo) = (c.id.clone(), Duo::of(&c.id, c.colours.as_ref()));
-            col = col.child(div().id("rail-server").flex_none().size(px(16.)).rounded(px(5.)).bg(duo.dot()).cursor_pointer().on_click(cx.listener(move |this, _, window, cx| this.go(Level::Server(cid.clone()), window, cx))));
+            col = col.child(div().id("rail-server").relative().flex_none().size(px(16.)).cursor_pointer().child(sq::back(5., duo.dot())).on_click(cx.listener(move |this, _, window, cx| this.go(Level::Server(cid.clone()), window, cx))));
         }
         col = col.child(div().flex_none().h(px(6.)));
         for ch in c.channels.iter().filter(|ch| ch.joined) {
@@ -158,15 +167,19 @@ impl Mega {
             let name: Vec<String> = ch.name.chars().take(14).map(|c| c.to_string()).collect();
             let (w, ink) = (if on { 56. } else { 46. }, duo.ink());
             let hgt = (name.len() as f32 * 19. + 44.).max(84.);
-            col = col.child(div().id(SharedString::from(format!("dot-{}", ch.gid))).relative().flex_none().w(px(w)).h(px(hgt)).rounded(px(if on { 22. } else { 18. })).bg(duo.field()).cursor_pointer()
-                .border_2().border_color(if on { look::paper() } else { hsla(0., 0., 0., 0.) })
+            let spot = sq::spot();
+            let rr = if on { 22. } else { 18. };
+            col = col.child(div().id(SharedString::from(format!("dot-{}", ch.gid))).relative().flex_none().w(px(w)).h(px(hgt)).cursor_pointer()
+                .border_2().border_color(hsla(0., 0., 0., 0.))
                 .when(!on, |d| d.opacity(0.9))
+                .child(sq::back(if on { 22. } else { 18. }, duo.field()))
+                .child(sq::front(if on { 22. } else { 18. }, None, on.then(|| (2., look::paper())), Some(spot.clone())))
                 // unread: a dot in the room's highlight colour on the spine's head
                 .child(div().absolute().top(px(8.)).left_0().right_0().flex().justify_center()
                     .child(div().size(px(10.)).rounded_full().when(ch.unread > 0 && !on, |d| d.bg(rgb(duo.hi)).border_1().border_color(ink)).when(ch.kind == "voice" && !(ch.unread > 0 && !on), |d| d.border_2().border_color(ink))))
                 .child(v_flex().absolute().top(px(26.)).left_0().right_0().items_center().font_family(look::F_MSG).text_size(px(18.)).line_height(px(19.)).text_color(ink)
                     .children(name.into_iter().map(|c| div().child(c))))
-                .on_click(cx.listener(move |this, _, window, cx| this.open_room(cid.clone(), gid.clone(), window, cx))));
+                .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| { if sq::clicked(&spot, ev, rr) { this.open_room(cid.clone(), gid.clone(), window, cx) } })));
         }
         col
     }
@@ -192,7 +205,16 @@ impl Mega {
         let Some(m) = self.win.msgs.get(ix) else { return div().into_any_element() };
         let prev = ix.checked_sub(1).and_then(|i| self.win.msgs.get(i));
         let star = self.dm_marks.0 == self.gid.clone().unwrap_or_default() && self.dm_marks.1 > 0 && ix + self.dm_marks.1 >= self.win.msgs.len() && !m.mine;
-        row(m, prev, self.chat_font(), &self.holes, star)
+        let me = self.snap.as_ref().map(|s| s.me_name.as_str()).unwrap_or("");
+        let now = self.now_secs();
+        let fx = RowFx {
+            tier_px: crate::arrive::tier_px(crate::arrive::size_tier(m, me)),
+            arrive: self.arrivals.progress(&m.id, now).map(|k| (k, (now * 60.) as u64)),
+            hi: rgb(self.room_duo(self.gid.as_deref().unwrap_or("")).hi).into(),
+            flights: self.flights.live.iter().filter(|f| f.msg == m.id).cloned().collect(),
+            now,
+        };
+        row(m, prev, self.chat_font(), &self.holes, star, &fx)
     }
 
     fn render_chat(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -220,9 +242,12 @@ impl Mega {
                 .child(list(self.list.clone(), cx.processor(|this, ix: usize, _, _| this.render_msg(ix))).size_full())
                 .child(div().absolute().top_0().right_0().bottom_0().w(px(12.)).child(Scrollbar::vertical(&self.list))))
             .child(h_flex().flex_none().h(px(18.)).px_5().child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(duo.dot()).when(!typing.is_empty(), |d| d.child(hole(&holes))).child(typing)))
-            .child(div().relative().child(hole(&holes)).flex_none().mx_4().mb_4().px_2().py_1().rounded(px(22.)).bg(hsla(0.71, 0.22, 0.07, 0.93)).border_1().border_color(look::line())
+            .child(div().relative().flex_none().mx_4().mb_4().px_2().py_1().border_1().border_color(hsla(0., 0., 0., 0.))
                 .font_family(font)
-                .child(Textarea::new(&self.composer).appearance(false).text_size(px(size)).line_height(px(lh))))
+                // a translucent slip over the backdrop: a squircle fill and border, never a cut (the backdrop moves behind it)
+                .child(sq::back(22., hsla(0.71, 0.22, 0.07, 0.93))).child(hole(&holes))
+                .child(Textarea::new(&self.composer).appearance(false).text_size(px(size)).line_height(px(lh)))
+                .child(sq::front(22., None, Some((1., look::line())), None)))
             .into_any_element()
     }
 
@@ -233,8 +258,10 @@ impl Mega {
         let note = |t: &str| div().text_size(px(13.)).text_color(look::mute()).child(t.to_string());
         // a row of choices, one of them on
         fn choice(id: &'static str, on: bool, text: &'static str) -> Stateful<Div> {
-            div().id(id).px_3().py_1().rounded_full().border_1().cursor_pointer().border_color(if on { look::paper() } else { look::line() })
-                .when(on, |d| d.bg(look::paper()).text_color(rgb(0x0c0d12))).child(text)
+            div().id(id).relative().px_3().py_1().border_1().border_color(hsla(0., 0., 0., 0.)).cursor_pointer()
+                .when(on, |d| d.text_color(rgb(0x0c0d12)).child(sq::back(999., look::paper())))
+                .child(div().relative().child(text))
+                .child(sq::front(999., None, Some((1., if on { look::paper() } else { look::line() })), None))
         }
         let mode = self.notify_settings["mode"].as_str().unwrap_or("all").to_string();
         let show_text = self.notify_settings["show_text"].as_bool().unwrap_or(false);
@@ -299,8 +326,12 @@ impl Mega {
     }
 }
 
+/// What is happening to one message right now (arrive.rs): its size tier, its glyph copy while it arrives, reactions flying to it.
+pub struct RowFx { pub tier_px: Option<f32>, pub arrive: Option<(f64, u64)>, pub hi: Hsla, pub flights: Vec<crate::arrive::Flight>, pub now: f64 }
+
 /// One message. `prev` decides whether the face and name are shown again (same person within five minutes: no).
-pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f32), holes: &Holes, star: bool) -> AnyElement {
+pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f32), holes: &Holes, star: bool, fx: &RowFx) -> AnyElement {
+    let (size, lh) = match fx.tier_px { Some(p) => (p, (p * 1.05).round()), None => (size, lh) };
     if m.kind == "member" || m.kind == "notice" {
         return h_flex().w_full().pl(px(68.)).pr_4().py_1().child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(m.text.clone()).child(hole(holes))).into_any_element();
     }
@@ -317,18 +348,39 @@ pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f3
     }
     let body: AnyElement = if m.deleted { div().relative().child(hole(holes)).text_color(look::mute()).text_size(px(16.)).child("(deleted)").into_any_element() }
         else if let Some((name, bytes)) = &m.file { div().relative().child(hole(holes)).max_w_full().text_color(look::mute()).text_size(px(16.)).child(format!("[file] {name} ({} KB){}", bytes / 1024, if m.text.is_empty() { String::new() } else { format!("  {}", m.text) })).into_any_element() }
+        else if let Some((k, tick)) = fx.arrive {
+            // the real words stay where they are (invisible, so the row keeps its size); a copy made of glyphs sits over them and resolves
+            let (copy, real) = crate::arrive::compose(&m.text, k, tick);
+            let ink = look::paper();
+            div().relative().child(hole(holes)).max_w_full().font_family(font).text_size(px(size)).line_height(px(lh))
+                .child(div().text_color(hsla(0., 0., 0., 0.)).child(m.text.clone()))
+                .child(div().absolute().top_0().left_0().size_full().overflow_hidden().text_color(fx.hi)
+                    .child(StyledText::new(copy).with_highlights([(0..real, HighlightStyle { color: Some(ink), ..Default::default() })])))
+                .into_any_element()
+        }
         else { div().relative().child(hole(holes)).max_w_full().font_family(font).text_size(px(size)).line_height(px(lh)).child(m.text.clone()).into_any_element() };
     col = col.child(body);
     let mut foot = h_flex().relative().gap_1().flex_wrap();
-    for r in &m.reactions {
-        foot = foot.child(div().px_1p5().rounded_full().border_1().border_color(if r.mine { look::paper() } else { look::line() }).text_size(px(13.)).child(format!("{} {}", r.emoji, r.count)));
+    let landing = std::rc::Rc::new(std::cell::Cell::new(Bounds::<Pixels>::default()));
+    let mut flying: Vec<(usize, crate::arrive::Flight)> = vec![];
+    for (i, r) in m.reactions.iter().enumerate() {
+        // a thrown emoji is still in the air: the pill keeps its old number (or stays hidden when it is new)
+        let shown = if fx.flights.is_empty() { Some(r.count) } else {
+            let mut t = crate::arrive::Flights::default(); t.live = fx.flights.clone(); t.shown(&m.id, &r.emoji, fx.now, r.count)
+        };
+        if let Some(f) = fx.flights.iter().find(|f| f.emoji == r.emoji) { flying.push((i, f.clone())); }
+        let pill = div().relative().px_1p5().border_1().border_color(hsla(0., 0., 0., 0.)).text_size(px(13.)).child(format!("{} {}", r.emoji, shown.unwrap_or(r.count)))
+            .child(sq::front(999., None, Some((1., if r.mine { look::paper() } else { look::line() })), None));
+        foot = foot.child(if shown.is_none() { pill.opacity(0.) } else { pill });
     }
+    if !flying.is_empty() { foot = foot.child(flight_spot(landing.clone())); }
     if m.edited { foot = foot.child(div().text_color(look::mute()).text_size(px(11.)).child("edited")); }
     if m.mine && (m.status == "pending" || m.status == "failed") { foot = foot.child(div().text_color(look::mute()).text_size(px(11.)).child(m.status.clone())); }
     if !m.read_by.is_empty() { foot = foot.child(div().text_color(look::mute()).text_size(px(11.)).child(format!("read by {}", m.read_by.join(", ")))); }
     let has_foot = !m.reactions.is_empty() || m.edited || !m.read_by.is_empty() || (m.mine && (m.status == "pending" || m.status == "failed"));
     if has_foot { foot = foot.child(hole(holes)); }
     h_flex().relative().w_full().items_start().gap_3().px_5().pb_1().when(head, |d| d.pt_3())
+        .when(!flying.is_empty(), |d| d.child(flight_layer(flying, landing, fx.now, fx.hi)))
         .when(star, |d| d.child(div().absolute().left(px(5.)).top(px(if head { 22. } else { 8. })).text_size(px(13.)).text_color(look::paper()).opacity(0.8).child("✦")))
         .child(if head { avatar(&m.name).mt_1() } else { div().w(px(36.)).flex_none() })
         .child(col.child(foot)).into_any_element()
@@ -338,6 +390,12 @@ impl Render for Mega {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !std::mem::replace(&mut self.first_frame_done, true) { window.on_next_frame(|_, _| crate::bench::mark("first_frame")); }
         crate::bench::drive(self, window, cx);
+        // arrivals and thrown reactions ask for a frame only while one is in the air; the frame after the last one draws the finished state
+        if !(self.arrivals.is_idle() && self.flights.is_idle()) {
+            let now = self.now_secs();
+            self.arrivals.step(now); self.flights.step(now);
+            window.request_animation_frame();
+        }
         self.holes.borrow_mut().clear();
         let base = div().id("root").size_full().bg(rgb(look::VOID)).text_color(look::paper()).font_family(look::F_UI).text_size(px(15.))
             // dragging the column's edge, and push-to-talk: the key never reaches the composer while that mode is on
@@ -365,4 +423,43 @@ impl Render for Mega {
             }
         }
     }
+}
+
+/// Inside the footer of a row: tells the flight layer where the pills are.
+fn flight_spot(at: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>) -> impl IntoElement {
+    canvas(move |b, _, _| at.set(b), |_, _, _, _| {}).absolute().top_0().left_0().size_full()
+}
+
+/// Over the whole row: emoji in the air from the right edge to their pill, then a burst of glyphs where they land (mega.js `throwReaction`).
+fn flight_layer(flights: Vec<(usize, crate::arrive::Flight)>, foot: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>, now: f64, hi: Hsla) -> impl IntoElement {
+    use crate::arrive::{burst_at, burst_glyph, flight_at, BURST_LIFE, BURST_N, FLIGHT};
+    canvas(|_, _, _| (), move |b, _, window, cx| {
+        let f = foot.get();
+        let to_f = |v: Pixels| f32::from(v);
+        for (i, fl) in &flights {
+            // pills are about 56 px apart, each about 28 px from its own left edge
+            let target = (to_f(f.origin.x) + 28. + 56. * *i as f32, to_f(f.origin.y) + 10.);
+            let from = (to_f(b.origin.x + b.size.width) - 40., to_f(b.origin.y) + 4.);
+            let t = (now - fl.t0) as f32;
+            let paint = |window: &mut Window, cx: &mut App, text: &str, px_size: f32, at: (f32, f32), color: Hsla| {
+                let s: SharedString = text.to_string().into();
+                let run = TextRun { len: s.len(), font: font(look::F_UI), color, background_color: None, underline: None, strikethrough: None };
+                let line = window.text_system().shape_line(s, px(px_size), &[run], None);
+                let _ = line.paint(point(px(at.0 - px_size * 0.5), px(at.1 - px_size * 0.55)), px(px_size * 1.2), TextAlign::Left, None, window, cx);
+            };
+            if t < FLIGHT as f32 {
+                let (p, sc) = flight_at(from, target, t / FLIGHT as f32);
+                paint(window, cx, &fl.emoji, 20. * sc, p, hi);
+            } else {
+                let k = (t - FLIGHT as f32) / BURST_LIFE as f32;
+                if k < 1. {
+                    for n in 0..BURST_N {
+                        let (d, a) = burst_at(n, k);
+                        let mut c = hi; c.a = a;
+                        paint(window, cx, &burst_glyph(n).to_string(), 16., (target.0 + d.0, target.1 + d.1), c);
+                    }
+                }
+            }
+        }
+    }).absolute().top_0().left_0().size_full()
 }
