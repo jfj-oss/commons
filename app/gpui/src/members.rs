@@ -663,18 +663,18 @@ impl Mega {
         let Some(c) = self.comm_of(cid) else { return vec![] };
         let mut out: Vec<AnyElement> = vec![];
         let a = cid.to_string();
-        out.push(Button::new("b-people").ghost().small().label("people").on_click(cx.listener(move |this, _, window, cx| this.open_panel(Panel::People(a.clone()), window, cx))).into_any_element());
+        out.push(crate::cards::chip("b-people", "people").on_click(cx.listener(move |this, _, window, cx| this.open_panel(Panel::People(a.clone()), window, cx))).into_any_element());
         if is_admin(&c) {
             let (a, b) = (cid.to_string(), cid.to_string());
-            out.push(Button::new("b-invite").ghost().small().label("invite").on_click(cx.listener(move |this, _, window, cx| this.open_panel(Panel::Invite(a.clone()), window, cx))).into_any_element());
-            out.push(Button::new("b-manage").ghost().small().label("manage").on_click(cx.listener(move |this, _, window, cx| this.open_panel(Panel::Admin(b.clone()), window, cx))).into_any_element());
+            out.push(crate::cards::chip("b-invite", "invite").on_click(cx.listener(move |this, _, window, cx| this.open_panel(Panel::Invite(a.clone()), window, cx))).into_any_element());
+            out.push(crate::cards::chip("b-manage", "manage").on_click(cx.listener(move |this, _, window, cx| this.open_panel(Panel::Admin(b.clone()), window, cx))).into_any_element());
         }
         out
     }
     pub fn home_buttons(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         vec![
-            Button::new("b-join").ghost().small().label("join").on_click(cx.listener(|this, _, window, cx| this.open_panel(Panel::Join, window, cx))).into_any_element(),
-            Button::new("b-new").ghost().small().label("new community").on_click(cx.listener(|this, _, window, cx| this.open_panel(Panel::NewCommunity, window, cx))).into_any_element(),
+            crate::cards::chip("b-join", "join").on_click(cx.listener(|this, _, window, cx| this.open_panel(Panel::Join, window, cx))).into_any_element(),
+            crate::cards::chip("b-new", "new").on_click(cx.listener(|this, _, window, cx| this.open_panel(Panel::NewCommunity, window, cx))).into_any_element(),
         ]
     }
     /// The small notes on the home screen about communities this account asked to join or was turned away from.

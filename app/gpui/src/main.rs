@@ -5,6 +5,9 @@ mod arrive;
 mod ascii;
 mod backdrop;
 mod bench;
+mod cards;
+mod nav;
+mod rail;
 #[cfg(feature = "calls")]
 #[allow(dead_code)]
 mod calls;
@@ -58,10 +61,12 @@ fn main() {
         let quit_core = core.clone();
         cx.on_app_quit(move |_| { let c = quit_core.clone(); async move { c.app.shutdown(); } }).detach();
 
-        let bounds = Bounds::centered(None, size(px(1100.), px(760.)), cx);
+        // tests only: MEGA_GPUI_SIZE=1280x900 opens the window at that size (the window's content, without a title bar)
+        let (ww, wh) = std::env::var("MEGA_GPUI_SIZE").ok().and_then(|v| { let (a, b) = v.split_once('x')?; Some((a.parse::<f32>().ok()?, b.parse::<f32>().ok()?)) }).unwrap_or((1100., 760.));
+        let bounds = Bounds::centered(None, size(px(ww), px(wh)), cx);
         let opts = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(720.), px(520.))),
+            window_min_size: Some(size(px(ww.min(720.)), px(wh.min(520.)))),
             titlebar: Some(TitlebarOptions { title: Some("mega".into()), ..Default::default() }),
             app_id: Some("app.commons.chat.gpui".into()),
             ..Default::default()
