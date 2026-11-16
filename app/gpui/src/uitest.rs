@@ -11,6 +11,10 @@
 //!   {"cmd":"home"}                              back to the home screen
 //!   {"cmd":"leave"}  {"cmd":"open","name"}      leave the call; open a room (or a direct conversation) by name
 //!   {"cmd":"rune","what":"pause|resume|next|prev"}  {"cmd":"along"}   the rune controls of the call bar
+//!   {"cmd":"panel","which","name"}               open people|person|manage|invite|join|new|safety|close for a community (by name; person: also "who")
+//!   {"cmd":"do","what",...}                     what the panels' buttons do (members.rs `ui_do`): role kick unban transfer leave revoke rename room_* colours wall_* invite verify
+//!   {"cmd":"members"}                          what the panel and the communities hold
+//!   {"cmd":"click","what"}                     press a panel button: confirm | cancel | create-invite
 //!   {"cmd":"core","method","args"}              a call to the core as this account
 use crate::app::Mega;
 use gpui_kit::*;
@@ -79,6 +83,24 @@ impl Mega {
                 }
                 "rune" => { let what = match s("what").as_str() { "pause" => "pause", "resume" => "resume", "next" => "next", "prev" => "prev", _ => "" }; if what.is_empty() { json!({"error": "bad control"}) } else { self.rune_control(what, window, cx); json!({"ok": true}) } }
                 "along" => { self.rune_along(window, cx); json!({"ok": true}) }
+                "panel" => {
+                    use crate::members::Panel;
+                    let want = s("name");
+                    let cid = self.snap.as_ref().and_then(|sn| sn.communities.iter().find(|c| c.name == want).map(|c| c.id.clone())).unwrap_or_default();
+                    let who = s("who");
+                    let acct = self.mem.members.iter().find(|m| m.name == who).map(|m| m.account.clone()).unwrap_or_default();
+                    let p = match s("which").as_str() {
+                        "people" => Some(Panel::People(cid)), "person" => Some(Panel::Person(cid, acct)), "manage" => Some(Panel::Admin(cid)), "invite" => Some(Panel::Invite(cid)),
+                        "join" => Some(Panel::Join), "new" => Some(Panel::NewCommunity), "close" => { self.close_panel(cx); None } _ => None,
+                    };
+                    if let Some(p) = p { self.open_panel(p, window, cx); }
+                    json!({"ok": true})
+                }
+                "members" => self.members_dump(),
+                "do" => self.ui_do(&cmd, window, cx),
+                "go" => { let want = s("name"); let cid = self.snap.as_ref().and_then(|sn| sn.communities.iter().find(|c| c.name == want).map(|c| c.id.clone())); match cid { Some(c) => { self.go(crate::app::Level::Server(c), window, cx); json!({"ok": true}) } None => json!({"error": "no such community"}) } }
+                "join_text" => { let v = s("text"); self.mem.join_in.update(cx, |i, cx| i.set_value(v, window, cx)); self.join_submit(window, cx); json!({"ok": true}) }
+                "click" => match s("what").as_str() { "confirm" => { self.run_confirm(window, cx); json!({"ok": true}) } "cancel" => { self.mem.confirm = None; cx.notify(); json!({"ok": true}) } _ => json!({"error": "unknown button"}) },
                 "core" => { let core = self.core.clone(); let (m, a) = (s("method"), cmd["args"].clone()); match core.call(&m, a) { Ok(v) => json!({"ok": v}), Err(e) => json!({"error": e}) } }
                 other => json!({"error": format!("unknown command {other}")}),
             };

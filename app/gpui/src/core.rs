@@ -36,7 +36,9 @@ impl Core {
     pub fn open() -> Arc<Core> {
         let dir = data_dir();
         let relay = std::env::var("COMMONS_RELAY").unwrap_or_else(|_| include_str!("../../src-tauri/default-relay.txt").trim().to_string());
-        let app = App::new(dir.clone(), &relay);
+        // Tests only (never set for a person's app): the cheap key derivation, so a password invite made here and one looked up by a test bridge agree.
+        let kdf = if std::env::var_os("COMMONS_FAST_KDF").is_some() { commons_core::vault::KdfParams::TEST } else { commons_core::vault::KdfParams::STRONG };
+        let app = App::with_kdf(dir.clone(), &relay, kdf);
         app.start_background();
         let hub = app.notify_hub();
         // Notes go to the system exactly as in the Tauri app. A check that must not show anything writes them to a file instead.

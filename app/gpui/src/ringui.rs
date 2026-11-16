@@ -35,7 +35,7 @@ pub struct RingUi {
 pub struct Stats { pub shown: u32, pub tones: u32, pub polls: u32 }
 
 impl Mega {
-    fn say(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+    pub fn say(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
         self.ring.notes.push((text.into(), unix() + 6.));
         if self.ring.notes.len() > 3 { self.ring.notes.remove(0); }
         cx.notify();
