@@ -2,6 +2,7 @@
 //! `App::call(method, args)` JSON API as the Tauri shell and the browser bridge (see core.rs).
 mod app;
 mod arrive;
+mod reading;
 mod ascii;
 mod backdrop;
 mod bench;
