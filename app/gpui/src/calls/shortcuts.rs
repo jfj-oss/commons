@@ -600,7 +600,7 @@ mod portal_tests {
         let portal = rt.block_on(Portal::start(&bus.addr, Answer::Approve, 2));
         let mut settings = crate::calls::settings::CallSettings::default();
         settings.push_to_talk = true;
-        let engine = CallEngine::start(Arc::new(NoCore), Options { audio: AudioMode::Silent { tone_hz: 900. }, settings, settings_path: None, shortcuts: Mode::Bus(bus.addr.clone()) });
+        let engine = CallEngine::start(Arc::new(NoCore), Options { audio: AudioMode::Silent { tone_hz: 900. }, settings, settings_path: None, shortcuts: Mode::Bus(bus.addr.clone()), frames: None });
         let wait = |what: &str, f: &dyn Fn(&crate::calls::engine::Snapshot) -> bool| {
             let t = Instant::now();
             while !f(&engine.snapshot()) { assert!(t.elapsed() < Duration::from_secs(10), "timed out waiting for {what}: {:?}", engine.snapshot().global_shortcuts); std::thread::sleep(Duration::from_millis(30)); }

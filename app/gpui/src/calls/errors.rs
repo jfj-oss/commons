@@ -2,19 +2,19 @@
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind { Unsupported, Network, Removed, NotMember, NoServer, NoE2ee, Permission, NoDevice, Device, Mic, Screen, NoScreen, Busy, Play, Other }
+pub enum Kind { Unsupported, Network, Removed, NotMember, NoServer, NoE2ee, Permission, NoDevice, Device, Mic, Camera, Screen, NoScreen, Busy, Play, Other }
 
 impl Kind {
     pub fn as_str(self) -> &'static str {
         match self {
             Kind::Unsupported => "unsupported", Kind::Network => "network", Kind::Removed => "removed", Kind::NotMember => "not-member",
             Kind::NoServer => "no-server", Kind::NoE2ee => "no-e2ee", Kind::Permission => "permission", Kind::NoDevice => "no-device",
-            Kind::Device => "device", Kind::Mic => "mic", Kind::Screen => "screen", Kind::NoScreen => "no-screen", Kind::Busy => "busy",
+            Kind::Device => "device", Kind::Mic => "mic", Kind::Camera => "camera", Kind::Screen => "screen", Kind::NoScreen => "no-screen", Kind::Busy => "busy",
             Kind::Play => "play", Kind::Other => "other",
         }
     }
     /// A notice about one thing that did not work: it fades after [`PASSING_FADE`].
-    pub fn passing(self) -> bool { matches!(self, Kind::Screen | Kind::NoScreen | Kind::Busy | Kind::Device | Kind::Play) }
+    pub fn passing(self) -> bool { matches!(self, Kind::Screen | Kind::Camera | Kind::NoScreen | Kind::Busy | Kind::Device | Kind::Play) }
     /// The state of the call itself: it stays until the next call.
     pub fn lasting(self) -> bool { matches!(self, Kind::Network | Kind::Removed | Kind::Unsupported) }
 }

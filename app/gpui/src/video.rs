@@ -9,7 +9,7 @@
 //! checks that must not need a camera: it is the only thing in this file that makes frames by itself.
 use gpui_kit::*;
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -20,9 +20,20 @@ pub enum Kind { Camera, Screen }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tile { pub sid: String, pub identity: String, pub name: String, pub kind: Kind }
 
+/// What one tile has received so far (tests and diagnostics): frames pushed, the size of the last one, and when.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TileStat { pub count: u64, pub w: u32, pub h: u32 }
+
+impl std::fmt::Debug for Frames { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("Frames") } }
+
 /// Newest frame per tile, written by whoever reads the track (any thread), taken by the window's render.
+///
+/// A tile can be marked hidden ([`Frames::set_hidden`]): whoever reads the track then skips the conversion and the push
+/// (the window is not drawing it), and the tile's picture is dropped, so showing it again waits for the next frame.
 pub struct Frames {
     slots: Mutex<HashMap<String, Arc<RenderImage>>>,
+    stats: Mutex<HashMap<String, TileStat>>,
+    hidden: Mutex<HashSet<String>>,
     wake: futures::channel::mpsc::UnboundedSender<()>,
     pending: AtomicBool,
 }
@@ -30,14 +41,30 @@ pub struct Frames {
 impl Frames {
     pub fn new() -> (Arc<Frames>, futures::channel::mpsc::UnboundedReceiver<()>) {
         let (wake, rx) = futures::channel::mpsc::unbounded();
-        (Arc::new(Frames { slots: Default::default(), wake, pending: AtomicBool::new(false) }), rx)
+        (Arc::new(Frames { slots: Default::default(), stats: Default::default(), hidden: Default::default(), wake, pending: AtomicBool::new(false) }), rx)
     }
     /// A new picture for tile `sid`; replaces one that was not shown yet (frames are never queued).
     pub fn push(&self, sid: &str, img: Arc<RenderImage>) {
+        let sz = img.size(0);
+        {
+            let mut st = self.stats.lock();
+            let e = st.entry(sid.to_string()).or_default();
+            e.count += 1; e.w = sz.width.0 as u32; e.h = sz.height.0 as u32;
+        }
         self.slots.lock().insert(sid.to_string(), img);
         if !self.pending.swap(true, Ordering::AcqRel) { let _ = self.wake.unbounded_send(()); }
     }
-    pub fn forget(&self, sid: &str) { self.slots.lock().remove(sid); }
+    /// The tile is gone: its picture and its counters.
+    pub fn forget(&self, sid: &str) { self.slots.lock().remove(sid); self.stats.lock().remove(sid); self.hidden.lock().remove(sid); }
+    /// Only the picture goes (a camera switched off): the counters stay.
+    pub fn clear(&self, sid: &str) { self.slots.lock().remove(sid); }
+    /// Hides or shows a tile for the readers: a hidden tile is not converted or pushed.
+    pub fn set_hidden(&self, sid: &str, hidden: bool) {
+        if hidden { self.hidden.lock().insert(sid.to_string()); self.slots.lock().remove(sid); } else { self.hidden.lock().remove(sid); }
+    }
+    pub fn is_hidden(&self, sid: &str) -> bool { self.hidden.lock().contains(sid) }
+    /// Counters per tile since it appeared (tests).
+    pub fn stats(&self) -> HashMap<String, TileStat> { self.stats.lock().clone() }
     /// The window saw the wake-up; the next push wakes it again.
     pub fn ack(&self) { self.pending.store(false, Ordering::Release); }
     pub fn newest(&self, sid: &str) -> Option<Arc<RenderImage>> { self.slots.lock().get(sid).cloned() }
@@ -61,6 +88,12 @@ impl Shown {
         let gone: Vec<String> = self.cur.keys().filter(|k| !live.contains(k)).cloned().collect();
         for k in gone { if let Some(i) = self.cur.remove(&k) { let _ = window.drop_image(i); } }
     }
+}
+
+/// A BGRA picture (libyuv's "ARGB" byte order, which is what the atlas wants) as a tile image.
+pub fn bgra_image(w: u32, h: u32, bgra: Vec<u8>) -> Option<Arc<RenderImage>> {
+    let img = image::RgbaImage::from_raw(w, h, bgra)?;
+    Some(Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(img)])))
 }
 
 /// Tiles from the engine's `subscribed` list ("<identity>/<track sid>:<Source>").

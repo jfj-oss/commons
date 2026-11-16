@@ -11,7 +11,7 @@
 //! hands frames over a small channel that drops the oldest when the publisher is slow.
 use super::share::Profile;
 use livekit::webrtc::native::yuv_helper;
-use livekit::webrtc::video_frame::I420Buffer;
+use livekit::webrtc::video_frame::{I420Buffer, VideoBuffer};
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -95,6 +95,17 @@ pub fn start(source: ShareSource, limits: Limits) -> Capture {
     Capture { rx, stop, die, limits }
 }
 
+/// A capture that runs `f` on a thread of its own with this capture's channel and flags: the camera's source goes this way
+/// (`camera.rs`), and so does anything else that produces fitted I420 pictures.
+pub fn start_with(name: &str, limits: Limits, f: impl FnOnce(Ctx) + Send + 'static) -> Capture {
+    let (tx, rx) = channel(3);
+    let (stop, die) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    let limits = Arc::new(Mutex::new(limits));
+    let ctx = Ctx { tx, stop: stop.clone(), die: die.clone(), limits: limits.clone() };
+    if let Err(e) = std::thread::Builder::new().name(name.into()).spawn(move || f(ctx)) { log::warn!("capture thread {name}: {e}"); }
+    Capture { rx, stop, die, limits }
+}
+
 #[cfg(target_os = "linux")]
 fn portal(ctx: Ctx) { super::capture_linux::run(ctx) }
 #[cfg(not(target_os = "linux"))]
@@ -129,6 +140,13 @@ pub fn bgra_to_i420(data: &[u8], stride: u32, w: u32, h: u32, l: Limits) -> Opti
         }
     }
     if (fw, fh) == (cw, ch) { Some(full) } else { Some(full.scale(fw as i32, fh as i32)) }
+}
+
+/// An I420 picture fitted inside the limits (shrunk keeping its shape, never enlarged).
+pub fn fit_i420(mut b: I420Buffer, l: Limits) -> I420Buffer {
+    let (w, h) = (b.width(), b.height());
+    let (fw, fh) = fit(w, h, l.max_w, l.max_h);
+    if (fw, fh) == (w, h) { b } else { b.scale(fw as i32, fh as i32) }
 }
 
 // ------------------------------------------------------------------------------------------------ the test source

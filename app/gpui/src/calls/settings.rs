@@ -15,13 +15,16 @@ pub struct CallSettings {
     pub out_id: Option<String>,
     pub processing: Processing,
     pub push_to_talk: bool,
+    /// The camera used last (its id) and the camera profile (`720p` unless `1080p` was chosen), as call.js `camId` and `cameraProfile`.
+    pub cam_id: Option<String>,
+    pub cam_profile: Option<super::camera::CamProfile>,
     /// One output volume per account, 0 to 10 (1 is unchanged), as `commons.call.volumes`.
     pub volumes: BTreeMap<String, f64>,
 }
 
 impl Default for CallSettings {
     fn default() -> CallSettings {
-        CallSettings { mic_id: None, out_id: None, processing: Processing::ON, push_to_talk: false, volumes: BTreeMap::new() }
+        CallSettings { mic_id: None, out_id: None, processing: Processing::ON, push_to_talk: false, cam_id: None, cam_profile: None, volumes: BTreeMap::new() }
     }
 }
 
@@ -37,6 +40,8 @@ impl CallSettings {
         s.processing.noise_suppression = v["noiseSuppression"].as_bool() != Some(false);
         s.processing.auto_gain_control = v["autoGainControl"].as_bool() != Some(false);
         s.push_to_talk = v["ptt"].as_bool() == Some(true);
+        if let Some(id) = v["camId"].as_str() { s.cam_id = Some(id.to_string()); }
+        s.cam_profile = v["cameraProfile"].as_str().and_then(super::camera::CamProfile::parse);
         if let Some(vols) = v["volumes"].as_object() {
             for (k, val) in vols { if let Some(x) = val.as_f64() { s.volumes.insert(k.clone(), x.clamp(0., 10.)); } }
         }
@@ -53,6 +58,8 @@ impl CallSettings {
             "noiseSuppression": self.processing.noise_suppression,
             "autoGainControl": self.processing.auto_gain_control,
             "ptt": self.push_to_talk,
+            "camId": self.cam_id,
+            "cameraProfile": self.cam_profile.map(|p| p.name()),
             "volumes": serde_json::Value::Object(vols),
         });
         // the folder exists once there is an account; before that there is nothing worth remembering
@@ -99,6 +106,8 @@ mod tests {
         s.out_id = Some("out0".into());
         s.processing.noise_suppression = false;
         s.push_to_talk = true;
+        s.cam_id = Some("/dev/video2".into());
+        s.cam_profile = Some(crate::calls::camera::CamProfile::P1080);
         s.volumes.insert("acc".into(), 0.5);
         s.save(&p);
         assert_eq!(CallSettings::load(&p), s);

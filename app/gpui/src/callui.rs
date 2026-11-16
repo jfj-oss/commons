@@ -106,7 +106,7 @@ impl Mega {
         if let Some(e) = &self.call.engine { return e.clone(); }
         let settings_path = self.core.dir.join("gpui-call-prefs.json");
         let settings = CallSettings::load(&settings_path);
-        let e = Arc::new(CallEngine::start(Arc::new(Linked(self.core.clone())), Options { audio: AudioMode::from_env(), settings, settings_path: Some(settings_path), shortcuts: crate::calls::shortcuts::Mode::from_env() }));
+        let e = Arc::new(CallEngine::start(Arc::new(Linked(self.core.clone())), Options { audio: AudioMode::from_env(), settings, settings_path: Some(settings_path), shortcuts: crate::calls::shortcuts::Mode::from_env(), frames: Some(self.call.frames.clone()) }));
         // the engine's change channel wakes the window: nothing else does, so a call that changes nothing costs nothing
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<()>();
         let mut ch = e.changes();
@@ -141,7 +141,11 @@ impl Mega {
         if was_in && !in_call { self.call_ended(window); }
         // the column's tiles: the engine's subscribed cameras and screens (and the synthetic ones when asked for)
         let snap = self.call.snap.clone();
-        let mut tiles = video::tiles_from(&snap.subscribed, |id| snap.peers.iter().find(|p| p.identity == id).map(|p| p.name.clone()).unwrap_or_else(|| "someone".into()));
+        // others' cameras and screens, then your own (the preview of what you send); a camera that is off has no tile
+        let mut all = snap.subscribed.clone();
+        all.extend(snap.local_video.iter().cloned());
+        let mut tiles = video::tiles_from(&all, |id| snap.peers.iter().find(|p| p.identity == id).map(|p| if p.me { "You".to_string() } else { p.name.clone() }).unwrap_or_else(|| "someone".into()));
+        tiles.retain(|t| !snap.muted_video.iter().any(|m| m.ends_with(&format!("/{}", t.sid))));
         let fake = video::fake_count();
         if fake > 0 && self.call.connected() {
             if !self.call.fake_alive.swap(true, Ordering::SeqCst) { video::start_fake(self.call.frames.clone(), fake, self.call.fake_alive.clone()); }
@@ -224,7 +228,7 @@ impl Mega {
     // ---- choices ----
     pub fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.call.settings_open = !self.call.settings_open;
-        if self.call.settings_open { let e = self.engine(window, cx); e.send(Command::ListDevices); self.call.snap = e.snapshot(); }
+        if self.call.settings_open { let e = self.engine(window, cx); e.send(Command::ListDevices); e.send(Command::ListCameras); self.call.snap = e.snapshot(); }
         cx.notify();
     }
     pub fn open_person(&mut self, account: String, name: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -285,9 +289,14 @@ impl Mega {
         for p in &people { faces = faces.child(self.person_chip(p, cx)); }
         bar = bar.child(faces);
         let (muted, deaf, ptt, held) = (snap.muted, snap.deafened, snap.push_to_talk, snap.ptt_held);
+        let cam_on = snap.camera.state != "off" && !snap.camera.state.is_empty();
         if let Some(err) = snap.error.clone() { bar = bar.child(div().max_w(px(260.)).text_size(px(12.)).text_color(rgb(look::DANGER)).child(err.msg)); }
         bar = bar
             .child(pill("c-mute", muted, if muted { "Muted" } else { "Mute" }).when(ptt, |d| d.opacity(0.6)).on_click(cx.listener(move |this, _, _, cx| { this.call_cmd(Command::SetMuted(!muted)); cx.notify(); })))
+            .child(pill("c-cam", cam_on, if cam_on { "Camera on" } else { "Camera" }).on_click(cx.listener(move |this, _, _, cx| {
+                this.call_cmd(if cam_on { Command::StopCamera } else { Command::StartCamera { source: crate::calls::camera::CameraSource::Device(None), profile: None } });
+                cx.notify();
+            })))
             .child(pill("c-deaf", deaf, if deaf { "Deafened" } else { "Deafen" }).on_click(cx.listener(move |this, _, _, cx| { this.call_cmd(Command::SetDeafened(!deaf)); cx.notify(); })))
             .when(ptt, |d| d.child(pill("c-ptt", held, "Hold to talk")
                 .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, _| this.call_cmd(Command::PushToTalk(true))))
@@ -316,6 +325,26 @@ impl Mega {
                 .child(pill("v-1", (v - 1.).abs() < 0.001, "Normal").on_click(cx.listener(move |this, _, window, cx| { this.call_cmd(Command::SetVolume { account: a2.clone(), volume: 1. }); this.call.vol.update(cx, |s, cx| s.set_value(1., window, cx)); cx.notify(); })))
                 .child(div().flex_1())
                 .child(pill("v-x", false, "Close").on_click(cx.listener(|this, _, _, cx| { this.call.menu = None; cx.notify(); })))).into_any_element())
+    }
+
+    /// The cameras of this computer and the two profiles of call.js, as pills.
+    fn camera_list(&mut self, snap: &engine::Snapshot, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::calls::camera::{CamProfile, CameraSource};
+        let mut col = v_flex().id("cam-list").gap_1().max_h(px(120.)).overflow_y_scroll();
+        if snap.cameras.is_empty() { col = col.child(div().text_size(px(12.)).text_color(look::mute()).child("No camera found on this computer.")); }
+        for (i, c) in snap.cameras.iter().enumerate() {
+            let id = c.id.clone();
+            let cur = snap.camera.id.as_deref() == Some(c.id.as_str()) || (snap.camera.id.is_none() && snap.cam_id.as_deref() == Some(c.id.as_str()));
+            let on = snap.camera.state != "off" && !snap.camera.state.is_empty();
+            col = col.child(pill(SharedString::from(format!("cam-{i}")), cur, c.name.clone()).on_click(cx.listener(move |this, _, _, cx| {
+                this.call_cmd(if on { Command::SwitchCamera(CameraSource::Device(Some(id.clone()))) } else { Command::StartCamera { source: CameraSource::Device(Some(id.clone())), profile: None } });
+                cx.notify();
+            })));
+        }
+        let cur = snap.camera.profile.clone().unwrap_or_else(|| "720p".into());
+        h_flex().gap_2().child(v_flex().flex_1().child(col)).child(v_flex().gap_1()
+            .child(pill("cam-720", cur == "720p", "720p").on_click(cx.listener(|this, _, _, cx| { this.call_cmd(Command::SetCameraProfile(CamProfile::P720)); cx.notify(); })))
+            .child(pill("cam-1080", cur == "1080p", "1080p").on_click(cx.listener(|this, _, _, cx| { this.call_cmd(Command::SetCameraProfile(CamProfile::P1080)); cx.notify(); }))))
     }
 
     fn settings_panel(&mut self, snap: &engine::Snapshot, cx: &mut Context<Self>) -> impl IntoElement {
@@ -352,6 +381,8 @@ impl Mega {
             .child(dev("mic", &snap.devices.mic, snap.mic_id.as_ref(), true, cx))
             .child(label("speakers"))
             .child(dev("out", &snap.devices.out, snap.out_id.as_ref(), false, cx))
+            .child(label("camera"))
+            .child(self.camera_list(snap, cx))
             .child(label("voice"))
             .child(sw("cs-echo", snap.echo_cancellation, "Echo cancellation", 0))
             .child(sw("cs-noise", snap.noise_suppression, "Noise suppression", 1))

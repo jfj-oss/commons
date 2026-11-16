@@ -21,6 +21,13 @@
 //!   `SetShareProfile` / `ListShareApps` / `StartShareAudio` / `StopShareAudio`, read from `Snapshot.share` and
 //!   `Snapshot.share_apps`. What every field and event means, and how it is published, is at the top of
 //!   [`crate::calls::share`].
+//! - **Pictures** (step 4): give [`Options::frames`] a `video::Frames` and every subscribed remote camera and screen share is read
+//!   and pushed to it under the track's sid (`videoin.rs`: newest frame only, hidden tiles cost nothing); your own camera and
+//!   screen share are pushed under their publication's sid from the picture being sent. `Snapshot.subscribed` lists the remote
+//!   ones, `Snapshot.local_video` your own, `Snapshot.muted_video` the remote ones switched off (no tile). `Frames::set_hidden`
+//!   stops the work for a tile the window is not showing.
+//! - **Camera** (step 6): `Command::ListCameras` / `StartCamera` / `StopCamera` / `SwitchCamera` / `SetCameraProfile`, read from
+//!   `Snapshot.cameras` and `Snapshot.camera`. What every field and event means is at the top of [`crate::calls::camera`].
 //! - **Tests only**: [`CallEngine::plout`] (the receiver's playout energy, the W1 measure) and
 //!   [`CallEngine::mic_options`] (what the published microphone source actually runs).
 //!
@@ -39,7 +46,10 @@ use super::reconnect::{self as rc, MediaWatch};
 use super::settings::CallSettings;
 use super::appaudio::AppStream;
 use super::capture::ShareSource;
+use super::camera::{self, CamCmd, CamProfile, CamReport, CameraHandle, CameraInfo, CameraSource, CameraView};
 use super::share::{self, Profile, Report, Sess, ShareCmd, ShareHandle, ShareView};
+use super::videoin::{Preview, Sink};
+use crate::video::Frames;
 use super::shortcuts::{self, Shortcut, ShortcutInfo, VoiceState};
 use super::{ice, review, tone};
 use futures::StreamExt;
@@ -113,6 +123,8 @@ pub struct Options {
     pub settings_path: Option<PathBuf>,
     /// System-wide push-to-talk, mute and deafen through the desktop portal ([`shortcuts`]); `Mode::Off` for tests.
     pub shortcuts: shortcuts::Mode,
+    /// Where the pictures of cameras and screens go (remote and your own). `None`: video tracks are not read at all.
+    pub frames: Option<Arc<Frames>>,
 }
 
 #[derive(Debug)]
@@ -159,6 +171,18 @@ pub enum Command {
     StopShareAudio,
     /// Tests: the running capture ends as if the system had closed it.
     TestShareEnd,
+    /// Fill `Snapshot.cameras` with the cameras of this computer, then raise the change.
+    ListCameras,
+    /// Camera on (see [`crate::calls::camera`]). `profile` `None`: the remembered one (720p at first). Refused outside a call.
+    StartCamera { source: CameraSource, profile: Option<CamProfile> },
+    /// Camera off: the device is closed and the track muted, not unpublished.
+    StopCamera,
+    /// Use another camera now (remembered).
+    SwitchCamera(CameraSource),
+    /// 720p or 1080p (remembered); republishes when the camera is on.
+    SetCameraProfile(CamProfile),
+    /// Tests: the camera goes away as if it had been unplugged.
+    TestCameraEnd,
     /// Tests: play every encrypted track whoever sends it, so a test can show the cryptography alone keeps a removed member out.
     TestTrustAll(bool),
 }
@@ -200,6 +224,16 @@ pub struct Snapshot {
     pub share: ShareView,
     /// The apps playing sound, filled on [`Command::ListShareApps`].
     #[serde(rename = "shareApps")] pub share_apps: Vec<AppStream>,
+    /// The cameras of this computer, filled on [`Command::ListCameras`].
+    pub cameras: Vec<CameraInfo>,
+    /// Your camera; see [`crate::calls::camera`].
+    pub camera: CameraView,
+    /// The remembered camera (`None` until one was used) and profile.
+    #[serde(rename = "camId")] pub cam_id: Option<String>,
+    /// Your own live, unmuted pictures in `subscribed`'s format (`<your device>/<sid>:Camera` or `:Screenshare`).
+    #[serde(rename = "localVideo")] pub local_video: Vec<String>,
+    /// Remote video tracks that are switched off (a camera that is off is muted, not gone): they have no tile.
+    #[serde(rename = "mutedVideo")] pub muted_video: Vec<String>,
     /// Whether push-to-talk, mute and deafen work with any window focused: `off` (not asked for), `pending` (the desktop's
     /// approval dialog may be open), `active`, `denied` (ask again with [`Command::RebindShortcuts`]), `unavailable` (no
     /// portal) or `unsupported` (this platform). Anything but `active` means the window's own keys only.
@@ -236,6 +270,8 @@ pub struct CallEngine {
     pub taps: Arc<Taps>,
     pub rt: Arc<tokio::runtime::Runtime>,
     pub core: Arc<dyn CoreLink>,
+    /// The `Options.frames` it was started with (tests read its counters).
+    pub frames: Option<Arc<Frames>>,
 }
 
 impl CallEngine {
@@ -245,9 +281,10 @@ impl CallEngine {
         let snap: Arc<Mutex<Snapshot>> = Arc::new(Mutex::new(Snapshot { phase: "idle".into(), ..Default::default() }));
         let (vtx, version) = tokio::sync::watch::channel(0u64);
         let taps: Arc<Taps> = Default::default();
+        let frames = opts.frames.clone();
         let actor = Actor::new(core.clone(), opts, tx.clone(), snap.clone(), vtx, taps.clone());
         rt.spawn(actor.run(rx));
-        CallEngine { tx, snap, version, taps, rt, core }
+        CallEngine { tx, snap, version, taps, rt, core, frames }
     }
     pub fn send(&self, c: Command) { let _ = self.tx.send(Msg::Cmd(c)); }
     pub fn snapshot(&self) -> Snapshot { self.snap.lock().clone() }
@@ -310,13 +347,15 @@ enum Msg {
     ShareStats { reply: tokio::sync::oneshot::Sender<Value> },
     Room { gen: u64, ev: RoomEvent },
     Share(Report),
+    Camera(CamReport),
+    Cameras(Vec<CameraInfo>),
     ShareApps(Result<Vec<AppStream>, String>),
     Shortcuts(shortcuts::Event),
 }
 
 struct Session { room: Arc<Room>, book: Arc<Mutex<KeyBook>>, gen: u64 }
 
-struct TrackInfo { identity: String, source: TrackSource, audio: Option<RemoteAudioTrack> }
+struct TrackInfo { identity: String, source: TrackSource, audio: Option<RemoteAudioTrack>, #[allow(dead_code)] sink: Option<Sink> }
 
 /// What the audio should be doing right now. The gate owns `on` (mute/unmute); the engine owns the device choices and
 /// the processing switches. [`realize_mic`] reconciles this against the realised [`MicSlot`], so whoever changed the
@@ -490,6 +529,9 @@ struct Actor {
     share: Option<ShareHandle>,
     share_view: ShareView,
     share_apps: Vec<AppStream>,
+    camera: Option<CameraHandle>,
+    camera_view: CameraView,
+    cameras: Vec<CameraInfo>,
     settings: CallSettings,
     settings_path: Option<PathBuf>,
     gate: Arc<MicGate>,
@@ -520,7 +562,7 @@ impl Actor {
             attempt: 0, retry_at: None, rejoin_started: None, reconnecting_since: None, media: MediaWatch::default(), polling: false, me: String::new(),
             members: BTreeMap::new(), blocked: BTreeMap::new(), tracks: BTreeMap::new(), speaking: HashSet::new(), want_speaking: false, speaking_sent: None,
             speak_at: Instant::now() - Duration::from_secs(5), speak_due: None, decrypt_fail: HashMap::new(), rekeyed: HashMap::new(),
-            muted: false, deafened: false, game_muted: false, game_injected: false, trust_all: false, ptt_held: false, sc_ctl: None, sc_status: shortcuts::Status::Off, sc_note: String::new(), sc_infos: vec![], devices: Devices::default(), share: None, share_view: ShareView { state: "idle".into(), ..Default::default() }, share_apps: vec![],
+            muted: false, deafened: false, game_muted: false, game_injected: false, trust_all: false, ptt_held: false, sc_ctl: None, sc_status: shortcuts::Status::Off, sc_note: String::new(), sc_infos: vec![], devices: Devices::default(), share: None, share_view: ShareView { state: "idle".into(), ..Default::default() }, share_apps: vec![], camera: None, camera_view: CameraView { state: "off".into(), ..Default::default() }, cameras: vec![],
             settings, settings_path, gate: Arc::new(MicGate::new(publish)), mic, wish, game_watch: None, dirty: true, published_at: Instant::now(), v: 0,
         }
     }
@@ -569,6 +611,12 @@ impl Actor {
                 Ok(v) => { self.log(format!("{} apps playing sound", v.len())); self.share_apps = v; self.dirty = true; }
                 Err(e) => { self.log(format!("app list unavailable: {e}")); self.share_apps.clear(); self.dirty = true; }
             },
+            Msg::Camera(r) => match r {
+                CamReport::View(v) => { self.camera_view = v; self.dirty = true; }
+                CamReport::Log(m) => self.log(m),
+                CamReport::Fail(m) => self.fail(CallError::new(Kind::Camera, m)),
+            },
+            Msg::Cameras(v) => { self.log(format!("{} cameras", v.len())); self.cameras = v; self.dirty = true; }
             Msg::Shortcuts(e) => self.on_shortcuts(e),
             Msg::Room { gen, ev } => { if self.session.as_ref().is_some_and(|s| s.gen == gen) { self.on_room(ev); } }
         }
@@ -604,6 +652,25 @@ impl Actor {
             Command::StartShareAudio { stream } => self.share_cmd(ShareCmd::AudioStart(stream), true),
             Command::StopShareAudio => self.share_cmd(ShareCmd::AudioStop, false),
             Command::TestShareEnd => self.share_cmd(ShareCmd::TestEnd, false),
+            Command::ListCameras => {
+                let tx = self.tx.clone();
+                tokio::task::spawn_blocking(move || { let _ = tx.send(Msg::Cameras(camera::list())); });
+            }
+            Command::StartCamera { source, profile } => {
+                let profile = profile.or(self.settings.cam_profile).unwrap_or(CamProfile::P720);
+                self.settings.cam_profile = Some(profile);
+                if let CameraSource::Device(Some(id)) = &source { self.settings.cam_id = Some(id.clone()); }
+                self.save_settings();
+                let remembered = self.settings.cam_id.clone();
+                self.camera_cmd(CamCmd::Start { source, profile, remembered }, true);
+            }
+            Command::StopCamera => self.camera_cmd(CamCmd::Stop, false),
+            Command::SwitchCamera(source) => {
+                if let CameraSource::Device(Some(id)) = &source { self.settings.cam_id = Some(id.clone()); self.save_settings(); }
+                self.camera_cmd(CamCmd::Switch(source), true);
+            }
+            Command::SetCameraProfile(p) => { self.settings.cam_profile = Some(p); self.save_settings(); self.camera_cmd(CamCmd::Profile(p), false); }
+            Command::TestCameraEnd => self.camera_cmd(CamCmd::TestEnd, false),
             Command::Shortcut { shortcut, down } => self.on_shortcut(shortcut, down),
             Command::RebindShortcuts => { if let Some(c) = &self.sc_ctl { let _ = c.send(shortcuts::Ctl::Rebind); } }
             Command::TestGame(g) => match g {
@@ -619,11 +686,23 @@ impl Actor {
         if needs_call && self.session.is_none() { self.fail(CallError::new(Kind::Screen, "Join the call first.")); return; }
         if self.share.is_none() {
             let (tx, rt) = (self.tx.clone(), tokio::runtime::Handle::current());
-            let h = share::spawn(&rt, Arc::new(move |r| { let _ = tx.send(Msg::Share(r)); }));
+            let h = share::spawn(&rt, Arc::new(move |r| { let _ = tx.send(Msg::Share(r)); }), self.opts.frames.clone().map(Preview::new));
             if let Some(s) = &self.session { h.send(ShareCmd::Session(Some(Sess { room: s.room.clone(), book: s.book.clone() }))); }
             self.share = Some(h);
         }
         if let Some(h) = &self.share { h.send(c); }
+    }
+
+    /// The camera task is made on first use. Starting needs a call.
+    fn camera_cmd(&mut self, c: CamCmd, needs_call: bool) {
+        if needs_call && self.session.is_none() { self.fail(CallError::new(Kind::Camera, "Join the call first.")); return; }
+        if self.camera.is_none() {
+            let (tx, rt) = (self.tx.clone(), tokio::runtime::Handle::current());
+            let h = camera::spawn(&rt, Arc::new(move |r| { let _ = tx.send(Msg::Camera(r)); }), self.opts.frames.clone().map(Preview::new));
+            if let Some(s) = &self.session { h.send(CamCmd::Session(Some(Sess { room: s.room.clone(), book: s.book.clone() }))); }
+            self.camera = Some(h);
+        }
+        if let Some(h) = &self.camera { h.send(c); }
     }
 
     fn on_share_report(&mut self, r: Report) {
@@ -776,6 +855,7 @@ impl Actor {
         self.rejoin_started = None;
         self.teardown();
         if let Some(h) = &self.share { h.send(ShareCmd::Stop); h.send(ShareCmd::AudioStop); }
+        if let Some(h) = &self.camera { h.send(CamCmd::Stop); }
         self.gid = None;
         self.reset();
         self.muted = false; self.deafened = false; self.ptt_held = false;
@@ -786,6 +866,7 @@ impl Actor {
     fn teardown(&mut self) {
         self.gate.close();
         if let Some(h) = &self.share { h.send(ShareCmd::Session(None)); }
+        if let Some(h) = &self.camera { h.send(CamCmd::Session(None)); }
         self.speak_due = None; self.speaking_sent = None;
         let mic = self.mic.clone();
         let old = self.session.take().map(|s| (s.room, s.gen));
@@ -892,6 +973,7 @@ impl Actor {
         let book = Arc::new(Mutex::new(book));
         self.session = Some(Session { room: room.clone(), book: book.clone(), gen });
         if let Some(h) = &self.share { h.send(ShareCmd::Session(Some(Sess { room: room.clone(), book: book.clone() }))); }
+        if let Some(h) = &self.camera { h.send(CamCmd::Session(Some(Sess { room: room.clone(), book: book.clone() }))); }
         self.phase = "connected";
         self.reconnecting_since = None;
         self.media.reset();
@@ -1028,6 +1110,7 @@ impl Actor {
                 if review::verdict(self.members.contains_key(&id), publication.encryption_type() != EncryptionType::None, self.trust_all).is_some() { publication.set_subscribed(false); return; }
                 self.rekey(&id);
                 let key = format!("{id}/{}", publication.sid());
+                let track_v = match &track { RemoteTrack::Video(v) => Some(v.clone()), _ => None };
                 let audio = match track {
                     RemoteTrack::Audio(a) => {
                         if self.deafened { a.disable(); }
@@ -1040,7 +1123,12 @@ impl Actor {
                     }
                     RemoteTrack::Video(_) => None,
                 };
-                self.tracks.insert(key, TrackInfo { identity: id, source: publication.source(), audio });
+                // a camera or a screen: read it into the window's tile (the track's sid is the tile's id)
+                let sink = match (&track_v, &self.opts.frames) {
+                    (Some(v), Some(f)) => Some(Sink::start(f.clone(), publication.sid().to_string(), v.clone())),
+                    _ => None,
+                };
+                self.tracks.insert(key, TrackInfo { identity: id, source: publication.source(), audio, sink });
                 self.dirty = true;
             }
             RoomEvent::TrackUnsubscribed { publication, participant, .. } => { self.tracks.remove(&format!("{}/{}", participant.identity(), publication.sid())); self.dirty = true; }
@@ -1082,7 +1170,12 @@ impl Actor {
                 }
             }
             RoomEvent::Disconnected { reason } => { self.log(format!("disconnected: {reason:?}")); self.auto_rejoin("the session ended"); }
-            RoomEvent::TrackMuted { .. } | RoomEvent::TrackUnmuted { .. } | RoomEvent::ParticipantAttributesChanged { .. } => self.dirty = true,
+            RoomEvent::TrackMuted { participant, publication } => {
+                // a camera switched off: its last picture must not show when it comes back
+                if let (Participant::Remote(_), Some(f)) = (&participant, &self.opts.frames) { f.clear(&publication.sid().to_string()); }
+                self.dirty = true;
+            }
+            RoomEvent::TrackUnmuted { .. } | RoomEvent::ParticipantAttributesChanged { .. } => self.dirty = true,
             _ => {}
         }
     }
@@ -1203,6 +1296,20 @@ impl Actor {
             enc = Encryption { active: s.room.e2ee_manager().enabled(), epoch: b.epoch, key_index: b.epoch.map(|_| b.index), rotations: b.rotations, devices: b.devices(), wipes: b.wipes_done,
                 sender_index: s.room.e2ee_manager().frame_cryptors().iter().filter(|((id, _), _)| id.as_str() == self.me).map(|(_, fc)| fc.key_index()).collect() };
         }
+        // your own live pictures (a camera switched off is muted and has no tile) and the remote ones that are switched off
+        let mut local_video = vec![];
+        if self.session.is_some() {
+            if self.camera_view.state == "live" { if let Some(sid) = &self.camera_view.sid { local_video.push(format!("{}/{}:Camera", self.me, sid)); } }
+            if self.share_view.state == "live" { if let Some(sid) = &self.share_view.sid { local_video.push(format!("{}/{}:Screenshare", self.me, sid)); } }
+        }
+        let mut muted_video = vec![];
+        if let Some(s) = &self.session {
+            for (id, rp) in s.room.remote_participants() {
+                for p in rp.track_publications().values() {
+                    if matches!(p.source(), TrackSource::Camera | TrackSource::Screenshare) && p.is_muted() { muted_video.push(format!("{id}/{}", p.sid())); }
+                }
+            }
+        }
         Snapshot {
             phase: self.phase.into(), error: self.error.as_ref().map(|(e, _)| ErrorView { kind: e.kind.as_str().into(), msg: e.msg.clone() }), gid: self.gid.clone(), room_name: self.room_name.clone(),
             muted: self.muted, game_muted: self.game_muted, deafened: self.deafened, peers, encryption: enc, blocked: self.blocked.values().cloned().collect(),
@@ -1212,6 +1319,7 @@ impl Actor {
             echo_cancellation: self.settings.processing.echo_cancellation, noise_suppression: self.settings.processing.noise_suppression,
             auto_gain_control: self.settings.processing.auto_gain_control, push_to_talk: self.settings.push_to_talk, ptt_held: self.ptt_held,
             share: self.share_view.clone(), share_apps: self.share_apps.clone(),
+            cameras: self.cameras.clone(), camera: self.camera_view.clone(), cam_id: self.settings.cam_id.clone(), local_video, muted_video,
             global_shortcuts: self.sc_status.as_str().into(), global_shortcuts_note: self.sc_note.clone(), shortcuts: self.sc_infos.clone(),
         }
     }

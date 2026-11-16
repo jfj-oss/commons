@@ -29,7 +29,11 @@ pub fn run() {
     if let Err(e) = core.call("unlock", serde_json::json!({"passphrase": pass})) { eprintln!("unlock: {e}"); std::process::exit(1); }
     let settings_path = core.dir.join("gpui-call-prefs.json");
     let settings = CallSettings::load(&settings_path);
-    let engine = Arc::new(CallEngine::start(Arc::new(Linked(core.clone())), Options { audio: AudioMode::from_env(), settings, settings_path: Some(settings_path), shortcuts: headless_shortcuts() }));
+    // the pictures go to a `Frames` nobody draws; the tests read its counters (`frames` on the test port)
+    let (frames, mut wake) = crate::video::Frames::new();
+    let f2 = frames.clone();
+    let engine = Arc::new(CallEngine::start(Arc::new(Linked(core.clone())), Options { audio: AudioMode::from_env(), settings, settings_path: Some(settings_path), shortcuts: headless_shortcuts(), frames: Some(frames) }));
+    engine.rt.spawn(async move { use futures::StreamExt; while wake.next().await.is_some() { f2.ack(); } });
     let rt = engine.rt.clone();
     let e2 = engine.clone();
     let me = core.call("snapshot", serde_json::json!({})).ok().map(|s| s["me"].clone()).unwrap_or_default();

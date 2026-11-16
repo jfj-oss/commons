@@ -9,9 +9,13 @@
 //!   {"cmd":"share_switch","source","w","h","speed"} {"cmd":"share_profile","profile"} {"cmd":"share_end"} {"cmd":"share_stats"}
 //!   {"cmd":"share_apps"} {"cmd":"share_audio","stream"} {"cmd":"share_audio_stop"}
 //!   {"cmd":"ptt_mode","on"} {"cmd":"ptt","down"} {"cmd":"shortcut","id","down"} {"cmd":"rebind"} {"cmd":"plout","identity","ms"} {"cmd":"mic_options"}
+//!   {"cmd":"cameras"} {"cmd":"camera","source":"test|device","id","profile":"720p|1080p"} {"cmd":"camera_stop"} {"cmd":"camera_switch","source","id"}
+//!   {"cmd":"camera_profile","profile"} {"cmd":"camera_end"}
+//!   {"cmd":"frames"} (per tile: count, w, h, and frames per second over the last `ms`) {"cmd":"frames_hide","sid","on"}
 //!   {"cmd":"core","method","args"} {"cmd":"call_active"} {"cmd":"quit"}
 use super::audio::Processing;
 use super::capture::{ShareSource, TestPattern};
+use super::camera::{CamProfile, CameraSource};
 use super::engine::{CallEngine, Command};
 use super::share::Profile;
 use serde_json::{json, Value};
@@ -95,6 +99,35 @@ async fn handle(e: &Arc<CallEngine>, c: &Value, quit: &tokio::sync::mpsc::Unboun
         }
         "share_audio" => { e.send(Command::StartShareAudio { stream: c["stream"].as_u64().unwrap_or(0) as u32 }); json!({"ok": true}) }
         "share_audio_stop" => { e.send(Command::StopShareAudio); json!({"ok": true}) }
+        "cameras" => {
+            e.send(Command::ListCameras);
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            json!({"cameras": e.snapshot().cameras})
+        }
+        "camera" => { e.send(Command::StartCamera { source: cam_source(c), profile: CamProfile::parse(c["profile"].as_str().unwrap_or("")) }); json!({"ok": true}) }
+        "camera_stop" => { e.send(Command::StopCamera); json!({"ok": true}) }
+        "camera_switch" => { e.send(Command::SwitchCamera(cam_source(c))); json!({"ok": true}) }
+        "camera_profile" => {
+            let Some(p) = CamProfile::parse(c["profile"].as_str().unwrap_or("")) else { return json!({"error": "unknown profile"}) };
+            e.send(Command::SetCameraProfile(p)); json!({"ok": true})
+        }
+        "camera_end" => { e.send(Command::TestCameraEnd); json!({"ok": true}) }
+        "frames" => match &e.frames {
+            None => json!({"error": "no frames sink"}),
+            Some(f) => {
+                // counters now and `ms` later: the difference is the rate the window would have seen
+                let ms = c["ms"].as_u64().unwrap_or(0);
+                let a = f.stats();
+                if ms > 0 { tokio::time::sleep(std::time::Duration::from_millis(ms)).await; }
+                let b = f.stats();
+                let tiles: serde_json::Map<String, Value> = b.iter().map(|(k, v)| {
+                    let before = a.get(k).map(|x| x.count).unwrap_or(0);
+                    (k.clone(), json!({"count": v.count, "w": v.w, "h": v.h, "fps": if ms > 0 { (v.count - before.min(v.count)) as f64 * 1000. / ms as f64 } else { 0. }, "hidden": f.is_hidden(k)}))
+                }).collect();
+                json!({"tiles": tiles})
+            }
+        },
+        "frames_hide" => { if let Some(f) = &e.frames { f.set_hidden(&s("sid"), on); } json!({"ok": true}) }
         "snapshot" => serde_json::to_value(e.snapshot()).unwrap_or(Value::Null),
         "hear" => e.taps.hear(&s("identity"), c["hz"].as_f64().unwrap_or(500.), c["ms"].as_u64().unwrap_or(1500)).await,
         "plout" => e.plout(&s("identity"), c["ms"].as_u64().unwrap_or(1500)).await,
@@ -114,6 +147,10 @@ fn source(c: &Value) -> ShareSource {
     if c["source"].as_str() == Some("portal") { return ShareSource::Portal; }
     let d = TestPattern::default();
     ShareSource::Test(TestPattern { width: c["w"].as_u64().map(|n| n as u32).unwrap_or(d.width), height: c["h"].as_u64().map(|n| n as u32).unwrap_or(d.height), speed: c["speed"].as_u64().map(|n| n as u32).unwrap_or(d.speed) })
+}
+
+fn cam_source(c: &Value) -> CameraSource {
+    if c["source"].as_str() == Some("test") { CameraSource::Test } else { CameraSource::Device(c["id"].as_str().map(String::from)) }
 }
 
 async fn devices(e: &Arc<CallEngine>) -> Value {

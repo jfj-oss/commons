@@ -41,6 +41,7 @@
 use super::appaudio::{self, AppStream};
 use super::capture::{self, Capture, Item, Limits, ShareSource};
 use super::keys::KeyBook;
+use super::videoin::Preview;
 use livekit::e2ee::EncryptionType;
 use livekit::options::{AudioEncoding, TrackPublishOptions, VideoCodec, VideoEncoding, VideoPreset};
 use livekit::prelude::*;
@@ -196,9 +197,9 @@ impl ShareHandle {
     pub fn send(&self, c: ShareCmd) { let _ = self.tx.send(c); }
 }
 
-pub fn spawn(rt: &tokio::runtime::Handle, report: Arc<dyn Fn(Report) + Send + Sync>) -> ShareHandle {
+pub fn spawn(rt: &tokio::runtime::Handle, report: Arc<dyn Fn(Report) + Send + Sync>, preview: Option<Preview>) -> ShareHandle {
     let (tx, rx) = unbounded_channel();
-    let task = Task::new(tx.clone(), report);
+    let task = Task::new(tx.clone(), report, preview);
     rt.spawn(task.run(rx));
     ShareHandle { tx }
 }
@@ -219,6 +220,8 @@ struct AudioShare {
 
 struct Task {
     me: UnboundedSender<ShareCmd>,
+    /// Where the picture being sent is also shown (the window's tile of your own screen share), if anywhere.
+    preview: Option<Preview>,
     report: Arc<dyn Fn(Report) + Send + Sync>,
     sess: Option<Sess>,
     profile: Profile,
@@ -245,8 +248,8 @@ async fn next(c: Option<&mut Capture>) -> Option<Item> {
 fn ts() -> i64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as i64).unwrap_or(0) }
 
 impl Task {
-    fn new(me: UnboundedSender<ShareCmd>, report: Arc<dyn Fn(Report) + Send + Sync>) -> Task {
-        Task { me, report, sess: None, profile: Profile::Text, source: None, cap: None, pending: None, vid: None, resize: None, audio: None, audio_gen: 0,
+    fn new(me: UnboundedSender<ShareCmd>, report: Arc<dyn Fn(Report) + Send + Sync>, preview: Option<Preview>) -> Task {
+        Task { me, preview, report, sess: None, profile: Profile::Text, source: None, cap: None, pending: None, vid: None, resize: None, audio: None, audio_gen: 0,
             view: ShareView { state: "idle".into(), ..Default::default() }, last_sent: None, sec_start: Instant::now(), sec_frames: 0, ended_seq: 0, audio_check: Instant::now() }
     }
 
@@ -351,6 +354,7 @@ impl Task {
     /// The engine built (or lost) a session: what was published belongs to the old room, so it is published again from the
     /// still-running capture and tap.
     async fn on_session(&mut self, s: Option<Sess>) {
+        if let (Some(v), Some(p)) = (&self.vid, &self.preview) { p.forget(&v.publication.sid().to_string()); }
         self.vid = None;   // the old room is gone with its tracks
         self.resize = None;
         if let Some(a) = &mut self.audio { a.publication = None; }
@@ -395,7 +399,7 @@ impl Task {
         }
     }
 
-    async fn on_frame(&mut self, b: livekit::webrtc::video_frame::I420Buffer) {
+    async fn on_frame(&mut self, mut b: livekit::webrtc::video_frame::I420Buffer) {
         let (w, h) = (b.width(), b.height());
         self.sec_frames += 1;
         self.view.frames += 1;
@@ -417,6 +421,7 @@ impl Task {
         }
         self.resize = None;
         if let Some(v) = &self.vid {
+            if let Some(p) = &self.preview { p.push(&v.publication.sid().to_string(), &mut b); }
             let mut f = VideoFrame::new(VideoRotation::VideoRotation0, b);
             f.timestamp_us = ts();
             v.src.capture_frame(&f);
@@ -442,7 +447,10 @@ impl Task {
     }
 
     async fn unpublish_video(&mut self) {
-        if let (Some(v), Some(s)) = (self.vid.take(), self.sess.as_ref()) { let _ = s.room.local_participant().unpublish_track(&v.publication.sid()).await; }
+        if let Some(v) = self.vid.take() {
+            if let Some(p) = &self.preview { p.forget(&v.publication.sid().to_string()); }
+            if let Some(s) = self.sess.as_ref() { let _ = s.room.local_participant().unpublish_track(&v.publication.sid()).await; }
+        }
         self.vid = None; self.resize = None; self.view.sid = None; self.view.encrypted = false;
     }
 
