@@ -35,7 +35,7 @@ fn code(k: &str) -> Option<(u32, bool)> {
 
 fn main() {
     let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
-    assert!(display == "wayland-megatest" || display == "wayland-uishot", "fakekeys only talks to a private test compositor (WAYLAND_DISPLAY=wayland-megatest or wayland-uishot), not {display:?}");
+    assert!(display == "wayland-megatest" || display == "wayland-uishot" || display == "wayland-updshot", "fakekeys only talks to a private test compositor (WAYLAND_DISPLAY=wayland-megatest, wayland-uishot or wayland-updshot), not {display:?}");
     let conn = Connection::connect_to_env().expect("compositor");
     let mut q = conn.new_event_queue::<S>();
     let qh = q.handle();

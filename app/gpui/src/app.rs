@@ -68,6 +68,8 @@ pub struct Mega {
     pub dm_marks: (String, usize),
     /// A backdrop picture per direct-conversation row on the home screen.
     pub dm_caches: std::collections::HashMap<String, crate::backdrop::Shared>,
+    /// The updater's state and cards (updateui.rs).
+    pub upd: crate::updateui::UpdateUi,
     _tasks: Vec<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -93,8 +95,9 @@ impl Mega {
         subs.push(cx.observe_window_activation(window, |this, window, cx| this.beat(window, cx)));
         let prefs = Prefs::load(&core.dir);
         let call = crate::callui::CallUi::new(prefs.deck_w, window, cx);
+        let upd = crate::updateui::UpdateUi::new(&core.dir);
         let mut this = Mega {
-            call, colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), dm_caches: Default::default(),
+            call, upd, colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), dm_caches: Default::default(),
             level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., waves: vec![], bd_clock: 0., bd_cache: Default::default(), holes: Default::default(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
@@ -125,6 +128,7 @@ impl Mega {
             if this.update_in(cx, |this, window, cx| this.power_tick(window, cx)).is_err() { break; }
             cx.background_executor().timer(Duration::from_secs(60)).await;
         }));
+        this._tasks.push(crate::updateui::task(window, cx));
         this
     }
 

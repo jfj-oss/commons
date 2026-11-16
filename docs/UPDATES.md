@@ -208,3 +208,71 @@ W=~/data/agent-tmp/commons-update/e2e; mkdir -p $W/keys
 for k in test wrong; do tools/node_modules/.bin/tauri signer generate --ci -w $W/keys/$k.key >/dev/null; : > $W/keys/$k.key.password; chmod 600 $W/keys/$k.key*; done
 COMMONS_OUT=$W/n COMMONS_TAURI_CONFIG="$(jq -cn --arg k "$(cat $W/keys/test.key.pub)" '{version:"0.1.901",plugins:{updater:{pubkey:$k}}}')" scripts/build-appimage-portable.sh
 ```
+
+## The native app (GPUI)
+
+The native desktop app (`app/gpui`, `mega-gpui`) updates itself from the same feed, with the same key and the same rules,
+but through its own entry and its own code (`app/gpui/src/update.rs`, the window's side in `updateui.rs`). The other apps
+never see it.
+
+| System | Feed platform key | File (in `dist/update/`) |
+| --- | --- | --- |
+| Linux x86_64 | `linux-gpui-x86_64` | `Megatron_<version>_gpui-x86_64`, the `mega-gpui` executable |
+| macOS Apple silicon | `darwin-gpui-aarch64` | `Megatron_<version>_gpui-aarch64.app.tar.gz`, one `Megatron.app` |
+
+(Linux aarch64 and macOS Intel have keys too, `linux-gpui-aarch64` and `darwin-gpui-x86_64`, for when those are built.
+Windows has no native build yet and does not check.)
+
+**Checks.** The feed is read 15 seconds after unlocking and then every 4 hours, from the account's own relay by the same
+code as the Tauri app (`commons_core::update::fetch_manifest`: https or loopback http, no redirects, every address inside
+that relay). Nothing is read, offered or restarted during a call (`CallUi::in_call`, and the core's `call_active` for a
+call handed to the browser). The version the app compares is the one it was built as (`MEGA_GPUI_VERSION` at build time).
+
+**Signature.** The download is checked against the minisign public key of the Tauri updater: `update.rs` reads
+`plugins.updater.pubkey` from `app/src-tauri/tauri.conf.json` when it is built, so there is no second key to keep. The
+signature must also have been made for exactly the version the feed announces (the `version:` in its trusted comment), so
+a genuine old file cannot be passed off as a new one, and a file that fails any of it is dropped before a byte of it is
+written next to the app. Nothing unverified is ever run. (`MEGA_GPUI_UPDATE_PUBKEY` at build time swaps the key, for the
+tests' throwaway key; it is not read at run time.)
+
+**Installing.**
+
+- Linux: the new executable is written next to the running one (`.mega-gpui.update-new`, synced, mode 755), the running
+  one is kept as `mega-gpui.previous` (a hard link, so nothing moves), and one `rename` puts the new file in place. The
+  running process keeps its old file open and goes on unharmed. The folder has to be writable.
+- macOS: the `.app.tar.gz` is unpacked next to `Megatron.app` (files, folders and links that stay inside the app; any
+  other entry refuses the whole update), sealed again ad hoc (`codesign --force --deep --sign -`, then `--verify`; the
+  build is not Developer ID signed, so it is the same right-click, Open the first time as the other macOS downloads), and
+  swapped for the old bundle with two renames. The old one is kept as `Megatron.previous.app`. Not from inside the dmg.
+
+The person is then told the version is installed and offered **Restart now**. "Restart" waits for the end of a call and
+is never done by itself; otherwise the new version simply runs the next time mega is opened.
+
+**Rollback.** An installed version is counted at each start until it has stayed up 20 seconds. Three starts in a row that
+never did: the previous one is put back (one rename of the `.previous` copy), started in its place, and Home
+says once that the new version did not start well. The state is `gpui-update.json` beside `gpui-prefs.json`.
+
+**What's new.** After an install, the feed's `notes` (the text `publish-update.sh --notes` put there) are kept in that file;
+the first launch of the new version shows them as a card on Home, with Dismiss. They are shown only if the running
+version is the one the notes are for, and only once.
+
+**Publishing the native build.**
+
+```sh
+scripts/publish-update.sh minor --notes "..."      # the Tauri apps first: this makes the version and the notes
+MEGA_GPUI_VERSION=0.4.0 cargo build --release -p mega-gpui     # on the oldest system you support
+scripts/publish-gpui.sh --version 0.4.0 --binary target/release/mega-gpui --dry-run   # look first
+scripts/publish-gpui.sh --version 0.4.0 --binary target/release/mega-gpui              # then for real
+# on the Mac: scripts/publish-gpui.sh --version 0.4.0 --app path/to/Megatron.app
+```
+
+`publish-gpui.sh` refuses unless `latest.json` already announces exactly that version (a feed holding only a native
+entry would take the other apps' updates away), signs with the same updater key as `publish-update.sh`, checks the
+signature carries the key the apps trust, copies the file, and adds only its own platform entry, last. `--dry-run` signs
+and copies nothing and does not read the key.
+
+**Tests.** `cargo test -p mega-gpui --bin mega-gpui update::` (version order, platform keys, entry choice, signature
+accept and reject with a throwaway key, atomic replace and rollback of a binary and of a bundle, hostile archives, state
+and start counting). `tools/gpui-update-test.sh` adds the end-to-end run against a private relay (`COMMONS_TEST_PORT_OFFSET`
+1400+): `publish-gpui.sh` with a throwaway key into a scratch `dist/`, a local `commons-relay` serving it, and the check,
+download, verification and install against it.
