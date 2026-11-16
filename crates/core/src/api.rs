@@ -37,7 +37,9 @@ pub struct App {
     windows: Mutex<HashMap<String, std::collections::VecDeque<(String, Vec<(String, u64)>)>>>,
     /// Per `messages` key, the room revision and typing list the last full answer was built from, and that answer's
     /// hash. An unchanged room (same revision, same typing) is answered from this without rebuilding the window.
-    msg_cache: Mutex<HashMap<String, (u64, Vec<String>, String)>>,
+    /// The `Instant` bounds how long a remembered answer is trusted (MSG_CACHE_TRUST): a change that forgot to bump the
+    /// room's revision can then show late, never forever.
+    msg_cache: Mutex<HashMap<String, (u64, Vec<String>, String, Instant)>>,
     files: Mutex<Vec<(String, Arc<Vec<u8>>)>>,
     /// loopback server for "open this call in my browser" (started on first use). Desktops only: a phone has no
     /// second browser to hand a call to.
@@ -559,7 +561,7 @@ impl App {
                 let mut stamp = None;
                 let v = self.read(key.clone(), |c| { stamp = Some((c.chan_rev(&gid), c.typing_now(&gid))); messages(c, &gid, limit, &around) })?;
                 let hash = format!("{:016x}", hash_of(&v));
-                if let Some((rev, typing)) = stamp { self.msg_cache.lock().unwrap().insert(key.clone(), (rev, typing, hash.clone())); }
+                if let Some((rev, typing)) = stamp { self.msg_cache.lock().unwrap().insert(key.clone(), (rev, typing, hash.clone(), Instant::now())); }
                 self.messages_answer(key, v, hash, &a)
             }
             // The page calls this only while the room is in view, so it is also what sends a read receipt (receipts.rs), unless the
@@ -1050,6 +1052,8 @@ fn same_or(r: R, a: &Value) -> R {
 /// Windows remembered per `messages` key, and keys remembered at all (the open room, and the cards' one look at the
 /// newest line of every room, make a key per room and window size).
 const WINDOWS_PER_KEY: usize = 4;
+/// A remembered `messages` answer is rebuilt at least this often even when the room's revision says nothing changed.
+const MSG_CACHE_TRUST: std::time::Duration = std::time::Duration::from_secs(10);
 const WINDOW_KEYS: usize = 96;
 
 impl App {
@@ -1070,8 +1074,8 @@ impl App {
     /// Everything else (a change, a caller holding some other answer, no remembered answer) falls through to a rebuild.
     fn messages_same(&self, key: &str, gid: &str, a: &Value) -> Option<Value> {
         let (rev, typing) = self.chan_stamp(gid)?;
-        let (c_rev, c_typing, hash) = self.msg_cache.lock().unwrap().get(key).cloned()?;
-        if c_rev != rev || c_typing != typing { return None; }
+        let (c_rev, c_typing, hash, built) = self.msg_cache.lock().unwrap().get(key).cloned()?;
+        if c_rev != rev || c_typing != typing || built.elapsed() > MSG_CACHE_TRUST { return None; }
         if a["if"].as_str() != Some(hash.as_str()) { return None; }
         Some(json!({"same": true, "hash": hash}))
     }
