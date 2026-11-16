@@ -167,7 +167,7 @@ mod tests {
     #[::core::prelude::v1::test]
     fn a_wave_organises_the_speckle_and_then_it_relaxes() {
         let wv = [Wave { x: 0.1, y: 0.9, t0: 0., s: 1. }];
-        let (o_mid, _) = order_at(&wv, 2.0, 0.1 + 0.16 * 2.0 * 1.5, 0.9, 1.5);
+        let (o_mid, _) = order_at(&wv, 2.0, 0.1 + 0.16 * 2.0, 0.9, 1.5);
         assert!(o_mid > 0.3, "the front is organised: {o_mid}");
         let (o_far, _) = order_at(&wv, 2.0, 0.99, 0.0, 1.5);
         assert!(o_far < 0.05, "far ahead of the front nothing yet: {o_far}");

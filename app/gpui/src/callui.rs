@@ -57,10 +57,10 @@ pub struct CallUi {
     pub live_busy: bool,
     pub asked: bool,
     pub ptt_key: String,
-    pub changing_key: bool,
     /// The call's pictures have their own window (the main window shows no column meanwhile).
     pub popped: bool,
     pub mini: Option<AnyWindowHandle>,
+    pub pop_handle: Option<AnyWindowHandle>,
     pub error_shown: Option<String>,
     pub _tasks: Vec<Task<()>>,
     pub _subs: Vec<Subscription>,
@@ -81,13 +81,12 @@ impl CallUi {
         });
         CallUi {
             engine: None, snap: Default::default(), settings_open: false, menu: None, vol, frames, shown: Shown::default(), fake_alive: Arc::new(AtomicBool::new(false)), tiles: vec![], deck: Deck::default(),
-            deck_w, resize: None, grip: cx.focus_handle(), live_since: 0, live_ready: false, live_busy: false, asked: false, ptt_key: "`".into(), changing_key: false, popped: false, mini: None, error_shown: None,
+            deck_w, resize: None, grip: cx.focus_handle(), live_since: 0, live_ready: false, live_busy: false, asked: false, ptt_key: "`".into(), popped: false, mini: None, pop_handle: None, error_shown: None,
             _tasks: vec![task], _subs: vec![sub],
         }
     }
     pub fn in_call(&self) -> bool { matches!(self.snap.phase.as_str(), "connecting" | "connected" | "reconnecting") }
     pub fn connected(&self) -> bool { matches!(self.snap.phase.as_str(), "connected" | "reconnecting") }
-    pub fn name_of(&self, identity: &str) -> String { self.snap.peers.iter().find(|p| p.identity == identity).map(|p| p.name.clone()).unwrap_or_else(|| "someone".into()) }
     /// Accounts of the other people in the call (members only, as mega-deck.js `others`).
     pub fn others(&self) -> HashSet<String> { self.snap.peers.iter().filter(|p| !p.me && p.member).filter_map(|p| p.account.clone()).collect() }
     pub fn me_account(&self) -> String { self.snap.peers.iter().find(|p| p.me).and_then(|p| p.account.clone()).unwrap_or_default() }
@@ -168,6 +167,7 @@ impl Mega {
         self.call.fake_alive.store(false, Ordering::SeqCst);
         self.call.shown.keep_only(&[], window);
         self.call.popped = false;
+        self.call.pop_handle = None;
     }
 
     // ---- who is in the call, and the live channel (the order of the tiles) ----
@@ -180,6 +180,7 @@ impl Mega {
     }
     /// Every 700 ms while others are in the call: read their `deck.*` events, and ask once for the order.
     pub fn call_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.call.popped || self.call.mini.is_some() { self.pop_windows_check(cx); }
         let Some(gid) = self.call_gid() else { self.call.live_ready = false; return };
         let others = self.call.others();
         if others.is_empty() { return; }
@@ -439,7 +440,6 @@ impl Mega {
     }
 }
 
-pub fn ping(_d: Duration) {}
 
 // ---- automation for checks: MEGA_GPUI_UI_STEPS="join;wait=4000;settings;wait=1000;..." ----
 impl Mega {

@@ -84,7 +84,7 @@ impl Render for PopView {
 impl Mega {
     /// Opens a window for the call. It is done after the current update ends: the new window draws at once and reads this
     /// entity, which cannot be read while it is being updated.
-    fn open_pop(&mut self, kind: PopKind, title: &str, size_px: (f32, f32), mini: bool, cx: &mut Context<Self>, then: impl FnOnce(&mut Mega, AnyWindowHandle, &mut Context<Mega>) + 'static) {
+    fn open_pop(&mut self, kind: PopKind, title: &str, size_px: (f32, f32), mini: bool, cx: &mut Context<Self>, then: impl FnOnce(&mut Mega, AnyWindowHandle, Entity<PopView>, &mut Context<Mega>) + 'static) {
         let main = cx.entity();
         let title = title.to_string();
         cx.defer(move |cx| {
@@ -99,32 +99,40 @@ impl Mega {
             };
             let m2 = main.clone();
             match gpui_kit::open_window(opts, cx, move |_, cx| cx.new(|cx| PopView::new(kind, m2, cx))) {
-                Ok((h, _)) => { main.update(cx, |m, cx| then(m, h, cx)); }
+                Ok((h, view)) => { main.update(cx, |m, cx| then(m, h, view, cx)); }
                 Err(e) => eprintln!("pop-out window: {e}"),
             }
         });
     }
     pub fn pop_call(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if !self.call.in_call() || self.call.popped { return; }
-        self.open_pop(PopKind::Call, "mega · call", (980., 640.), false, cx, |m, h, cx| {
+        self.open_pop(PopKind::Call, "mega · call", (980., 640.), false, cx, |m, h, _view, cx| {
+            // the column leaves the main window until that window is closed (`call_tick` notices)
             m.call.popped = true;
-            // when that window closes the column comes back
-            let me = cx.entity().downgrade();
-            let _ = h.update(cx, |_, window, cx| { let me = me.clone(); window.on_window_should_close(cx, move |_, cx| { let _ = me.update(cx, |m, cx| { m.call.popped = false; cx.notify(); }); true }); });
+            m.call.pop_handle = Some(h);
             cx.notify();
         });
     }
     pub fn pop_tile(&mut self, sid: String, _window: &mut Window, cx: &mut Context<Self>) {
         let title = self.call.tile(&sid).map(|t| format!("mega · {}", t.name)).unwrap_or_else(|| "mega".into());
-        self.open_pop(PopKind::Tile(sid), &title, (960., 540.), false, cx, |_, _, _| {});
+        self.open_pop(PopKind::Tile(sid), &title, (960., 540.), false, cx, |_, _, _, _| {});
     }
     pub fn toggle_mini(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(h) = self.call.mini.take() { let _ = h.update(cx, |_, window, _| window.remove_window()); cx.notify(); return; }
-        self.open_pop(PopKind::Mini, "mega", (330., 64.), true, cx, |m, h, cx| {
+        self.open_pop(PopKind::Mini, "mega", (330., 64.), true, cx, |m, h, _view, cx| {
             m.call.mini = Some(h);
-            let me = cx.entity().downgrade();
-            let _ = h.update(cx, |_, window, cx| { window.on_window_should_close(cx, move |_, cx| { let _ = me.update(cx, |m, cx| { m.call.mini = None; cx.notify(); }); true }); });
             cx.notify();
         });
+    }
+}
+
+impl Mega {
+    /// A pop-out window the user closed is forgotten: the column comes back, the mini button goes off.
+    pub fn pop_windows_check(&mut self, cx: &mut Context<Self>) {
+        let open: Vec<AnyWindowHandle> = cx.windows();
+        let mut changed = false;
+        if self.call.pop_handle.is_some_and(|h| !open.contains(&h)) { self.call.pop_handle = None; self.call.popped = false; changed = true; }
+        if self.call.mini.is_some_and(|h| !open.contains(&h)) { self.call.mini = None; changed = true; }
+        if changed { cx.notify(); }
     }
 }
