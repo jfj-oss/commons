@@ -48,6 +48,11 @@ pub struct Client {
     /// ids of groups we have fully caught up on since this process started (safe to encrypt)
     pub(crate) synced: BTreeSet<String>,
     pub typing: BTreeMap<String, u64>,
+    /// Per room, a counter that rises whenever anything the `messages` window shows changes: a new message, an edit,
+    /// a reaction, a deletion, a read mark, a typing hint, a name or role, the room's status, a download's progress.
+    /// Not saved: it only has to be stable within one run, and the page asks afresh after any reload. The `messages`
+    /// RPC answers an unchanged room from this without rebuilding the window (api.rs `messages_answer`).
+    pub(crate) chan_rev: BTreeMap<String, u64>,
     /// Per room, when (ms) this device last sent a read receipt. Never saved.
     pub(crate) read_sent_at: BTreeMap<String, u64>,
     /// Live events received and not yet read by the UI, newest last. Never saved, and capped.
@@ -197,7 +202,7 @@ impl Client {
         // changed the switch. An account that chose (on or off) keeps its choice.
         if !st.share_listening_default_applied { st.share_listening_default_applied = true; if !st.share_listening_chosen { st.share_listening = true; } }
         let walls = st.walls.clone();
-        Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), wall_peer_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), read_sent_at: BTreeMap::new(), live_in: Default::default(), live_next: 0, live: Default::default(), ring_in: Default::default(), ring_next: 0, ring_seen: BTreeMap::new(), ring_rate: BTreeMap::new(), ring_ends: BTreeMap::new(), ring_sent: BTreeMap::new(), direct_seen: BTreeMap::new(), direct_rate: BTreeMap::new(), direct_joined: Default::default(), direct_out: vec![], history_hold_until: 0, history_chunk_bytes: crate::history::CHUNK_PLAIN,
+        Client { walls, walls_dirty: false, walls_flushed: 0, wall_rev: 1, wall_snap_seen: BTreeMap::new(), wall_peer_seen: BTreeMap::new(), dir: dir.into(), vault, st, prov, api: Api { t }, synced: BTreeSet::new(), typing: BTreeMap::new(), chan_rev: BTreeMap::new(), read_sent_at: BTreeMap::new(), live_in: Default::default(), live_next: 0, live: Default::default(), ring_in: Default::default(), ring_next: 0, ring_seen: BTreeMap::new(), ring_rate: BTreeMap::new(), ring_ends: BTreeMap::new(), ring_sent: BTreeMap::new(), direct_seen: BTreeMap::new(), direct_rate: BTreeMap::new(), direct_joined: Default::default(), direct_out: vec![], history_hold_until: 0, history_chunk_bytes: crate::history::CHUNK_PLAIN,
             #[cfg(feature = "test-hooks")]
             debug_offers: vec![],
             live_out: BTreeMap::new(), live_sent: BTreeMap::new(), live_rate: BTreeMap::new(), applied: BTreeSet::new(), acl_delay_secs: 120, last_saved: [0; 32], activity: 0, last_dir_check: HashMap::new(),
@@ -324,6 +329,24 @@ impl Client {
     pub fn has_identity(&self) -> bool { self.st.cert.is_some() }
     pub fn my_account(&self) -> String { self.st.cert.as_ref().map(|c| c.account.clone()).unwrap_or_default() }
     pub fn my_device(&self) -> String { self.st.cert.as_ref().map(|c| c.device.clone()).unwrap_or_default() }
+
+    /// The room's message revision: how many times anything the `messages` window shows has changed. A cached answer
+    /// carrying the same revision is still the state of now.
+    pub(crate) fn chan_rev(&self, gid: &str) -> u64 { self.chan_rev.get(gid).copied().unwrap_or(0) }
+    pub(crate) fn bump_chan(&mut self, gid: &str) {
+        let v = self.chan_rev.entry(gid.to_string()).or_insert(0);
+        *v = v.wrapping_add(1);
+    }
+    /// Names and roles show in every room of a community: a change to them bumps every channel there, not just one.
+    pub(crate) fn bump_comm_chans(&mut self, cid: &str) {
+        let gids: Vec<String> = self.st.groups.values().filter(|g| g.community == cid && g.kind == Kind::Channel).map(|g| g.gid.clone()).collect();
+        for g in gids { self.bump_chan(&g); }
+    }
+    /// My own name (and every profile name) shows in every room I can see: a change bumps every channel.
+    pub(crate) fn bump_all_chans(&mut self) {
+        let gids: Vec<String> = self.st.groups.values().filter(|g| g.kind == Kind::Channel).map(|g| g.gid.clone()).collect();
+        for g in gids { self.bump_chan(&g); }
+    }
     pub(crate) fn dev_key(&self) -> Result<SigningKey> { Ok(SigningKey::from_bytes(&hex32(&self.st.device_secret).map_err(|_| anyhow!("no identity yet"))?)) }
     /// A consent stops counting here, whatever a community's table goes on saying.
     pub(crate) fn withdraw_consent(&mut self, sig: String) {

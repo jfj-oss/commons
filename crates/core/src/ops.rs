@@ -934,6 +934,7 @@ impl Client {
         // A member adding a device of their own needs nothing from the relay: their account is in already.
         let acl_add: Vec<String> = { let mut v: Vec<String> = plan.adds.iter().map(|(c, _)| c.account.clone()).filter(|a| !gs.accounts.contains(a)).collect(); v.sort(); v.dedup(); v };
         self.st.groups.get_mut(gid).unwrap().pending = Some(PendingCommit { msg_id: msg_id.clone(), data: b64(&data), welcome, recipients, acl_remove: plan.acl_remove.clone(), posted: false, desc: plan.desc.clone(), acl_add, handled: plan.handled.clone(), acl_demote: plan.acl_demote.clone() });
+        self.bump_chan(gid);   // the room is now "applying a change"
         self.save()?; // the staged commit and advanced key schedule hit disk before the network
         Ok(msg_id)
     }
@@ -1419,7 +1420,7 @@ impl Client {
             let taken = self.st.groups.get(&c.id).is_some_and(|g| g.accounts.iter().any(|a| *a != me && name_key(&self.display_name(a)) == name_key(name)));
             if taken { bail!("someone in {} is already called that; pick another name", c.name); }
         }
-        self.st.name = name.into(); self.st.profile_dirty = true; self.save()
+        self.st.name = name.into(); self.st.profile_dirty = true; self.bump_all_chans(); self.save()
     }
     pub fn group_status(&self, gid: &str) -> String {
         match self.st.groups.get(gid) {

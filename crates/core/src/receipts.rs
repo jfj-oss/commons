@@ -87,6 +87,7 @@ impl Client {
         }
         l.read_by.insert(acct.to_string(), upto);
         self.activity += 1;
+        self.bump_chan(gid);
     }
     /// For the page: of the rows it is about to get, which one each other member has read up to, as `message id -> names`. A
     /// place on a message that shows no row (deleted since) moves to the nearest row before it; a place above these rows is not

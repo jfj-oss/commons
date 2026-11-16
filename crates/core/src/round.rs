@@ -495,7 +495,7 @@ impl Client {
                 let me = self.my_account();
                 let tid = match &it.env { Envelope::Text { id, .. } | Envelope::File { id, .. } => Some(id.clone()), _ => None };
                 if let Some(tid) = tid {
-                    if let Some(m) = self.st.chans.get_mut(&it.gid).and_then(|l| l.msgs.iter_mut().find(|m| m.id == tid && m.sender == me)) { m.seq = resp.seq; m.status = "sent".into(); }
+                    if let Some(m) = self.st.chans.get_mut(&it.gid).and_then(|l| l.msgs.iter_mut().find(|m| m.id == tid && m.sender == me)) { m.seq = resp.seq; m.status = "sent".into(); self.bump_chan(&it.gid); }
                 }
                 self.st.outbox.iter().any(|i| i.cipher.is_some())
             }

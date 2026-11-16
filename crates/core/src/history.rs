@@ -143,7 +143,9 @@ impl Client {
             log.msgs = sent;
             let unread = unread_before.max(s.unread.min(log.msgs.len()));
             log.read_upto = log.msgs.len() - unread;
+            let changed = !new_ids.is_empty();
             for id in new_ids { Client::drain_orphans(log, &id, &s.gid); }
+            if changed { self.bump_chan(&s.gid); }
         }
         let h = self.st.history_in.as_mut().unwrap();
         h.got.insert(p.i);
