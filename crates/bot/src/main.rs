@@ -11,6 +11,7 @@ use commons_bot::bot::{AvatarOutcome, Bot, Config, Job, JobKind, SharedClient, D
 use commons_bot::gpu::{GpuGate, Pause};
 use commons_bot::llm::{DeepSeek, Ollama, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DEFAULT_OLLAMA};
 use commons_bot::search::{DuckDuckGo, SearXng, WebSearch, DEFAULT_SEARCH_URL, SEARCH_TIMEOUT};
+use commons_bot::study::{self, HttpStudy, Outcome, Runner};
 use commons_bot::studio::{HttpStudio, StudioApi, DEFAULT_STUDIO_URL};
 use commons_core::client::Client;
 use commons_core::envelope::InviteLink;
@@ -116,7 +117,7 @@ fn usage() -> ! {
         \n  MEGATRON_BOT_WALL_PERCENT (default 3), MEGATRON_BOT_WALL_DAILY (default 2 per room),\
         \n  MEGATRON_BOT_AVATAR_DAILY (1 = a new self-designed profile picture each day, default off), MEGATRON_BOT_AVATAR_HOUR (default 6),\
         \n  MEGATRON_BOT_AVATAR_ANNOUNCE (default 1: one line about it in rooms where he may join in),\
-        \n  MEGATRON_BOT_MAX_PER_MINUTE, MEGATRON_BOT_MAX_REPLY_CHARS,\n  MEGATRON_BOT_OWNER_ACCOUNT (hex id; switches on the assistant room), MEGATRON_BOT_ASSIST=0 (off), MEGATRON_BOT_ASSIST_ROOTS,\n  MEGATRON_BOT_ASSIST_UNITS, MEGATRON_BOT_ASSIST_CLAUDE, MEGATRON_BOT_RUNE_URL, MEGATRON_BOT_ASSIST_DOMAINS\n\n\
+        \n  MEGATRON_BOT_MAX_PER_MINUTE, MEGATRON_BOT_MAX_REPLY_CHARS,\n  MEGATRON_BOT_OWNER_ACCOUNT (hex id; switches on the assistant room), MEGATRON_BOT_ASSIST=0 (off), MEGATRON_BOT_ASSIST_ROOTS,\n  MEGATRON_BOT_ASSIST_UNITS, MEGATRON_BOT_ASSIST_CLAUDE, MEGATRON_BOT_RUNE_URL, MEGATRON_BOT_ASSIST_DOMAINS,\n  MEGATRON_BOT_STUDY_ROOM (room id; switches on study reminders), MEGATRON_BOT_STUDY_URL (default http://127.0.0.1:4575),\n  MEGATRON_BOT_STUDY_TOKEN_FILE (default ~/.config/homebase/study-reminders-token)\n  megatron-bot rooms                list the rooms (id and name) in a COPY of the data folder, to find the study room's id\n\n\
         In chat (owner or admin): \"@{DEFAULT_NAME} bulletin here\", \"@{DEFAULT_NAME} bulletin at 8pm\" (or 20:00), \"@{DEFAULT_NAME} stop bulletin\": \
         a daily Babylon bulletin in that room (default 09:00 local), kept in bot-state.json.");
     std::process::exit(2)
@@ -127,6 +128,7 @@ fn main() {
     let r = match args.first().map(String::as_str) {
         Some("join") => match args.get(1) { Some(link) => join(link), None => { eprintln!("Which invite? Usage: megatron-bot join <invite-link or invite password>"); std::process::exit(2) } },
         Some("run") => run(),
+        Some("rooms") => rooms(),
         // started by Claude Code itself as its permission-prompt server; never typed by hand
         Some("assist-mcp") => {
             let Some(sock) = args.get(1) else { eprintln!("assist-mcp needs a socket path"); std::process::exit(2) };
@@ -196,6 +198,19 @@ fn join(link_or_password: &str) -> Result<(), String> {
         println!("Joined. To keep it answering, start the service: packaging/megatron-bot/enable.sh, or `megatron-bot run`.");
     } else {
         println!("Not in yet. The request is saved; the next `megatron-bot run` (or the service) will keep trying and finish it.");
+    }
+    Ok(())
+}
+
+/// Lists the rooms the bot is in (id, then community and name), read from the account in MEGATRON_BOT_DATA without contacting the relay.
+/// Meant for a COPY of the data folder (`cp -r ~/.local/share/megatron-bot /tmp/x; MEGATRON_BOT_DATA=/tmp/x megatron-bot rooms`), so the
+/// running bot's folder is never opened by a second process.
+fn rooms() -> Result<(), String> {
+    let c = open_client(&data_dir())?;
+    for co in c.st.communities.values().filter(|x| !x.removed) {
+        for ch in c.channels_of(&co.id) {
+            if ch.joined { println!("{}\t{} / {}", ch.gid, co.name, ch.name); }
+        }
     }
     Ok(())
 }
@@ -296,6 +311,26 @@ fn serve(client: Client, bot: Arc<Bot>) {
                     last = now;
                 }
                 std::thread::sleep(Duration::from_secs(10));
+            }
+        });
+    }
+
+    // The owner's study reminders: off unless MEGATRON_BOT_STUDY_ROOM names a room. Once a minute: ask the planner (port 4575, the
+    // reminders-only token) what is due, post it there as one message, tell the planner it went out. See STUDY-REMINDERS.md.
+    if let Some(s) = study::settings(&home(), env_string) {
+        eprintln!("[bot] study reminders: room {}, planner {} (token file {})", s.room, s.url, if s.token_file.exists() { "found" } else { "MISSING" });
+        let shared = shared.clone();
+        std::thread::spawn(move || {
+            let mut runner = Runner::new(Box::new(HttpStudy::new(&s.url, &s.token_file)), &s.room);
+            let mut last: Option<Outcome> = None;
+            loop {
+                let out = { let mut chat = SharedClient(&shared); runner.tick(&mut chat) };
+                // A failure or a quiet room is logged once per change; a post is always logged; an idle minute never.
+                if matches!(out, Outcome::Posted) || (last.as_ref() != Some(&out) && !matches!(out, Outcome::Idle)) {
+                    eprintln!("[bot] study reminders: {out:?}");
+                }
+                last = Some(out);
+                std::thread::sleep(study::POLL_EVERY);
             }
         });
     }

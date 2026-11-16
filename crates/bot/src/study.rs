@@ -1,6 +1,5 @@
-//! Due reminders from the owner's study planner (homebase `study/`, port 4575), posted into one room.  STUB: the design and
-//! the pure parts are here and tested; the HTTP calls and the thread in `main.rs` are written but not wired in (see
-//! `STUDY-REMINDERS.md` beside the crate).  Nothing here runs unless `MEGATRON_BOT_STUDY_ROOM` is set.
+//! Due reminders from the owner's study planner (homebase `study/`, port 4575), posted into one room.  Wired into `main.rs::serve`
+//! as a once-a-minute thread (see `STUDY-REMINDERS.md` beside the crate).  Nothing here runs unless `MEGATRON_BOT_STUDY_ROOM` is set.
 //!
 //! How it works, in one paragraph.  The planner makes the schedule (a week before, two days before and the morning of each
 //! piece of graded work, with per-course mutes, all from the syllabus tables, no model).  Every minute this module asks
@@ -13,6 +12,7 @@
 //! Why a poll and not a push: the planner runs in a tight systemd sandbox with its own token, and the bot already keeps a
 //! client open to the relay.  A GET every minute from the bot is one more loopback request; a push would need the planner
 //! to hold mega keys.  Why not a file: the bot's data dir is private to it, and the planner's sandbox cannot write there.
+use crate::bot::Chat;
 use serde::Deserialize;
 use std::path::Path;
 use std::time::Duration;
@@ -137,6 +137,41 @@ pub fn poll_once(api: &dyn StudyApi, post: &mut dyn FnMut(&str) -> Result<(), St
         api.sent(&due)?;
     }
     Ok(now)
+}
+
+/// What one tick of the runner did, for the log: it is printed only when it changes, so a quiet minute prints nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outcome {
+    /// Asked, nothing was due.
+    Idle,
+    /// Posted one message (all the reminders due at that minute) and recorded them as sent.
+    Posted,
+    /// The owner switched Oracle to quiet in that room: nothing posted, nothing recorded, so they go out when it is switched back
+    /// (the planner drops them itself once they are 36 hours old).
+    Quiet,
+    /// The planner did not answer, the post failed or the record failed; tried again next tick.
+    Failed(String),
+}
+
+/// The loop's state: which room, and the planner's own clock from the last good answer.  `tick` is called every `POLL_EVERY`.
+pub struct Runner {
+    api: Box<dyn StudyApi>,
+    room: String,
+    since: String,
+}
+impl Runner {
+    pub fn new(api: Box<dyn StudyApi>, room: &str) -> Runner { Runner { api, room: room.to_string(), since: String::new() } }
+    pub fn tick(&mut self, chat: &mut dyn Chat) -> Outcome {
+        if chat.oracle_quiet(&self.room) { return Outcome::Quiet; }
+        let mut posted = false;
+        let room = self.room.clone();
+        let result = poll_once(self.api.as_ref(), &mut |text| { chat.send(&room, text, None).map(|_| posted = true) }, &self.since);
+        match result {
+            // `since` moves only when the whole round worked: a failed post or record leaves it, and the planner offers them again.
+            Ok(now) => { if !now.is_empty() { self.since = now; } if posted { Outcome::Posted } else { Outcome::Idle } }
+            Err(e) => Outcome::Failed(e),
+        }
+    }
 }
 
 #[cfg(test)]

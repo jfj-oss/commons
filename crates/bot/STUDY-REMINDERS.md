@@ -1,4 +1,4 @@
-# Study reminders through Oracle (design; the bot side is a stub)
+# Study reminders through Oracle
 
 The owner's study planner (`~/projects/homebase/study`, port 4575) keeps a schedule of due reminders: for every piece of
 graded work with a date, a week before, two days before and the morning it is due (the days and the hour are settings in the
@@ -45,19 +45,20 @@ planner (4575)                          megatron-bot (Oracle)                   
 * **The planner owns the schedule and the "sent" list.** Mutes, days and the hour live where the student sees them (the
   planner's Settings, "Reminders in mega"), and the planner's `now` (which a check can fix with `--today`) is the clock.
 
-## What is stubbed here
+## What is built
 
 * `crates/bot/src/study.rs`: the planner's answer parsed and checked, the one-message rule, the `sent` body, the settings
-  from the environment, an `HttpStudy` client for exactly the two routes (with the reminders-only token), and `poll_once`
-  (ask, post, record), with unit tests on fakes. Compiled and tested as a module of the library (`pub mod study;`), but not
-  called from `main.rs`, so the running bot is unchanged.
+  from the environment, an `HttpStudy` client for exactly the two routes (with the reminders-only token), `poll_once`
+  (ask, post, record) and `Runner` (one tick a minute: skips a room the owner made quiet without recording anything, keeps the
+  planner's clock as the next `since` only after a whole good round). `main.rs::serve` runs it on its own thread when
+  `MEGATRON_BOT_STUDY_ROOM` is set; the thread logs a post, and a failure or quiet room once per change.
+* `megatron-bot rooms` lists the room ids (and "community / room" names), to find the value for `MEGATRON_BOT_STUDY_ROOM`. Run it on a
+  COPY of the data folder so the running bot's folder is not opened twice.
+* Tests: unit tests in `study.rs`, and `tests/study.rs` (a fake planner that behaves like the real one, a throwaway relay and real
+  accounts): posted once and recorded, not reposted after a restart, stale and muted left out, wrong or missing token and a planner
+  that is down post nothing, a quiet room gets nothing and nothing is recorded.
 
-## To wire it in (not done)
+## Install (see the hand-off notes)
 
-1. (`pub mod study;` is already in `lib.rs`.)
-2. In `main.rs::serve`, after the GPU thread: if `study::settings(&home(), env_string)` is `Some`, spawn a thread that every
-   `study::POLL_EVERY` calls `study::poll_once(&api, &mut |text| SharedClient(&shared).send(&room, text, None).map(|_| ()), &since)`
-   and keeps the returned `since`; log a failure once per change, like the GPU watcher does.
-3. Respect the room's `oracle_quiet` look: when the owner has switched Oracle off in that room, skip the post and do not record it as sent.
-4. A `study_reminders_tests` integration test with a fake planner (an `httptest`-style local server, or a `StudyApi` fake) and the
-   relay test harness, like `tests/` does for Studio.
+1. Planner side: `~/.config/homebase/study-reminders-token` (mode 600, a long random string). The planner reads it on every request, no restart.
+2. Bot side: build, swap the binary, add `Environment=MEGATRON_BOT_STUDY_ROOM=<room id>` to `megatron-bot.service`, restart the service.
