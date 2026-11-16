@@ -213,6 +213,7 @@ impl Mega {
                     .child(div().relative().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).child(title.clone()).child(hole(&holes)))
                     .child(div().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(sub).child(hole(&holes))))
                 .child(div().flex_1())
+                .children(if is_dm { self.call_person_button(&gid, cx) } else { None })
                 .when(owner, |d| d.child(self.colour_picker(cx))))
             .child(div().flex_1().min_h_0().relative()
                 .child(list(self.list.clone(), cx.processor(|this, ix: usize, _, _| this.render_msg(ix))).size_full())
@@ -248,6 +249,7 @@ impl Mega {
                 let _ = e.update(cx, |this, cx| {
                     match method {
                         "presence" => { this.prefs.presence = v; this.prefs.save(); cx.notify(); }
+                        "ring_sound" => { this.prefs.sound = v; this.prefs.save(); cx.notify(); }
                         "notify_set" => this.set_setting("notify_set", json!({"show_text": v}), window, cx),
                         "set_listening_sharing" => this.set_setting(method, json!({"on": v, "rune": ""}), window, cx),
                         _ => this.set_setting(method, json!({"on": v}), window, cx),
@@ -275,6 +277,7 @@ impl Mega {
                 .child(choice("nm-men", mode == "mentions", "Mentions only").on_click(set_mode("mentions")))
                 .child(choice("nm-off", mode == "off", "Off").on_click(set_mode("off"))))
             .child(toggle("nt-text", show_text, "Show the message text in notifications", "notify_set"))
+            .child(toggle("nt-ring", self.prefs.sound, "Play a sound when someone rings", "ring_sound"))
             .child(label("privacy"))
             .child(toggle("p-typing", snap.typing_enabled, "Show others when I am writing", "set_typing_enabled"))
             .child(toggle("p-read", snap.read_receipts, "Read receipts", "set_read_receipts"))
@@ -356,7 +359,8 @@ impl Render for Mega {
                 };
                 let bar = self.call_bar(cx);
                 let pop = self.call_popover(cx);
-                base.child(v_flex().size_full().child(div().flex_1().min_h_0().w_full().child(body)).children(bar)).children(pop)
+                let rings = self.ring_overlay(cx);
+                base.child(v_flex().size_full().child(div().flex_1().min_h_0().w_full().child(body)).children(bar)).children(pop).children(rings)
             }
         }
     }

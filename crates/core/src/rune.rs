@@ -168,6 +168,51 @@ pub fn now_playing_at(base: &str, now_ms: u64) -> Result<Option<NowPlaying>, Str
     Ok(playing_zone.as_ref().and_then(|z| playing(z, now_ms)).or_else(|| paused_zone.as_ref().and_then(|z| playing(z, now_ms))))
 }
 
+/// What rune's own player shows right now, for a bar that controls it (the call bar of the desktop app): the zone that is
+/// playing (the PC speakers first), or else one that is paused, with the song's two lines. `Ok(None)` is a rune that is
+/// there with nothing in any queue.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Current { pub zone: String, pub zone_name: String, pub playing: bool, pub title: String, pub artist: String }
+
+pub fn current(base: &str) -> Result<Option<Current>, String> {
+    let base = clean_url(base)?;
+    let agent = ureq::AgentBuilder::new().timeout(TIMEOUT).build();
+    let zones: Vec<Zone> = get(&agent, &format!("{base}/api/zones"))?;
+    let mut best: Option<(u8, Current)> = None;
+    for z in zones {
+        if z.id.is_empty() { continue; }
+        let Ok(st) = get::<PlayerState>(&agent, &format!("{base}/api/player/{}", segment(&z.id))) else { continue };
+        let playing = matches!(st.status.as_str(), "playing" | "loading");
+        if !playing && st.status != "paused" { continue; }
+        let Some((title, artist)) = line_of(&st) else { continue };
+        // the PC speakers while they play, then any playing zone, then a paused one
+        let rank = match (playing, z.kind == "pc") { (true, true) => 3, (true, false) => 2, (false, true) => 1, (false, false) => 0 };
+        if best.as_ref().map_or(true, |(r, _)| rank > *r) {
+            let zone_name = if z.name.is_empty() { z.id.clone() } else { z.name.clone() };
+            best = Some((rank, Current { zone: z.id.clone(), zone_name, playing, title, artist }));
+        }
+    }
+    Ok(best.map(|(_, c)| c))
+}
+
+/// The title and artist of what a player state has up, whatever the source (a queue entry, or a radio stream's own metadata).
+fn line_of(st: &PlayerState) -> Option<(String, String)> {
+    if let Some(item) = usize::try_from(st.index).ok().and_then(|i| st.queue.get(i)) {
+        let title = tidy(&item.track.title);
+        if !title.is_empty() { return Some((title, tidy(&item.track.artists.iter().map(|a| a.name.as_str()).filter(|n| !n.trim().is_empty()).collect::<Vec<_>>().join(", ")))); }
+    }
+    let r = st.now_playing.as_ref()?;
+    let title = tidy(r.title.as_deref().unwrap_or(""));
+    if title.is_empty() { return None; }
+    Some((title, tidy(r.artist.as_deref().or(r.station.as_deref()).unwrap_or(""))))
+}
+
+/// One of the four plain controls of a zone: `pause`, `resume`, `next`, `prev`.
+pub fn control(base: &str, zone: &str, what: &str) -> Result<(), String> {
+    if !matches!(what, "pause" | "resume" | "next" | "prev") { return Err(format!("unknown control {what}")); }
+    command(base, zone, &serde_json::json!({"type": what}))
+}
+
 /// A zone id goes into one path segment. Only what needs escaping is escaped, so familiar ids stay readable.
 fn segment(s: &str) -> String {
     s.bytes().map(|b| match b {

@@ -24,7 +24,7 @@ pub struct Community {
 pub struct Snapshot {
     pub me_account: String, pub me_name: String, pub relay: String, pub net: String, pub net_detail: String,
     pub communities: Vec<Community>, pub direct: Vec<Community>,
-    pub typing_enabled: bool, pub read_receipts: bool, pub share_listening: bool, pub outbox: u64,
+    pub rune_url: String, pub typing_enabled: bool, pub read_receipts: bool, pub share_listening: bool, pub outbox: u64,
     pub problems: Vec<String>,
 }
 
@@ -50,7 +50,7 @@ impl Snapshot {
         }).collect()).unwrap_or_default();
         Snapshot {
             me_account: st(&v["me"], "account"), me_name: st(&v["me"], "name"), relay: st(v, "relay"), net: st(v, "net"), net_detail: st(v, "net_detail"),
-            communities, direct, typing_enabled: bo(v, "typing_enabled"), read_receipts: bo(v, "read_receipts"), share_listening: bo(v, "share_listening"), outbox: un(v, "outbox"),
+            communities, direct, rune_url: st(v, "rune_url"), typing_enabled: bo(v, "typing_enabled"), read_receipts: bo(v, "read_receipts"), share_listening: bo(v, "share_listening"), outbox: un(v, "outbox"),
             problems: v["problems"].as_array().map(|l| l.iter().map(|p| st(p, "text")).collect()).unwrap_or_default(),
         }
     }

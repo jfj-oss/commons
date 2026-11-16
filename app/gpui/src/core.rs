@@ -11,6 +11,10 @@ pub struct Core {
     /// The half-second look runs on one thread of its own. A look at a long room builds thousands of small JSON values;
     /// spread over a pool of threads, each thread's allocator kept its own high-water mark (measured: 745 MB with 5000
     /// rows open, see SPIKE.md). One thread keeps one.
+    /// What desktop notifications ask of the window (a click, a quick reply that was sent); read by the window's clock.
+    pub inbox: Arc<crate::notifier::Inbox>,
+    /// The notification service with quick reply, where there is one (Linux); also used for rings and missed calls.
+    pub notifier: Option<Arc<crate::notifier::Notifier>>,
     looks: std::sync::Mutex<std::sync::mpsc::Sender<Box<dyn FnOnce(&App) + Send>>>,
 }
 
@@ -36,14 +40,31 @@ impl Core {
         app.start_background();
         let hub = app.notify_hub();
         // Notes go to the system exactly as in the Tauri app. A check that must not show anything writes them to a file instead.
+        let inbox = Arc::new(crate::notifier::Inbox::default());
+        let mut notifier = None;
         match std::env::var_os("MEGA_GPUI_NOTIFY_FILE") {
             Some(f) => hub.set_sink(Arc::new(commons_core::notify::FileSink::new(PathBuf::from(f)))),
-            None => hub.set_sink(Arc::new(commons_core::notify::NativeSink::new(&hub, None, "app.commons.chat"))),
+            None => {
+                #[cfg(all(feature = "calls", target_os = "linux"))]
+                {
+                    // Linux: the freedesktop service directly, with a quick reply where the desktop offers one (notifier.rs)
+                    let weak = Arc::downgrade(&app);
+                    let reply: crate::notifier::Reply = Arc::new(move |gid, text| {
+                        let app = weak.upgrade().ok_or("closing")?;
+                        app.call("send_text", serde_json::json!({"gid": gid, "text": text})).map(|_| ())
+                    });
+                    let n = crate::notifier::Notifier::start(crate::notifier::Bus::from_env(), reply, inbox.clone());
+                    hub.set_sink(n.clone());
+                    notifier = Some(n);
+                }
+                #[cfg(not(all(feature = "calls", target_os = "linux")))]
+                hub.set_sink(Arc::new(commons_core::notify::NativeSink::new(&hub, None, "app.commons.chat")));
+            }
         }
         let (tx, rx) = std::sync::mpsc::channel::<Box<dyn FnOnce(&App) + Send>>();
         let worker = app.clone();
         std::thread::Builder::new().name("mega-look".into()).spawn(move || { while let Ok(job) = rx.recv() { job(&worker); } }).expect("thread");
-        Arc::new(Core { app, dir, looks: std::sync::Mutex::new(tx) })
+        Arc::new(Core { app, dir, inbox, notifier, looks: std::sync::Mutex::new(tx) })
     }
     pub fn call(&self, method: &str, args: Value) -> Result<Value, String> { self.app.call(method, args) }
     /// Run `f` on the look thread and hand back what it made.

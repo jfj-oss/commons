@@ -102,7 +102,7 @@ fn pill(id: impl Into<ElementId>, on: bool, text: impl Into<SharedString>) -> St
 
 impl Mega {
     // ---- the engine ----
-    fn engine(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Arc<CallEngine> {
+    pub fn engine(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Arc<CallEngine> {
         if let Some(e) = &self.call.engine { return e.clone(); }
         let settings_path = self.core.dir.join("gpui-call-prefs.json");
         let settings = CallSettings::load(&settings_path);
@@ -284,6 +284,7 @@ impl Mega {
         let mut faces = h_flex().id("faces").gap_2().items_center().flex_1().min_w_0().overflow_x_hidden();
         for p in &people { faces = faces.child(self.person_chip(p, cx)); }
         bar = bar.child(faces);
+        bar = bar.children(self.rune_segment(cx)).children(self.ring_button(cx));
         let (muted, deaf, ptt, held) = (snap.muted, snap.deafened, snap.push_to_talk, snap.ptt_held);
         if let Some(err) = snap.error.clone() { bar = bar.child(div().max_w(px(260.)).text_size(px(12.)).text_color(rgb(look::DANGER)).child(err.msg)); }
         bar = bar

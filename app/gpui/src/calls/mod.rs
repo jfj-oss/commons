@@ -18,3 +18,4 @@ pub mod capture;
 pub mod capture_linux;
 pub mod share;
 pub mod shortcuts;
+pub mod ring;

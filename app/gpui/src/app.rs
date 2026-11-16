@@ -60,6 +60,10 @@ pub struct Mega {
     pub first_frame_done: bool,
     pub auto: crate::bench::Auto,
     pub call: crate::callui::CallUi,
+    /// Rings, direct calls and the missed-call notes (ringui.rs), rune in the call bar (runebar.rs), and the test port (uitest.rs).
+    pub ring: crate::ringui::RingUi,
+    pub rune: crate::runebar::RuneUi,
+    pub uitest: Option<Arc<crate::uitest::Queue>>,
     /// The owner's colour presets are showing in the open room's header.
     pub colours_open: bool,
     /// Checks only (`dmunread=N` step): pretend this many unread messages in every direct conversation, for the core reports none yet.
@@ -94,7 +98,7 @@ impl Mega {
         let prefs = Prefs::load(&core.dir);
         let call = crate::callui::CallUi::new(prefs.deck_w, window, cx);
         let mut this = Mega {
-            call, colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), dm_caches: Default::default(),
+            call, ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), dm_caches: Default::default(),
             level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., waves: vec![], bd_clock: 0., bd_cache: Default::default(), holes: Default::default(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
@@ -114,6 +118,11 @@ impl Mega {
         this._tasks.push(cx.spawn_in(window, async move |this, cx| loop {
             cx.background_executor().timer(Duration::from_millis(700)).await;
             if this.update_in(cx, |this, window, cx| { this.presence_tick(window, cx); this.call_tick(window, cx); }).is_err() { break; }
+        }));
+        // Rings, what notifications ask of the window, rune in the call bar, the test port: a quarter-second clock.
+        this._tasks.push(cx.spawn_in(window, async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_millis(250)).await;
+            if this.update_in(cx, |this, window, cx| { this.ring_tick(window, cx); this.rune_tick(window, cx); this.uitest_tick(window, cx); }).is_err() { break; }
         }));
         // The fields move at 20 frames a second on the cards and 10 behind a chat (25 while a ripple runs), as in mega.js;
         // not at all with the battery saver on, or while the window is not the active one.
