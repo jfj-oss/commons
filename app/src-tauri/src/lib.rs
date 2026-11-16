@@ -5,14 +5,43 @@
 // mobile entry point takes the place of `main`.
 use commons_core::api::App;
 use serde_json::Value;
+use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 use tauri::Manager;
 
 #[cfg(desktop)]
 mod update;
 
+/// The page's timer-driven polls: the half-second `snapshot` and `messages`, and the live/ring polls that carry the
+/// cards' presence. Their answers (a room's whole window, the whole app snapshot) are the largest JSON this process
+/// builds, and they are built twice a second, so they run on one dedicated thread: glibc keeps a separate allocator
+/// arena per thread, and building a big answer on a fresh pool thread each time left every one of those threads at
+/// its high-water mark (~745 MB against ~320 MB when the half-second poll ran on one thread). The relay's
+/// `call_presence` stays on the pool: it blocks on a relay request and must not hold the polls up behind it.
+fn is_poll(method: &str) -> bool { matches!(method, "snapshot" | "messages" | "live_poll" | "ring_poll") }
+
+/// The one worker thread that answers the polling calls above.
+struct Poller { tx: Sender<(String, Value, Sender<Result<Value, String>>)> }
+
+impl Poller {
+    fn start(app: Arc<App>) -> Poller {
+        let (tx, rx) = channel::<(String, Value, Sender<Result<Value, String>>)>();
+        std::thread::Builder::new().name("rpc-poll".into()).spawn(move || {
+            while let Ok((method, args, reply)) = rx.recv() { let _ = reply.send(app.call(&method, args)); }
+        }).expect("spawn the poll worker");
+        Poller { tx }
+    }
+    async fn call(&self, method: String, args: Value) -> Result<Value, String> {
+        let (reply, rx) = channel();
+        self.tx.send((method, args, reply)).map_err(|_| "poll worker stopped".to_string())?;
+        // The answer is built on the poll thread; this only waits for it (nothing here is allocated on the pool).
+        tauri::async_runtime::spawn_blocking(move || rx.recv().map_err(|_| "poll worker stopped".to_string())?)
+            .await.map_err(|e| e.to_string())?
+    }
+}
+
 #[tauri::command]
-async fn rpc(_handle: tauri::AppHandle, app: tauri::State<'_, Arc<App>>, method: String, args: Value) -> Result<Value, String> {
+async fn rpc(_handle: tauri::AppHandle, app: tauri::State<'_, Arc<App>>, poller: tauri::State<'_, Poller>, method: String, args: Value) -> Result<Value, String> {
     // A phone has no desktop to hand a link to, so the system opens it directly in Safari.
     #[cfg(mobile)]
     if method == "open_link" {
@@ -21,6 +50,7 @@ async fn rpc(_handle: tauri::AppHandle, app: tauri::State<'_, Arc<App>>, method:
         tauri_plugin_opener::OpenerExt::opener(&_handle).open_url(url, None::<&str>).map_err(|e| e.to_string())?;
         return Ok(serde_json::json!({"opened": true}));
     }
+    if is_poll(&method) { return poller.call(method, args).await; }
     let app = app.inner().clone();
     tauri::async_runtime::spawn_blocking(move || app.call(&method, args)).await.map_err(|e| e.to_string())?
 }
@@ -64,6 +94,7 @@ pub fn run() {
             let relay = std::env::var("COMMONS_RELAY").unwrap_or_else(|_| include_str!("../default-relay.txt").trim().to_string());
             let app = App::new(dir, &relay);
             app.start_background();
+            let poller = Poller::start(app.clone());
             // The same notifier as the browser version's background part: a new message while this window is hidden or not
             // focused is shown by the system (the page reports that through its heartbeat). Phones have their own path.
             #[cfg(desktop)]
@@ -72,6 +103,7 @@ pub fn run() {
                 hub.set_sink(Arc::new(commons_core::notify::NativeSink::new(&hub, None, "app.commons.chat")));
             }
             t.manage(app);
+            t.manage(poller);
             Ok(())
         })
         .build(tauri::generate_context!())
