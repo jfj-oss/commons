@@ -66,6 +66,7 @@ fn main() {
             "mouseup" => { f.button(0x110, 0); flush(&mut q, &mut s); ms(60); }
             "keydown" => { f.keyboard_key(code(arg).unwrap_or_else(|| panic!("no key {arg}")).0, 1); flush(&mut q, &mut s); ms(30); }
             "keyup" => { f.keyboard_key(code(arg).unwrap_or_else(|| panic!("no key {arg}")).0, 0); flush(&mut q, &mut s); ms(30); }
+            "rclick" => { f.button(0x111, 1); f.button(0x111, 0); flush(&mut q, &mut s); ms(60); }
             "click" => { f.button(0x110, 1); f.button(0x110, 0); flush(&mut q, &mut s); ms(60); }
             // wheel:<value>x<count>@<interval-ms>: vertical scroll, negative is up
             "wheel" => {

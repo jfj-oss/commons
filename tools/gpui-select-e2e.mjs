@@ -1,5 +1,5 @@
 // Selecting and copying message text in the native window (select.rs), with REAL pointer and key events (examples/fakekeys.rs) in a private headless KWin;
-// the clipboard is read back from that compositor (wl-paste) and from the app. Was: The open room's chat screen (reading zone, header, column, day lines, owner tags, read ticks, composer), native window against the web client: side-by-side screenshots and scroll frame sequences. Alice is the native WINDOW
+// the clipboard is read back from that compositor  and from the app. Was: The open room's chat screen (reading zone, header, column, day lines, owner tags, read ticks, composer), native window against the web client: side-by-side screenshots and scroll frame sequences. Alice is the native WINDOW
 // (`mega-gpui`) in a private headless KWin, driven over its test port (uitest.rs); Bob is the real app/ui in headless Chrome for Testing.
 // One local relay, throwaway accounts, silent. Nobody joins a real room.
 //   cargo build -p mega-gpui -p commons-relay -p commons-core --features commons-core/devbridge --bin mega-gpui --bin commons-relay --bin dev_bridge
@@ -85,7 +85,8 @@ try {
   await sleep(2500);
   // real input: fakekeys steps against the private compositor
   const fk = async (...steps) => { const r = spawnSync(FAKE, steps, { env: winEnv, encoding: 'utf8' }); if (r.status !== 0) throw new Error('fakekeys ' + steps.join(' ') + ': ' + r.stderr); };
-  const paste = () => spawnSync('wl-paste', ['--no-newline'], { env: winEnv, encoding: 'utf8', timeout: 4000 }).stdout || '';
+  const CLIP = process.env.MEGA_GPUI_CLIPREAD || path.join(root, 'target/release/examples/clipread');
+  const paste = () => { const r = spawnSync(CLIP, [], { env: winEnv, encoding: 'utf8', timeout: 8000 }); if (r.stderr) console.log('clipread:', r.stderr.trim().slice(0, 200)); return r.stdout || ''; };
   const sel = () => W.cmd('selection');
   await W.cmd('go', { name: 'Select club' }); await sleep(1500);
   await W.cmd('open', { name: 'lounge' }); await sleep(3500);
@@ -96,6 +97,7 @@ try {
   const at = (x, y) => `move:${Math.round(x + OFF[0])},${Math.round(y + OFF[1])}`;
   const row = (rows, text) => rows.find(r => r.text.startsWith(text));
   const find = async t => { const r = row((await sel()).rows, t); if (!r) throw new Error('row not drawn: ' + t); return r; };
+  const stable = async () => { let a = J((await sel()).rows.map(r => [r.ix, r.y])); for (let i = 0; i < 20; i++) { await sleep(350); const b = J((await sel()).rows.map(r => [r.ix, r.y])); if (a === b) return; a = b; } };
   const clear = async () => { await fk('key:escape'); await sleep(250); };
 
   // 1. drag inside one message: from the start of "Copy" to the end of "mouse"
@@ -106,13 +108,13 @@ try {
   check('S1 a drag inside one message selects part of its words', s.selected.length > 5 && r1.text.includes(s.selected), s.selected);
   await fk('key:ctrl+c'); await sleep(500);
   const c1 = paste(); const a1 = (await W.cmd('clipboard')).text;
-  check('S2 Ctrl+C puts the picked words on the clipboard (wl-paste in the private compositor)', c1 === s.selected && c1.length > 5, J({ c1, a1 }));
+  check('S2 Ctrl+C puts the picked words on the clipboard (read back from the private compositor)', c1 === s.selected && c1.length > 5, J({ c1, a1 }));
   check('S2b the app reads back the same text', a1 === s.selected, a1);
 
   // 2. across messages
   const rows = (await sel()).rows.sort((a, b) => a.y - b.y);
   const i0 = rows.findIndex(r => r.text.startsWith('Thanks')), ra = rows[i0], rb = rows[i0 + 2];
-  await fk(at(ra.x + 20, ra.y + ra.h / 2), 'mousedown', at(rb.x + 40, rb.y + rb.h / 2), 'mouseup'); await sleep(400);
+  await fk(at(ra.x + 1, ra.y + ra.h / 2), 'mousedown', at(rb.x + 40, rb.y + rb.h / 2), 'mouseup'); await sleep(400);
   await nshot('2-drag-across');
   s = await sel();
   const lines = s.selected.split('\n');
@@ -149,24 +151,44 @@ try {
   s = await sel();
   check('S8 a click on nothing clears the selection', s.selected === '', s.selected);
 
+  // 5b. right-click: the menu offers "Copy message" (and Copy when words are picked)
+  await clear();
+  r3 = await find('Third');
+  await fk(at(r3.x + 30, r3.y + r3.h / 2), 'rclick'); await sleep(400);
+  check('S8b right-click opens the menu', (await sel()).menu === true);
+  await nshot('5b-menu');
+  // no selection: the items are "Copy message", "Select all"; the first is 4 + 15 px under the pointer
+  await fk(at(r3.x + 30 + 40, r3.y + r3.h / 2 + 19), 'click'); await sleep(500);
+  const cm = paste();
+  check('S8c "Copy message" copies the whole message', cm === 'Third message from Alice.' && !(await sel()).menu, cm);
+
   // 6. a room scrolled back (the reading zone draws far rows smaller): select across rows, small and whole
   await W.cmd('open', { name: 'long' }); await sleep(3000);
   await W.cmd('scroll', { end: true }); await sleep(500);
-  await W.cmd('scroll', { dy: 500 }); await sleep(900);
+  await W.cmd('scroll', { dy: 500 }); await sleep(900); await stable();
   const rd = await W.cmd('reading');
   const small = (await sel()).rows;
+  const scaledIx = new Set(rd.rows.filter(x => x.k < .99).map(x => x.ix));
   const scaled = rd.rows.filter(x => x.k < 1);
   check('S9 the reading zone has scaled rows in view', scaled.length > 0, rd.rows.map(x => x.k));
-  const sr = small.sort((a, b) => a.y - b.y);
-  const top = sr.find(r => rd.rows.some(x => x.ix === r.ix && x.k < .95)) || sr[0];
+  const sr = small.filter(r => r.y > 150 && r.y + r.h < 900).sort((a, b) => a.y - b.y);
+  const top = sr[0];
   const bot = sr[sr.length - 1];
   await fk(at(top.x + 4, top.y + top.h / 2), 'mousedown', at(bot.x + 30, bot.y + bot.h / 2), 'mouseup'); await sleep(500);
   await nshot('6-scaled');
   s = await sel();
   const n = s.selected.split('\n').length;
-  check('S10 a drag over rows the zone draws smaller selects them all', n >= 3 && n === small.filter(r => r.y >= top.y - 1 && r.y <= bot.y + 1).length, J({ n, drawn: small.length }));
+  check('S10 a drag over rows the zone draws smaller selects them all', sr.some(r => scaledIx.has(r.ix)) && n >= 3 && n === small.filter(r => r.y >= top.y - 1 && r.y <= bot.y + 1).length, J({ n, drawn: small.length }));
   await fk('key:ctrl+c'); await sleep(500);
   check('S11 and copies them', paste() === s.selected, paste().slice(0, 80));
+  // holding the pointer below the list keeps scrolling and the selection grows with it
+  await clear(); await W.cmd('scroll', { dy: 700 }); await sleep(800); await stable();
+  const vis = (await sel()).rows.filter(r => r.y > 150 && r.y + r.h < 900).sort((a, b) => a.y - b.y);
+  await fk(at(vis[0].x + 4, vis[0].y + vis[0].h / 2), 'mousedown', at(vis[0].x + 60, 905), 'sleep:1500');
+  await nshot('6b-autoscroll');
+  await fk('mouseup'); await sleep(400);
+  s = await sel();
+  check('S11b dragging past the bottom edge scrolls and keeps selecting', s.selected.split('\n').length > vis.length, J({ n: s.selected.split('\n').length, visible: vis.length }));
   // typing after a selection goes to the composer
   await fk('type:hi'); await sleep(400);
   s = await sel();

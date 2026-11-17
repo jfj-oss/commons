@@ -217,14 +217,13 @@ impl Mega {
         }
     }
 
-    pub fn sel_move(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn sel_move(&mut self, ev: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let area = self.sel.area.get();
         if self.sel.dragging {
             if ev.pressed_button != Some(MouseButton::Left) { self.sel.dragging = false; self.sel.edge = 0.; return; }
             self.sel.pointer = ev.position;
             self.sel.edge = if ev.position.y < area.top() { -1. } else if ev.position.y > area.bottom() { 1. } else { 0. };
             if let Some((id, off)) = self.sel_hit(ev.position, false) { self.sel.head = Some((id, off)); self.sel_resolve(); }
-            if self.sel.edge != 0. { window.request_animation_frame(); }
             cx.notify();
             return;
         }
