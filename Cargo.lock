@@ -6107,6 +6107,7 @@ dependencies = [
  "tokio",
  "ureq",
  "wayland-client",
+ "wayland-protocols",
  "wayland-protocols-plasma",
  "webrtc-sys",
  "zbus 5.19.0",

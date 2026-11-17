@@ -80,7 +80,7 @@ making" below, but it is not needed for the port.
 | Load older (limit grows by 200) and jump to a message (`around`) | next | keep the scroll position across a window that slides |
 | Day separators, "new" line, jump-to-bottom with count | next | |
 | Edit, delete, reply, react from a row (hover actions, context menu) | next | gpui-component has menus and popovers |
-| **Selecting and copying message text** | hard | GPUI text is not selectable by default. gpui-component has `selectable_text`; it has to work across rows of a virtual list, which nothing gives for free |
+| **Selecting and copying message text** | done (`select.rs`) | Own implementation over the rows' `StyledText` layouts (gpui-component's selectable text cannot span rows of the list): drag within and across rows, double-click word, triple-click message, Ctrl+C / Ctrl+A, right-click menu (Copy, Copy message, Select all), edge autoscroll; the reading zone keeps the hovered and selected rows whole. Checked with real pointer events by `tools/gpui-select-e2e.mjs` |
 | Links (open with `open_link`, which checks them), mentions highlighted, mention counts | next | styled runs in a row; the checks stay in the core |
 | Markdown-ish formatting, code blocks | next | gpui-component renders Markdown natively |
 | Big-emoji / message size steps (`data-mz`) | next | |

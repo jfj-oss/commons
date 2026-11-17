@@ -91,6 +91,8 @@ impl Mega {
                 // the open room's list: scroll it by pixels (positive = towards older), and say how the reading zone drew each visible row
                 "scroll" => { let mut dy = cmd["dy"].as_f64().unwrap_or(0.) as f32; if dy > 0. && self.reading.remaining < 1. { dy += self.reading.size.1; } if cmd["end"].as_bool() == Some(true) { self.list.scroll_to_end(); } else { self.list.scroll_by(px(-dy)); } cx.notify(); json!({"ok": true}) }
                 "reading" => self.reading_dump(),
+                "selection" => self.sel_dump(),
+                "clipboard" => json!({"text": cx.read_from_clipboard().and_then(|c| c.text())}),
                 "open" => {
                     let want = s("name");
                     let f = self.snap.as_ref().and_then(|sn| sn.direct.iter().find(|d| d.name == want).map(|d| (d.id.clone(), d.room.clone()))

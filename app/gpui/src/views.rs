@@ -126,7 +126,8 @@ impl Mega {
         if let Some((top, height)) = geo {
             let was_scaled = self.reading.scaled.contains(&m.id);
             if !was_scaled { self.reading.full.insert(m.id.clone(), height); }
-            if !self.still() && self.reading.on {
+            let whole = crate::select::keeps_whole(ix, self.sel.hover.as_ref().and_then(|h| self.win.msgs.iter().position(|x| &x.id == h)), self.sel.now);
+            if !self.still() && self.reading.on && !whole {
                 if let (Some((sc, o)), Some(h)) = (crate::reading::effect(top, top + height, vh, remaining), self.reading.full.get(&m.id)) { k = sc; op = o; full = Some(*h); }
             }
         }
@@ -137,7 +138,7 @@ impl Mega {
             arrive: self.arrivals.progress(&m.id, now).map(|k| (k, (now * 60.) as u64)),
             hi: rgb(self.room_duo(self.gid.as_deref().unwrap_or("")).hi).into(),
             flights: self.flights.live.iter().filter(|f| f.msg == m.id).cloned().collect(),
-            now, k, day, new,
+            now, k, day, new, pick: self.sel.now.and_then(|s| crate::select::range_in(s, ix, m.text.len())), texts: self.sel.texts.clone(),
         };
         let el = row(m, prev, self.chat_font(), &self.holes, star, &fx);
         match full { Some(h) => div().w_full().h(px(h)).flex().flex_col().justify_center().overflow_hidden().opacity(op).child(el).into_any_element(), None => el }
@@ -204,6 +205,8 @@ impl Mega {
         let wall_bar = self.wall_toolbar(cx);
         let wall_btn = if is_dm { None } else { self.wall_room_button(cx) };
         self.reading_look();
+        self.sel.texts.borrow_mut().clear();
+        self.sel_resolve();
         // the day of the first row in view, and the way back to the end (the web's `#day-float` and `#jump`): only while reading back
         let float_day = (!crate::reading::at_end(self.reading.remaining)).then(|| {
             let ix = self.reading.geo.iter().filter(|(_, (t, h))| t + h > 0.).map(|(i, _)| *i).min()?;
@@ -220,12 +223,15 @@ impl Mega {
                     .child(div().relative().max_w_full().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).child(title.clone()).child(hole(&holes)))
                     .child(div().relative().max_w_full().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(sub).child(hole(&holes))))
                 .children(bar_chips))
-            .child(div().flex_1().min_h_0().relative()
+            .child(div().id("room-text").flex_1().min_h_0().relative().track_focus(&self.sel.focus).key_context("ChatText")
+                .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.sel_key(ev, window, cx)))
+                .child(sel_watch(self.sel.area.clone(), cx))
                 .child(list(self.list.clone(), cx.processor(|this, ix: usize, _, _| this.render_msg(ix))).size_full())
                 .child(div().absolute().top_0().right_0().bottom_0().w(px(12.)).child(Scrollbar::vertical(&self.list)))
                 .children(float_day.map(|t| h_flex().absolute().top(px(6.)).left_0().right_0().justify_center().child(div().px(px(14.)).py(px(6.)).rounded_full().bg(rgb(0x1b1922)).border_1().border_color(look::line()).font_family(look::F_SHARP).text_size(px(14.)).text_color(look::mute()).child(t))))
                 .children(jump.then(|| h_flex().absolute().bottom(px(10.)).left_0().right_0().justify_center().child(div().id("jump").px(px(14.)).py(px(7.)).rounded_full().bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_UI).text_size(px(12.)).cursor_pointer().child("\u{2193} latest")
-                    .on_click(cx.listener(|this, _, _, cx| { this.list.scroll_to_end(); cx.notify(); }))))))
+                    .on_click(cx.listener(|this, _, _, cx| { this.list.scroll_to_end(); cx.notify(); })))))
+                .children(self.sel_menu()))
             .child(h_flex().w_full().flex_none().justify_center().px_4()
                 .child(v_flex().w_full().max_w(px(COLUMN - 20.))
                     .child(div().relative().w_full().px_2().py_1().border_1().border_color(hsla(0., 0., 0., 0.))
@@ -327,7 +333,7 @@ impl Mega {
 
 /// What is happening to one message right now (arrive.rs): its size tier, its glyph copy while it arrives, reactions flying to it.
 /// `k` is the reading zone's scale (reading.rs; 1 = whole), `day` the day line above it, `new` the "N new" line above it.
-pub struct RowFx { pub tier_px: Option<f32>, pub arrive: Option<(f64, u64)>, pub hi: Hsla, pub flights: Vec<crate::arrive::Flight>, pub now: f64, pub k: f32, pub day: Option<String>, pub new: Option<usize> }
+pub struct RowFx { pub tier_px: Option<f32>, pub arrive: Option<(f64, u64)>, pub hi: Hsla, pub flights: Vec<crate::arrive::Flight>, pub now: f64, pub k: f32, pub day: Option<String>, pub new: Option<usize>, /** the selected part of the text, and where to keep its painted layout (select.rs) */ pub pick: Option<std::ops::Range<usize>>, pub texts: crate::select::Texts }
 
 /// The widest the message column gets (mega-design.css: `--gutter` 58 + `--measure` 800 + 44 around it).
 pub const COLUMN: f32 = 902.;
@@ -412,6 +418,15 @@ pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f3
                     .child(StyledText::new(copy).with_highlights([(0..real, HighlightStyle { color: Some(ink), ..Default::default() })])))
                 .into_any_element()
         }
+        else if m.kind == "text" && m.file.is_none() && !m.text.is_empty() {
+            // the words are a StyledText so a selection can colour part of them and the painted layout can be asked where a pointer is
+            let hi = fx.hi.opacity(0.4);
+            let st = StyledText::new(m.text.clone()).with_highlights(fx.pick.clone().map(|r| (r, HighlightStyle { background_color: Some(hi), ..Default::default() })));
+            let (layout, texts, id) = (st.layout().clone(), fx.texts.clone(), m.id.clone());
+            div().relative().child(hole(holes)).max_w_full().font_family(font).text_size(px(size)).line_height(px(lh)).child(st)
+                .child(canvas(|_, _, _| {}, move |b, _, _, _| { texts.borrow_mut().insert(id.clone(), crate::select::RowText { layout: layout.clone(), bounds: layout.bounds() }); let _ = b; }).absolute().top_0().left_0().size_full())
+                .into_any_element()
+        }
         else { div().relative().child(hole(holes)).max_w_full().font_family(font).text_size(px(size)).line_height(px(lh)).child(m.text.clone()).into_any_element() };
     col = col.child(body);
     let mut foot = h_flex().relative().gap_1().flex_wrap();
@@ -446,6 +461,7 @@ impl Render for Mega {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !std::mem::replace(&mut self.first_frame_done, true) { window.on_next_frame(|_, _| crate::bench::mark("first_frame")); }
         crate::bench::drive(self, window, cx);
+        self.sel_autoscroll(window, cx);
         // arrivals and thrown reactions ask for a frame only while one is in the air; the frame after the last one draws the finished state
         if !(self.arrivals.is_idle() && self.flights.is_idle()) {
             let now = self.now_secs();
@@ -482,6 +498,28 @@ impl Render for Mega {
                 base.child(v_flex().size_full().child(div().flex_1().min_h_0().w_full().child(body)).children(bar)).children(pop).children(people).children(rings)
             }
         }
+    }
+}
+
+/// Watches the pointer over the room's list (the window's events, so a drag that leaves the list keeps going) and keeps the list's bounds.
+fn sel_watch(area: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>, cx: &mut Context<Mega>) -> impl IntoElement {
+    let (down, mv, up) = (cx.listener(|this, ev: &MouseDownEvent, window, cx| this.sel_down(ev, window, cx)), cx.listener(|this, ev: &MouseMoveEvent, window, cx| this.sel_move(ev, window, cx)), cx.listener(|this, ev: &MouseUpEvent, window, cx| this.sel_up(ev, window, cx)));
+    canvas(|_, _, _| {}, move |b, _, window, _| {
+        area.set(b);
+        window.on_mouse_event(move |ev: &MouseDownEvent, phase, w, cx| { if phase == DispatchPhase::Capture { down(ev, w, cx); } });
+        window.on_mouse_event(move |ev: &MouseMoveEvent, phase, w, cx| { if phase == DispatchPhase::Capture { mv(ev, w, cx); } });
+        window.on_mouse_event(move |ev: &MouseUpEvent, phase, w, cx| { if phase == DispatchPhase::Capture { up(ev, w, cx); } });
+    }).absolute().top_0().left_0().size_full()
+}
+
+impl Mega {
+    /// The right-click menu over a message: Copy (a selection), Copy message, Select all. Items are read by position in `sel_down`.
+    fn sel_menu(&self) -> Option<AnyElement> {
+        let (at, _) = self.sel.menu.clone()?;
+        let area = self.sel.area.get();
+        let items = self.menu_items();
+        Some(v_flex().absolute().left(at.x - area.left()).top(at.y - area.top()).w(px(crate::select::MENU_W)).py(px(4.)).rounded(px(10.)).bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_UI).text_size(px(13.))
+            .children(items.into_iter().map(|t| div().h(px(crate::select::MENU_ROW)).px(px(14.)).flex().items_center().child(t))).into_any_element())
     }
 }
 

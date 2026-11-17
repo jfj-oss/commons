@@ -60,6 +60,7 @@ required-features = ["calls"]
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 wayland-client = "0.31"
 wayland-protocols-plasma = { version = "0.3", features = ["client"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
 [dev-dependencies]
 # update.rs tests: a throwaway signing key made in the test (never the real one), as crates/core/src/browser_update.rs does
