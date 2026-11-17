@@ -128,8 +128,12 @@ impl Mega {
     }
     pub fn leave_call(&mut self, cx: &mut Context<Self>) {
         if let Some(e) = &self.call.engine { e.send(Command::Leave); }
-        self.call.settings_open = false; self.call.menu = None;
+        self.set_settings_open(false); self.call.menu = None;
         cx.notify();
+    }
+    fn set_settings_open(&mut self, on: bool) {
+        self.call.settings_open = on;
+        if !on { self.call_cmd(Command::MicMeter(false)); }
     }
     pub fn call_cmd(&mut self, c: Command) { if let Some(e) = &self.call.engine { e.send(c); } }
 
@@ -228,7 +232,8 @@ impl Mega {
     // ---- choices ----
     pub fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.call.settings_open = !self.call.settings_open;
-        if self.call.settings_open { let e = self.engine(window, cx); e.send(Command::ListDevices); e.send(Command::ListCameras); self.call.snap = e.snapshot(); }
+        if self.call.settings_open { let e = self.engine(window, cx); e.send(Command::ListDevices); e.send(Command::ListCameras); e.send(Command::MicMeter(true)); self.call.snap = e.snapshot(); }
+        else { self.call_cmd(Command::MicMeter(false)); }
         cx.notify();
     }
     pub fn open_person(&mut self, account: String, name: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -292,6 +297,9 @@ impl Mega {
         let (muted, deaf, ptt, held) = (snap.muted, snap.deafened, snap.push_to_talk, snap.ptt_held);
         let cam_on = snap.camera.state != "off" && !snap.camera.state.is_empty();
         if let Some(err) = snap.error.clone() { bar = bar.child(div().max_w(px(260.)).text_size(px(12.)).text_color(rgb(look::DANGER)).child(err.msg)); }
+        if !muted && (snap.mic_quiet || snap.mic_system_muted == Some(true)) {
+            bar = bar.child(div().id("c-mic-warn").max_w(px(260.)).text_size(px(12.)).text_color(rgb(look::DANGER)).child(if snap.mic_system_muted == Some(true) { "Others cannot hear you: your microphone is muted in your computer's sound settings." } else { "Others cannot hear you: no sound is coming from your microphone." }));
+        }
         bar = bar
             .child(pill("c-mute", muted, if muted { "Muted" } else { "Mute" }).when(ptt, |d| d.opacity(0.6)).on_click(cx.listener(move |this, _, _, cx| { this.call_cmd(Command::SetMuted(!muted)); cx.notify(); })))
             .child(pill("c-cam", cam_on, if cam_on { "Camera on" } else { "Camera" }).on_click(cx.listener(move |this, _, _, cx| {
@@ -348,6 +356,17 @@ impl Mega {
             .child(pill("cam-1080", cur == "1080p", "1080p").on_click(cx.listener(|this, _, _, cx| { this.call_cmd(Command::SetCameraProfile(CamProfile::P1080)); cx.notify(); }))))
     }
 
+    /// "Test microphone": the live input level, drawn only (nothing is played), with the reason when it is flat.
+    fn mic_meter(&self, snap: &engine::Snapshot) -> impl IntoElement {
+        let pos = crate::calls::meter::meter_position(snap.mic_level);
+        let hint = if snap.mic_system_muted == Some(true) { Some("Your microphone is switched off (muted) in your computer's sound settings. Unmute it there and the bar will move.")
+            } else if snap.mic_quiet { Some("No sound is coming from this microphone. Check that it is the right one, plugged in, and not muted.") } else { None };
+        v_flex().id("mic-meter").gap_1()
+            .child(div().id("mic-meter-bar").h(px(10.)).w_full().rounded_full().bg(look::line()).child(div().id("mic-meter-fill").h_full().rounded_full().bg(if pos > 0.85 { rgb(look::DANGER).into() } else { look::paper() }).w(relative(pos))))
+            .child(div().text_size(px(12.)).text_color(look::mute()).child(if snap.phase == "idle" || snap.phase.is_empty() { "Speak to test it. Nothing is played back." } else { "Speak to test it. This is what the others in the call receive." }))
+            .children(hint.map(|h| div().id("mic-hint").text_size(px(12.)).text_color(rgb(look::DANGER)).child(h)))
+    }
+
     fn settings_panel(&mut self, snap: &engine::Snapshot, cx: &mut Context<Self>) -> impl IntoElement {
         let label = |t: &str| div().mt_2().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(t.to_string());
         let dev = |prefix: &'static str, list: &[crate::calls::audio::AudioDevice], current: Option<&String>, mic: bool, cx: &mut Context<Self>| {
@@ -377,10 +396,13 @@ impl Mega {
         };
         v_flex().id("call-settings").absolute().bottom(px(64.)).right(px(16.)).w(px(420.)).max_h(px(520.)).overflow_y_scroll().gap_1().p_4().rounded(px(22.)).bg(rgb(look::SLIP)).border_1().border_color(look::line()).shadow_lg().occlude()
             .child(h_flex().items_center().child(div().flex_1().font_family(look::F_SHARP).text_size(px(28.)).line_height(px(28.)).child("call settings"))
-                .child(pill("cs-close", false, "Close").on_click(cx.listener(|this, _, _, cx| { this.call.settings_open = false; cx.notify(); }))))
+                .child(pill("cs-close", false, "Close").on_click(cx.listener(|this, _, _, cx| { this.set_settings_open(false); cx.notify(); }))))
             .child(label("microphone"))
+            .child(div().text_size(px(12.)).child(format!("Using: {}", snap.mic_name.clone().unwrap_or_else(|| default_name(&snap.devices.mic)))))
+            .child(self.mic_meter(snap))
             .child(dev("mic", &snap.devices.mic, snap.mic_id.as_ref(), true, cx))
             .child(label("speakers"))
+            .child(div().text_size(px(12.)).child(format!("Using: {}", snap.out_name.clone().unwrap_or_else(|| default_name(&snap.devices.out)))))
             .child(dev("out", &snap.devices.out, snap.out_id.as_ref(), false, cx))
             .child(label("camera"))
             .child(self.camera_list(snap, cx))
@@ -499,7 +521,7 @@ impl Mega {
             "leave" => self.leave_call(cx),
             "settings" => self.open_settings(window, cx),
             "person" => { let p = self.call.snap.peers.iter().find(|p| !p.me && p.account.is_some()).cloned(); if let Some(p) = p { self.open_person(p.account.unwrap(), p.name, window, cx); } }
-            "close" => { self.call.menu = None; self.call.settings_open = false; cx.notify(); }
+            "close" => { self.call.menu = None; self.set_settings_open(false); cx.notify(); }
             "pop" => self.pop_call(window, cx),
             "poptile" => { if let Some(t) = self.call.tiles.first().cloned() { self.pop_tile(t.sid, window, cx); } }
             "mini" => self.toggle_mini(window, cx),
@@ -520,4 +542,9 @@ impl Mega {
             _ => eprintln!("ui step? {s}"),
         }
     }
+}
+
+/// What "System default" is called in the list: the default entry's own name, "default: " dropped.
+fn default_name(list: &[crate::calls::audio::AudioDevice]) -> String {
+    list.iter().find(|d| crate::calls::audio::is_default_entry(d)).map(|d| format!("System default ({})", d.name.trim_start_matches("default:").trim())).unwrap_or_else(|| "System default".into())
 }
