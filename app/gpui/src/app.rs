@@ -43,6 +43,11 @@ pub struct Mega {
     pub clock: f64,
     /// The open room's backdrop (backdrop.rs): its pattern clock, heat and ripples; frames are asked for only while one of them moves.
     pub bd: crate::backdrop::Bd,
+    /// Mascots of whoever is typing in the open room (typing.rs).
+    pub typing_ui: crate::typing::TypingUi,
+    typing_at: Instant,
+    /// Test port only: pretend the window is hidden (a headless compositor cannot minimise it).
+    pub fake_hidden: bool,
     pub holes: crate::ascii::Holes,
     /// Messages resolving out of glyphs and reactions flying to their pills (arrive.rs); empty almost always, and then no frames are asked for.
     pub arrivals: crate::arrive::Arrivals,
@@ -125,7 +130,7 @@ impl Mega {
         subs.push(paint_sub);
         let mut this = Mega {
             nav, rail: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx),
-            level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd: crate::backdrop::Bd::new(""), holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
+            level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd: crate::backdrop::Bd::new(""), typing_ui: Default::default(), typing_at: Instant::now(), fake_hidden: false, holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
             list: ListState::new(0, ListAlignment::Bottom, px(600.)), composer, typing_sent: None, ticking: false, again: false, first_frame_done: false,
@@ -173,20 +178,28 @@ impl Mega {
             if b != this.on_battery { this.on_battery = b; cx.notify(); }
         });
     }
+    /// The page's frame loops, at the page's rates: the cards' fields (20 a second), the open room's backdrop (10 a second, 25 while a ring runs,
+    /// forever: a quiet room drifts and rings by itself), the rail's cards while it is open, and the typing mascots and waves. Everything
+    /// stops while the window is hidden (the page's `document.hidden`) and with the battery saver on.
     fn animate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.screen != Screen::Main || self.still() || !window.is_window_active() { self.last_anim = Instant::now(); return; }
+        if self.screen != Screen::Main || self.still() || !window.is_visible() || self.fake_hidden { self.last_anim = Instant::now(); self.typing_at = Instant::now(); return; }
         let dt = self.last_anim.elapsed().as_secs_f64();
+        let mut draw = false;
         match self.level {
-            Level::Home | Level::Server(_) => { if dt < 0.05 { return; } self.clock += dt.min(0.1); }
+            Level::Home | Level::Server(_) => { if dt >= 0.045 { self.clock += dt.min(0.1); draw = true; } }
             Level::Chat => {
-                // the backdrop moves only while a ripple runs (20 pictures a second) or the room cools (10), never otherwise
-                if !self.bd.live() || dt < if self.bd.rips.is_empty() { 0.1 } else { 0.05 } { return; }
-                self.bd.step(dt.min(0.25));
+                if dt >= if self.bd.busy() { 0.035 } else { 0.095 } { self.bd.step(dt.min(0.25), self.gid.as_deref().map(|g| self.bd_dim(g)).unwrap_or(100)); draw = true; }
+                // the rail's cards move too while it is open (their fields run on the page's clock)
+                if self.rail.k > 0.02 && dt >= 0.045 { self.clock += dt.min(0.1); draw = true; }
             }
             Level::Settings => return,
         }
-        self.last_anim = Instant::now();
-        cx.notify();
+        if draw { self.last_anim = Instant::now(); }
+        if self.level == Level::Chat && self.typing_on() {
+            let t = self.typing_at.elapsed().as_secs_f64();
+            if t >= if self.typing_sliding() { 0.03 } else { crate::typing::WAVE_STEP } { self.typing_at = Instant::now(); self.typing_ui.clock = self.now_secs(); draw = true; }
+        }
+        if draw { cx.notify(); }
     }
     /// Seconds on the arrival clock.
     /// (Tests slow it down with MEGA_GPUI_ARRIVE_SLOW=10 so a screenshot can catch it half way.)
@@ -427,7 +440,7 @@ impl Mega {
     pub fn open_room(&mut self, cid: String, gid: String, window: &mut Window, cx: &mut Context<Self>) {
         self.level = Level::Chat;
         if self.gid.as_deref() == Some(gid.as_str()) { cx.notify(); return; }
-        self.bd = crate::backdrop::Bd::new(&gid); self.arrivals.clear(); self.flights.clear();
+        self.bd = crate::backdrop::Bd::new(&gid); self.typing_ui = Default::default(); self.arrivals.clear(); self.flights.clear();
         let unread = self.channel(&gid).filter(|(c, _)| c.direct).map(|(_, ch)| ch.unread as usize).unwrap_or(0).max(if self.channel(&gid).is_some_and(|(c, _)| c.direct) { self.fake_dm_unread } else { 0 });
         self.dm_marks = (gid.clone(), unread);
         self.cid = Some(cid);

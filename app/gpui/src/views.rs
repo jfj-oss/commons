@@ -179,7 +179,8 @@ impl Mega {
         let is_dm = self.channel(&gid).is_some_and(|(c, _)| c.direct);
         let owner = self.channel(&gid).is_some_and(|(c, _)| !c.direct && (c.role == "owner" || c.role == "admin"));
         let chat_cid = self.channel(&gid).map(|(c, _)| c.id.clone());
-        let typing = match self.win.typing.len() { 0 => String::new(), 1 => format!("{} is writing…", self.win.typing[0]), n => format!("{n} people are writing…") };
+        let want = self.typing_sync(&gid);
+        let typing_strip = self.typing_strip(&want, duo, &self.holes.clone());
         let (font, size, lh) = self.chat_font();
         // The room's backdrop: the room's ASCII field in the owner's chat pattern, colours and strength, dim behind the chat (backdrop.rs).
         // The owner's own backdrop colours, else the room's; the chat pattern, else the room's automatic one; strength 100 percent unless set.
@@ -226,7 +227,7 @@ impl Mega {
             .child(div().id("room-text").flex_1().min_h_0().relative().track_focus(&self.sel.focus).key_context("ChatText")
                 .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.sel_key(ev, window, cx)))
                 .child(sel_watch(self.sel.area.clone(), cx))
-                .child(list(self.list.clone(), cx.processor(|this, ix: usize, _, _| this.render_msg(ix))).size_full())
+                .child(list(self.list.clone(), cx.processor(|this, ix: usize, _, _| this.render_msg(ix))).size_full().pb(px(42.)))
                 .child(div().absolute().top_0().right_0().bottom_0().w(px(12.)).child(Scrollbar::vertical(&self.list)))
                 .children(float_day.map(|t| h_flex().absolute().top(px(6.)).left_0().right_0().justify_center().child(div().px(px(14.)).py(px(6.)).rounded_full().bg(rgb(0x1b1922)).border_1().border_color(look::line()).font_family(look::F_SHARP).text_size(px(14.)).text_color(look::mute()).child(t))))
                 .children(jump.then(|| h_flex().absolute().bottom(px(10.)).left_0().right_0().justify_center().child(div().id("jump").px(px(14.)).py(px(7.)).rounded_full().bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_UI).text_size(px(12.)).cursor_pointer().child("\u{2193} latest")
@@ -234,6 +235,7 @@ impl Mega {
                 .children(self.sel_menu()))
             .child(h_flex().w_full().flex_none().justify_center().px_4()
                 .child(v_flex().w_full().max_w(px(COLUMN - 20.))
+                    .children(typing_strip)
                     .child(div().relative().w_full().px_2().py_1().border_1().border_color(hsla(0., 0., 0., 0.))
                         .font_family(font)
                         // a translucent slip over the backdrop: a squircle fill and border, never a cut (the backdrop moves behind it)
@@ -249,8 +251,7 @@ impl Mega {
                     // the small print under the slip: who is writing, or what the room promises (web `#typing` and `#hint`)
                     .child(h_flex().h(px(22.)).px_3().gap(px(5.)).items_center().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute())
                         .child(hole(&holes))
-                        .when(typing.is_empty(), |d| d.child(lock_icon()).child("end-to-end encrypted.").child(div().ml(px(3.)).child("shift+enter for a new line.")))
-                        .when(!typing.is_empty(), |d| d.text_color(duo.dot()).child(typing.clone())))))
+                        .child(lock_icon()).child("end-to-end encrypted.").child(div().ml(px(3.)).child("shift+enter for a new line.")))))
             .children(wall_hit)
             .children(wall_bar)
             .into_any_element()

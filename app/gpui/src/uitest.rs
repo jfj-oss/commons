@@ -17,6 +17,7 @@
 //!   {"cmd":"click","what"}                     press a panel button: confirm | cancel | create-invite
 //!   {"cmd":"core","method","args"}              a call to the core as this account
 //!   {"cmd":"paint"}  {"cmd":"paint_do","what",...}   the colours panel: open/close it; hex value | mode card/back | well 0/1 | preset n | tile which n | dim n | oracle quiet/draw | reset | same
+//!   {"cmd":"saver","mode":"on|off|auto"}  {"cmd":"hidden","on"}   the battery saver for this run (not saved); pretend the window is hidden
 //!   {"cmd":"stir"}  {"cmd":"bd"}   a new message's ripple in the open room; the room backdrop's clock, heat and ripples
 //!   {"cmd":"draw","on"}  {"cmd":"tool","brush","col"}  {"cmd":"pen","points":[[x,y],...]}  {"cmd":"wall"}   drawing mode, the brush, a stroke in window pixels, what the wall holds
 //!   {"cmd":"wall_do","what"}                     lock | clear (the owner's buttons; clear asks twice)
@@ -77,8 +78,10 @@ impl Mega {
                     match c { Some(cid) => { self.go(crate::app::Level::Server(cid), window, cx); json!({"ok": true}) } None => json!({"error": "no such community"}) }
                 }
                 "settings" => { self.go(crate::app::Level::Settings, window, cx); json!({"ok": true}) }
+                "saver" => { self.prefs.saver = match s("mode").as_str() { "on" => crate::prefs::Saver::On, "off" => crate::prefs::Saver::Off, _ => crate::prefs::Saver::Auto }; cx.notify(); json!({"ok": true, "still": self.still()}) }
+                "hidden" => { self.fake_hidden = cmd["on"].as_bool() == Some(true); json!({"ok": true}) }
                 "stir" => { self.stir(2); cx.notify(); json!({"ok": true}) }
-                "bd" => json!({"t": self.bd.t, "heat": self.bd.heat, "ripples": self.bd.rips.len(), "live": self.bd.live(), "still": self.still(), "dim": self.gid.as_deref().map(|g| self.bd_dim(g))}),
+                "bd" => json!({"t": self.bd.t, "heat": self.bd.heat, "ripples": self.bd.rips.len(), "busy": self.bd.busy(), "next_rip": self.bd.next_rip, "visible": window.is_visible(), "typing": self.win.typing, "still": self.still(), "dim": self.gid.as_deref().map(|g| self.bd_dim(g))}),
                 "home" => { self.go(crate::app::Level::Home, window, cx); json!({"ok": true}) }
                 "attend" => { self.ring.unattended = cmd["on"].as_bool() == Some(false); json!({"ok": true}) }
                 "ring_all" => { self.ring_all(window, cx); json!({"ok": true}) }

@@ -6,6 +6,7 @@ mod reading;
 mod select;
 mod ascii;
 mod backdrop;
+mod typing;
 mod bench;
 mod cards;
 mod nav;
