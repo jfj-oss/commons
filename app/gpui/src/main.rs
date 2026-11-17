@@ -3,6 +3,7 @@
 mod app;
 mod arrive;
 mod reading;
+mod select;
 mod ascii;
 mod backdrop;
 mod bench;
