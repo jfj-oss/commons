@@ -56,6 +56,21 @@ pub fn nearest(offsets: &[f32], offset: f32) -> usize {
 }
 
 /// Where a scroll that has just stopped comes to rest: the nearest card to where it would have coasted on. `vel` is px/s.
+/// One wheel notch, in GPUI lines (gpui_linux `SCROLL_LINES`: Wayland reports a notch as 3 lines).
+pub const NOTCH_LINES: f32 = 3.0;
+
+/// A wheel's line delta (down positive) to a card move: -1, 0 or 1. One notch = one card, however the platform reports it: a
+/// whole notch or more in one event (some compositors send a notch twice in one frame) moves exactly one card; the fractions a
+/// high-resolution wheel sends add up to a notch first; turning the other way starts the count again.
+pub fn wheel_notch(acc: &mut f32, d: f32) -> i32 {
+    if d == 0. { return 0; }
+    if d.abs() >= NOTCH_LINES { *acc = 0.; return if d > 0. { 1 } else { -1 }; }
+    if *acc != 0. && acc.signum() != d.signum() { *acc = 0.; }
+    *acc += d;
+    if acc.abs() >= NOTCH_LINES { let dir = if *acc > 0. { 1 } else { -1 }; *acc = 0.; return dir; }
+    0
+}
+
 pub fn snap_to(offsets: &[f32], offset: f32, vel: f32) -> usize { nearest(offsets, offset + vel * 0.12) }
 
 /// A title's font size at a card width `cw` (`.mti`: clamp(40px, 13cqw, 138px) x 1.25, rounded down to the 12 px grid of the pixel font).
@@ -287,5 +302,24 @@ mod tests {
         s.go(0, &o, 3., false);
         assert!(s.anim.is_some());
         assert_eq!(s.target(&o), 0);
+    }
+}
+
+#[cfg(test)]
+mod wheel_tests {
+    use super::*;
+    #[test]
+    fn one_notch_is_one_card_however_it_is_reported() {
+        let mut acc = 0.;
+        assert_eq!(wheel_notch(&mut acc, 3.0), 1);          // a notch as GPUI reports it on Wayland
+        assert_eq!(wheel_notch(&mut acc, 6.0), 1);          // a notch sent twice in one frame
+        assert_eq!(wheel_notch(&mut acc, -3.0), -1);
+        // a high-resolution wheel: 8 eighths of a notch make one card, not eight
+        let moves: i32 = (0..8).map(|_| wheel_notch(&mut acc, 3.0 / 8.)).sum();
+        assert_eq!(moves, 1);
+        // turning back starts the count again
+        wheel_notch(&mut acc, 2.0);
+        assert_eq!(wheel_notch(&mut acc, -2.0), 0);
+        assert_eq!(wheel_notch(&mut acc, -1.0), -1);
     }
 }

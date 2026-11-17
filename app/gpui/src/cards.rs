@@ -433,10 +433,8 @@ impl Mega {
         match ev.delta {
             ScrollDelta::Pixels(p) => { let dy = -f32::from(p.y); if dy != 0. { self.nav.scroll.wheel_px(dy, &offs, now); } }
             ScrollDelta::Lines(l) => {
-                // a wheel's notch goes one card (the page's snap does the same); a wheel that sends fractions is added up
-                self.nav.acc += -l.y;
-                while self.nav.acc >= 1. { self.nav.acc -= 1.; self.nav.scroll.step(1, &offs, now); }
-                while self.nav.acc <= -1. { self.nav.acc += 1.; self.nav.scroll.step(-1, &offs, now); }
+                let dir = crate::nav::wheel_notch(&mut self.nav.acc, -l.y);
+                if dir != 0 { self.nav.scroll.step(dir, &offs, now); }
             }
         }
         cx.stop_propagation(); cx.notify();
