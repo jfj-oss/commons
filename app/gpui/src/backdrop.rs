@@ -1,8 +1,9 @@
 //! The room's backdrop (app/ui/mega.js: bdColours, bdDraw, bdLoop, ripple, bdHeat): the room's ASCII field behind the chat, in the
 //! owner's chat pattern, colours and strength, dim, flowing around every message's words (ascii.rs `hole`). New activity sends a ripple
 //! out of the newest line and warms the room (a little faster, a little brighter); the heat then cools back to its floor.
-//! Nothing moves when nothing happens: at rest the field is one still picture, and frames are asked for only while a ripple runs or the
-//! room is cooling. The battery saver draws the faint tone-on-tone emboss the cards use, and never moves.
+//! Like the page's `bdLoop` it never stops: a quiet room still drifts (ten pictures a second, twenty-five while a ring runs) and every
+//! fourteen to twenty-eight seconds a gentle ring leaves from somewhere in the room. It pauses while the window is hidden, and the
+//! battery saver draws the faint tone-on-tone emboss the cards use, and never moves.
 use crate::ascii::{Field, Ripple};
 use crate::look::{self, Duo};
 use gpui_kit::*;
@@ -15,16 +16,34 @@ const TEXT: u32 = 0xe9e7ef;
 
 /// The open room's backdrop clock: the pattern's time, the room's heat and the ripples running now.
 #[derive(Clone, Debug)]
-pub struct Bd { pub t: f64, pub heat: f64, pub rips: Vec<Ripple> }
+pub struct Bd { pub t: f64, pub heat: f64, pub rips: Vec<Ripple>, /** seconds until the next idle ring */ pub next_rip: f64, rng: u64 }
 
 impl Bd {
-    pub fn new(gid: &str) -> Bd { Bd { t: (look::h(gid) % 90) as f64, heat: HEAT_FLOOR, rips: vec![] } }
-    /// Does anything still move? (Otherwise no frame is asked for.)
-    pub fn live(&self) -> bool { !self.rips.is_empty() || self.heat > HEAT_FLOOR + 1e-6 }
-    /// `bdLoop`: the time runs faster the hotter the room is, heat cools with a half life of 18 seconds, rings travel out and fade.
-    pub fn step(&mut self, dt: f64) {
+    pub fn new(gid: &str) -> Bd { Bd::seeded(gid, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1)) }
+    /// The same with a fixed seed for the random idle rings (tests).
+    pub fn seeded(gid: &str, seed: u64) -> Bd {
+        let mut b = Bd { t: (look::h(gid) % 90) as f64, heat: HEAT_FLOOR, rips: vec![], next_rip: 0., rng: seed | 1 };
+        b.next_rip = 5. + b.rand() * 6.;   // the first one comes sooner (`bdStart`)
+        b
+    }
+    /// 0..1 (xorshift: the idle rings only need to look random).
+    fn rand(&mut self) -> f64 { let mut x = self.rng; x ^= x << 13; x ^= x >> 7; x ^= x << 17; self.rng = x; (x >> 11) as f64 / (1u64 << 53) as f64 }
+    /// A ring is running: the picture is drawn at 25 frames a second instead of 10.
+    pub fn busy(&self) -> bool { !self.rips.is_empty() }
+    /// `bdLoop`: the time runs faster the hotter the room is, heat cools with a half life of 18 seconds, rings travel out and fade,
+    /// and every 14 to 28 seconds a gentle ring comes from somewhere in the room (`idleRipple`).
+    pub fn step(&mut self, dt: f64, dim: u32) {
         self.heat = HEAT_FLOOR.max(self.heat * 0.5f64.powf(dt / 18.));
         self.t += dt * (0.1 + self.heat * 1.5);
+        self.next_rip -= dt;
+        if self.next_rip <= 0. {
+            self.next_rip = 14. + self.rand() * 14.;
+            if dim > 0 {
+                if self.rips.len() > 6 { self.rips.remove(0); }
+                let (x, y) = (0.15 + 0.7 * self.rand(), 0.2 + 0.6 * self.rand());
+                self.rips.push(Ripple { x, y, r: 0., s: 0.5 * lv(dim), v: 26., band: 8., fade: 0.3, frac: true });
+            }
+        }
         for q in &mut self.rips { q.r += q.v * dt; q.s *= q.fade.powf(dt); }
         self.rips.retain(|q| q.s > 0.04 && q.r < 400.);
     }
@@ -51,7 +70,7 @@ pub fn wash(main: u32, lv: f64) -> u32 {
     c
 }
 
-fn lift_over(mut c: u32, bg: u32, r: f32) -> u32 { let mut i = 0; while look::contrast(c, bg) < r && i < 16 { i += 1; c = look::mix(c, 0xffffff, 0.12); } c }
+pub fn lift_over(mut c: u32, bg: u32, r: f32) -> u32 { let mut i = 0; while look::contrast(c, bg) < r && i < 16 { i += 1; c = look::mix(c, 0xffffff, 0.12); } c }
 
 /// The glyph colours (`bdColours`): soft, mid and bright, and the brighter three under a ripple; and the wash they lie on.
 pub fn tints(duo: Duo, dim: u32) -> ([Hsla; 3], [Hsla; 3], u32) {
@@ -97,18 +116,23 @@ mod tests {
         assert_ne!(t[2], lit[0], "under a ripple the glyphs are brighter");
     }
     #[::core::prelude::v1::test]
-    fn a_quiet_room_asks_for_no_frames() {
-        let mut b = Bd::new("g");
-        assert!(!b.live());
-        let t0 = b.t;
-        b.ripple(0.3, 0.8, 0.72, false, 100); b.warm(0.24, 100);
-        assert!(b.live());
-        let mut n = 0;
-        while b.live() && n < 4000 { b.step(0.05); n += 1; }
-        assert!(!b.live(), "it settles");
-        assert!(b.t > t0, "and the pattern moved meanwhile");
-        let t1 = b.t; b.step(0.05);
-        assert!(b.t > t1, "stepping always advances time, but nothing steps at rest (app.rs animate)");
+    fn a_quiet_room_keeps_drifting_and_rings_by_itself() {
+        let mut b = Bd::seeded("g", 7);
+        assert!(!b.busy());
+        let (mut t, mut rings, mut last) = (b.t, 0, 0usize);
+        for _ in 0..(120 * 10) { b.step(0.1, 100); assert!(b.t > t, "every step the pattern moves"); t = b.t; if b.rips.len() > last { rings += 1; } last = b.rips.len(); }
+        assert!(rings >= 3 && rings <= 9, "in two minutes a handful of idle rings: {rings}");
+        let mut c = Bd::seeded("g", 7);
+        c.ripple(0.3, 0.8, 0.72, false, 100); c.warm(0.24, 100);
+        assert!(c.busy() && c.heat > HEAT_FLOOR);
+        for _ in 0..400 { c.step(0.1, 100); }
+        assert!(c.heat <= HEAT_FLOOR + 1e-3, "a busy room cools back to its floor");
+    }
+    #[::core::prelude::v1::test]
+    fn strength_zero_makes_no_idle_rings() {
+        let mut b = Bd::seeded("g", 3);
+        for _ in 0..1000 { b.step(0.1, 0); }
+        assert!(b.rips.is_empty());
     }
     #[::core::prelude::v1::test]
     fn strength_zero_makes_no_ripples_and_a_hotter_room_gates_lower() {
