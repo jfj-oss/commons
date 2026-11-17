@@ -3,7 +3,7 @@
 //! test) against `mega-gpui --call-headless`.
 //!   {"cmd":"join","gid","name"} {"cmd":"leave"} {"cmd":"mute","on"} {"cmd":"deafen","on"} {"cmd":"volume","account","v"}
 //!   {"cmd":"snapshot"} {"cmd":"hear","identity","hz","ms"} {"cmd":"game","muted":true|false|null} {"cmd":"trust_all","on"}
-//!   {"cmd":"devices"} {"cmd":"mic","id"} {"cmd":"out","id"} {"cmd":"processing","echo","noise","gain"}
+//!   {"cmd":"meter","on"} (the settings meter) {"cmd":"devices"} {"cmd":"mic","id"} {"cmd":"out","id"} {"cmd":"processing","echo","noise","gain"}
 //!   {"cmd":"ptt_mode","on"} {"cmd":"ptt","down"} {"cmd":"plout","identity","ms"} {"cmd":"mic_options"}
 //!   {"cmd":"share","profile":"text|motion|motion60","source":"test|portal","w","h","speed","audio":<stream id>}  {"cmd":"share_stop"}
 //!   {"cmd":"share_switch","source","w","h","speed"} {"cmd":"share_profile","profile"} {"cmd":"share_end"} {"cmd":"share_stats"}
@@ -62,6 +62,7 @@ async fn handle(e: &Arc<CallEngine>, c: &Value, quit: &tokio::sync::mpsc::Unboun
         "game" => { e.send(Command::TestGame(c["muted"].as_bool())); json!({"ok": true}) }
         "trust_all" => { e.send(Command::TestTrustAll(on)); json!({"ok": true}) }
         "devices" => devices(e).await,
+        "meter" => { e.send(Command::MicMeter(on)); json!({"ok": true}) }
         "mic" => { e.send(Command::SetMicDevice { id: s("device") }); json!({"ok": true}) }
         "out" => { e.send(Command::SetOutDevice { id: s("device") }); json!({"ok": true}) }
         "processing" => {

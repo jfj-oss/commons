@@ -122,12 +122,18 @@ try {
   // let the device-module switches finish (or be abandoned by the engine's timeout) before the next step
   await sleep(6000);
 
+  // V11 the choice is remembered by NAME (ids are positions that move), and a microphone that sends only silence is reported
+  // (this private PipeWire has no session manager, so the device module's calls are slow here and hold the microphone slot; the level reader waits its turn)
+  const sQuiet = await soft(until(async () => { const s = await nat.snap(); return s.micQuiet ? s : null; }, 45000, 'mic quiet')).then(r => r.timeout ? nat.snap() : r);
+  const prefs = JSON.parse(fs.readFileSync(path.join(out, 'data/nat/gpui-call-prefs.json'), 'utf8'));
+  check('V11 the microphone is remembered by name and a silent one is reported (micQuiet), without dropping the call', sQuiet.micName === micB.name && prefs.micName === micB.name && sQuiet.micQuiet === true && sQuiet.micLevel < 0.0003 && healthy(sQuiet), { micName: sQuiet.micName, saved: prefs.micName, micQuiet: sQuiet.micQuiet, micLevel: sQuiet.micLevel, muted: sQuiet.muted, deafened: sQuiet.deafened, gameMuted: sQuiet.gameMuted, phase: sQuiet.phase });
+
   // a processing switch republishes the mic (new SID) without rejoining
   const sidBefore = (await nat.cmd('mic_options')).sid;
   await nat.cmd('processing', { noise: false });
-  const sProc = await until(async () => { const s = await nat.snap(); return !s.noiseSuppression && s.phase === 'connected' ? s : null; }, 8000, 'noise off');
+  const sProc = await until(async () => { const s = await nat.snap(); return !s.noiseSuppression && s.phase === 'connected' ? s : null; }, 8000, 'noise off').catch(async e => { const s = await nat.snap(); console.log('NOISE-OFF STUCK', J({ phase: s.phase, error: s.error, events: s.events, noise: s.noiseSuppression })); throw e; });
   const moProc = await nat.cmd('mic_options');
-  check('V10 a processing switch republishes the mic without a rejoin', healthy(sProc) && !sProc.noiseSuppression && moProc.sid && moProc.sid !== sidBefore, { sidBefore, sidAfter: moProc.sid, phase: sProc.phase, noiseSuppression: sProc.noiseSuppression });
+  check('V10 a processing switch republishes the mic without a rejoin', healthy(sProc) && !sProc.noiseSuppression && moProc.sid && moProc.sid !== sidBefore, { sidBefore, sidAfter: moProc.sid, phase: sProc.phase, noiseSuppression: sProc.noiseSuppression, error: sProc.error, events: sProc.events });
 
   await nat.cmd('quit').catch(() => { });
   await Promise.race([new Promise(r => nat.proc.on('exit', r)), sleep(5000)]);

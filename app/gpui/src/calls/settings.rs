@@ -11,8 +11,11 @@ use std::path::Path;
 pub struct CallSettings {
     /// The remembered recording (microphone) device id; `None` means the platform default.
     pub mic_id: Option<String>,
+    /// The remembered device's NAME: the stable handle (PulseAudio and PipeWire ids are positions, `index:N`, that move).
+    pub mic_name: Option<String>,
     /// The remembered playout (speaker) device id; `None` means the platform default.
     pub out_id: Option<String>,
+    pub out_name: Option<String>,
     pub processing: Processing,
     pub push_to_talk: bool,
     /// The camera used last (its id) and the camera profile (`720p` unless `1080p` was chosen), as call.js `camId` and `cameraProfile`.
@@ -24,7 +27,7 @@ pub struct CallSettings {
 
 impl Default for CallSettings {
     fn default() -> CallSettings {
-        CallSettings { mic_id: None, out_id: None, processing: Processing::ON, push_to_talk: false, cam_id: None, cam_profile: None, volumes: BTreeMap::new() }
+        CallSettings { mic_id: None, mic_name: None, out_id: None, out_name: None, processing: Processing::ON, push_to_talk: false, cam_id: None, cam_profile: None, volumes: BTreeMap::new() }
     }
 }
 
@@ -33,8 +36,13 @@ impl CallSettings {
         let v: serde_json::Value =
             std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::Value::Null);
         let mut s = CallSettings::default();
-        if let Some(id) = v["micId"].as_str() { s.mic_id = Some(id.to_string()); }
-        if let Some(id) = v["outId"].as_str() { s.out_id = Some(id.to_string()); }
+        // An empty id was the old "system default"; a bare `index:N` is a position that moves, so it is only kept next to
+        // a name (which then wins, see audio::resolve) and otherwise means the system default.
+        let keep = |id: &str, has_name: bool| !id.is_empty() && (has_name || !id.starts_with("index:"));
+        s.mic_name = v["micName"].as_str().filter(|n| !n.is_empty()).map(String::from);
+        s.out_name = v["outName"].as_str().filter(|n| !n.is_empty()).map(String::from);
+        if let Some(id) = v["micId"].as_str().filter(|i| keep(i, s.mic_name.is_some())) { s.mic_id = Some(id.to_string()); }
+        if let Some(id) = v["outId"].as_str().filter(|i| keep(i, s.out_name.is_some())) { s.out_id = Some(id.to_string()); }
         // The three switches default to on, so `!= Some(false)` rather than `== Some(true)`.
         s.processing.echo_cancellation = v["echoCancellation"].as_bool() != Some(false);
         s.processing.noise_suppression = v["noiseSuppression"].as_bool() != Some(false);
@@ -53,7 +61,9 @@ impl CallSettings {
         for (k, v) in &self.volumes { vols.insert(k.clone(), serde_json::json!(v)); }
         let v = serde_json::json!({
             "micId": self.mic_id,
+            "micName": self.mic_name,
             "outId": self.out_id,
+            "outName": self.out_name,
             "echoCancellation": self.processing.echo_cancellation,
             "noiseSuppression": self.processing.noise_suppression,
             "autoGainControl": self.processing.auto_gain_control,
@@ -89,11 +99,25 @@ mod tests {
         assert_eq!(s, CallSettings::default());
         std::fs::write(&p, br#"{"noiseSuppression": false, "micId": "tone", "volumes": {"a": 0, "b": 12}}"#).unwrap();
         let s = CallSettings::load(&p);
-        assert_eq!(s.mic_id.as_deref(), Some("tone"));
+        assert_eq!(s.mic_id.as_deref(), Some("tone"), "a real id is kept");
         assert!(!s.processing.noise_suppression);
         assert!(s.processing.echo_cancellation, "echo stays on by default");
         assert_eq!(s.volumes["a"], 0.);
         assert_eq!(s.volumes["b"], 10., "volumes clamp to 10");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_old_positional_id_migrates_to_the_system_default() {
+        let dir = std::env::temp_dir().join(format!("mega-call-settings-mig-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("gpui-call-prefs.json");
+        std::fs::write(&p, br#"{"micId": "index:1", "outId": ""}"#).unwrap();
+        let s = CallSettings::load(&p);
+        assert_eq!((s.mic_id, s.mic_name, s.out_id), (None, None, None));
+        std::fs::write(&p, br#"{"micId": "index:1", "micName": "Q1U"}"#).unwrap();
+        let s = CallSettings::load(&p);
+        assert_eq!((s.mic_id.as_deref(), s.mic_name.as_deref()), (Some("index:1"), Some("Q1U")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -104,6 +128,8 @@ mod tests {
         let p = dir.join("gpui-call-prefs.json");
         let mut s = CallSettings::default();
         s.out_id = Some("out0".into());
+        s.out_name = Some("Speakers".into());
+        s.mic_name = Some("Q1U".into());
         s.processing.noise_suppression = false;
         s.push_to_talk = true;
         s.cam_id = Some("/dev/video2".into());

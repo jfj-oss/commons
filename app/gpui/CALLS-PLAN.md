@@ -57,6 +57,29 @@ Corrections to this plan found on the way:
 - `parec` does not end when the app closes its stream (the sink's monitor goes on, silent), so the engine looks the
   stream up every 2 s.
 
+## Progress (2026-11-16, branch `gpui-realvoice`): real microphone and speakers
+
+First run of the engine against the REAL audio stack (PipeWire 1.6, the desktop's own default devices), silently:
+`tools/gpui-realvoice.mjs` (native engine with the platform audio module, a web client whose "microphone" is a zero-gain
+oscillator and whose output is muted; reception measured on RTP stats and analyser energy, never on a speaker).
+
+- The engine side works with real devices: a capture stream opens on the default microphone, a playback stream on the
+  default speaker, the track is published, the web client receives it (rms 0.2 to 0.4 with room noise), and the app never
+  changes the system's default devices or the microphone's mute.
+- What made the user's calls silent in the first run: the AT2020 source was **muted in PipeWire/WirePlumber**
+  (`pactl get-source-mute` yes, `default-routes` has `"mute":true`): every app, including `parec`, got digital zero. The
+  app could not tell that from a quiet room. It now reports it (`micSystemMuted`, `micQuiet`) in the call bar and the
+  settings panel.
+- Device ids on the PulseAudio backend are positions (`index:N`, no GUIDs). The remembered device is now stored by NAME
+  (`micName`/`outName` in `gpui-call-prefs.json`); an old bare `index:N` means the system default; a device that is gone
+  falls back to the default instead of failing the join. The settings show "Using: <name>".
+- "Test microphone" meter in the call settings (`Snapshot.mic_level`): in a call it is the sender's own `audioLevel`;
+  outside a call, on Linux, a `parec` recording of the chosen source while the panel is open. Visual only.
+- Found on the way: listing devices on the live ADM during a call stalls it ("the audio device did not answer in time"
+  on the next switch). Mid-call switches now use the ids of the list the person picked from; names are resolved once,
+  before the first publish. Stats are never requested while the microphone slot is being changed.
+- Not built: "Test speakers" (a sound would have to be played; deliberately left out).
+
 ## Progress (2026-11-16, branch `gpui-ui`): the UI for calls, and four design ideas
 
 The window side of step 3 and step 4, in `src/callui.rs`, `deck.rs`, `video.rs`, `popout.rs`; the looks in `backdrop.rs`, `linen.rs`,
