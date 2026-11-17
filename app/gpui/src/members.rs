@@ -361,7 +361,7 @@ impl Mega {
         let say = self.mem.say.clone();
         Some(div().id("mem-overlay").absolute().inset_0().flex().items_center().justify_center().occlude()
             .child(div().id("mem-scrim").absolute().inset_0().bg(hsla(0., 0., 0., 0.62)).on_click(cx.listener(|this, _, _, cx| this.close_panel(cx))))
-            .child(v_flex().id("mem-card").relative().w(px(600.)).max_w_full().max_h(px(660.)).mx_4().rounded(px(30.)).bg(rgb(look::SLIP)).border_1().border_color(look::line()).shadow_lg().overflow_hidden()
+            .child(v_flex().id("mem-card").relative().occlude().w(px(600.)).max_w_full().max_h(px(660.)).mx_4().rounded(px(30.)).bg(rgb(look::SLIP)).border_1().border_color(look::line()).shadow_lg().overflow_hidden()
                 .child(div().flex_none().h(px(8.)).w_full().bg(linear_gradient(90., linear_color_stop(rgb(duo.main), 0.5), linear_color_stop(rgb(duo.hi), 0.5))))
                 .child(v_flex().id("mem-body").flex_1().min_h_0().overflow_y_scroll().px_6().pt_4().pb_5().gap_2()
                     .when_some(say, |d, (t, bad, _)| d.child(div().id("mem-say").px_3().py_1().rounded(px(12.)).border_1().border_color(if bad { rgb(look::DANGER).into() } else { look::line() }).text_color(if bad { rgb(look::DANGER).into() } else { look::paper() }).text_size(px(13.)).child(t)))
