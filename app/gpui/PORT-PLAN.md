@@ -99,8 +99,8 @@ making" below, but it is not needed for the port.
 | Large files: resumable upload/download, progress, pause, cancel, save-as (`file_transfers`, `file_download_*`, `pick_folder`) | next | all state is the core's; needs a native file dialog (GPUI has `prompt_for_paths` / `prompt_for_new_path`) |
 | Video inline | hard | no video element in GPUI; either hand to the system player or decode with GStreamer/ffmpeg into `surface` frames |
 | Voice clips: record, waveform, play (mega-voice.js) | hard | needs audio capture and playback (`cpal`) and an Opus/WebM writer the web UI gets from MediaRecorder. Playing received clips needs a WebM/MP4 audio decoder |
-| Profile pictures: show (`avatar_versions`, `avatar_data`) | next | |
-| Profile pictures: crop and upload (avatar.js) | next | crop UI by hand; resize with the `image` crate |
+| Profile pictures: show (`avatar_versions`, `avatar_data`) | done | avatars.rs: versions asked every 4 s, a picture is fetched and decoded off the UI thread only when its blob id is new, masked to its shape (circle or squircle), kept as small and large GPU images. Message rows, people list, person card, call bar faces, tiles with the camera off, direct and "you" cards; the letter seal when there is none |
+| Profile pictures: crop and upload (avatar.js) | done | settings: choose (file dialog) or drop; drag, scroll or buttons to zoom 1..4, circle or square; sent as a 256 px JPEG under 40 KB (the page's own fallback format) through `set_avatar`; `remove_avatar`. Checked both ways against the web client (tools/gpui-avatars-e2e.mjs). The file dialog itself is untested headless (needs the desktop portal); a drop and the dialog share `avatar_open` |
 
 ## 6. People, direct calls, presence
 

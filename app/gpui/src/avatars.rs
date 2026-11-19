@@ -439,7 +439,7 @@ fn frame(window: &mut Window, b: Bounds<Pixels>, circle: bool) {
     let edge = hsla(0., 0., 1., 0.8);
     if !circle { sq::cutters(window, b, n * SQ_R, dim); sq::stroke(window, b, n * SQ_R, 1.5, edge); return; }
     let r = n / 2.;
-    let arc = |a0: f32, a1: f32| -> Vec<(f32, f32)> { (0..=24).map(|i| { let a = a0 + (a1 - a0) * i as f32 / 24.; (x + r + r * a.cos(), y + r + r * a.sin()) }).collect() };
+    let arc = |a0: f32, a1: f32| -> Vec<(f32, f32)> { (0..=96).map(|i| { let a = a0 + (a1 - a0) * i as f32 / 96.; (x + r + r * a.cos(), y + r + r * a.sin()) }).collect() };
     let pi = std::f32::consts::PI;
     // each corner: the box's corner, then the quarter circle between the two edge midpoints
     let corners = [((x, y), arc(pi, 1.5 * pi)), ((x + n, y), arc(1.5 * pi, 2. * pi)), ((x + n, y + n), arc(0., 0.5 * pi)), ((x, y + n), arc(0.5 * pi, pi))];
