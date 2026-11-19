@@ -8,6 +8,7 @@
 //!   {"cmd":"attend","on":false}               behave as a window nobody looks at (so notifications show)
 //!   {"cmd":"ring_all"}                          the ring button of the call bar
 //!   {"cmd":"join","name"}                       join the voice room with this name
+//!   {"cmd":"avatars"} {"cmd":"avatar_open","path"} {"cmd":"avatar_crop","zoom","x","y","circle"} {"cmd":"avatar_use"} {"cmd":"avatar_remove"} {"cmd":"avatar_poll"}   profile pictures: what is held and what the cropper shows; choose a file (what a drop does); crop; send; remove; look now
 //!   {"cmd":"home"}  {"cmd":"server","name"}  {"cmd":"settings"}   back to the home screen; a community's rooms; settings
 //!   {"cmd":"leave"}  {"cmd":"open","name"}      leave the call; open a room (or a direct conversation) by name
 //!   {"cmd":"rune","what":"pause|resume|next|prev"}  {"cmd":"along"}   the rune controls of the call bar
@@ -82,6 +83,17 @@ impl Mega {
                 "hidden" => { self.fake_hidden = cmd["on"].as_bool() == Some(true); json!({"ok": true}) }
                 "stir" => { self.stir(2); cx.notify(); json!({"ok": true}) }
                 "bd" => json!({"t": self.bd.t, "heat": self.bd.heat, "ripples": self.bd.rips.len(), "busy": self.bd.busy(), "next_rip": self.bd.next_rip, "visible": window.is_visible(), "typing": self.win.typing, "still": self.still(), "dim": self.gid.as_deref().map(|g| self.bd_dim(g))}),
+                "avatars" => self.avatar_dump(),
+                "avatar_open" => { self.avatar_open(std::path::PathBuf::from(s("path")), window, cx); json!({"ok": true}) }
+                "avatar_crop" => {
+                    let (z, x, y) = (cmd["zoom"].as_f64(), cmd["x"].as_f64(), cmd["y"].as_f64());
+                    let circle = cmd["circle"].as_bool();
+                    self.avatar_crop_set(|c| { if let Some(z) = z { c.zoom = z as f32; } if let Some(x) = x { c.x = x as f32; } if let Some(y) = y { c.y = y as f32; } if let Some(b) = circle { c.circle = b; } }, cx);
+                    self.avatar_dump()
+                }
+                "avatar_use" => { self.avatar_use(window, cx); json!({"ok": true}) }
+                "avatar_remove" => { self.avatar_remove(window, cx); json!({"ok": true}) }
+                "avatar_poll" => { self.avatar_poll(); json!({"ok": true}) }
                 "home" => { self.go(crate::app::Level::Home, window, cx); json!({"ok": true}) }
                 "attend" => { self.ring.unattended = cmd["on"].as_bool() == Some(false); json!({"ok": true}) }
                 "ring_all" => { self.ring_all(window, cx); json!({"ok": true}) }

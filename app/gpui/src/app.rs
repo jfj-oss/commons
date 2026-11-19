@@ -97,6 +97,8 @@ pub struct Mega {
     /// The colours panel (paint.rs) and the shared ASCII wall (wall.rs).
     pub paint: crate::paint::PaintUi,
     pub wall: crate::wall::WallUi,
+    /// Profile pictures: the cropper and the settings note (avatars.rs).
+    pub av: crate::avatars::AvatarUi,
     _tasks: Vec<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -129,7 +131,7 @@ impl Mega {
         let (paint, paint_sub) = crate::paint::PaintUi::new(window, cx);
         subs.push(paint_sub);
         let mut this = Mega {
-            nav, rail: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx),
+            nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx),
             level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd: crate::backdrop::Bd::new(""), typing_ui: Default::default(), typing_at: Instant::now(), fake_hidden: false, holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
@@ -148,7 +150,7 @@ impl Mega {
         }));
         this._tasks.push(cx.spawn_in(window, async move |this, cx| loop {
             cx.background_executor().timer(Duration::from_millis(700)).await;
-            if this.update_in(cx, |this, window, cx| { this.presence_tick(window, cx); this.call_tick(window, cx); this.preview_tick(window, cx); }).is_err() { break; }
+            if this.update_in(cx, |this, window, cx| { this.presence_tick(window, cx); this.avatar_tick(window, cx); this.call_tick(window, cx); this.preview_tick(window, cx); }).is_err() { break; }
         }));
         // Rings, what notifications ask of the window, rune in the call bar, the test port: a quarter-second clock.
         this._tasks.push(cx.spawn_in(window, async move |this, cx| loop {

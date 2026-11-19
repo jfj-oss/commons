@@ -262,8 +262,11 @@ impl Mega {
         let me = p.me;
         div().id(SharedString::from(format!("peer-{}", p.identity))).relative().flex_none().size(px(34.)).rounded_full().cursor_pointer()
             .border_2().border_color(if p.speaking { rgb(look::SPEAK).into() } else { hsla(0., 0., 0., 0.) })
-            .child(div().size_full().rounded_full().bg(look::face(&p.name)).text_color(rgb(0x0c0d12)).font_family(look::F_SHARP).text_size(px(20.)).flex().items_center().justify_center()
-                .when(p.muted || p.deafened, |d| d.opacity(0.55)).child(initial))
+            .child(match p.account.as_deref().and_then(|a| crate::avatars::pic_view(a, 30.)) {
+                Some(pic) => pic.when(p.muted || p.deafened, |d| d.opacity(0.55)),
+                None => div().size_full().rounded_full().bg(look::face(&p.name)).text_color(rgb(0x0c0d12)).font_family(look::F_SHARP).text_size(px(20.)).flex().items_center().justify_center()
+                    .when(p.muted || p.deafened, |d| d.opacity(0.55)).child(initial),
+            })
             .when(p.muted, |d| d.child(div().absolute().right(px(-2.)).bottom(px(-2.)).size(px(11.)).rounded_full().bg(rgb(look::DANGER)).border_1().border_color(rgb(look::VOID))))
             .when(!me && acct.is_some(), |d| d.on_click(cx.listener(move |this, _, window, cx| { if let Some(a) = acct.clone() { this.open_person(a, name.clone(), window, cx); } })))
     }
@@ -436,7 +439,15 @@ impl Mega {
         let inner = div().absolute().inset_0();
         let inner = match pic {
             Some(i) => inner.child(img(ImageSource::Render(i)).size_full().object_fit(ObjectFit::Cover)),
-            None => inner.bg(look::face(&t.name).opacity(0.25)).flex().items_center().justify_center().child(div().font_family(look::F_SHARP).text_size(px(54.)).text_color(look::face(&t.name)).child(t.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default())),
+            None => {
+                let acct = self.call.snap.peers.iter().find(|p| p.identity == t.identity).and_then(|p| p.account.clone()).unwrap_or_default();
+                match crate::avatars::get(&acct) {
+                    // no camera: their picture, centred, as the page's `.cp img` stands for them
+                    Some(p) => inner.bg(look::face(&t.name).opacity(0.25)).flex().items_center().justify_center()
+                        .child(div().h(relative(0.72)).aspect_square().child(img(ImageSource::Render(p.at(200.))).size_full().object_fit(ObjectFit::Fill))),
+                    None => inner.bg(look::face(&t.name).opacity(0.25)).flex().items_center().justify_center().child(div().font_family(look::F_SHARP).text_size(px(54.)).text_color(look::face(&t.name)).child(t.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default())),
+                }
+            }
         };
         d.child(inner)
             .child(h_flex().absolute().left(px(10.)).bottom(px(8.)).gap_1().px_2().py_0p5().rounded_full().bg(hsla(0., 0., 0., 0.55)).font_family(look::F_NAME).text_size(px(12.)).text_color(look::paper())

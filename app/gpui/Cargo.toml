@@ -8,7 +8,7 @@ description = "mega desktop on GPUI (spike; not part of any release)"
 [features]
 default = ["calls"]
 # Calls inside the app. Off, the rest of the app builds without libwebrtc.
-calls = ["dep:livekit", "dep:libwebrtc", "dep:webrtc-sys", "dep:tokio", "dep:base64", "dep:parking_lot", "dep:getrandom", "dep:image", "dep:smallvec", "dep:serde", "dep:log", "dep:zbus", "dep:libc", "dep:zune-jpeg"]
+calls = ["dep:livekit", "dep:libwebrtc", "dep:webrtc-sys", "dep:tokio", "dep:parking_lot", "dep:getrandom", "dep:serde", "dep:log", "dep:zbus", "dep:libc", "dep:zune-jpeg"]
 
 [[bin]]
 name = "mega-gpui"
@@ -34,12 +34,12 @@ livekit = { version = "=0.11.0", features = ["rustls-tls-native-roots", "glib-ma
 libwebrtc = { version = "=0.4.1", optional = true }
 webrtc-sys = { version = "=0.3.54", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "io-std"], optional = true }
-base64 = { version = "0.22", optional = true }
+base64 = "0.22"
 parking_lot = { version = "0.12", optional = true }
 getrandom = { version = "0.2", optional = true }
 # remote video drawn as images on Linux (videobench.rs now, calls/video.rs later): the versions GPUI already uses
-image = { version = "0.25", default-features = false, optional = true }
-smallvec = { version = "1", optional = true }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+smallvec = "1"
 serde = { version = "1", features = ["derive"], optional = true }
 log = { version = "0.4", optional = true }
 # The camera (calls/camera_linux.rs): V4L2 by hand and the JPEG decoder `image` already builds (same versions as Cargo.lock).

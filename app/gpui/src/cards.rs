@@ -29,6 +29,8 @@ pub enum Open { Server(String), Room(String, String), Settings, Admin(String) }
 /// One card of the column.
 #[derive(Clone)]
 pub struct NavItem {
+    /// The account whose picture the card shows (a direct conversation: the other person; "you": me), or empty.
+    pub face: String,
     pub key: String,
     pub cid: String,
     pub room: String,
@@ -118,7 +120,7 @@ impl Mega {
             let mut pv: Option<&crate::cards::Prev> = None;
             for x in c.channels.iter().filter(|x| x.kind != "voice" && x.joined) { if let Some(p) = self.nav.previews.get(&x.gid).filter(|p| !p.text.is_empty()) { if pv.is_none_or(|q| p.ts > q.ts) { pv = Some(p); } } }
             let sub = if c.members > 0 { format!("{} {}", c.members, if c.members == 1 { "person" } else { "people" }) } else { format!("{} room{}", c.channels.len(), if c.channels.len() == 1 { "" } else { "s" }) };
-            out.push(NavItem { key: format!("c:{}", c.id), cid: c.id.clone(), room: String::new(), title: c.name.clone(), sub, num: c.unread, duo: self.duo_for(&c.id, c.colours.as_ref()), fx: self.look_fx(&c.id, &c.id, ascii::auto_fx(&c.name)), auto: ascii::auto_fx(&c.name),
+            out.push(NavItem { face: String::new(), key: format!("c:{}", c.id), cid: c.id.clone(), room: String::new(), title: c.name.clone(), sub, num: c.unread, duo: self.duo_for(&c.id, c.colours.as_ref()), fx: self.look_fx(&c.id, &c.id, ascii::auto_fx(&c.name)), auto: ascii::auto_fx(&c.name),
                 locked: false, voice: false, looking: self.people_on(&c.id, ""), here: here.clone(), hi_t: 0.9 - 0.22 * (c.unread.min(12) as f64 / 12.),
                 preview: pv.map(|p| (p.who.clone(), p.text.clone())),
                 note: voice_ch.filter(|_| !here.is_empty()).map(|x| format!("{} in {}", here.len(), x.name)),
@@ -130,12 +132,12 @@ impl Mega {
             let unread = d.channels.iter().map(|ch| ch.unread).sum::<u64>().max(d.unread).max(self.fake_dm_unread as u64);
             let duo = Duo::of(&d.room, d.room_colours.iter().find(|(g, _)| g == &d.room).map(|(_, x)| x));
             let pv = self.nav.previews.get(&d.room).filter(|p| !p.text.is_empty());
-            out.push(NavItem { key: format!("d:{}", d.id), cid: d.id.clone(), room: d.room.clone(), title: d.name.clone(), sub: if on { "direct".into() } else { "waiting for them".into() }, num: unread, duo,
+            out.push(NavItem { face: d.peer.clone(), key: format!("d:{}", d.id), cid: d.id.clone(), room: d.room.clone(), title: d.name.clone(), sub: if on { "direct".into() } else { "waiting for them".into() }, num: unread, duo,
                 fx: ascii::auto_fx(&d.name), auto: ascii::auto_fx(&d.name), locked: !on, voice: false, looking: vec![], here: vec![], hi_t: 0.9 - 0.22 * (unread.min(12) as f64 / 12.), preview: pv.map(|p| (p.who.clone(), p.text.clone())),
                 note: None, section: None, open: Open::Room(d.id.clone(), d.room.clone()), news: vec![] });
         }
         // "you": the profile and the device's own options (the page's last card)
-        out.push(NavItem { key: "you".into(), cid: String::new(), room: String::new(), title: "you".into(), sub: "settings".into(), num: 0, duo: Duo { main: 0xd9dce4, hi: 0x2b3bff }, fx: 4, auto: 4, locked: false, voice: false,
+        out.push(NavItem { face: snap.me_account.clone(), key: "you".into(), cid: String::new(), room: String::new(), title: "you".into(), sub: "settings".into(), num: 0, duo: Duo { main: 0xd9dce4, hi: 0x2b3bff }, fx: 4, auto: 4, locked: false, voice: false,
             looking: vec![], here: vec![], hi_t: 0.9, preview: None, note: Some("your profile and account".into()), section: None, open: Open::Settings, news: vec![] });
         out
     }
@@ -156,7 +158,7 @@ impl Mega {
         let rows: Vec<NewsRow> = rows.into_iter().map(|r| r.1).collect();
         let total: u64 = rows.iter().map(|r| r.n).sum();
         let first = rows[0].clone();
-        Some(NavItem { key: "news".into(), cid: String::new(), room: String::new(), title: "what\u{2019}s new".into(), sub: format!("{} unread room{}", rows.len(), if rows.len() == 1 { "" } else { "s" }), num: total,
+        Some(NavItem { face: String::new(), key: "news".into(), cid: String::new(), room: String::new(), title: "what\u{2019}s new".into(), sub: format!("{} unread room{}", rows.len(), if rows.len() == 1 { "" } else { "s" }), num: total,
             duo: Duo { main: 0xff8a5c, hi: 0xffe45e }, fx: 12, auto: 12, locked: false, voice: false, looking: vec![], here: vec![], hi_t: 0.9 - 0.22 * (total.min(12) as f64 / 12.), preview: None, note: None, section: None,
             open: Open::Room(first.cid, first.gid), news: rows })
     }
@@ -175,16 +177,16 @@ impl Mega {
             let sub = if !ch.joined { "waiting for keys".to_string() } else if !ch.status.is_empty() && ch.status != "ok" { ch.status.clone() } else if voice { "voice".into() } else if ch.unread > 0 { "unread".into() } else { "caught up".into() };
             let num = if voice { here.len() as u64 } else { ch.unread };
             let hi_t = if !ch.joined || (voice && here.is_empty()) { 2. } else if voice { 0.76 } else { 0.9 - 0.22 * (ch.unread.min(12) as f64 / 12.) };
-            out.push(NavItem { key: ch.gid.clone(), cid: c.id.clone(), room: ch.gid.clone(), title: ch.name.clone(), sub, num, duo, fx, auto, locked: !ch.joined, voice,
+            out.push(NavItem { face: String::new(), key: ch.gid.clone(), cid: c.id.clone(), room: ch.gid.clone(), title: ch.name.clone(), sub, num, duo, fx, auto, locked: !ch.joined, voice,
                 looking: self.people_on(&c.id, &ch.gid), here: here.clone(), hi_t, preview: if voice { None } else { pv.map(|p| (p.who.clone(), p.text.clone())) },
                 note: if !ch.joined { Some("this device does not have the keys for this room yet".into()) } else if voice && here.is_empty() { Some("nobody here yet".into()) } else { None },
                 section: if voice { Some("voice") } else { None }, open: Open::Room(c.id.clone(), ch.gid.clone()), news: vec![] });
         }
         if crate::members::is_admin(c) {
-            out.push(NavItem { key: format!("adm:{}", c.id), cid: c.id.clone(), room: String::new(), title: "server settings".into(), sub: "owners and admins".into(), num: 0, duo: Duo::of(&format!("adm:{}", c.id), None), fx: 2, auto: 2, locked: false, voice: false,
+            out.push(NavItem { face: String::new(), key: format!("adm:{}", c.id), cid: c.id.clone(), room: String::new(), title: "server settings".into(), sub: "owners and admins".into(), num: 0, duo: Duo::of(&format!("adm:{}", c.id), None), fx: 2, auto: 2, locked: false, voice: false,
                 looking: vec![], here: vec![], hi_t: 0.9, preview: None, note: Some("name, rooms, members, invites. Everyone here sees what you change.".into()), section: None, open: Open::Admin(c.id.clone()), news: vec![] });
         }
-        out.push(NavItem { key: format!("opt:{}", c.id), cid: c.id.clone(), room: String::new(), title: "options".into(), sub: "only on this device".into(), num: 0, duo: Duo { main: 0xa9adb8, hi: 0x4a4e5c }, fx: 6, auto: 6, locked: false, voice: false,
+        out.push(NavItem { face: String::new(), key: format!("opt:{}", c.id), cid: c.id.clone(), room: String::new(), title: "options".into(), sub: "only on this device".into(), num: 0, duo: Duo { main: 0xa9adb8, hi: 0x4a4e5c }, fx: 6, auto: 6, locked: false, voice: false,
             looking: vec![], here: vec![], hi_t: 0.9, preview: None, note: Some("alerts, sound and look. Nobody else can see these.".into()), section: None, open: Open::Settings, news: vec![] });
         out
     }
@@ -365,7 +367,7 @@ impl Mega {
         let more = it.looking.len().saturating_sub(crate::presence::SHOW);
         let here_faces: Vec<AnyElement> = it.here.iter().take(5).map(|n| crate::views::face_dot(n, 22. * s).into_any_element()).collect();
         let top = h_flex().w_full().items_start().gap(px(12. * s)).font_family(look::F_UI).text_size(px(top_px)).line_height(px(top_px * 1.4)).text_color(ink)
-            .child(div().relative().child(it.sub.clone()).child(ascii::hole(&live))).child(div().flex_1()).children(looking.into_iter().map(|f| div().relative().child(f).child(ascii::hole(&live)).into_any_element())).when(more > 0, |d| d.child(div().relative().child(format!("+{more}")).child(ascii::hole(&live))));
+            .child(div().relative().child(it.sub.clone()).child(ascii::hole(&live))).child(div().flex_1()).when(!it.face.is_empty(), |d| d.child(div().relative().children(crate::avatars::pic_view(&it.face, 30. * s)).child(ascii::hole(&live)))).children(looking.into_iter().map(|f| div().relative().child(f).child(ascii::hole(&live)).into_any_element())).when(more > 0, |d| d.child(div().relative().child(format!("+{more}")).child(ascii::hole(&live))));
         // the "what's new" card holds a row per unread room instead of one line
         let news_rows: Vec<AnyElement> = if it.news.is_empty() || !show_mid { vec![] } else {
             let fit = (((h - 2. * pad - tpx * lines as f32 * 0.95 - top_px * 2.5) / ((56. + 8.) * s)).floor().max(1.)) as usize;

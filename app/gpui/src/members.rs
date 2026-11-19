@@ -131,7 +131,8 @@ fn danger_pill(id: impl Into<ElementId>, text: impl Into<SharedString>) -> State
 fn label(t: &str) -> Div { div().mt_3().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(t.to_string()) }
 fn note(t: impl Into<SharedString>) -> Div { div().text_size(px(13.)).text_color(look::mute()).child(t.into()) }
 fn chip(t: &str, on: bool) -> Div { div().px_2().rounded_full().border_1().border_color(if on { look::paper() } else { look::line() }).font_family(look::F_NAME).text_size(px(11.)).text_color(if on { look::paper() } else { look::mute() }).child(t.to_string()) }
-fn small_avatar(name: &str, size: f32) -> Div {
+fn small_avatar(account: &str, name: &str, size: f32) -> Div {
+    if let Some(p) = crate::avatars::pic_view(account, size) { return p; }
     let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into());
     div().size(px(size)).flex_none().rounded(px(size * 0.3)).bg(look::face(name)).text_color(rgb(0x0c0d12)).font_family(look::F_SHARP).text_size(px(size * 0.66)).line_height(px(size))
         .flex().items_center().justify_center().child(initial)
@@ -399,7 +400,7 @@ impl Mega {
             let on = self.online(m);
             list = list.child(h_flex().id(SharedString::from(format!("person-{}", m.account))).gap_3().items_center().px_3().py_2().rounded(px(18.)).border_1().border_color(look::line()).cursor_pointer()
                 .child(div().size(px(10.)).flex_none().rounded_full().when(on, |d| d.bg(rgb(look::SPEAK))).when(!on, |d| d.border_1().border_color(look::mute())))
-                .child(small_avatar(&m.name, 36.))
+                .child(small_avatar(&m.account, &m.name, 36.))
                 .child(v_flex().flex_1().min_w_0()
                     .child(h_flex().gap_2().items_center().child(div().font_family(look::F_SHARP).text_size(px(24.)).line_height(px(24.)).child(m.name.clone()))
                         .when(m.me, |d| d.child(chip("you", false)))
@@ -460,7 +461,7 @@ impl Mega {
         }
         let back = cid.clone();
         v_flex().gap_3()
-            .child(h_flex().gap_4().items_center().child(small_avatar(&m.name, 84.))
+            .child(h_flex().gap_4().items_center().child(small_avatar(&m.account, &m.name, 84.))
                 .child(v_flex().flex_1().min_w_0().gap_1()
                     .child(div().font_family(look::F_SHARP).text_size(px(52.)).line_height(px(48.)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(m.name.clone()))
                     .child(h_flex().gap_2().items_center().child(div().size(px(10.)).rounded_full().when(on, |d| d.bg(rgb(look::SPEAK))).when(!on, |d| d.border_1().border_color(look::mute())))
