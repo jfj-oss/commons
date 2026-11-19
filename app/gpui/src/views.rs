@@ -27,7 +27,9 @@ fn lock_icon() -> Div {
 pub(crate) fn face_dot(name: &str, size: f32) -> Div {
     div().size(px(size)).flex_none().rounded_full().bg(look::face(name)).border_1().border_color(hsla(0., 0., 0., 0.35))
 }
-fn avatar(name: &str, size: f32) -> Div {
+/// A person's picture where they have one, else their letter on the seal's squircle.
+pub(crate) fn avatar(account: &str, name: &str, size: f32) -> Div {
+    if let Some(p) = crate::avatars::pic_view(account, size) { return p; }
     let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into());
     div().relative().size(px(size)).flex_none().text_color(rgb(0x0c0d12)).font_family(look::F_SHARP).text_size(px(size * 24. / 36.)).line_height(px(size))
         .flex().items_center().justify_center().child(sq::back(11., look::face(name))).child(div().relative().child(initial))
@@ -259,6 +261,7 @@ impl Mega {
 
     fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let snap = self.snap.clone().unwrap_or_default();
+        let avatar_row = self.avatar_settings(cx);
         let back = if self.gid.is_some() { Level::Chat } else { Level::Home };
         let label = |t: &str| div().mt_4().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(t.to_string());
         let note = |t: &str| div().text_size(px(13.)).text_color(look::mute()).child(t.to_string());
@@ -295,6 +298,8 @@ impl Mega {
             .child(label("your name"))
             .child(h_flex().gap_2().child(div().w(px(280.)).child(Input::new(&self.set_name)))
                 .child(Button::new("save-name").label("Save").on_click(cx.listener(|this, _, window, cx| { let n = this.set_name.read(cx).value().to_string(); this.set_setting("set_name", json!({"name": n}), window, cx); }))))
+            .child(label("profile picture"))
+            .child(avatar_row)
             .child(label("battery saver"))
             .child(h_flex().gap_2()
                 .child(choice("sv-auto", saver == Saver::Auto, "Auto").on_click(set_saver(Saver::Auto)))
@@ -454,7 +459,7 @@ pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f3
         .child(line(h_flex().relative().items_start().gap_3().px(px(10.)).pb_1().when(head, |d| d.pt(px(10.)))
             .when(!flying.is_empty(), |d| d.child(flight_layer(flying, landing, fx.now, fx.hi)))
             .when(star, |d| d.child(div().absolute().left(px(-12.)).top(px(if head { 22. } else { 8. })).text_size(px(13.)).text_color(look::paper()).opacity(0.8).child("✦")))
-            .child(if head { avatar(&m.name, 36. * k).mt_1() } else { div().w(px(36. * k)).flex_none() })
+            .child(if head { avatar(&m.sender, &m.name, 36. * k).mt_1() } else { div().w(px(36. * k)).flex_none() })
             .child(col.child(foot)))).into_any_element()
 }
 
@@ -496,7 +501,8 @@ impl Render for Mega {
                 let pop = self.call_popover(cx);
                 let rings = self.ring_overlay(cx);
                 let people = self.members_overlay(cx);
-                base.child(v_flex().size_full().child(div().flex_1().min_h_0().w_full().child(body)).children(bar)).children(pop).children(people).children(rings)
+                let cropper = self.avatar_overlay(cx);
+                base.child(v_flex().size_full().child(div().flex_1().min_h_0().w_full().child(body)).children(bar)).children(pop).children(people).children(rings).children(cropper)
             }
         }
     }
