@@ -47,8 +47,6 @@ const SECRET_WORDS: &[&str] = &["password", "passwd", "secret", "token", "apikey
 /// Commands that give root or another identity. Denied for Claude Code, everywhere.
 const SUDO_WORDS: &[&str] = &["sudo", "doas", "pkexec", "su", "sudoedit", "run0"];
 
-/// Network tools other than Claude's own web search and fetch.
-const NET_TOOLS: &[&str] = &["curl", "wget", "nc", "ncat", "netcat", "socat", "ssh", "scp", "sftp", "rsync", "telnet", "ftp", "tftp", "nmap", "aria2c", "lftp"];
 
 #[derive(Debug, Clone)]
 pub struct Deny {
@@ -56,6 +54,8 @@ pub struct Deny {
     /// Absolute paths, each with its symlink-resolved twin when that differs.
     paths: Vec<PathBuf>,
     no_write: Vec<PathBuf>,
+    /// False: nothing is protected (the owner switched `MEGATRON_BOT_ASSIST_PROTECT_SECRETS` off).
+    pub protect: bool,
 }
 
 /// `/a/./b/../c` becomes `/a/c`, without touching the disk.
@@ -90,7 +90,10 @@ pub fn resolve(p: &Path) -> PathBuf {
 }
 
 impl Deny {
-    pub fn new(home: &Path, extra: &[PathBuf]) -> Deny {
+    pub fn new(home: &Path, extra: &[PathBuf]) -> Deny { Deny::with_protect(home, extra, true) }
+
+    pub fn with_protect(home: &Path, extra: &[PathBuf], protect: bool) -> Deny {
+        if !protect { return Deny { home: home.to_path_buf(), paths: vec![], no_write: vec![], protect: false }; }
         let mut paths: Vec<PathBuf> = vec![];
         let add = |v: &mut Vec<PathBuf>, p: PathBuf| {
             let real = resolve(&p);
@@ -109,7 +112,7 @@ impl Deny {
         add(&mut paths, PathBuf::from("/etc/sudoers.d"));
         let mut no_write = vec![];
         for rel in NO_WRITE_REL { add(&mut no_write, home.join(rel)); }
-        Deny { home: home.to_path_buf(), paths, no_write }
+        Deny { home: home.to_path_buf(), paths, no_write, protect: true }
     }
 
     pub fn paths(&self) -> &[PathBuf] { &self.paths }
@@ -141,6 +144,7 @@ impl Deny {
 
     /// Does this free text (a shell command, a path, a diff) mention a protected place in any spelling we can recognise?
     pub fn mentions_protected(&self, text: &str) -> Option<String> {
+        if !self.protect { return None; }
         let home = self.home.to_string_lossy().to_string();
         let flat = text.replace("${HOME}", "~").replace("$HOME", "~").replace(&home, "~");
         for t in DENY_TOKENS { if flat.contains(t) { return Some((*t).to_string()); } }
@@ -165,37 +169,33 @@ pub fn mentions_sudo(cmd: &str) -> bool {
     })
 }
 
-/// The Claude Code settings file: deny rules (they beat every allow rule and every approval), no allow rules, and the
-/// sandbox on for shell commands (fails closed when it cannot start).
-pub fn claude_settings(d: &Deny, allowed_domains: &[String], read_dirs: &[PathBuf]) -> Value {
+/// The Claude Code settings file. Every tool goes through the approver (`ask`), which allows it unless the destruction guard refuses
+/// (guard.rs); the deny rules (protected places, sudo, a few plain deletion commands as a second line of defence) beat every allow rule.
+/// The sandbox is off: Claude Code works on the whole machine.
+pub fn claude_settings(d: &Deny) -> Value {
     let abs = |p: &Path| format!("/{}", p.to_string_lossy());
-    // Reading inside the read dirs (`--add-dir`) is not free: the first read in a project folder is asked, and a yes covers that
-    // folder for the rest of the task (claude.rs `read_scope`). Grep shows file contents too, so it is asked the same way.
-    let mut ask: Vec<String> = vec!["Bash".into(), "WebFetch".into(), "WebSearch".into(), "Grep".into()];
-    for r in read_dirs { if !d.is_denied(r) { ask.push(format!("Read({}/**)", abs(r))); } }
+    let ask: Vec<String> = ["Bash", "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Glob", "Grep", "WebFetch", "WebSearch"].iter().map(|s| s.to_string()).collect();
     let mut deny: Vec<String> = vec![];
-    let mut deny_read_paths: Vec<String> = vec![];
-    for p in d.paths() {
-        let a = abs(p);
-        for tool in ["Read", "Edit"] {
-            deny.push(format!("{tool}({a})"));
-            deny.push(format!("{tool}({a}/**)"));
+    if d.protect {
+        for p in d.paths() {
+            let a = abs(p);
+            for tool in ["Read", "Edit"] {
+                deny.push(format!("{tool}({a})"));
+                deny.push(format!("{tool}({a}/**)"));
+            }
         }
-        deny_read_paths.push(p.to_string_lossy().to_string());
+        // Secret-looking files anywhere (a project's .env, keys, keystores).
+        for pat in ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/*.p12", "**/*.pfx", "**/*.kdbx", "**/*.keystore", "**/id_rsa*", "**/id_ed25519*", "**/id_ecdsa*", "**/.netrc", "**/.npmrc", "**/.pypirc", "**/credentials*", "**/*secret*", "**/*token*"] {
+            deny.push(format!("Read({pat})"));
+            deny.push(format!("Edit({pat})"));
+        }
+        for p in &d.no_write {
+            let a = abs(p);
+            deny.push(format!("Edit({a})"));
+            deny.push(format!("Edit({a}/**)"));
+        }
+        for t in DENY_TOKENS { deny.push(format!("Bash(*{t}*)")); }
     }
-    // Secret-looking files anywhere (a project's .env, keys, keystores), for Claude too, even inside the read dirs it may read freely.
-    for pat in ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/*.p12", "**/*.pfx", "**/*.kdbx", "**/*.keystore", "**/id_rsa*", "**/id_ed25519*", "**/id_ecdsa*", "**/.netrc", "**/.npmrc", "**/.pypirc", "**/credentials*", "**/*secret*", "**/*token*"] {
-        deny.push(format!("Read({pat})"));
-        deny.push(format!("Edit({pat})"));
-    }
-    let mut deny_write_paths = deny_read_paths.clone();
-    for p in &d.no_write {
-        let a = abs(p);
-        deny.push(format!("Edit({a})"));
-        deny.push(format!("Edit({a}/**)"));
-        deny_write_paths.push(p.to_string_lossy().to_string());
-    }
-    for t in DENY_TOKENS { deny.push(format!("Bash(*{t}*)")); }
     for w in SUDO_WORDS {
         deny.push(format!("Bash({w})"));
         deny.push(format!("Bash({w} *)"));
@@ -205,21 +205,12 @@ pub fn claude_settings(d: &Deny, allowed_domains: &[String], read_dirs: &[PathBu
         deny.push(format!("Bash(*/{w} *)"));
     }
     deny.push("Bash(sudo:*)".into());
-    for t in NET_TOOLS { deny.push(format!("Bash({t} *)")); deny.push(format!("Bash(*&& {t} *)")); deny.push(format!("Bash(*; {t} *)")); deny.push(format!("Bash(*| {t} *)")); }
+    for p in ["rm", "rmdir", "unlink", "shred", "srm", "truncate", "mkfs", "wipefs", "fdisk", "parted"] { deny.push(format!("Bash({p})")); deny.push(format!("Bash({p} *)")); }
     deny.sort();
     deny.dedup();
-    let mut sandbox = json!({
-        "enabled": true,
-        "failIfUnavailable": true,
-        "autoAllowBashIfSandboxed": false,
-        "allowUnsandboxedCommands": false,
-        "filesystem": { "denyRead": deny_read_paths, "denyWrite": deny_write_paths },
-    });
-    if !allowed_domains.is_empty() { sandbox["network"] = json!({ "allowedDomains": allowed_domains }); }
     json!({
-        // "ask" on every shell command, so even the ones Claude Code treats as read-only (ls, cat, df...) come to the room
         "permissions": { "deny": deny, "ask": ask, "allow": [], "defaultMode": "default" },
-        "sandbox": sandbox,
+        "sandbox": { "enabled": false },
         "includeCoAuthoredBy": false,
         "enableAllProjectMcpServers": false,
     })
@@ -233,14 +224,10 @@ pub fn user_settings_problem(config_dir: &Path) -> Option<String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(_) => return Some("it cannot be read, so I cannot tell what it allows".into()),
     };
-    // Claude Code would read a file this program cannot parse in its own, more lenient way, so unreadable means unsafe
     let Ok(v) = serde_json::from_str::<Value>(&text) else { return Some("it cannot be parsed, so I cannot tell what it allows".into()) };
-    for key in ["apiKeyHelper", "statusLine", "awsAuthRefresh", "awsCredentialExport", "otelHeadersHelper", "enabledPlugins", "extraKnownMarketplaces", "plugins", "pluginConfigs"] {
-        if !v[key].is_null() { return Some(format!("it sets {key}, which can run programs without approval")); }
-    }
-    if v["permissions"]["allow"].as_array().is_some_and(|a| !a.is_empty()) { return Some("it has allow rules (permissions.allow), which would skip approvals".into()); }
-    if v["permissions"]["defaultMode"].as_str().is_some_and(|m| m != "default") { return Some("its default permission mode is not 'default'".into()); }
-    if !v["hooks"].is_null() && !v["hooks"].as_object().is_some_and(|h| h.is_empty()) { return Some("it defines hooks, which would run commands without approval".into()); }
-    if v["skipDangerousModePermissionPrompt"].as_bool() == Some(true) || v["env"].as_object().is_some_and(|e| !e.is_empty()) { return Some("it sets environment variables or skips permission prompts".into()); }
+    // Only what would skip the destruction guard matters now: allow rules and a permission mode that does not ask.
+    if v["permissions"]["allow"].as_array().is_some_and(|a| !a.is_empty()) { return Some("it has allow rules (permissions.allow), which would skip the deletion guard".into()); }
+    if v["permissions"]["defaultMode"].as_str().is_some_and(|m| m != "default") { return Some("its default permission mode is not 'default', which would skip the deletion guard".into()); }
+    if v["skipDangerousModePermissionPrompt"].as_bool() == Some(true) { return Some("it skips permission prompts".into()); }
     None
 }

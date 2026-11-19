@@ -38,9 +38,15 @@ pub struct AssistConfig {
     /// Progress messages per task (the approvals and the final answer are not counted).
     pub max_progress: usize,
     pub progress_gap: Duration,
-    /// Hand the session bus and display variables (D-Bus, X11, Wayland, XDG_RUNTIME_DIR) to Claude Code. Off: a command run by it could
-    /// start units outside the sandbox or watch and drive the screen.
+    /// Hand the session bus and display variables (D-Bus, X11, Wayland, XDG_RUNTIME_DIR) to Claude Code, so `systemctl --user` works.
     pub desktop_env: bool,
+    /// Keep the protected places (keys, tokens, password stores, browser profiles, the bot's own data) out of reach. Default on;
+    /// `MEGATRON_BOT_ASSIST_PROTECT_SECRETS=0` turns the whole protection off.
+    pub protect_secrets: bool,
+    /// The snapper config whose snapshot is taken before each Claude task (`None`: no snapshots).
+    pub snapshot_config: Option<String>,
+    /// How many task snapshots to keep.
+    pub snapshot_keep: usize,
 }
 
 pub fn valid_account(s: &str) -> bool { s.len() >= 6 && s.chars().all(|c| c.is_ascii_hexdigit()) }
@@ -77,7 +83,10 @@ impl AssistConfig {
             chunk_chars: 1800,
             max_progress: 5,
             progress_gap: Duration::from_secs(25),
-            desktop_env: false,
+            desktop_env: true,
+            protect_secrets: true,
+            snapshot_config: Some("home".into()),
+            snapshot_keep: 10,
         }
     }
 
@@ -102,7 +111,10 @@ impl AssistConfig {
         if let Some(b) = env_string("MEGATRON_BOT_ASSIST_CLAUDE") { cfg.claude_bin = expand_home(&b, &home); }
         if let Some(u) = env_string("MEGATRON_BOT_RUNE_URL") { cfg.rune_url = u; }
         if let Some(d) = env_string("MEGATRON_BOT_ASSIST_DOMAINS") { cfg.allowed_domains = d.split([',', ' ']).filter(|x| !x.is_empty()).map(String::from).collect(); }
-        if env_string("MEGATRON_BOT_ASSIST_DESKTOP_ENV").is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "on" | "true" | "yes")) { cfg.desktop_env = true; }
+        let off = |name: &str| env_string(name).is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "0" | "off" | "false" | "no"));
+        if off("MEGATRON_BOT_ASSIST_DESKTOP_ENV") { cfg.desktop_env = false; }
+        if off("MEGATRON_BOT_ASSIST_PROTECT_SECRETS") { cfg.protect_secrets = false; eprintln!("[bot] assistant room: protection of secret places is OFF (MEGATRON_BOT_ASSIST_PROTECT_SECRETS=0)"); }
+        if off("MEGATRON_BOT_ASSIST_SNAPSHOT") { cfg.snapshot_config = None; } else if let Some(c) = env_string("MEGATRON_BOT_ASSIST_SNAPSHOT_CONFIG") { cfg.snapshot_config = Some(c); }
         Some(cfg)
     }
 }

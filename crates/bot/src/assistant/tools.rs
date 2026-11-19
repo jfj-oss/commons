@@ -1,7 +1,7 @@
 //! The local model's tools in the assistant room. Three tiers:
 //!   look   - list/read text files under the allowed roots, system status, web search. No approval.
-//!   safe   - a fixed allowlist of small actions (music transport, restart a named unit, open a link or file).
-//!   handoff - `do_on_computer`: anything else goes to Claude Code, where every step is approved in chat.
+//!   safe   - a fixed allowlist of small actions (music transport, restart a named unit, open a link or file). No approval.
+//! Claude Code is not a tool: the owner starts it with `/claude <task>` and the model never offers it.
 //! Nothing here runs a shell, and no tool takes a command line from the model.
 use super::config::{expand_home, AssistConfig};
 use super::deny::Deny;
@@ -18,23 +18,19 @@ pub const SYSTEM_STATUS: &str = "system_status";
 pub const RUNE: &str = "rune_control";
 pub const RESTART_UNIT: &str = "restart_unit";
 pub const OPEN: &str = "open_target";
-pub const HANDOFF: &str = "do_on_computer";
 pub const WEB_SEARCH: &str = crate::search::TOOL_NAME;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tier { Look, Safe, Handoff }
+pub enum Tier { Look, Safe }
 
 pub fn tier_of(name: &str) -> Option<Tier> {
     match name {
         LIST_FILES | READ_FILE | SYSTEM_STATUS | WEB_SEARCH => Some(Tier::Look),
         RUNE | RESTART_UNIT | OPEN => Some(Tier::Safe),
-        HANDOFF => Some(Tier::Handoff),
         _ => None,
     }
 }
 
-/// Look tools that put outside text in the model's context (file contents, file names, web results): using one taints the turn.
-pub fn taints(name: &str) -> bool { matches!(name, READ_FILE | LIST_FILES | WEB_SEARCH) }
 
 fn spec(name: &str, description: &str, properties: Value, required: &[&str]) -> ToolSpec {
     ToolSpec { name: name.into(), description: description.into(), parameters: json!({"type": "object", "properties": properties, "required": required}) }
@@ -50,8 +46,6 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         spec(RUNE, "Control the rune music player: play, pause, next or prev.", json!({"action": {"type": "string", "enum": ["play", "pause", "next", "prev"]}}), &["action"]),
         spec(RESTART_UNIT, "Restart one systemd user unit from the owner's short allowed list.", json!({"unit": {"type": "string"}}), &["unit"]),
         spec(OPEN, "Open a web address (http or https) or a file in the desktop's default application.", json!({"target": {"type": "string"}}), &["target"]),
-        spec(HANDOFF, "Hand a task that acts on the computer (run commands, edit files, install, build, anything not covered by the other tools) to Claude Code. \
-                       Every step it takes is approved by the owner in this chat. Describe the task completely.", json!({"task": {"type": "string"}}), &["task"]),
     ]
 }
 

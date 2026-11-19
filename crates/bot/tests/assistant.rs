@@ -1,9 +1,9 @@
 //! The assistant room, end to end with fakes: a fake Claude Code (a python script that speaks stream-json and asks the
 //! real permission-prompt MCP server), a fake local model, fake system commands. Nothing real is contacted or run.
 mod common;
-use commons_bot::assistant::approvals::parse_reply;
 use commons_bot::assistant::config::AssistConfig;
-use commons_bot::assistant::deny::{claude_settings, mentions_sudo, Deny};
+use commons_bot::assistant::deny::{claude_settings, mentions_sudo};
+use commons_bot::assistant::strip_claude;
 use commons_bot::assistant::tools::{self, Sys};
 use commons_bot::assistant::{Assistant, RoomFacts, Route};
 use commons_bot::bot::{Chat, Job, JobKind, Line};
@@ -81,9 +81,20 @@ fn say(t: &str) -> ModelReply { ModelReply { content: t.into(), tool_calls: vec!
 fn call(name: &str, args: Value) -> ModelReply { ModelReply { content: String::new(), tool_calls: vec![ToolCall { id: None, name: name.into(), arguments: args.to_string() }] } }
 
 #[derive(Default)]
-struct FakeSys { runs: Mutex<Vec<String>>, runes: Mutex<Vec<(String, Value)>> }
+struct FakeSys { runs: Mutex<Vec<String>>, runes: Mutex<Vec<(String, Value)>>, snapper: Mutex<Vec<String>>, snaps: Mutex<Vec<u64>>, snapper_fails: std::sync::atomic::AtomicBool }
 impl Sys for FakeSys {
-    fn run(&self, program: &str, args: &[&str]) -> Result<(i32, String), String> { self.runs.lock().unwrap().push(format!("{program} {}", args.join(" "))); Ok((0, "fake output".into())) }
+    fn run(&self, program: &str, args: &[&str]) -> Result<(i32, String), String> {
+        if program == "snapper" {
+            self.snapper.lock().unwrap().push(args.join(" "));
+            if self.snapper_fails.load(std::sync::atomic::Ordering::SeqCst) { return Ok((1, "No permissions.".into())); }
+            let mut snaps = self.snaps.lock().unwrap();
+            if args.contains(&"create") { let n = snaps.last().copied().unwrap_or(0) + 1; snaps.push(n); return Ok((0, format!("{n}\n"))); }
+            if args.contains(&"list") { return Ok((0, format!("number,description\n0,\n{}", snaps.iter().map(|n| format!("{n},oracle task 2026-01-01 00:00:00")).collect::<Vec<_>>().join("\n")))); }
+            if args.contains(&"delete") { let n: u64 = args.last().unwrap().parse().unwrap(); snaps.retain(|x| *x != n); return Ok((0, String::new())); }
+            return Ok((0, String::new()));
+        }
+        self.runs.lock().unwrap().push(format!("{program} {}", args.join(" "))); Ok((0, "fake output".into()))
+    }
     fn rune(&self, url: &str, command: &Value) -> Result<String, String> { self.runes.lock().unwrap().push((url.into(), command.clone())); Ok("{}".into()) }
 }
 
@@ -292,27 +303,6 @@ fn the_deny_list_covers_every_named_place_for_every_tool() {
     assert!(tools::read_file(&e.a.cfg, e.a.deny(), &h.join(".bashrc").to_string_lossy()).is_err());
 }
 
-#[test]
-fn the_claude_settings_deny_the_same_places_and_sudo_and_run_the_sandbox() {
-    let e = env();
-    let s = claude_settings(e.a.deny(), &[], &e.a.cfg.read_dirs);
-    let deny: Vec<String> = s["permissions"]["deny"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
-    let ssh = format!("//{}/.ssh/**", e.home.to_string_lossy().trim_start_matches('/'));
-    assert!(deny.contains(&format!("Read({ssh})")) && deny.contains(&format!("Edit({ssh})")), "{deny:?}");
-    assert!(deny.contains(&"Bash(sudo:*)".to_string()) && deny.iter().any(|d| d.starts_with("Bash(curl")) && deny.iter().any(|d| d.contains("deepseek-key")));
-    assert_eq!(s["permissions"]["allow"], json!([]));
-    assert!(s["permissions"]["ask"].as_array().unwrap().iter().any(|v| v == "Bash"));
-    assert_eq!(s["sandbox"]["enabled"], true);
-    assert_eq!(s["sandbox"]["failIfUnavailable"], true);
-    assert_eq!(s["sandbox"]["allowUnsandboxedCommands"], false);
-    assert_eq!(s["sandbox"]["autoAllowBashIfSandboxed"], false);
-    let dr: Vec<&str> = s["sandbox"]["filesystem"]["denyRead"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-    assert!(dr.iter().any(|p| p.ends_with("/.ssh")) && dr.iter().any(|p| p.ends_with("liner.db")));
-    let dw: Vec<&str> = s["sandbox"]["filesystem"]["denyWrite"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-    assert!(dw.iter().any(|p| p.ends_with("/.claude")) && dw.iter().any(|p| p.ends_with("/.local/bin")));
-    let _ = Deny::looks_secret(Path::new("x"));
-}
-
 // ------------------------------------------------------------------ tiers
 
 #[test]
@@ -390,128 +380,7 @@ fn a_do_message_goes_straight_to_claude_and_the_model_is_not_asked() {
     assert_eq!(runs[0]["prompt"].as_str().unwrap().trim(), "SCENARIO answer");
 }
 
-#[test]
-fn anything_else_is_handed_off_with_the_exact_cli_flags() {
-    let e = env();
-    e.on();
-    let llm = Arc::new(ScriptedLlm::new(vec![call(tools::HANDOFF, json!({"task": "SCENARIO answer\nclean up the build folders"}))]));
-    e.owner(llm, nosearch(), "clean my build folders").unwrap().join().unwrap();
-    let runs = e.claude_runs();
-    assert_eq!(runs.len(), 1);
-    let args: Vec<String> = runs[0]["args"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
-    for want in ["-p", "--output-format", "stream-json", "--verbose", "--settings", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", "--permission-prompt-tool", "mcp__approver__ask", "--permission-mode", "default", "--disable-slash-commands"] {
-        assert!(args.contains(&want.to_string()), "missing {want}: {args:?}");
-    }
-    for bad in ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "bypassPermissions", "--allowedTools", "--bare"] { assert!(!args.iter().any(|a| a == bad), "{bad}"); }
-    assert_eq!(runs[0]["cwd"].as_str().unwrap(), e.a.cfg.workspace.to_string_lossy());
-    assert_ne!(runs[0]["cwd"].as_str().unwrap(), e.home.to_string_lossy());
-    let i = args.iter().position(|a| a == "--add-dir").expect("read dir");
-    assert_eq!(args[i + 1], e.home.join("projects").to_string_lossy());
-    let env_keys: Vec<String> = runs[0]["env"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
-    assert!(!env_keys.iter().any(|k| k.starts_with("MEGATRON_BOT") || k.contains("KEY") || k.contains("TOKEN") || k == "ANTHROPIC_API_KEY"), "{env_keys:?}");
-    // the settings file the CLI was pointed at
-    let settings: Value = serde_json::from_str(&std::fs::read_to_string(args[args.iter().position(|a| a == "--settings").unwrap() + 1].clone()).unwrap()).unwrap();
-    assert_eq!(settings["permissions"]["allow"], json!([]));
-    assert!(e.chat.find("Started").is_some());
-    assert_eq!(e.chat.sent().last().unwrap(), "all done");
-    let log = e.log();
-    assert!(log.contains("\thandoff\t"), "{log}");
-}
-
 // ------------------------------------------------------------------ approvals
-
-#[test]
-fn approving_runs_the_command_and_denying_does_not() {
-    let e = env();
-    e.on();
-    // yes
-    let t = e.owner(quiet_llm(), nosearch(), "do: SCENARIO bash echo hello").unwrap();
-    let code = e.chat.code_of(0);
-    let msg = e.chat.find("Approval needed").unwrap();
-    assert!(msg.contains("Tool: Bash") && msg.contains("echo hello") && msg.contains(&format!("yes {code}")) && msg.contains(&format!("no {code}")) && msg.contains(&format!("edit {code}")), "{msg}");
-    assert_eq!(e.reply(&format!("yes {code}")), Route::Handled);
-    t.join().unwrap();
-    assert_eq!(e.chat.sent().last().unwrap(), "ran: echo hello");
-    // the same code is spent
-    assert!(matches!(e.reply(&format!("yes {code}")), Route::Notice(t) if t.contains("Nothing is waiting")));
-    // no
-    let t = e.owner(quiet_llm(), nosearch(), "do: SCENARIO bash echo bye").unwrap();
-    let code = e.chat.code_of(1);
-    assert_eq!(e.reply(&format!("no {}", code.to_lowercase())), Route::Handled);
-    t.join().unwrap();
-    assert!(e.chat.sent().last().unwrap().starts_with("denied: The owner said no"), "{:?}", e.chat.sent().last());
-    let log = e.log();
-    assert!(log.contains("Bash: echo hello\towner\tok"), "{log}");
-    assert!(log.contains("Bash: echo bye\towner-denied\terror"), "{log}");
-}
-
-#[test]
-fn edit_replaces_the_command_and_is_checked_again() {
-    let e = env();
-    e.on();
-    let t = e.owner(quiet_llm(), nosearch(), "do: SCENARIO bash rm -rf build").unwrap();
-    let code = e.chat.code_of(0);
-    assert_eq!(e.reply(&format!("edit {code} ls build")), Route::Handled);
-    t.join().unwrap();
-    assert_eq!(e.chat.sent().last().unwrap(), "ran: ls build");
-    assert!(e.log().contains("owner-edited"));
-    // an edit that reaches for a protected place or root is refused
-    let t = e.owner(quiet_llm(), nosearch(), "do: SCENARIO bash ls").unwrap();
-    let code = e.chat.code_of(1);
-    assert_eq!(e.reply(&format!("edit {code} sudo cat ~/.ssh/id_rsa")), Route::Handled);
-    t.join().unwrap();
-    assert!(e.chat.sent().last().unwrap().contains("blocked"), "{:?}", e.chat.sent().last());
-}
-
-#[test]
-fn silence_for_the_timeout_is_a_no() {
-    let e = env_with(700);
-    e.on();
-    let t = e.owner(quiet_llm(), nosearch(), "do: SCENARIO bash echo slow").unwrap();
-    e.chat.code_of(0);
-    t.join().unwrap();
-    assert!(e.chat.find("timed out").is_some(), "{:?}", e.chat.sent());
-    assert!(e.chat.sent().last().unwrap().starts_with("denied: No answer in time"), "{:?}", e.chat.sent().last());
-    assert!(e.log().contains("timeout"));
-}
-
-#[test]
-fn protected_places_and_sudo_are_refused_without_even_asking() {
-    let e = env();
-    e.on();
-    let t = e.owner(quiet_llm(), nosearch(), "do: SCENARIO read ~/.ssh/id_rsa").unwrap();
-    t.join().unwrap();
-    assert!(e.chat.find("Approval needed").is_none());
-    assert!(e.chat.find("Blocked without asking").is_some());
-    assert!(e.chat.sent().last().unwrap().starts_with("denied: Blocked"));
-    let t = e.owner(quiet_llm(), nosearch(), "do: SCENARIO bash sudo systemctl stop x").unwrap();
-    t.join().unwrap();
-    assert!(e.chat.find("Approval needed").is_none());
-    assert!(e.chat.sent().last().unwrap().starts_with("denied: Blocked"));
-    assert!(e.log().contains("blocked"));
-}
-
-#[test]
-fn approval_replies_from_anyone_else_or_another_room_do_nothing() {
-    let e = env();
-    e.on();
-    let t = e.owner(quiet_llm(), nosearch(), "do: SCENARIO bash echo x").unwrap();
-    let code = e.chat.code_of(0);
-    assert_eq!(e.a.route(&two(), "Oracle", "dddddddddddd", &format!("yes {code}")), Route::Drop);
-    let mut other = two();
-    other.gid = "other-room".into();
-    assert!(e.a.route(&other, "Oracle", OWNER, &format!("yes {code}")) == Route::Pass, "a room that is not an assistant room does not even look");
-    // the owner in some other assistant room cannot answer this room's request either
-    let _ = e.a.route(&other, "Oracle", OWNER, "@Oracle assistant here");
-    assert!(matches!(e.a.route(&other, "Oracle", OWNER, &format!("yes {code}")), Route::Notice(t) if t.contains("Nothing is waiting")));
-    assert_eq!(e.reply(&format!("no {code}")), Route::Handled);
-    t.join().unwrap();
-    assert!(e.chat.sent().last().unwrap().starts_with("denied"));
-    // a non-code "yes" is just conversation
-    assert_eq!(parse_reply("yes please"), None);
-    assert_eq!(parse_reply("yes"), None);
-    assert_eq!(e.reply("yes please"), Route::Chat);
-}
 
 #[test]
 fn the_socket_refuses_a_caller_without_the_token() {
@@ -532,70 +401,6 @@ fn the_socket_refuses_a_caller_without_the_token() {
 // ------------------------------------------------------------------ injection guard
 
 #[test]
-fn after_reading_outside_text_even_a_safe_action_needs_approval_until_a_fresh_message() {
-    let e = env();
-    e.on();
-    let search: Arc<dyn WebSearch> = Arc::new(poisoned());
-    let llm = Arc::new(ScriptedLlm::new(vec![
-        call(tools::WEB_SEARCH, json!({"query": "news"})),
-        call(tools::RESTART_UNIT, json!({"unit": "rune-server.service"})),
-        say("Restarted."),
-    ]));
-    let t = e.owner(llm, search.clone(), "look up the news").unwrap();
-    let code = e.chat.code_of(0);
-    let msg = e.chat.find("Approval needed").unwrap();
-    assert!(msg.contains("systemctl --user restart rune-server.service") && msg.contains("web or file content"), "{msg}");
-    assert!(e.sys.runs.lock().unwrap().is_empty(), "nothing ran before approval");
-    assert_eq!(e.reply(&format!("yes {code}")), Route::Handled);
-    t.join().unwrap();
-    assert_eq!(e.sys.runs.lock().unwrap().len(), 1);
-    // a denied one does not run
-    let llm = Arc::new(ScriptedLlm::new(vec![
-        call(tools::WEB_SEARCH, json!({"query": "more news"})),
-        call(tools::RESTART_UNIT, json!({"unit": "rune-server.service"})),
-        say("OK, not restarted."),
-    ]));
-    let t = e.owner(llm, search.clone(), "look up more news").unwrap();
-    let code = e.chat.code_of(1);
-    e.reply(&format!("no {code}"));
-    t.join().unwrap();
-    assert_eq!(e.sys.runs.lock().unwrap().len(), 1, "denied, so it did not run");
-    // the taint stays through later messages (the model's own reply may quote what it read), "continue" or not; only /reset clears it
-    let llm = Arc::new(ScriptedLlm::new(vec![call(tools::RESTART_UNIT, json!({"unit": "rune-server.service"})), say("done")]));
-    let t = e.owner(llm, search.clone(), "ok, continue").unwrap();
-    let code = e.chat.code_of(2);
-    e.reply(&format!("yes {code}"));
-    t.join().unwrap();
-    assert_eq!(e.sys.runs.lock().unwrap().len(), 2);
-    let llm = Arc::new(ScriptedLlm::new(vec![call(tools::RESTART_UNIT, json!({"unit": "rune-server.service"})), say("done")]));
-    let t = e.owner(llm, search.clone(), "restart rune").unwrap();
-    let code = e.chat.code_of(3);
-    e.reply(&format!("yes {code}"));
-    t.join().unwrap();
-    assert_eq!(e.sys.runs.lock().unwrap().len(), 3, "a fresh message is still tainted");
-    assert!(e.a.is_tainted(GID));
-    assert!(matches!(e.owner(quiet_llm(), search.clone(), "@Oracle /reset"), None));
-    assert!(!e.a.is_tainted(GID), "/reset starts fresh");
-    let llm = Arc::new(ScriptedLlm::new(vec![call(tools::RESTART_UNIT, json!({"unit": "rune-server.service"})), say("done")]));
-    e.owner(llm, search, "restart rune").unwrap().join().unwrap();
-    assert_eq!(e.chat.sent().iter().filter(|s| s.starts_with("Approval needed")).count(), 4, "no new approval after /reset");
-    assert_eq!(e.sys.runs.lock().unwrap().len(), 4);
-}
-
-#[test]
-fn opening_a_web_address_always_needs_a_yes_even_on_a_clean_turn() {
-    let e = env();
-    e.on();
-    let llm = Arc::new(ScriptedLlm::new(vec![call(tools::OPEN, json!({"target": "https://example.org/page?x=1"})), say("done")]));
-    let t = e.owner(llm, nosearch(), "open example.org").unwrap();
-    let code = e.chat.code_of(0);
-    assert!(e.sys.runs.lock().unwrap().is_empty(), "nothing opened before the yes");
-    e.reply(&format!("yes {code}"));
-    t.join().unwrap();
-    assert!(e.sys.runs.lock().unwrap().contains(&"xdg-open https://example.org/page?x=1".to_string()));
-}
-
-#[test]
 fn only_the_owner_and_the_bot_reach_the_model_from_the_history() {
     let e = env();
     e.on();
@@ -605,24 +410,6 @@ fn only_the_owner_and_the_bot_reach_the_model_from_the_history() {
     let seen = llm.seen.lock().unwrap()[0].clone();
     assert!(!format!("{seen:?}").contains("evil.test"), "a stranger's old line is not context: {seen:?}");
     assert!(format!("{seen:?}").contains("hi"));
-}
-
-#[test]
-fn a_handoff_after_reading_outside_text_asks_first() {
-    let e = env();
-    e.on();
-    let llm = Arc::new(ScriptedLlm::new(vec![
-        call(tools::WEB_SEARCH, json!({"query": "x"})),
-        call(tools::HANDOFF, json!({"task": "SCENARIO answer\ndelete everything"})),
-    ]));
-    let t = e.owner(llm, Arc::new(poisoned()), "search for x").unwrap();
-    let code = e.chat.code_of(0);
-    assert!(e.chat.find("Hand this to Claude Code?").is_some_and(|m| m.contains("delete everything")));
-    assert!(e.claude_runs().is_empty());
-    e.reply(&format!("no {code}"));
-    // the model is out of script after the refusal, so the turn ends with an error message; the point is that Claude never ran
-    t.join().unwrap();
-    assert!(e.claude_runs().is_empty());
 }
 
 // ------------------------------------------------------------------ tasks
@@ -686,39 +473,19 @@ fn the_claude_session_id_is_kept_and_resumed() {
 }
 
 #[test]
-fn claude_is_not_started_when_its_user_settings_would_skip_approvals() {
-    let e = env();
-    e.on();
-    std::fs::create_dir_all(e.home.join(".claude")).unwrap();
-    std::fs::write(e.home.join(".claude/settings.json"), r#"{"permissions":{"allow":["Bash(*)"]}}"#).unwrap();
-    e.owner(quiet_llm(), nosearch(), "do: SCENARIO answer").unwrap().join().unwrap();
-    assert!(e.claude_runs().is_empty());
-    assert!(e.chat.sent().last().unwrap().contains("will not start Claude Code"));
-    std::fs::write(e.home.join(".claude/settings.json"), r#"{"hooks":{"PreToolUse":[{"matcher":"","hooks":[]}]}}"#).unwrap();
-    e.owner(quiet_llm(), nosearch(), "do: SCENARIO answer").unwrap().join().unwrap();
-    assert!(e.claude_runs().is_empty());
-    std::fs::write(e.home.join(".claude/settings.json"), r#"{"theme":"dark","model":"x"}"#).unwrap();
-    e.owner(quiet_llm(), nosearch(), "do: SCENARIO answer").unwrap().join().unwrap();
-    assert_eq!(e.claude_runs().len(), 1);
-}
-
-#[test]
 fn the_log_has_every_call_and_no_chat_text() {
     let e = env();
     e.on();
     std::fs::write(e.home.join("Documents/a.txt"), "hi").unwrap();
     let llm = Arc::new(ScriptedLlm::new(vec![call(tools::READ_FILE, json!({"path": e.home.join("Documents/a.txt").to_string_lossy()})), say("It says hi.")]));
     e.owner(llm, nosearch(), "SECRET-CHAT-WORDS what is in a.txt").unwrap().join().unwrap();
-    let t = e.owner(quiet_llm(), nosearch(), "do: SCENARIO bash echo logged").unwrap();
-    let code = e.chat.code_of(0);
-    e.reply(&format!("yes {code}"));
-    t.join().unwrap();
+    e.owner(quiet_llm(), nosearch(), "/claude SCENARIO bash echo logged").unwrap().join().unwrap();
     let log = e.log();
     assert!(!log.contains("SECRET-CHAT-WORDS") && !log.contains("It says hi"), "{log}");
     let rows: Vec<Vec<&str>> = log.lines().map(|l| l.split('\t').collect()).collect();
     assert!(rows.iter().all(|r| r.len() == 5 && r[0].ends_with('Z') && r[0].len() == 20), "{log}");
     assert!(rows.iter().any(|r| r[1] == "look" && r[2].starts_with("read_file") && r[3] == "auto" && r[4] == "ok"));
-    assert!(rows.iter().any(|r| r[1] == "claude" && r[2] == "Bash: echo logged" && r[3] == "owner" && r[4] == "ok"));
+    assert!(rows.iter().any(|r| r[1] == "claude" && r[2] == "Bash: echo logged" && r[3] == "auto" && r[4] == "ok"));
     assert!(rows.iter().any(|r| r[1] == "handoff"));
 }
 
@@ -745,7 +512,7 @@ fn mega_shell_history_and_cloud_places_are_protected_and_user_settings_that_run_
         assert!(e.deny().is_denied(&h.join(p)), "{p}");
         assert!(e.deny().is_write_denied(&h.join(p)), "{p}");
     }
-    let s = claude_settings(e.deny(), &[], &[]);
+    let s = claude_settings(e.deny());
     let deny: Vec<&str> = s["permissions"]["deny"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
     assert!(deny.iter().any(|d| d.starts_with("Read(") && d.contains("app.commons.chat.browser-profile")) && deny.iter().any(|d| d.contains("gcloud")) && deny.iter().any(|d| d.contains("_history")), "{deny:?}");
     for cmd in ["cat ~/.bash_history", "grep x ~/.local/share/fish/fish_history", "ls ~/.local/share/app.commons.chat", "cat ~/.azure/x"] {
@@ -755,69 +522,198 @@ fn mega_shell_history_and_cloud_places_are_protected_and_user_settings_that_run_
     let d = h.join(".claude");
     std::fs::create_dir_all(&d).unwrap();
     assert!(commons_bot::assistant::deny::user_settings_problem(&d).is_none(), "no file is fine");
-    for bad in ["{ not json", r#"{"apiKeyHelper":"/x/y"}"#, r#"{"statusLine":{"type":"command","command":"x"}}"#, r#"{"enabledPlugins":{"a@b":true}}"#, r#"{"hooks":{"Stop":[1]}}"#] {
+    for bad in ["{ not json", r#"{"permissions":{"allow":["Bash(*)"]}}"#, r#"{"permissions":{"defaultMode":"bypassPermissions"}}"#, r#"{"skipDangerousModePermissionPrompt":true}"#] {
         std::fs::write(d.join("settings.json"), bad).unwrap();
         assert!(commons_bot::assistant::deny::user_settings_problem(&d).is_some(), "{bad}");
     }
-    std::fs::write(d.join("settings.json"), r#"{"theme":"dark"}"#).unwrap();
-    assert!(commons_bot::assistant::deny::user_settings_problem(&d).is_none());
+    for fine in [r#"{"theme":"dark"}"#, r#"{"hooks":{"Stop":[1]},"apiKeyHelper":"/x"}"#] {
+        std::fs::write(d.join("settings.json"), fine).unwrap();
+        assert!(commons_bot::assistant::deny::user_settings_problem(&d).is_none(), "{fine}");
+    }
+}
+
+
+// ------------------------------------------------------------------ no approvals, an explicit Claude command, the deletion guard
+
+fn no_approval_text(e: &Env) { assert!(e.chat.sent().iter().all(|m| !m.contains("Approval needed") && !m.contains("Hand this to Claude")), "{:?}", e.chat.sent()); }
+
+#[test]
+fn the_claude_command_forms_and_what_is_not_a_command() {
+    for (t, want) in [("/claude fix it", Some("fix it")), ("/Claude   fix it", Some("fix it")), ("claude, fix it", Some("fix it")), ("Claude: fix it", Some("fix it")), ("do: fix it", Some("fix it")), ("/claude", Some(""))] {
+        assert_eq!(strip_claude(t).as_deref(), want, "{t}");
+    }
+    for t in ["claude is a nice name", "can claude do this?", "please send this to claude", "/claudette x", "hello", "claudette, hi"] { assert_eq!(strip_claude(t), None, "{t}"); }
 }
 
 #[test]
-fn approval_messages_hide_nothing() {
-    let cmd = "ls \u{202E}gpj.txt\u{200B}  # \u{0007}x\nsecond line";
-    let d = commons_bot::assistant::claude::approval_detail("Bash", &json!({"command": cmd}));
-    for c in ['\u{202E}', '\u{200B}', '\u{0007}'] { assert!(!d.contains(c), "{d:?}"); }
-    assert!(d.contains("second line") && d.contains('\n'));
-    let m = commons_bot::assistant::approvals::approval_message("K7QX", "Tool: \u{2066}Bash", &d, false, Duration::from_secs(60), "n\u{200E}ote");
-    assert!(!m.contains('\u{2066}') && !m.contains('\u{200E}'), "{m:?}");
+fn an_ordinary_request_never_offers_claude_and_only_the_command_starts_it() {
+    let e = env();
+    e.on();
+    // the local model has no hand-off tool and its prompt does not mention Claude
+    assert!(tools::tool_specs().iter().all(|t| t.name != "do_on_computer" && !t.description.to_lowercase().contains("claude")));
+    let llm = Arc::new(ScriptedLlm::new(vec![call("do_on_computer", json!({"task": "SCENARIO answer\nclean up"})), say("I cannot do that with my tools.")]));
+    e.owner(llm.clone(), nosearch(), "clean my build folders").unwrap().join().unwrap();
+    assert!(e.claude_runs().is_empty(), "the model cannot start Claude");
+    assert_eq!(e.chat.sent().last().unwrap(), "I cannot do that with my tools.");
+    no_approval_text(&e);
+    for sys in llm.systems.lock().unwrap().iter() {
+        let l = sys.to_lowercase();
+        assert!(!l.contains("do_on_computer") && !l.contains("claude") && !l.contains("approves each"), "{sys}");
+        assert!(l.contains("never offer"), "{sys}");
+    }
+    // the command starts it, with the model not consulted
+    let llm2 = quiet_llm();
+    e.owner(llm2.clone(), nosearch(), "/claude SCENARIO answer").unwrap().join().unwrap();
+    assert!(llm2.seen.lock().unwrap().is_empty());
+    assert_eq!(e.claude_runs().len(), 1);
+    assert_eq!(e.chat.sent().last().unwrap(), "all done");
+    e.owner(quiet_llm(), nosearch(), "claude, SCENARIO answer").unwrap().join().unwrap();
+    assert_eq!(e.claude_runs().len(), 2);
+    // mentioning Claude in a sentence is just chat
+    let llm3 = Arc::new(ScriptedLlm::new(vec![say("Fine.")]));
+    e.owner(llm3.clone(), nosearch(), "claude is great").unwrap().join().unwrap();
+    assert_eq!(e.claude_runs().len(), 2);
+    assert_eq!(llm3.seen.lock().unwrap().len(), 1);
+    // an empty command explains itself instead of starting anything
+    e.owner(quiet_llm(), nosearch(), "/claude").unwrap().join().unwrap();
+    assert!(e.chat.sent().last().unwrap().contains("Write the task"));
+    assert_eq!(e.claude_runs().len(), 2);
+    no_approval_text(&e);
 }
 
 #[test]
-fn claude_gets_no_session_bus_or_display_unless_asked() {
+fn claude_runs_without_asking_and_with_the_cli_flags_that_ask_nobody() {
+    let e = env();
+    e.on();
+    e.owner(quiet_llm(), nosearch(), "/claude SCENARIO bash echo hello").unwrap().join().unwrap();
+    assert_eq!(e.chat.sent().last().unwrap(), "ran: echo hello");
+    no_approval_text(&e);
+    assert!(e.chat.find("Started.").is_some_and(|m| m.contains("without asking")));
+    let runs = e.claude_runs();
+    let args: Vec<String> = runs[0]["args"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+    for want in ["-p", "--output-format", "stream-json", "--verbose", "--settings", "--strict-mcp-config", "--mcp-config", "--permission-prompt-tool", "mcp__approver__ask", "--permission-mode", "default"] {
+        assert!(args.contains(&want.to_string()), "missing {want}: {args:?}");
+    }
+    assert_eq!(runs[0]["cwd"].as_str().unwrap(), e.a.cfg.workspace.to_string_lossy());
+    let settings: Value = serde_json::from_str(&std::fs::read_to_string(args[args.iter().position(|a| a == "--settings").unwrap() + 1].clone()).unwrap()).unwrap();
+    assert_eq!(settings["sandbox"]["enabled"], false);
+    let ask: Vec<&str> = settings["permissions"]["ask"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    for t in ["Bash", "Write", "Edit", "Read", "WebFetch"] { assert!(ask.contains(&t), "{t} must reach the guard: {ask:?}"); }
+    let deny: Vec<&str> = settings["permissions"]["deny"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    assert!(deny.contains(&"Bash(sudo:*)") && deny.contains(&"Bash(rm *)"), "{deny:?}");
+    assert!(!deny.iter().any(|d| d.starts_with("Bash(curl")), "network tools are no longer blocked");
+    // the user's own work: a command in a protected-free place, a read anywhere, a new file
+    e.owner(quiet_llm(), nosearch(), "/claude SCENARIO read ~/Documents/anything.txt").unwrap().join().unwrap();
+    assert_eq!(e.chat.sent().last().unwrap(), "read it");
+    e.owner(quiet_llm(), nosearch(), "/claude SCENARIO write ~/Documents/brand-new.txt").unwrap().join().unwrap();
+    assert_eq!(e.chat.sent().last().unwrap(), "wrote it");
+    no_approval_text(&e);
+}
+
+#[test]
+fn deleting_and_overwriting_are_refused_with_a_reason_and_logged() {
+    let e = env();
+    e.on();
+    let existing = e.home.join("Documents/keep.txt");
+    std::fs::write(&existing, "precious").unwrap();
+    for cmd in ["rm -rf build", "bash -c 'find . -delete'", "git reset --hard", "echo x > ~/Documents/keep.txt", "mv ~/Documents/a ~/Documents/keep.txt", "python3 -c \"import os; os.remove('x')\""] {
+        e.owner(quiet_llm(), nosearch(), &format!("/claude SCENARIO bash {cmd}")).unwrap().join().unwrap();
+        let last = e.chat.sent().last().unwrap().clone();
+        assert!(last.starts_with("denied: Blocked:"), "{cmd}: {last}");
+    }
+    e.owner(quiet_llm(), nosearch(), "/claude SCENARIO write ~/Documents/keep.txt").unwrap().join().unwrap();
+    let last = e.chat.sent().last().unwrap().clone();
+    assert!(last.starts_with("denied: Blocked:") && last.contains("Edit"), "{last}");
+    assert_eq!(std::fs::read_to_string(&existing).unwrap(), "precious");
+    assert!(e.chat.sent().iter().all(|m| !m.contains("Approval")));
+    let log = e.log();
+    assert!(log.contains("\tguard\t") && log.contains("\tblocked\t"), "{log}");
+    assert!(log.contains("Bash: rm -rf build\tblocked\terror"), "{log}");
+    // ordinary commands still pass
+    e.owner(quiet_llm(), nosearch(), "/claude SCENARIO bash cargo build --release 2>&1 | tail -5").unwrap().join().unwrap();
+    assert!(e.chat.sent().last().unwrap().starts_with("ran: cargo build"));
+    // protected places and sudo are still refused
+    e.owner(quiet_llm(), nosearch(), "/claude SCENARIO read ~/.ssh/id_rsa").unwrap().join().unwrap();
+    assert!(e.chat.sent().last().unwrap().starts_with("denied: Blocked"));
+    e.owner(quiet_llm(), nosearch(), "/claude SCENARIO bash sudo systemctl stop x").unwrap().join().unwrap();
+    assert!(e.chat.sent().last().unwrap().starts_with("denied: Blocked"));
+}
+
+#[test]
+fn the_protected_places_have_one_switch() {
+    let e = env();
+    assert!(e.a.cfg.protect_secrets);
+    assert!(e.a.deny().is_denied(&e.home.join(".ssh/id_rsa")));
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut cfg, home, ..) = cfg_for(tmp.path(), 1000);
+    cfg.protect_secrets = false;
+    let off = Assistant::new(cfg, Arc::new(FakeSys::default()));
+    assert!(!off.deny().is_denied(&home.join(".ssh/id_rsa")));
+    assert!(commons_bot::assistant::claude::precheck(off.deny(), "Read", &json!({"file_path": home.join(".ssh/id_rsa")})).is_none());
+    assert!(commons_bot::assistant::claude::precheck(off.deny(), "Bash", &json!({"command": "sudo ls"})).is_some(), "sudo stays refused");
+    let deny: Vec<String> = claude_settings(off.deny())["permissions"]["deny"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+    assert!(!deny.iter().any(|d| d.contains(".ssh") || d.contains("deepseek")), "{deny:?}");
+}
+
+#[test]
+fn a_snapshot_is_taken_before_each_task_reported_and_only_ten_are_kept() {
+    let e = env();
+    e.on();
+    for _ in 0..12 { e.owner(quiet_llm(), nosearch(), "/claude SCENARIO answer").unwrap().join().unwrap(); }
+    let said = e.chat.sent();
+    let snaps: Vec<&String> = said.iter().filter(|m| m.starts_with("snapshot taken:")).collect();
+    assert_eq!(snaps.len(), 12);
+    assert!(snaps[0].contains("#1") && snaps[0].contains("Undo:") && snaps[0].contains("snapper -c home undochange 1..0"), "{}", snaps[0]);
+    // the snapshot comes before the task starts
+    let first_snap = said.iter().position(|m| m.starts_with("snapshot taken:")).unwrap();
+    let first_started = said.iter().position(|m| m.starts_with("Started.")).unwrap();
+    assert!(first_snap < first_started);
+    assert!(e.sys.snapper.lock().unwrap()[0].contains("-c home create") && e.sys.snapper.lock().unwrap()[0].contains("--type single"));
+    assert_eq!(e.sys.snaps.lock().unwrap().len(), 10, "{:?}", e.sys.snaps.lock().unwrap());
+    assert_eq!(*e.sys.snaps.lock().unwrap().first().unwrap(), 3);
+    assert!(e.log().contains("\tsnapshot\t"));
+}
+
+#[test]
+fn a_failing_snapshot_is_said_plainly_and_the_task_still_runs() {
+    let e = env();
+    e.on();
+    e.sys.snapper_fails.store(true, std::sync::atomic::Ordering::SeqCst);
+    e.owner(quiet_llm(), nosearch(), "/claude SCENARIO answer").unwrap().join().unwrap();
+    assert!(e.chat.find("No snapshot taken").is_some());
+    assert_eq!(e.claude_runs().len(), 1);
+    assert_eq!(e.chat.sent().last().unwrap(), "all done");
+}
+
+#[test]
+fn the_room_is_still_owner_only() {
+    let e = env();
+    e.on();
+    // someone else's command is ignored and runs nothing
+    assert_eq!(e.a.route(&two(), "Oracle", "dddddddddddd", "/claude SCENARIO answer"), Route::Drop);
+    assert_eq!(e.a.route(&two(), "Oracle", "dddddddddddd", "claude, SCENARIO answer"), Route::Drop);
+    assert!(e.claude_runs().is_empty());
+    // a second member ends the room: the notice, then everything passes through as an ordinary room
+    let notice = e.a.sync_room(&three()).expect("notice");
+    assert!(notice.contains("no longer an assistant room"));
+    assert!(!e.a.is_enabled(GID));
+    assert_eq!(e.a.route(&three(), "Oracle", OWNER, "/claude SCENARIO answer"), Route::Pass);
+    assert_eq!(e.a.route(&two(), "Oracle", OWNER, "/claude SCENARIO answer"), Route::Pass, "off until switched on again");
+    assert!(matches!(e.a.route(&three(), "Oracle", OWNER, "@Oracle assistant here"), Route::Notice(t) if t.contains("only members are you and me")));
+    // an owner command from a different (non-assistant) room does nothing either
+    let mut other = two();
+    other.gid = "other".into();
+    assert_eq!(e.a.route(&other, "Oracle", OWNER, "/claude SCENARIO answer"), Route::Pass);
+    assert!(e.claude_runs().is_empty());
+}
+
+#[test]
+fn claude_gets_the_session_bus_so_systemctl_user_works() {
     let e = env();
     e.on();
     std::env::set_var("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/x");
-    std::env::set_var("DISPLAY", ":9");
-    std::env::set_var("WAYLAND_DISPLAY", "wayland-9");
     std::env::set_var("XDG_RUNTIME_DIR", "/run/user/9");
-    e.owner(quiet_llm(), nosearch(), "do: SCENARIO env").unwrap().join().unwrap();
-    let run = e.claude_runs();
-    let text = format!("{:?}", run[0]["env"]);
-    for k in ["DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"] { assert!(!text.contains(k), "{k} reached Claude: {text}"); }
-}
-
-/// Audit M7: reading under ~/projects needed no approval at all. Now the first read in a project folder is asked, and a yes covers
-/// that folder for the rest of the task; Claude's own workspace is never asked about; grep is asked like read (it shows contents).
-#[test]
-fn a_read_in_a_project_folder_is_asked_once_per_task_and_the_workspace_never() {
-    use commons_bot::assistant::claude::{read_scope, ReadScope};
-    let e = env();
-    e.on();
-    let s = claude_settings(e.a.deny(), &[], &e.a.cfg.read_dirs);
-    let ask: Vec<String> = s["permissions"]["ask"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
-    let projects = format!("Read(//{}/**)", e.home.join("projects").to_string_lossy().trim_start_matches('/'));
-    assert!(ask.contains(&projects) && ask.contains(&"Grep".to_string()), "{ask:?}");
-    // the scope rule
-    let (rd, ws) = (e.a.cfg.read_dirs.clone(), e.a.cfg.workspace.clone());
-    std::fs::create_dir_all(e.home.join("projects/foo/src")).unwrap();
-    std::fs::write(e.home.join("projects/foo/src/a.rs"), "x").unwrap();
-    std::fs::write(e.home.join("projects/notes.txt"), "x").unwrap();
-    std::fs::create_dir_all(&ws).unwrap();
-    assert_eq!(read_scope(&rd, &ws, "Read", &json!({"file_path": e.home.join("projects/foo/src/a.rs")})), ReadScope::Folder(e.home.join("projects/foo")));
-    assert_eq!(read_scope(&rd, &ws, "Grep", &json!({"pattern": "x", "path": e.home.join("projects/foo")})), ReadScope::Folder(e.home.join("projects/foo")));
-    assert_eq!(read_scope(&rd, &ws, "Grep", &json!({"pattern": "x"})), ReadScope::Workspace, "no path: the working folder");
-    assert_eq!(read_scope(&rd, &ws, "Read", &json!({"file_path": ws.join("out.txt")})), ReadScope::Workspace);
-    assert_eq!(read_scope(&rd, &ws, "Read", &json!({"file_path": e.home.join("projects/notes.txt")})), ReadScope::Folder(e.home.join("projects")), "a file right in the read dir grants the read dir's own files");
-    assert_eq!(read_scope(&rd, &ws, "Read", &json!({"file_path": e.home.join("Documents/x.txt")})), ReadScope::Other);
-    assert_eq!(read_scope(&rd, &ws, "Bash", &json!({"command": "cat x"})), ReadScope::Other);
-    // the flow: asked, with the folder named; yes reads it
-    let t = e.owner(quiet_llm(), nosearch(), "do: SCENARIO read ~/projects/foo/src/a.rs").unwrap();
-    let code = e.chat.code_of(0);
-    let msg = e.chat.find("Approval needed").unwrap();
-    assert!(msg.contains("Tool: Read") && msg.contains("read everything under") && msg.contains("projects/foo"), "{msg}");
-    assert_eq!(e.reply(&format!("yes {code}")), Route::Handled);
-    t.join().unwrap();
-    assert_eq!(e.chat.sent().last().unwrap(), "read it");
-    assert!(e.log().contains("Read: ") && e.log().contains("\towner\tok"), "{}", e.log());
+    e.owner(quiet_llm(), nosearch(), "/claude SCENARIO env").unwrap().join().unwrap();
+    let text = format!("{:?}", e.claude_runs()[0]["env"]);
+    for k in ["DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"] { assert!(text.contains(k), "{k} missing: {text}"); }
 }
