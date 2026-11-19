@@ -43,6 +43,8 @@ pub struct AssistConfig {
     /// Keep the protected places (keys, tokens, password stores, browser profiles, the bot's own data) out of reach. Default on;
     /// `MEGATRON_BOT_ASSIST_PROTECT_SECRETS=0` turns the whole protection off.
     pub protect_secrets: bool,
+    /// `MEGATRON_BOT_ASSIST_PROTECT_SECRETS=read`: the protected places may be read (by read-only commands) but never changed.
+    pub secrets_read: bool,
     /// The snapper config whose snapshot is taken before each Claude task (`None`: no snapshots).
     pub snapshot_config: Option<String>,
     /// How many task snapshots to keep.
@@ -85,6 +87,7 @@ impl AssistConfig {
             progress_gap: Duration::from_secs(25),
             desktop_env: true,
             protect_secrets: true,
+            secrets_read: false,
             snapshot_config: Some("home".into()),
             snapshot_keep: 10,
         }
@@ -113,6 +116,7 @@ impl AssistConfig {
         if let Some(d) = env_string("MEGATRON_BOT_ASSIST_DOMAINS") { cfg.allowed_domains = d.split([',', ' ']).filter(|x| !x.is_empty()).map(String::from).collect(); }
         let off = |name: &str| env_string(name).is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "0" | "off" | "false" | "no"));
         if off("MEGATRON_BOT_ASSIST_DESKTOP_ENV") { cfg.desktop_env = false; }
+        if env_string("MEGATRON_BOT_ASSIST_PROTECT_SECRETS").is_some_and(|v| v.eq_ignore_ascii_case("read")) { cfg.secrets_read = true; eprintln!("[bot] assistant room: protected places are READABLE but never changed (MEGATRON_BOT_ASSIST_PROTECT_SECRETS=read)"); }
         if off("MEGATRON_BOT_ASSIST_PROTECT_SECRETS") { cfg.protect_secrets = false; eprintln!("[bot] assistant room: protection of secret places is OFF (MEGATRON_BOT_ASSIST_PROTECT_SECRETS=0)"); }
         if off("MEGATRON_BOT_ASSIST_SNAPSHOT") { cfg.snapshot_config = None; } else if let Some(c) = env_string("MEGATRON_BOT_ASSIST_SNAPSHOT_CONFIG") { cfg.snapshot_config = Some(c); }
         Some(cfg)

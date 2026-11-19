@@ -109,7 +109,7 @@ pub fn allowed_path(cfg: &AssistConfig, deny: &Deny, raw: &str) -> Result<PathBu
         return Err(format!("That is outside the folders I may look in ({}).", cfg.roots.iter().map(|r| r.display().to_string()).collect::<Vec<_>>().join(", ")));
     }
     // every part of the path, not just the file: a secrets folder named as such is skipped too
-    if real.components().any(|c| Deny::looks_secret(Path::new(c.as_os_str()))) { return Err("That looks like a secrets file and is not readable.".into()); }
+    if !deny.read_ok && real.components().any(|c| Deny::looks_secret(Path::new(c.as_os_str()))) { return Err("That looks like a secrets file and is not readable.".into()); }
     Ok(real)
 }
 
@@ -119,7 +119,7 @@ pub fn list_files(cfg: &AssistConfig, deny: &Deny, raw: &str) -> Result<String, 
     let mut rows: Vec<String> = vec![];
     for e in rd.flatten() {
         let path = e.path();
-        if deny.is_denied(&path) || Deny::looks_secret(&path) { continue; }
+        if deny.is_denied(&path) || (!deny.read_ok && Deny::looks_secret(&path)) { continue; }
         let Ok(md) = std::fs::symlink_metadata(&path) else { continue };
         let name = e.file_name().to_string_lossy().to_string();
         rows.push(if md.is_dir() { format!("{name}/") } else if md.file_type().is_symlink() { format!("{name} (link)") } else { format!("{name}  {} bytes", md.len()) });

@@ -660,3 +660,75 @@ mod tests {
         assert!(why.contains("rm") && why.len() < 200, "{why}");
     }
 }
+
+// --------------------------------------------------------------------- read-only commands (protected places in "read" mode)
+
+/// Programs that only look at things. A command touching a protected place in "read" mode must be made only of these.
+const READERS: &[&str] = &[
+    "cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg", "ls", "stat", "file", "wc", "jq", "yq", "diff", "cmp",
+    "sha256sum", "sha1sum", "md5sum", "b2sum", "base64", "xxd", "hexdump", "od", "strings", "tree", "du", "realpath", "readlink",
+    "basename", "dirname", "sort", "uniq", "cut", "tr", "column", "nl", "echo", "printf", "true", "test", "[", "find", "git", "sed",
+    "ssh-keygen", "openssl", "gpg", "systemctl", "journalctl", "awk",
+];
+
+/// True when every command in the line only reads: allowed programs, no writing redirects, no in-place or exec flags.
+pub fn read_only(src: &str, home: &Path) -> bool { read_only_at(src, &home.to_string_lossy(), 0) }
+
+fn read_only_at(src: &str, home: &str, depth: u8) -> bool {
+    if depth > MAX_DEPTH { return false; }
+    let p = parse(src, home);
+    if !p.heredocs.is_empty() { return false; }
+    if !p.subs.iter().all(|s| read_only_at(s, home, depth + 1)) { return false; }
+    p.cmds.iter().all(|c| {
+        let redirs_ok = c.redirs.iter().all(|(op, t)| match op.as_str() {
+            "<" | "<<<" => true,
+            ">" | ">>" | "&>" | "&>>" | ">|" => t.as_ref().is_some_and(|t| !t.dynamic && t.t == "/dev/null"),
+            ">&" => t.as_ref().is_some_and(|t| !t.dynamic && (t.t.chars().all(|c| c.is_ascii_digit()) || t.t == "-")),
+            _ => false,
+        });
+        if !redirs_ok { return false; }
+        let mut w: &[Word] = &c.words;
+        while w.first().is_some_and(is_assignment) { w = &w[1..]; }
+        let Some(prog) = w.first() else { return true };
+        if prog.dynamic { return false; }
+        let b = base(&prog.t);
+        if !READERS.contains(&b) { return false; }
+        let args: Vec<&str> = w[1..].iter().map(|a| a.t.as_str()).collect();
+        let any = |xs: &[&str]| args.iter().any(|a| xs.iter().any(|x| a == x || a.starts_with(&format!("{x}="))));
+        match b {
+            "find" => !any(&["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"]),
+            "sed" => !args.iter().any(|a| a.starts_with("-i") || *a == "--in-place" || a.starts_with("--in-place=") || (a.starts_with('-') && !a.starts_with("--") && a.contains('i')))
+                && !args.iter().any(|a| a.contains("w ") || a.ends_with("/w") || a.contains("e ")),
+            "awk" => !args.iter().any(|a| a.contains("system") || a.contains('>') || a.contains("|")),
+            "git" => matches!({ let mut i = 0; while i < args.len() && args[i].starts_with('-') { i += if matches!(args[i], "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace") { 2 } else { 1 }; } args.get(i).copied() }, Some("log" | "show" | "diff" | "status" | "blame" | "cat-file" | "ls-files" | "rev-parse" | "grep")),
+            "ssh-keygen" => any(&["-l", "-y", "-lf", "-yf"]) && !any(&["-p", "-c", "-R", "-N", "-t", "-A", "-e", "-i"]),
+            "openssl" => matches!(args.first().copied(), Some("x509" | "rsa" | "pkey" | "req" | "ec")) && !any(&["-out"]),
+            "gpg" => any(&["--list-keys", "--list-secret-keys", "-k", "-K", "--fingerprint", "--list-packets"]) && !any(&["--output", "-o", "--delete-key", "--delete-secret-key", "--import", "--gen-key", "--edit-key"]),
+            "systemctl" => matches!(args.iter().find(|a| !a.starts_with('-')).copied(), Some("status" | "cat" | "show" | "is-active" | "is-enabled" | "list-units" | "list-unit-files" | "list-timers")),
+            "journalctl" => !any(&["--vacuum-size", "--vacuum-time", "--vacuum-files", "--rotate", "--flush"]),
+            _ => true,
+        }
+    })
+}
+
+#[cfg(test)]
+mod read_only_tests {
+    use super::read_only;
+    use std::path::Path;
+    #[test]
+    fn reading_commands_pass_and_changing_ones_do_not() {
+        let h = Path::new("/home/u");
+        for ok in ["cat ~/.ssh/config", "grep -r token ~/.config/homebase | head", "ls -la ~/.ssh", "jq . ~/.config/rune/x.json 2>/dev/null",
+                   "ssh-keygen -lf ~/.ssh/id_ed25519.pub", "git -C ~/.password-store log", "sed -n 1,5p ~/.config/homebase/token", "find ~/.gnupg -name '*.kbx'",
+                   "cat $(ls ~/.ssh/*.pub)", "systemctl --user status megatron-bot"] {
+            assert!(read_only(ok, h), "should be read-only: {ok}");
+        }
+        for bad in ["echo x >> ~/.ssh/authorized_keys", "cat a > ~/.ssh/config", "sed -i s/a/b/ ~/.ssh/config", "cp x ~/.ssh/config", "tee ~/.ssh/config",
+                    "chmod 777 ~/.ssh", "python3 -c 'open(\"/home/u/.ssh/x\",\"w\")'", "find ~/.ssh -delete", "find ~/.ssh -exec chmod 600 {} +",
+                    "ssh-keygen -p -f ~/.ssh/id_ed25519", "git -C ~/.password-store commit -am x", "gpg --import k.asc", "$X ~/.ssh/config",
+                    "cat <<EOF > ~/.ssh/config\nx\nEOF", "openssl rsa -in k -out ~/.ssh/k", "systemctl --user disable x", "awk '{print > \"f\"}' ~/.ssh/config",
+                    "curl -o ~/.ssh/k https://x", "vim ~/.ssh/config", "ln -s a ~/.ssh/b", "echo $(rm ~/.ssh/x)"] {
+            assert!(!read_only(bad, h), "should NOT be read-only: {bad}");
+        }
+    }
+}

@@ -56,6 +56,8 @@ pub struct Deny {
     no_write: Vec<PathBuf>,
     /// False: nothing is protected (the owner switched `MEGATRON_BOT_ASSIST_PROTECT_SECRETS` off).
     pub protect: bool,
+    /// True: protected places may be read, never written (`MEGATRON_BOT_ASSIST_PROTECT_SECRETS=read`).
+    pub read_ok: bool,
 }
 
 /// `/a/./b/../c` becomes `/a/c`, without touching the disk.
@@ -93,7 +95,7 @@ impl Deny {
     pub fn new(home: &Path, extra: &[PathBuf]) -> Deny { Deny::with_protect(home, extra, true) }
 
     pub fn with_protect(home: &Path, extra: &[PathBuf], protect: bool) -> Deny {
-        if !protect { return Deny { home: home.to_path_buf(), paths: vec![], no_write: vec![], protect: false }; }
+        if !protect { return Deny { home: home.to_path_buf(), paths: vec![], no_write: vec![], protect: false, read_ok: false }; }
         let mut paths: Vec<PathBuf> = vec![];
         let add = |v: &mut Vec<PathBuf>, p: PathBuf| {
             let real = resolve(&p);
@@ -112,15 +114,21 @@ impl Deny {
         add(&mut paths, PathBuf::from("/etc/sudoers.d"));
         let mut no_write = vec![];
         for rel in NO_WRITE_REL { add(&mut no_write, home.join(rel)); }
-        Deny { home: home.to_path_buf(), paths, no_write, protect: true }
+        Deny { home: home.to_path_buf(), paths, no_write, protect: true, read_ok: false }
     }
+
+    /// Read mode: protected places can be read but never written.
+    pub fn readable(mut self) -> Deny { if self.protect { self.read_ok = true; } self }
 
     pub fn paths(&self) -> &[PathBuf] { &self.paths }
 
     fn under(p: &Path, base: &Path) -> bool { p == base || p.starts_with(base) }
 
     /// Whether this path (as written, and as it resolves through symlinks) is inside a protected place.
-    pub fn is_denied(&self, p: &Path) -> bool {
+    pub fn is_denied(&self, p: &Path) -> bool { !self.read_ok && self.in_protected(p) }
+
+    /// Inside a protected place, whatever the mode.
+    pub fn in_protected(&self, p: &Path) -> bool {
         let lex = lexical(p);
         let real = resolve(&lex);
         self.paths.iter().any(|d| Self::under(&lex, d) || Self::under(&real, d))
@@ -128,7 +136,7 @@ impl Deny {
 
     /// Whether Claude may not write here either (protected places plus the no-write list).
     pub fn is_write_denied(&self, p: &Path) -> bool {
-        if self.is_denied(p) { return true; }
+        if self.in_protected(p) { return true; }
         let lex = lexical(p);
         let real = resolve(&lex);
         self.no_write.iter().any(|d| Self::under(&lex, d) || Self::under(&real, d))
@@ -180,13 +188,14 @@ pub fn claude_settings(d: &Deny) -> Value {
         for p in d.paths() {
             let a = abs(p);
             for tool in ["Read", "Edit"] {
+                if tool == "Read" && d.read_ok { continue; }
                 deny.push(format!("{tool}({a})"));
                 deny.push(format!("{tool}({a}/**)"));
             }
         }
         // Secret-looking files anywhere (a project's .env, keys, keystores).
         for pat in ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/*.p12", "**/*.pfx", "**/*.kdbx", "**/*.keystore", "**/id_rsa*", "**/id_ed25519*", "**/id_ecdsa*", "**/.netrc", "**/.npmrc", "**/.pypirc", "**/credentials*", "**/*secret*", "**/*token*"] {
-            deny.push(format!("Read({pat})"));
+            if !d.read_ok { deny.push(format!("Read({pat})")); }
             deny.push(format!("Edit({pat})"));
         }
         for p in &d.no_write {
@@ -194,7 +203,8 @@ pub fn claude_settings(d: &Deny) -> Value {
             deny.push(format!("Edit({a})"));
             deny.push(format!("Edit({a}/**)"));
         }
-        for t in DENY_TOKENS { deny.push(format!("Bash(*{t}*)")); }
+        // In read mode the bot's own check lets read-only commands through and refuses the rest.
+        if !d.read_ok { for t in DENY_TOKENS { deny.push(format!("Bash(*{t}*)")); } }
     }
     for w in SUDO_WORDS {
         deny.push(format!("Bash({w})"));

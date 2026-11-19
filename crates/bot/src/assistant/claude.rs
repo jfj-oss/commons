@@ -75,14 +75,17 @@ pub fn precheck(deny: &Deny, name: &str, input: &Value) -> Option<String> {
             let p = super::config::expand_home(p, &deny.home);
             let bad = if writes { deny.is_write_denied(&p) } else { deny.is_denied(&p) };
             if bad { return Some(format!("{} is a protected place", p.display())); }
-            if let Some(t) = deny.mentions_protected(&p.to_string_lossy()) { return Some(format!("the path mentions a protected place ({t})")); }
+            if writes || !deny.read_ok { if let Some(t) = deny.mentions_protected(&p.to_string_lossy()) { return Some(format!("the path mentions a protected place ({t})")); } }
         }
     }
     if let Some(cmd) = input["command"].as_str() {
         if mentions_sudo(cmd) { return Some("sudo and other ways of becoming root are not allowed".into()); }
-        if let Some(t) = deny.mentions_protected(cmd) { return Some(format!("the command mentions a protected place ({t})")); }
+        if let Some(t) = deny.mentions_protected(cmd) {
+            if !deny.read_ok { return Some(format!("the command mentions a protected place ({t})")); }
+            if !super::guard::read_only(cmd, &deny.home) { return Some(format!("{t} is a protected place: it may be read (cat, grep, ls, git log...) but this command could change it")); }
+        }
     }
-    if let Some(pat) = input["pattern"].as_str() { if let Some(t) = deny.mentions_protected(pat) { return Some(format!("the pattern mentions a protected place ({t})")); } }
+    if let Some(pat) = input["pattern"].as_str().filter(|_| !deny.read_ok) { if let Some(t) = deny.mentions_protected(pat) { return Some(format!("the pattern mentions a protected place ({t})")); } }
     if !matches!(name, "Bash" | "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | "Glob" | "Grep" | "WebFetch" | "WebSearch") {
         if let Some(t) = deny.mentions_protected(&input.to_string()) { return Some(format!("the request mentions a protected place ({t})")); }
     }

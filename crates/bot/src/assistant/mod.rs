@@ -138,7 +138,7 @@ fn machine_line(t: &str) -> bool {
 impl Assistant {
     pub fn new(cfg: AssistConfig, sys: Arc<dyn Sys>) -> Assistant {
         let extra = vec![cfg.data_dir.clone()];
-        let deny = Arc::new(Deny::with_protect(&cfg.home, &extra, cfg.protect_secrets));
+        let deny = { let d = Deny::with_protect(&cfg.home, &extra, cfg.protect_secrets); Arc::new(if cfg.secrets_read { d.readable() } else { d }) };
         let path = cfg.data_dir.join("assistant-state.json");
         let st = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let log = AssistLog::new(&cfg.data_dir);
