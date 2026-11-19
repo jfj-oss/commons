@@ -6105,6 +6105,7 @@ dependencies = [
  "smallvec",
  "tar",
  "tokio",
+ "ttf-parser",
  "ureq",
  "wayland-client",
  "wayland-protocols",

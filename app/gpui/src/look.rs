@@ -90,6 +90,8 @@ fn lum(c: u32) -> f32 {
     let [r, g, b] = ch(c);
     0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
 }
+/// mega.js `inkOn`: the dark ink or white, whichever reads on the colour.
+pub fn ink_on(c: u32) -> Hsla { if contrast(c, 0x0c0d12) >= contrast(c, 0xffffff) { rgb(0x0c0d12).into() } else { rgb(0xffffff).into() } }
 pub fn contrast(a: u32, b: u32) -> f32 { let (x, y) = (lum(a), lum(b)); (x.max(y) + 0.05) / (x.min(y) + 0.05) }
 
 /// A person's colour (mega.js `faceColor`): hsl(H(name) % 360, 78%, 74%).

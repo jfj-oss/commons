@@ -62,6 +62,18 @@ pub struct CallUi {
     pub mini: Option<AnyWindowHandle>,
     pub pop_handle: Option<AnyWindowHandle>,
     pub error_shown: Option<String>,
+    /// Where each control was last painted, for checks.
+    pub hits: crate::calldock::Hits,
+    /// The lock's explainer is open.
+    pub explain: bool,
+    /// The error notice the person closed.
+    pub err_hidden: Option<String>,
+    /// The settings drop-down that is open (its id).
+    pub dd: Option<&'static str>,
+    /// How a screen is shared next (the page's "Share as").
+    pub share_profile: crate::calls::share::Profile,
+    /// The column of cameras and screens is hidden for me (the page's `hide`).
+    pub deck_hidden: bool,
     pub _tasks: Vec<Task<()>>,
     pub _subs: Vec<Subscription>,
 }
@@ -81,7 +93,7 @@ impl CallUi {
         });
         CallUi {
             engine: None, snap: Default::default(), settings_open: false, menu: None, vol, frames, shown: Shown::default(), fake_alive: Arc::new(AtomicBool::new(false)), tiles: vec![], deck: Deck::default(),
-            deck_w, resize: None, grip: cx.focus_handle(), live_since: 0, live_ready: false, live_busy: false, asked: false, ptt_key: "`".into(), popped: false, mini: None, pop_handle: None, error_shown: None,
+            deck_w, resize: None, grip: cx.focus_handle(), live_since: 0, live_ready: false, live_busy: false, asked: false, ptt_key: "`".into(), popped: false, mini: None, pop_handle: None, error_shown: None, hits: Default::default(), explain: false, err_hidden: None, dd: None, share_profile: crate::calls::share::Profile::Text, deck_hidden: false,
             _tasks: vec![task], _subs: vec![sub],
         }
     }
@@ -131,7 +143,7 @@ impl Mega {
         self.set_settings_open(false); self.call.menu = None;
         cx.notify();
     }
-    fn set_settings_open(&mut self, on: bool) {
+    pub fn set_settings_open(&mut self, on: bool) {
         self.call.settings_open = on;
         if !on { self.call_cmd(Command::MicMeter(false)); }
     }
@@ -256,178 +268,49 @@ impl Mega {
     pub fn deck_width(&self, window: &Window) -> f32 { deck::clamp_width(self.call.deck_w, f32::from(window.viewport_size().width)) }
 
     // ---- drawing ----
-    fn person_chip(&mut self, p: &engine::Peer, cx: &mut Context<Self>) -> Stateful<Div> {
-        let initial = p.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into());
-        let (acct, name) = (p.account.clone(), p.name.clone());
-        let me = p.me;
-        div().id(SharedString::from(format!("peer-{}", p.identity))).relative().flex_none().size(px(34.)).rounded_full().cursor_pointer()
-            .border_2().border_color(if p.speaking { rgb(look::SPEAK).into() } else { hsla(0., 0., 0., 0.) })
-            .child(match p.account.as_deref().and_then(|a| crate::avatars::pic_view(a, 30.)) {
-                Some(pic) => pic.when(p.muted || p.deafened, |d| d.opacity(0.55)),
-                None => div().size_full().rounded_full().bg(look::face(&p.name)).text_color(rgb(0x0c0d12)).font_family(look::F_SHARP).text_size(px(20.)).flex().items_center().justify_center()
-                    .when(p.muted || p.deafened, |d| d.opacity(0.55)).child(initial),
-            })
-            .when(p.muted, |d| d.child(div().absolute().right(px(-2.)).bottom(px(-2.)).size(px(11.)).rounded_full().bg(rgb(look::DANGER)).border_1().border_color(rgb(look::VOID))))
-            .when(!me && acct.is_some(), |d| d.on_click(cx.listener(move |this, _, window, cx| { if let Some(a) = acct.clone() { this.open_person(a, name.clone(), window, cx); } })))
-    }
-
-    /// The bar along the bottom: while in a call, or in a voice room that has a call to join.
-    pub fn call_bar(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let snap = self.call.snap.clone();
-        let in_call = self.call.in_call();
-        let here = self.gid.clone().filter(|_| self.level == Level::Chat);
-        let voice_room = here.as_ref().and_then(|g| self.channel(g)).filter(|(_, ch)| ch.kind == "voice").map(|(_, ch)| (ch.gid.clone(), ch.name.clone()));
-        if !in_call && voice_room.is_none() { return None; }
-        let mut bar = h_flex().id("call-bar").flex_none().w_full().gap_3().px_4().py_2().items_center().bg(rgb(look::SLIP)).border_t_1().border_color(look::line());
-        if !in_call {
-            let (gid, name) = voice_room.unwrap();
-            let people = self.pres.calls.get(&gid).cloned().unwrap_or_default();
-            return Some(bar.child(div().font_family(look::F_SHARP).text_size(px(24.)).child(name))
-                .child(div().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(if people.is_empty() { "nobody in the call".to_string() } else { format!("{} in the call", people.join(", ")) }))
-                .child(div().flex_1())
-                .child(pill("c-set", self.call.settings_open, "Settings").on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx))))
-                .when_some(snap.error.clone().filter(|_| snap.phase == "idle" || snap.phase == "error"), |d, e| d.child(div().text_size(px(12.)).text_color(rgb(look::DANGER)).child(e.msg)))
-                .child(Button::new("join").primary().label("Join call").on_click(cx.listener(move |this, _, window, cx| this.join_call(gid.clone(), window, cx)))).into_any_element());
-        }
-        let phase = match snap.phase.as_str() { "connecting" => if snap.attempt > 1 { format!("connecting (try {})", snap.attempt) } else { "connecting…".into() }, "reconnecting" => "reconnecting…".into(), _ => String::new() };
-        let people: Vec<engine::Peer> = snap.peers.clone();
-        bar = bar.child(v_flex().flex_none().child(div().font_family(look::F_SHARP).text_size(px(24.)).line_height(px(24.)).child(snap.room_name.clone()))
-            .child(div().font_family(look::F_NAME).text_size(px(11.)).text_color(look::mute()).child(if phase.is_empty() { if snap.encryption.active { "end-to-end encrypted".to_string() } else { "in call".to_string() } } else { phase })));
-        let mut faces = h_flex().id("faces").gap_2().items_center().flex_1().min_w_0().overflow_x_hidden();
-        for p in &people { faces = faces.child(self.person_chip(p, cx)); }
-        bar = bar.child(faces);
-        bar = bar.children(self.rune_segment(cx)).children(self.ring_button(cx));
-        let (muted, deaf, ptt, held) = (snap.muted, snap.deafened, snap.push_to_talk, snap.ptt_held);
-        let cam_on = snap.camera.state != "off" && !snap.camera.state.is_empty();
-        if let Some(err) = snap.error.clone() { bar = bar.child(div().max_w(px(260.)).text_size(px(12.)).text_color(rgb(look::DANGER)).child(err.msg)); }
-        if !muted && (snap.mic_quiet || snap.mic_system_muted == Some(true)) {
-            bar = bar.child(div().id("c-mic-warn").max_w(px(260.)).text_size(px(12.)).text_color(rgb(look::DANGER)).child(if snap.mic_system_muted == Some(true) { "Others cannot hear you: your microphone is muted in your computer's sound settings." } else { "Others cannot hear you: no sound is coming from your microphone." }));
-        }
-        bar = bar
-            .child(pill("c-mute", muted, if muted { "Muted" } else { "Mute" }).when(ptt, |d| d.opacity(0.6)).on_click(cx.listener(move |this, _, _, cx| { this.call_cmd(Command::SetMuted(!muted)); cx.notify(); })))
-            .child(pill("c-cam", cam_on, if cam_on { "Camera on" } else { "Camera" }).on_click(cx.listener(move |this, _, _, cx| {
-                this.call_cmd(if cam_on { Command::StopCamera } else { Command::StartCamera { source: crate::calls::camera::CameraSource::Device(None), profile: None } });
-                cx.notify();
-            })))
-            .child(pill("c-deaf", deaf, if deaf { "Deafened" } else { "Deafen" }).on_click(cx.listener(move |this, _, _, cx| { this.call_cmd(Command::SetDeafened(!deaf)); cx.notify(); })))
-            .when(ptt, |d| d.child(pill("c-ptt", held, "Hold to talk")
-                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, _| this.call_cmd(Command::PushToTalk(true))))
-                .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.call_cmd(Command::PushToTalk(false))))
-                .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, _| this.call_cmd(Command::PushToTalk(false))))))
-            .child(pill("c-set", self.call.settings_open, "Settings").on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx))))
-            .child(pill("c-pop", self.call.popped, "Pop out").on_click(cx.listener(|this, _, window, cx| this.pop_call(window, cx))))
-            .child(pill("c-mini", self.call.mini.is_some(), "Mini").on_click(cx.listener(|this, _, window, cx| this.toggle_mini(window, cx))))
-            .child(Button::new("leave").label("Leave").on_click(cx.listener(|this, _, _, cx| this.leave_call(cx))));
-        Some(bar.into_any_element())
-    }
-
-    /// A popover above the bar: the settings, or one person's volume.
+    /// One person's volume, beside the call card (the page's `.call-pop.vol`).
     pub fn call_popover(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let snap = self.call.snap.clone();
-        if self.call.settings_open { return Some(self.settings_panel(&snap, cx).into_any_element()); }
         let (acct, name) = self.call.menu.clone()?;
         let v = snap.peers.iter().find(|p| p.account.as_deref() == Some(acct.as_str())).map(|p| p.volume).unwrap_or(1.);
         let a2 = acct.clone();
-        Some(v_flex().id("person-menu").absolute().bottom(px(64.)).left(px(80.)).w(px(280.)).gap_2().p_4().rounded(px(22.)).bg(rgb(look::SLIP)).border_1().border_color(look::line()).shadow_lg().occlude()
-            .child(h_flex().gap_2().items_center().child(div().size(px(14.)).rounded_full().bg(look::face(&name))).child(div().font_family(look::F_SHARP).text_size(px(26.)).line_height(px(26.)).child(name)))
-            .child(div().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(format!("volume for you only: {}%", (v * 100.).round() as i64)))
-            .child(Slider::new(&self.call.vol).horizontal())
+        let hits = self.call.hits.clone();
+        Some(v_flex().id("person-menu").absolute().right(px(crate::calldock::DOCK_W + 24.)).bottom(px(24.)).w(px(260.)).gap_2().p_4().rounded(px(18.)).bg(rgb(0x14131a)).border_1().border_color(look::line()).shadow_lg().occlude()
+            .child(div().font_family(look::F_UI).font_weight(FontWeight::SEMIBOLD).text_size(px(14.)).child(name))
+            .child(div().font_family(look::F_UI).text_size(px(12.)).text_color(look::mute()).child(format!("Volume for you only: {}%", (v * 100.).round() as i64)))
+            .child(div().relative().child(Slider::new(&self.call.vol).horizontal()).child(hits.track("v-slider")))
             .child(h_flex().gap_2()
-                .child(pill("v-0", v == 0., "Silence").on_click(cx.listener(move |this, _, window, cx| { this.call_cmd(Command::SetVolume { account: acct.clone(), volume: 0. }); this.call.vol.update(cx, |s, cx| s.set_value(0., window, cx)); cx.notify(); })))
-                .child(pill("v-1", (v - 1.).abs() < 0.001, "Normal").on_click(cx.listener(move |this, _, window, cx| { this.call_cmd(Command::SetVolume { account: a2.clone(), volume: 1. }); this.call.vol.update(cx, |s, cx| s.set_value(1., window, cx)); cx.notify(); })))
+                .child(pill("v-0", v == 0., if v == 0. { "Unmute for me" } else { "Mute for me" }).relative().child(hits.track("v-0")).on_click(cx.listener(move |this, _, window, cx| {
+                    let to = if v == 0. { 1. } else { 0. };
+                    this.call_cmd(Command::SetVolume { account: acct.clone(), volume: to }); this.call.vol.update(cx, |s, cx| s.set_value(to as f32, window, cx)); cx.notify(); })))
+                .child(pill("v-1", (v - 1.).abs() < 0.001, "Normal").relative().child(hits.track("v-1")).on_click(cx.listener(move |this, _, window, cx| { this.call_cmd(Command::SetVolume { account: a2.clone(), volume: 1. }); this.call.vol.update(cx, |s, cx| s.set_value(1., window, cx)); cx.notify(); })))
                 .child(div().flex_1())
-                .child(pill("v-x", false, "Close").on_click(cx.listener(|this, _, _, cx| { this.call.menu = None; cx.notify(); })))).into_any_element())
+                .child(pill("v-x", false, "Close").relative().child(hits.track("v-x")).on_click(cx.listener(|this, _, _, cx| { this.call.menu = None; cx.notify(); })))).into_any_element())
     }
 
-    /// The cameras of this computer and the two profiles of call.js, as pills.
-    fn camera_list(&mut self, snap: &engine::Snapshot, cx: &mut Context<Self>) -> impl IntoElement {
-        use crate::calls::camera::{CamProfile, CameraSource};
-        let mut col = v_flex().id("cam-list").gap_1().max_h(px(120.)).overflow_y_scroll();
-        if snap.cameras.is_empty() { col = col.child(div().text_size(px(12.)).text_color(look::mute()).child("No camera found on this computer.")); }
-        for (i, c) in snap.cameras.iter().enumerate() {
-            let id = c.id.clone();
-            let cur = snap.camera.id.as_deref() == Some(c.id.as_str()) || (snap.camera.id.is_none() && snap.cam_id.as_deref() == Some(c.id.as_str()));
-            let on = snap.camera.state != "off" && !snap.camera.state.is_empty();
-            col = col.child(pill(SharedString::from(format!("cam-{i}")), cur, c.name.clone()).on_click(cx.listener(move |this, _, _, cx| {
-                this.call_cmd(if on { Command::SwitchCamera(CameraSource::Device(Some(id.clone()))) } else { Command::StartCamera { source: CameraSource::Device(Some(id.clone())), profile: None } });
-                cx.notify();
-            })));
-        }
-        let cur = snap.camera.profile.clone().unwrap_or_else(|| "720p".into());
-        h_flex().gap_2().child(v_flex().flex_1().child(col)).child(v_flex().gap_1()
-            .child(pill("cam-720", cur == "720p", "720p").on_click(cx.listener(|this, _, _, cx| { this.call_cmd(Command::SetCameraProfile(CamProfile::P720)); cx.notify(); })))
-            .child(pill("cam-1080", cur == "1080p", "1080p").on_click(cx.listener(|this, _, _, cx| { this.call_cmd(Command::SetCameraProfile(CamProfile::P1080)); cx.notify(); }))))
+    /// The share button: end the share that runs, or start one (the system's picker opens; a test run uses a synthetic screen).
+    pub fn toggle_share(&mut self) {
+        if matches!(self.call.snap.share.state.as_str(), "" | "idle") {
+            let source = if crate::video::test_sources() { crate::calls::capture::ShareSource::Test(Default::default()) } else { crate::calls::capture::ShareSource::Portal };
+            self.call_cmd(Command::StartShare { profile: self.call.share_profile, source, audio: None });
+        } else { self.call_cmd(Command::StopShare); }
     }
-
-    /// "Test microphone": the live input level, drawn only (nothing is played), with the reason when it is flat.
-    fn mic_meter(&self, snap: &engine::Snapshot) -> impl IntoElement {
-        let pos = crate::calls::meter::meter_position(snap.mic_level);
-        let hint = if snap.mic_system_muted == Some(true) { Some("Your microphone is switched off (muted) in your computer's sound settings. Unmute it there and the bar will move.")
-            } else if snap.mic_quiet { Some("No sound is coming from this microphone. Check that it is the right one, plugged in, and not muted.") } else { None };
-        v_flex().id("mic-meter").gap_1()
-            .child(div().id("mic-meter-bar").h(px(10.)).w_full().rounded_full().bg(look::line()).child(div().id("mic-meter-fill").h_full().rounded_full().bg(if pos > 0.85 { rgb(look::DANGER).into() } else { look::paper() }).w(relative(pos))))
-            .child(div().text_size(px(12.)).text_color(look::mute()).child(if snap.phase == "idle" || snap.phase.is_empty() { "Speak to test it. Nothing is played back." } else { "Speak to test it. This is what the others in the call receive." }))
-            .children(hint.map(|h| div().id("mic-hint").text_size(px(12.)).text_color(rgb(look::DANGER)).child(h)))
-    }
-
-    fn settings_panel(&mut self, snap: &engine::Snapshot, cx: &mut Context<Self>) -> impl IntoElement {
-        let label = |t: &str| div().mt_2().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(t.to_string());
-        let dev = |prefix: &'static str, list: &[crate::calls::audio::AudioDevice], current: Option<&String>, mic: bool, cx: &mut Context<Self>| {
-            let mut col = v_flex().id(SharedString::from(format!("{prefix}-list"))).gap_1().max_h(px(120.)).overflow_y_scroll();
-            col = col.child(pill(SharedString::from(format!("{prefix}-default")), current.is_none(), "System default")
-                .on_click(cx.listener(move |this, _, _, cx| { this.call_cmd(if mic { Command::SetMicDevice { id: String::new() } } else { Command::SetOutDevice { id: String::new() } }); cx.notify(); })));
-            for d in list {
-                let id = d.id.clone();
-                col = col.child(pill(SharedString::from(format!("{prefix}-{}", d.index)), current == Some(&d.id), d.name.clone())
-                    .on_click(cx.listener(move |this, _, _, cx| { this.call_cmd(if mic { Command::SetMicDevice { id: id.clone() } } else { Command::SetOutDevice { id: id.clone() } }); cx.notify(); })));
-            }
-            col
-        };
-        let entity = cx.entity().downgrade();
-        let sw = move |id: &'static str, on: bool, text: &'static str, which: u8| {
-            let e = entity.clone();
-            Switch::new(id).checked(on).label(text).on_click(move |v: &bool, _, cx| {
-                let v = *v;
-                let _ = e.update(cx, |this, cx| {
-                    let s = this.call.snap.clone();
-                    let mut p = crate::calls::audio::Processing { echo_cancellation: s.echo_cancellation, noise_suppression: s.noise_suppression, auto_gain_control: s.auto_gain_control };
-                    match which { 0 => p.echo_cancellation = v, 1 => p = p.with_noise(v), _ => p.auto_gain_control = v }
-                    if which == 3 { this.call_cmd(Command::SetPushToTalk(v)); } else { this.call_cmd(Command::SetProcessing(p)); }
-                    cx.notify();
-                });
-            })
-        };
-        v_flex().id("call-settings").absolute().bottom(px(64.)).right(px(16.)).w(px(420.)).max_h(px(520.)).overflow_y_scroll().gap_1().p_4().rounded(px(22.)).bg(rgb(look::SLIP)).border_1().border_color(look::line()).shadow_lg().occlude()
-            .child(h_flex().items_center().child(div().flex_1().font_family(look::F_SHARP).text_size(px(28.)).line_height(px(28.)).child("call settings"))
-                .child(pill("cs-close", false, "Close").on_click(cx.listener(|this, _, _, cx| { this.set_settings_open(false); cx.notify(); }))))
-            .child(label("microphone"))
-            .child(div().text_size(px(12.)).child(format!("Using: {}", snap.mic_name.clone().unwrap_or_else(|| default_name(&snap.devices.mic)))))
-            .child(self.mic_meter(snap))
-            .child(dev("mic", &snap.devices.mic, snap.mic_id.as_ref(), true, cx))
-            .child(label("speakers"))
-            .child(div().text_size(px(12.)).child(format!("Using: {}", snap.out_name.clone().unwrap_or_else(|| default_name(&snap.devices.out)))))
-            .child(dev("out", &snap.devices.out, snap.out_id.as_ref(), false, cx))
-            .child(label("camera"))
-            .child(self.camera_list(snap, cx))
-            .child(label("voice"))
-            .child(sw("cs-echo", snap.echo_cancellation, "Echo cancellation", 0))
-            .child(sw("cs-noise", snap.noise_suppression, "Noise suppression", 1))
-            .child(sw("cs-agc", snap.auto_gain_control, "Automatic gain", 2))
-            .child(sw("cs-ptt", snap.push_to_talk, "Push to talk", 3))
-            .child(div().text_size(px(12.)).text_color(look::mute()).child(format!("Hold the {} key while this window is focused, or the Hold to talk button.", if self.call.ptt_key == "`" { "` (backtick)".to_string() } else { self.call.ptt_key.clone() })))
+    pub fn toggle_camera(&mut self) {
+        if !matches!(self.call.snap.camera.state.as_str(), "" | "off") { self.call_cmd(Command::StopCamera); return; }
+        let source = if crate::video::test_sources() { crate::calls::camera::CameraSource::Test } else { crate::calls::camera::CameraSource::Device(None) };
+        self.call_cmd(Command::StartCamera { source, profile: None });
     }
 
     // ---- the column of cameras and screens ----
     fn tile_view(&mut self, t: &Tile, ix: usize, cx: &mut Context<Self>, window: &mut Window) -> impl IntoElement {
         let pic = self.call.shown.take(&self.call.frames, &t.sid, window);
-        let speaking = self.call.snap.peers.iter().any(|p| p.identity == t.identity && p.speaking);
-        let me = self.call.me_account();
+                let me = self.call.me_account();
         let who = self.call.others();
         let holder = self.call.deck.holder(&t.sid, &me, &who, Instant::now()).and_then(|a| self.call.snap.peers.iter().find(|p| p.account.as_deref() == Some(a.as_str())).map(|p| p.name.clone()));
-        let (sid, sid2, sid3, label) = (t.sid.clone(), t.sid.clone(), t.sid.clone(), format!("{}{}", t.name, if t.kind == Kind::Screen { " · screen" } else { "" }));
+        let (sid, sid2, sid3, label) = (t.sid.clone(), t.sid.clone(), t.sid.clone(), format!("{} · {}", t.name, if t.kind == Kind::Screen { "screen" } else { "camera" }));
         let held_by_other = holder.is_some();
-        let mut d = div().id(SharedString::from(format!("tile-{}", t.sid))).relative().w_full().flex_none().rounded(px(18.)).overflow_hidden().bg(rgb(0x0b0a10)).border_2().cursor_grab()
-            .border_color(if speaking { rgb(look::SPEAK).into() } else { look::line() })
+        let mut d = div().id(SharedString::from(format!("tile-{}", t.sid))).relative().w_full().flex_none().rounded(px(14.)).overflow_hidden().bg(rgb(0x0b0a10)).border_2().cursor_grab()
+            .border_color(hsla(0., 0., 0., 0.))
             .when(held_by_other, |d| d.opacity(0.6))
             .on_drag(TileDrag { sid: t.sid.clone(), label: label.clone() }, |v, _, _, cx| cx.new(|_| Ghost(v.label.clone())))
             .on_drag_move::<TileDrag>(cx.listener(move |this, ev: &DragMoveEvent<TileDrag>, window, cx| {
@@ -449,25 +332,35 @@ impl Mega {
                 }
             }
         };
+        let hits = self.call.hits.clone();
         d.child(inner)
-            .child(h_flex().absolute().left(px(10.)).bottom(px(8.)).gap_1().px_2().py_0p5().rounded_full().bg(hsla(0., 0., 0., 0.55)).font_family(look::F_NAME).text_size(px(12.)).text_color(look::paper())
-                .child(label.clone()).when_some(holder, |d, h| d.child(div().text_color(look::mute()).child(format!("· {h} is moving it")))))
-            .child(div().id(SharedString::from(format!("tile-pop-{}", t.sid))).absolute().right(px(8.)).top(px(8.)).px_2().rounded_full().bg(hsla(0., 0., 0., 0.55)).font_family(look::F_NAME).text_size(px(12.)).cursor_pointer().child("pop out")
-                .on_click(cx.listener(move |this, _, window, cx| this.pop_tile(sid2.clone(), window, cx))))
+            .child(h_flex().absolute().left_0().right_0().bottom_0().gap_1().items_center().px(px(8.)).py(px(4.)).bg(linear_gradient(180., linear_color_stop(hsla(0., 0., 0., 0.), 0.), linear_color_stop(hsla(0., 0., 0., 0.7), 1.)))
+                .font_family(look::F_UI).text_size(px(11.)).text_color(look::paper())
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label.clone()))
+                .when_some(holder, |d, h| d.child(div().text_color(look::mute()).child(format!("{h} is moving it"))))
+                .child(div().id(SharedString::from(format!("tile-pop-{}", t.sid))).relative().px(px(8.)).py(px(2.)).rounded(px(6.)).bg(hsla(0., 0., 1., 0.18)).cursor_pointer().child("pop out").child(hits.track(format!("tile-pop-{}", t.sid)))
+                    .on_click(cx.listener(move |this, _, window, cx| { cx.stop_propagation(); this.pop_tile(sid2.clone(), window, cx); }))))
+            .child(hits.track(format!("tile-{}", t.sid)))
             .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| { if ev.click_count() >= 2 { this.pop_tile(sid3.clone(), window, cx); } }))
     }
 
     /// The column and the grip on its edge; `None` while there is nothing to show.
     pub fn deck_column(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.call.tiles.is_empty() || !self.call.connected() || self.call.popped { return None; }
+        if self.call.tiles.is_empty() || !self.call.connected() || self.call.popped { self.call.deck_hidden = false; return None; }
+        if self.call.deck_hidden { return None; }
         let w = self.deck_width(window);
         let order = self.call.ordered();
         let vw = f32::from(window.viewport_size().width);
         let (lo, hi, _) = deck::limits(vw);
         let mut col = v_flex().id("deck").flex_none().w(px(w)).h_full().overflow_y_scroll().gap_3().px_3().pt_4().pb_3().bg(rgb(look::VOID));
+        let hits = self.call.hits.clone();
+        col = col.child(h_flex().flex_none().items_center().gap_2().min_h(px(28.)).font_family(look::F_UI).text_size(px(12.))
+            .child(div().flex_1().min_w_0().opacity(0.75).child("cameras and screens"))
+            .child(div().id("deck-hide").relative().px(px(12.)).py(px(6.)).rounded_full().bg(hsla(0., 0., 1., 0.12)).cursor_pointer().child("hide").child(hits.track("deck-hide"))
+                .on_click(cx.listener(|this, _, _, cx| { this.call.deck_hidden = true; cx.notify(); }))));
         for (i, t) in order.iter().enumerate() { col = col.child(self.tile_view(t, i, cx, window)); }
         let active = self.call.resize.is_some();
-        let grip = div().id("deck-grip").track_focus(&self.call.grip).flex_none().w(px(9.)).h_full().cursor_col_resize().flex().justify_center()
+        let grip = div().id("deck-grip").relative().child(self.call.hits.track("deck-grip")).track_focus(&self.call.grip).flex_none().w(px(9.)).h_full().cursor_col_resize().flex().justify_center()
             .child(div().w(px(if active { 3. } else { 1. })).h_full().bg(if active { look::paper() } else { look::line() }))
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
                 window.focus(&this.call.grip.clone(), cx);
@@ -476,13 +369,28 @@ impl Mega {
             }))
             .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| {
                 let k = ev.keystroke.key.as_str();
-                let dir = match k { "right" => 1., "left" => -1., _ => return };
-                let w = deck::arrow(this.deck_width(window), f32::from(window.viewport_size().width), dir, ev.keystroke.modifiers.shift);
+                let vw = f32::from(window.viewport_size().width);
+                let w = match k {
+                    "right" => deck::arrow(this.deck_width(window), vw, 1., ev.keystroke.modifiers.shift),
+                    "left" => deck::arrow(this.deck_width(window), vw, -1., ev.keystroke.modifiers.shift),
+                    "home" => deck::limits(vw).0,
+                    "end" => deck::limits(vw).1,
+                    _ => return,
+                };
                 this.set_deck_width(w, window, true);
                 cx.stop_propagation(); cx.notify();
             }));
         let _ = (lo, hi);
         Some(h_flex().h_full().flex_none().child(col).child(grip).into_any_element())
+    }
+
+    /// "show N tiles": where the column was hidden (the page's `#mega-deckshow`).
+    pub fn deck_show_button(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.call.deck_hidden || self.call.tiles.is_empty() || !self.call.connected() { return None; }
+        let n = self.call.tiles.len();
+        let hits = self.call.hits.clone();
+        Some(div().id("deck-show").absolute().left(px(10.)).top(px(10.)).px(px(12.)).py(px(6.)).rounded_full().bg(rgb(0x2a2830)).cursor_pointer().font_family(look::F_UI).text_size(px(12.)).child(format!("show {n} {}", if n == 1 { "tile" } else { "tiles" })).child(hits.track("deck-show"))
+            .on_click(cx.listener(|this, _, _, cx| { this.call.deck_hidden = false; cx.notify(); })).into_any_element())
     }
 
     /// Dragging the edge: called for mouse moves and releases on the window's root.
@@ -505,6 +413,25 @@ impl Mega {
     }
 }
 
+
+impl Mega {
+    /// For checks: the engine's state, the window's call state, and where every control was painted.
+    pub fn callsnap(&self) -> Value {
+        let c = &self.call; let s = &c.snap;
+        json!({
+            "phase": s.phase, "gid": s.gid, "room": s.room_name, "muted": s.muted, "deafened": s.deafened, "pushToTalk": s.push_to_talk, "pttHeld": s.ptt_held,
+            "echo": s.echo_cancellation, "noise": s.noise_suppression, "agc": s.auto_gain_control,
+            "camera": s.camera.state, "camProfile": s.camera.profile, "share": s.share.state, "shareProfile": s.share.profile,
+            "peers": s.peers.iter().map(|p| json!({"identity": p.identity, "name": p.name, "me": p.me, "speaking": p.speaking, "muted": p.muted, "deafened": p.deafened, "volume": p.volume, "account": p.account})).collect::<Vec<_>>(),
+            "subscribed": s.subscribed, "localVideo": s.local_video, "micId": s.mic_id, "outId": s.out_id,
+            "ui": {"settings": c.settings_open, "menu": c.menu.as_ref().map(|m| m.1.clone()), "popped": c.popped, "mini": c.mini.is_some(), "explain": c.explain, "dd": c.dd, "deckW": self.deck_w_now(), "deckHidden": c.deck_hidden,
+                   "tiles": c.tile_ids(), "order": c.deck.order, "shareProfile": c.share_profile.name(), "docked": self.dock_on()},
+            "ring": self.ring_dump(), "rune": self.rune_dump(),
+            "hits": c.hits.dump(),
+        })
+    }
+    pub fn deck_w_now(&self) -> f32 { self.call.deck_w }
+}
 
 // ---- automation for checks: MEGA_GPUI_UI_STEPS="join;wait=4000;settings;wait=1000;..." ----
 impl Mega {
@@ -555,7 +482,3 @@ impl Mega {
     }
 }
 
-/// What "System default" is called in the list: the default entry's own name, "default: " dropped.
-fn default_name(list: &[crate::calls::audio::AudioDevice]) -> String {
-    list.iter().find(|d| crate::calls::audio::is_default_entry(d)).map(|d| format!("System default ({})", d.name.trim_start_matches("default:").trim())).unwrap_or_else(|| "System default".into())
-}

@@ -148,6 +148,7 @@ impl Mega {
             let unread = it.num > 0 && !it.voice && !on;
             let r = lerp(if it.title == "options" { 4. } else if on { 8. } else { 7. }, 62., k) * sc;
             let tip = it.title.clone();
+            let voice = it.voice && !it.locked;
             let open = it.open.clone();
             let keep = k > 0.01;
             // closed: a coloured dot; open: the room's own colour with a live field and its name
@@ -179,6 +180,8 @@ impl Mega {
                 .when(k < 0.5, |d| d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     match open.clone() {
+                        // a click on a voice dot is an explicit join (or leave), as on the page: a voice room has no chat to open
+                        Open::Room(_, g) if voice => { if this.call.in_call() && this.call.snap.gid.as_deref() == Some(g.as_str()) { this.leave_call(cx); } else { this.join_call(g, window, cx); } }
                         Open::Room(c, g) => { if this.gid.as_deref() != Some(g.as_str()) { this.open_room(c, g, window, cx); } }
                         Open::Settings => this.go(Level::Settings, window, cx),
                         Open::Admin(c) => this.open_panel(crate::members::Panel::Admin(c), window, cx),

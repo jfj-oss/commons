@@ -475,6 +475,7 @@ impl Render for Mega {
             window.request_animation_frame();
         }
         self.holes.borrow_mut().clear();
+        self.call.hits.clear();
         let base = div().id("root").size_full().bg(rgb(look::VOID)).text_color(look::paper()).font_family(look::F_UI).text_size(px(15.))
             // dragging the column's edge, and push-to-talk: the key never reaches the composer while that mode is on
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
@@ -492,17 +493,20 @@ impl Render for Mega {
                     Level::Home => self.render_home(window, cx),
                     Level::Server(cid) => self.render_server(&cid, window, cx),
                     Level::Chat => {
-                        let deck = self.deck_column(window, cx);
-                        h_flex().size_full().items_start().child(self.render_rail(window, cx)).children(deck).child(self.render_chat(cx)).into_any_element()
+                        h_flex().size_full().items_start().child(self.render_rail(window, cx)).child(self.render_chat(cx)).into_any_element()
                     }
                     Level::Settings => self.render_settings(cx).into_any_element(),
                 };
-                let bar = self.call_bar(cx);
+                let deck = self.deck_column(window, cx);
+                let show = self.deck_show_button(cx);
+                let dock = self.call_dock(window, cx);
+                let settings = self.settings_modal(window, cx);
+                let pr = if self.dock_on() { crate::calldock::GUTTER } else { 0. };
                 let pop = self.call_popover(cx);
                 let rings = self.ring_overlay(cx);
                 let people = self.members_overlay(cx);
                 let cropper = self.avatar_overlay(cx);
-                base.child(v_flex().size_full().child(div().flex_1().min_h_0().w_full().child(body)).children(bar)).children(pop).children(people).children(rings).children(cropper)
+                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(rings).children(cropper)
             }
         }
     }
