@@ -8,7 +8,7 @@
 use crate::app::Mega;
 use crate::look;
 use commons_core::rune::Current;
-use gpui_kit::component::h_flex;
+use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::{json, Value};
@@ -133,22 +133,29 @@ impl Mega {
         });
     }
 
-    /// The part of the call bar that is rune's: nothing unless rune answers.
+    /// rune's part of the call: a small card beside the call card (the page's `.cd-note`), nothing unless rune answers.
     pub fn rune_segment(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use crate::icons::{self, Icon};
+        use crate::squircle as sq;
         let now = self.rune.now.clone()?;
-        let small = |id: &'static str, text: SharedString| div().id(id).px_2().py_1().rounded_full().border_1().border_color(look::line()).cursor_pointer().font_family(look::F_NAME).text_size(px(12.)).child(text);
+        let hits = self.call.hits.clone();
+        let btn = |id: &'static str, icon: Icon| div().id(id).relative().w(px(34.)).h(px(24.)).flex().items_center().justify_center().cursor_pointer()
+            .child(sq::back(10., hsla(0., 0., 1., 0.1))).child(div().relative().child(icons::icon(icon, 14., look::paper()))).child(hits.track(id));
         let what: &'static str = if now.playing { "pause" } else { "resume" };
         let along = self.rune.along.is_some();
         let friend = self.rune.friends.first().cloned();
-        Some(h_flex().id("rune-bar").flex_none().gap_2().items_center().max_w(px(520.))
-            .child(div().id("rune-song").min_w_0().max_w(px(220.)).overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute())
+        Some(v_flex().id("rune-bar").relative().w_full().gap(px(6.)).px(px(10.)).py(px(8.)).font_family(look::F_UI).text_size(px(12.))
+            .child(sq::back(12., rgb(0x14131a)))
+            .child(div().id("rune-song").relative().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(look::mute())
                 .child(format!("{} {}", if now.playing { "\u{266a}" } else { "(paused)" }, song_line(&now))))
-            .child(small("rune-prev", "prev".into()).on_click(cx.listener(|this, _, window, cx| this.rune_control("prev", window, cx))))
-            .child(small("rune-play", if now.playing { "pause" } else { "play" }.into()).on_click(cx.listener(move |this, _, window, cx| this.rune_control(what, window, cx))))
-            .child(small("rune-next", "next".into()).on_click(cx.listener(|this, _, window, cx| this.rune_control("next", window, cx))))
+            .child(h_flex().relative().gap(px(6.)).items_center()
+                .child(btn("rune-prev", Icon::Prev).on_click(cx.listener(|this, _, window, cx| this.rune_control("prev", window, cx))))
+                .child(btn("rune-play", if now.playing { Icon::Pause } else { Icon::Play }).on_click(cx.listener(move |this, _, window, cx| this.rune_control(what, window, cx))))
+                .child(btn("rune-next", Icon::Next).on_click(cx.listener(|this, _, window, cx| this.rune_control("next", window, cx)))))
             .when(along || friend.is_some(), |d| {
                 let label = if along { "Stop listening along".to_string() } else { format!("Listen along with {}", friend.as_ref().map(|f| f.name.as_str()).unwrap_or("them")) };
-                d.child(small("rune-along", label.into()).when(along, |x| x.bg(look::paper()).text_color(rgb(0x0c0d12))).on_click(cx.listener(|this, _, window, cx| this.rune_along(window, cx))))
+                d.child(div().id("rune-along").relative().px(px(10.)).py(px(4.)).cursor_pointer().when(along, |x| x.text_color(rgb(0x0c0d12))).child(sq::back(999., if along { look::paper() } else { hsla(0., 0., 1., 0.1) })).child(div().relative().child(label)).child(hits.track("rune-along"))
+                    .on_click(cx.listener(|this, _, window, cx| this.rune_along(window, cx))))
             })
             .into_any_element())
     }

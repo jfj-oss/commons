@@ -5,7 +5,6 @@ use crate::app::Mega;
 use crate::calls::engine::Command;
 use crate::look;
 use crate::video::Shown;
-use gpui_kit::component::button::Button;
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -28,15 +27,28 @@ impl PopView {
     }
 }
 
+/// The people as the call card shows them: squares, the one talking ringed in the room's highlight.
 fn faces(m: &Mega, size: f32) -> Div {
-    let mut row = h_flex().gap_2().items_center();
+    let duo = m.room_duo(m.call.snap.gid.as_deref().unwrap_or(""));
+    let mut row = h_flex().gap(px(8.)).items_center();
     for p in &m.call.snap.peers {
-        let initial = p.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into());
-        row = row.child(div().relative().flex_none().size(px(size)).rounded_full().border_2().border_color(if p.speaking { rgb(look::SPEAK).into() } else { hsla(0., 0., 0., 0.) })
-            .child(div().size_full().rounded_full().bg(look::face(&p.name)).text_color(rgb(0x0c0d12)).font_family(look::F_SHARP).text_size(px(size * 0.58)).flex().items_center().justify_center().when(p.muted, |d| d.opacity(0.5)).child(initial))
-            .when(p.muted, |d| d.child(div().absolute().right(px(-1.)).bottom(px(-1.)).size(px(10.)).rounded_full().bg(rgb(look::DANGER)))));
+        let r = size * 22. / 48.;
+        let mut cell = div().relative().flex_none().size(px(size));
+        if p.speaking {
+            cell = cell.child(div().absolute().left(px(-4.)).top(px(-4.)).size(px(size + 8.)).child(crate::squircle::back(r + 4., rgb(duo.hi))))
+                .child(div().absolute().left(px(-2.)).top(px(-2.)).size(px(size + 4.)).child(crate::squircle::back(r + 2., rgb(look::VOID))));
+        }
+        row = row.child(cell.child(div().relative().size(px(size)).when(p.muted || p.deafened, |d| d.opacity(0.55)).child(crate::calldock::face(p.account.as_deref(), &p.name, size, r))));
     }
     row
+}
+
+/// An icon button of the call card's style (48 x 32, the squircle in near black, lit paper when on).
+fn ibtn(id: &'static str, icon: crate::icons::Icon, on: bool, main: Entity<Mega>, act: impl Fn(&mut Mega, &mut Context<Mega>) + 'static) -> Stateful<Div> {
+    let (bg, ink): (Hsla, Hsla) = if on { (rgb(0xefedf2).into(), rgb(0x050407).into()) } else { (hsla(0., 0., 1., 0.1), rgb(0xefedf2).into()) };
+    div().id(id).relative().flex_none().w(px(48.)).h(px(32.)).flex().items_center().justify_center().cursor_pointer()
+        .child(crate::squircle::back(22., bg)).child(div().relative().child(crate::icons::icon(icon, 16., ink)))
+        .on_click(move |_, _, cx| { main.update(cx, |m, cx| act(m, cx)); })
 }
 
 impl Render for PopView {
@@ -46,12 +58,9 @@ impl Render for PopView {
         let base = div().size_full().bg(rgb(look::VOID)).text_color(look::paper()).font_family(look::F_UI).text_size(px(14.));
         if !m.call.in_call() { return base.flex().items_center().justify_center().font_family(look::F_NAME).text_color(look::mute()).child("The call has ended.").into_any_element(); }
         let muted = m.call.snap.muted;
-        let mute_btn = {
-            let main = main.clone();
-            Button::new("pop-mute").label(if muted { "Unmute" } else { "Mute" }).on_click(move |_, _, cx| { main.update(cx, |m, cx| { m.call_cmd(Command::SetMuted(!muted)); cx.notify(); }); })
-        };
+        let mute_btn = ibtn("pop-mute", if muted { crate::icons::Icon::MicOff } else { crate::icons::Icon::Mic }, muted, main.clone(), move |m, cx| { m.call_cmd(Command::SetMuted(!muted)); cx.notify(); });
         match self.kind.clone() {
-            PopKind::Mini => base.p_2().child(h_flex().size_full().gap_3().items_center().child(faces(m, 38.)).child(div().flex_1()).child(mute_btn)).into_any_element(),
+            PopKind::Mini => base.p_2().child(h_flex().size_full().gap_3().items_center().child(faces(m, 40.)).child(div().flex_1()).child(mute_btn)).into_any_element(),
             PopKind::Tile(sid) => {
                 let (frames, tile) = (m.call.frames.clone(), m.call.tile(&sid).cloned());
                 let img_ = self.shown.take(&frames, &sid, window);
@@ -73,8 +82,8 @@ impl Render for PopView {
                 }
                 let main2 = main.clone();
                 base.child(v_flex().size_full()
-                    .child(h_flex().flex_none().gap_3().px_4().pt_3().items_center().child(div().font_family(look::F_SHARP).text_size(px(32.)).line_height(px(32.)).child(title)).child(faces(m, 34.)).child(div().flex_1()).child(mute_btn)
-                        .child(Button::new("pop-leave").label("Leave").on_click(move |_, _, cx| { main2.update(cx, |m, cx| m.leave_call(cx)); })))
+                    .child(h_flex().flex_none().gap_3().px_4().pt_3().items_center().child(div().font_family(look::F_SHARP).text_size(px(32.)).line_height(px(32.)).child(title)).child(faces(m, 36.)).child(div().flex_1()).child(mute_btn)
+                        .child(ibtn("pop-leave", crate::icons::Icon::Leave, false, main2, |m, cx| m.leave_call(cx))))
                     .child(grid)).into_any_element()
             }
         }

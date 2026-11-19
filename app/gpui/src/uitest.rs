@@ -70,6 +70,8 @@ impl Mega {
             let out = match cmd["cmd"].as_str().unwrap_or("") {
                 "dump" => json!({"ring": self.ring_dump(), "rune": self.rune_dump(), "call": {"phase": self.call.snap.phase, "gid": self.call.snap.gid, "peers": self.call.snap.peers.iter().map(|p| json!({"name": p.name, "account": p.account, "me": p.me})).collect::<Vec<_>>()},
                                 "level": format!("{:?}", self.level), "gid": self.gid, "active": window.is_window_active()}),
+                "callsnap" => { let mut v = self.callsnap(); v["windows"] = json!(cx.windows().len()); let vp = window.viewport_size(); v["viewport"] = json!([f32::from(vp.width), f32::from(vp.height)]); v["bounds"] = json!({"x": f32::from(window.bounds().origin.x), "y": f32::from(window.bounds().origin.y), "w": f32::from(window.bounds().size.width), "h": f32::from(window.bounds().size.height)}); v }
+                "call_settings" => { if self.call.settings_open != (cmd["on"].as_bool() != Some(false)) { self.open_settings(window, cx); } json!({"ok": true}) }
                 "accept" => match self.ring.book.cards.first().map(|c| c.ring.clone()) { Some(r) => { self.ring_accept(&r, window, cx); json!({"ok": true}) } None => json!({"error": "no card"}) },
                 "decline" => match self.ring.book.cards.first().map(|c| c.ring.clone()) { Some(r) => { self.ring_decline(&r, cx); json!({"ok": true}) } None => json!({"error": "no card"}) },
                 "dial" => { self.dial(s("peer"), s("name"), window, cx); json!({"ok": true}) }

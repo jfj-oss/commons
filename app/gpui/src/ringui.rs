@@ -13,6 +13,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::{json, Value};
 
+fn rgba_c(c: u32, a: f32) -> Hsla { let mut h: Hsla = rgb(c).into(); h.a = a; h }
+
 pub fn unix() -> f64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.) }
 
 #[derive(Default)]
@@ -176,7 +178,7 @@ impl Mega {
         });
     }
     /// The voice room of our connected call, if it is one that has others to ring (not a call between two).
-    fn ring_all_room(&self) -> Option<String> {
+    pub fn ring_all_room(&self) -> Option<String> {
         if !self.call.connected() { return None; }
         let gid = self.call.snap.gid.clone()?;
         self.channel(&gid).filter(|(c, ch)| !c.direct && ch.kind == "voice").map(|_| gid)
@@ -239,29 +241,39 @@ impl Mega {
         let missed = self.ring.book.missed.clone();
         let notes: Vec<String> = self.ring.notes.iter().map(|(t, _)| t.clone()).collect();
         if cards.is_empty() && missed.is_empty() && notes.is_empty() { return None; }
-        let mut col = v_flex().id("ring-overlay").absolute().top(px(14.)).right(px(14.)).w(px(380.)).gap_2().occlude();
+        let mut col = v_flex().id("ring-overlay").absolute().top(px(10.)).left(px(10.)).right(px(10.)).gap(px(8.));
+        let hits = self.call.hits.clone();
         for c in cards {
             let duo = self.room_duo(&c.gid);
             let ring = c.ring.clone();
             let (r2, r3) = (ring.clone(), ring.clone());
             let what = if c.direct || c.one_to_one { "calling you".to_string() } else { "ringing the room".to_string() };
             let where_ = if c.one_to_one { "direct call".to_string() } else { format!("{} · {}", c.room, c.comm) };
-            col = col.child(v_flex().id(SharedString::from(format!("ring-{ring}"))).gap_1().p_4().rounded(px(22.)).bg(duo.field()).text_color(duo.ink()).border_1().border_color(look::line()).shadow_lg()
-                .child(div().font_family(look::F_NAME).text_size(px(12.)).child(what))
-                .child(div().font_family(look::F_SHARP).text_size(px(30.)).line_height(px(30.)).child(c.name.clone()))
-                .child(div().font_family(look::F_NAME).text_size(px(12.)).child(where_))
-                .child(h_flex().mt_2().gap_2().justify_end()
-                    .child(Button::new(SharedString::from(format!("ring-no-{r2}"))).label("Decline").on_click(cx.listener(move |this, _, _, cx| this.ring_decline(&r2, cx))))
-                    .child(Button::new(SharedString::from(format!("ring-yes-{r3}"))).primary().label("Join").on_click(cx.listener(move |this, _, window, cx| this.ring_accept(&r3, window, cx))))));
+            // the page's `.rg-card`: the room's two colours across a slant, the ink on top
+            let bg = linear_gradient(110., linear_color_stop(rgb(duo.main), 0.), linear_color_stop(rgb(duo.hi), 0.95));
+            let ink = look::ink_on(duo.main);
+            col = col.child(div().id(SharedString::from(format!("ring-{ring}"))).relative().w_full().flex().items_center().justify_between().gap(px(16.)).pl(px(24.)).pr(px(18.)).py(px(10.)).text_color(ink).occlude()
+                .child(crate::squircle::back(52., bg)).child(crate::squircle::front(52., None, Some((1., hsla(0., 0., 1., 0.16))), None))
+                .child(v_flex().relative().min_w_0().flex_1()
+                    .child(div().font_family(look::F_UI).text_size(px(12.)).opacity(0.82).child(what))
+                    .child(div().font_family(look::F_SHARP).text_size(px(48.)).line_height(px(48.)).child(c.name.clone()))
+                    .child(div().font_family(look::F_NAME).text_size(px(14.)).opacity(0.9).child(where_)))
+                .child(h_flex().relative().gap(px(10.)).items_center()
+                    .child(div().id(SharedString::from(format!("ring-no-{r2}"))).relative().h(px(44.)).px(px(24.)).flex().items_center().cursor_pointer().font_family(look::F_UI).font_weight(FontWeight::SEMIBOLD).text_size(px(15.)).text_color(rgb(0xefedf2))
+                        .child(crate::squircle::back(999., rgba_c(0x050407, 0.38))).child(crate::squircle::front(999., None, Some((1., hsla(0., 0., 1., 0.3))), None)).child("decline").child(hits.track("ring-no"))
+                        .on_click(cx.listener(move |this, _, _, cx| this.ring_decline(&r2, cx))))
+                    .child(div().id(SharedString::from(format!("ring-yes-{r3}"))).relative().h(px(44.)).px(px(24.)).flex().items_center().cursor_pointer().font_family(look::F_UI).font_weight(FontWeight::SEMIBOLD).text_size(px(15.)).text_color(rgb(duo.main))
+                        .child(crate::squircle::back(999., ink)).child("join").child(hits.track("ring-yes"))
+                        .on_click(cx.listener(move |this, _, window, cx| this.ring_accept(&r3, window, cx))))));
         }
         if !missed.is_empty() {
-            let mut m = v_flex().id("missed").gap_1().px_4().py_2().rounded(px(18.)).bg(rgb(look::SLIP)).border_1().border_color(look::line()).shadow_lg();
+            let mut m = v_flex().id("missed").self_end().w(px(380.)).gap_1().px_4().py_2().rounded(px(18.)).bg(rgb(look::SLIP)).border_1().border_color(look::line()).shadow_lg();
             for x in &missed { m = m.child(div().font_family(look::F_NAME).text_size(px(13.)).child(format!("{} · {}", x.line(), crate::app::clock(x.at as u64)))); }
             m = m.child(h_flex().justify_end().child(div().id("missed-x").cursor_pointer().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child("dismiss")
                 .on_click(cx.listener(|this, _, _, cx| { this.ring.book.dismiss_missed(); cx.notify(); }))));
             col = col.child(m);
         }
-        for n in notes { col = col.child(div().px_4().py_2().rounded(px(18.)).bg(rgb(look::SLIP)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_NAME).text_size(px(13.)).child(n)); }
+        for n in notes { col = col.child(div().self_end().w(px(380.)).px_4().py_2().rounded(px(18.)).bg(rgb(look::SLIP)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_NAME).text_size(px(13.)).child(n)); }
         Some(col.into_any_element())
     }
 

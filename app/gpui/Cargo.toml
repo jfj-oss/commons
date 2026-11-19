@@ -40,6 +40,8 @@ getrandom = { version = "0.2", optional = true }
 # remote video drawn as images on Linux (videobench.rs now, calls/video.rs later): the versions GPUI already uses
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 smallvec = "1"
+# reads the glyph outlines of the room name that runs upward on the call card (vtext.rs); already in the lock file through gpui
+ttf-parser = "=0.25.1"
 serde = { version = "1", features = ["derive"], optional = true }
 log = { version = "0.4", optional = true }
 # The camera (calls/camera_linux.rs): V4L2 by hand and the JPEG decoder `image` already builds (same versions as Cargo.lock).

@@ -120,6 +120,8 @@ pub fn tiles_from(subscribed: &[String], name_of: impl Fn(&str) -> String) -> Ve
 }
 
 pub fn fake_count() -> usize { std::env::var("MEGA_GPUI_FAKE_TILES").ok().and_then(|x| x.parse().ok()).unwrap_or(0) }
+/// Tests only: `MEGA_GPUI_TEST_SOURCES=1` makes the share and camera buttons use the synthetic screen and camera (a headless run has neither).
+pub fn test_sources() -> bool { std::env::var_os("MEGA_GPUI_TEST_SOURCES").is_some() }
 
 /// A moving test picture, `w` x `h`, frame `n`, in a tone that depends on the tile.
 pub fn test_frame(w: u32, h: u32, n: u32, tone: u32) -> Arc<RenderImage> {
