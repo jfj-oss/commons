@@ -50,7 +50,28 @@ mod videobench;
 
 use gpui_kit::*;
 
+/// Every panic is written to `panic.log` (message, place, backtrace) before the process goes: on macOS a panic inside an
+/// AppKit callback aborts at once and the crash report never carries the message.
+fn log_panics() {
+    let dir = core::data_dir().join("logs");
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = std::fs::create_dir_all(&dir);
+        let bt = std::backtrace::Backtrace::force_capture();
+        let thread = std::thread::current().name().unwrap_or("?").to_string();
+        let line = format!("==== {} v{} thread {thread}\n{info}\n{bt}\n", now_text(), env!("CARGO_PKG_VERSION"));
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("panic.log")) { let _ = f.write_all(line.as_bytes()); }
+        prev(info);
+    }));
+}
+fn now_text() -> String {
+    let s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    format!("unix {s}")
+}
+
 fn main() {
+    log_panics();
     bench::mark("main");
     // a new version that keeps failing to start is replaced by the previous one (update.rs)
     update::guard_start(&core::data_dir());
