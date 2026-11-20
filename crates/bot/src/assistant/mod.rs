@@ -285,10 +285,24 @@ impl Assistant {
         let mut messages: Vec<Msg> = history.iter().map(|l| if l.mine { Msg::Assistant { content: l.text.clone(), tool_calls: vec![] } } else { Msg::User(l.text.clone()) }).collect();
         let mut searches = 0usize;
         let mut last_text = String::new();
+        let mut last_tool_out: Option<String> = None;
         for _ in 0..MAX_ROUNDS {
             let reply = match self.ask(c, gid, llm, &system, &messages, &specs) {
                 Ok(r) => r,
-                Err(e) => { self.say(c, gid, Some(&job.trigger), &Self::error_text(&e)); return; }
+                Err(e) => {
+                    eprintln!("[bot] assistant: local model failed: {e}");
+                    // Small models sometimes answer a tool result with nothing at all. Ask once more, plainly and without
+                    // tools; failing that, show what the tool found rather than an error.
+                    if let Some(out) = last_tool_out.take() {
+                        let mut again = messages.clone();
+                        again.push(Msg::User("Answer my question now, in plain words, from the tool results above.".into()));
+                        let text = self.ask(c, gid, llm, &system, &again, &[]).ok().map(|r| strip_model_junk(&r.content)).filter(|t| !t.trim().is_empty());
+                        self.say(c, gid, Some(&job.trigger), &text.unwrap_or(out));
+                        return;
+                    }
+                    self.say(c, gid, Some(&job.trigger), &Self::error_text(&e));
+                    return;
+                }
             };
             match mode {
                 ToolMode::FunctionCalling if !reply.tool_calls.is_empty() => {
@@ -297,6 +311,7 @@ impl Assistant {
                     messages.push(Msg::Assistant { content: reply.content, tool_calls: calls.clone() });
                     for call in calls {
                         let t = self.exec_tool(&call, &mut searches, searcher);
+                        last_tool_out = Some(t.clone());
                         messages.push(Msg::Tool { call_id: call.id, name: call.name, content: t });
                     }
                 }

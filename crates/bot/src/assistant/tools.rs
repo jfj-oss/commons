@@ -41,8 +41,8 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         crate::search::web_search_tool(),
         spec(LIST_FILES, "List the files and folders in a directory under the allowed folders.", json!({"path": {"type": "string", "description": "Absolute path or ~/..."}}), &["path"]),
         spec(READ_FILE, "Read a text file under the allowed folders (large files are cut off).", json!({"path": {"type": "string"}}), &["path"]),
-        spec(SYSTEM_STATUS, "Read-only system status. what = load, memory, disk, gpu, or unit (then give the unit name; it reports its systemd user status).",
-             json!({"what": {"type": "string", "enum": ["load", "memory", "disk", "gpu", "unit"]}, "unit": {"type": "string"}}), &["what"]),
+        spec(SYSTEM_STATUS, "Read-only system status. what = specs (the computer's hardware: CPU, RAM, GPU, board, disks, OS), load, memory, disk, gpu, or unit (then give the unit name; it reports its systemd user status).",
+             json!({"what": {"type": "string", "enum": ["specs", "load", "memory", "disk", "gpu", "unit"]}, "unit": {"type": "string"}}), &["what"]),
         spec(RUNE, "Control the rune music player: play, pause, next or prev.", json!({"action": {"type": "string", "enum": ["play", "pause", "next", "prev"]}}), &["action"]),
         spec(RESTART_UNIT, "Restart one systemd user unit from the owner's short allowed list.", json!({"unit": {"type": "string"}}), &["unit"]),
         spec(OPEN, "Open a web address (http or https) or a file in the desktop's default application.", json!({"target": {"type": "string"}}), &["target"]),
@@ -158,8 +158,26 @@ fn meminfo() -> String {
         gb(pick("SwapTotal:").saturating_sub(pick("SwapFree:"))), gb(pick("SwapTotal:")))
 }
 
+/// The computer's hardware in a few lines: what someone means by "my specs".
+fn specs(sys: &dyn Sys) -> String {
+    let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default().trim().to_string();
+    let cpuinfo = read("/proc/cpuinfo");
+    let cpu = cpuinfo.lines().find(|l| l.starts_with("model name")).and_then(|l| l.split(':').nth(1)).unwrap_or("unknown").trim().to_string();
+    let threads = cpuinfo.lines().filter(|l| l.starts_with("processor")).count();
+    let cores = cpuinfo.lines().find(|l| l.starts_with("cpu cores")).and_then(|l| l.split(':').nth(1)).map(|s| s.trim().to_string()).unwrap_or_default();
+    let mem = std::fs::read_to_string("/proc/meminfo").unwrap_or_default().lines().find(|l| l.starts_with("MemTotal:"))
+        .and_then(|l| l.split_whitespace().nth(1)).and_then(|n| n.parse::<u64>().ok()).map(|kb| format!("{:.0} GB", kb as f64 / 1_048_576.0)).unwrap_or_default();
+    let gpu = sys.run("nvidia-smi", &["--query-gpu=name,memory.total,driver_version", "--format=csv,noheader"]).map(|(_, o)| o.trim().to_string()).unwrap_or_else(|_| "unknown".into());
+    let board = format!("{} {}", read("/sys/class/dmi/id/board_vendor"), read("/sys/class/dmi/id/board_name")).trim().to_string();
+    let os = read("/etc/os-release").lines().find(|l| l.starts_with("PRETTY_NAME=")).map(|l| l.trim_start_matches("PRETTY_NAME=").trim_matches('"').to_string()).unwrap_or_default();
+    let kernel = read("/proc/sys/kernel/osrelease");
+    let disks = sys.run("lsblk", &["-d", "-n", "-o", "SIZE,MODEL", "-e", "7,11"]).map(|(_, o)| o.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("; ")).unwrap_or_default();
+    format!("CPU: {cpu} ({cores} cores, {threads} threads)\nRAM: {mem}\nGPU: {gpu}\nMotherboard: {board}\nDisks: {disks}\nOS: {os}, kernel {kernel}")
+}
+
 pub fn system_status(sys: &dyn Sys, args: &Value) -> Result<String, String> {
     match arg_str(args, "what").as_deref() {
+        Some("specs") => Ok(specs(sys)),
         Some("load") => Ok(format!("load average (1, 5, 15 min): {}", std::fs::read_to_string("/proc/loadavg").unwrap_or_default().split_whitespace().take(3).collect::<Vec<_>>().join(" "))),
         Some("memory") => Ok(meminfo()),
         Some("disk") => sys.run("df", &["-h", "-x", "tmpfs", "-x", "devtmpfs", "-x", "squashfs", "-x", "efivarfs"]).map(|(_, o)| o),
@@ -169,7 +187,7 @@ pub fn system_status(sys: &dyn Sys, args: &Value) -> Result<String, String> {
             if !valid_unit(&u) { return Err("That is not a valid unit name.".into()); }
             sys.run("systemctl", &["--user", "show", "--no-pager", "-p", "Id,Description,ActiveState,SubState,MainPID,ActiveEnterTimestamp,NRestarts,Result", &u]).map(|(_, o)| o)
         }
-        _ => Err("what must be load, memory, disk, gpu or unit.".into()),
+        _ => Err("what must be specs, load, memory, disk, gpu or unit.".into()),
     }
 }
 
