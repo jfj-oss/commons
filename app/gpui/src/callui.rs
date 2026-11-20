@@ -66,6 +66,8 @@ pub struct CallUi {
     pub hits: crate::calldock::Hits,
     /// The lock's explainer is open.
     pub explain: bool,
+    /// The rune card (song, controls, listen along) is open beside the dock: opened by the ♪ button, not always shown.
+    pub rune_open: bool,
     /// The error notice the person closed.
     pub err_hidden: Option<String>,
     /// The settings drop-down that is open (its id).
@@ -93,7 +95,7 @@ impl CallUi {
         });
         CallUi {
             engine: None, snap: Default::default(), settings_open: false, menu: None, vol, frames, shown: Shown::default(), fake_alive: Arc::new(AtomicBool::new(false)), tiles: vec![], deck: Deck::default(),
-            deck_w, resize: None, grip: cx.focus_handle(), live_since: 0, live_ready: false, live_busy: false, asked: false, ptt_key: "`".into(), popped: false, mini: None, pop_handle: None, error_shown: None, hits: Default::default(), explain: false, err_hidden: None, dd: None, share_profile: crate::calls::share::Profile::Text, deck_hidden: false,
+            deck_w, resize: None, grip: cx.focus_handle(), live_since: 0, live_ready: false, live_busy: false, asked: false, ptt_key: "`".into(), popped: false, mini: None, pop_handle: None, error_shown: None, hits: Default::default(), explain: false, rune_open: false, err_hidden: None, dd: None, share_profile: crate::calls::share::Profile::Text, deck_hidden: false,
             _tasks: vec![task], _subs: vec![sub],
         }
     }

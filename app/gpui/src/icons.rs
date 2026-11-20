@@ -5,7 +5,7 @@ use gpui_kit::*;
 
 /// The web's icon names.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Icon { Mic, MicOff, Phones, Screen, Cam, Leave, Gear, Lock, Bell, Pop, Mini, Play, Pause, Next, Prev, Download, File, Clip, Close, Folder, Left, Right, Plus, Minus }
+pub enum Icon { Mic, MicOff, Phones, Screen, Cam, Leave, Gear, Lock, Bell, Pop, Mini, Play, Pause, Next, Prev, Download, File, Clip, Close, Folder, Left, Right, Plus, Minus, Music }
 
 /// One shape of an icon in the 20x20 box.
 enum S { Path(&'static str), Rect(f32, f32, f32, f32, f32), Circle(f32, f32, f32) }
@@ -21,6 +21,8 @@ fn shapes(i: Icon) -> &'static [S] {
         Icon::Leave => &[Path("M3.5 12.5c4-3.5 9-3.5 13 0l-1.2 2.2-2.8-.9-.3-2c-1.5-.5-3-.5-4.4 0l-.3 2-2.8.9z")],
         Icon::Gear => &[Path("M3 6h7.5M15.5 6H17M3 14h1.5M9.5 14H17"), Circle(13., 6., 2.3), Circle(7., 14., 2.3)],
         Icon::Lock => &[Rect(4.5, 9., 11., 8., 2.), Path("M7 9V6.5a3 3 0 0 1 6 0V9")],
+        // a pair of eighth notes, in the sprite's stroke style
+        Icon::Music => &[Path("M7.5 15V4.5l9-2V13"), Circle(5.5, 15., 2.), Circle(14.5, 13., 2.)],
         Icon::Bell => &[Path("M5 14V9a5 5 0 0 1 10 0v5l1.5 1.5h-13zM8.5 17.5h3")],
         // a window and the same window popped out of it (not in the web's sprite: drawn in its style)
         Icon::Pop => &[Rect(2.5, 6.5, 11., 11., 1.8), Path("M9 11l8-8M12 3h5v5")],

@@ -113,6 +113,13 @@ impl Mega {
             .on_click(cx.listener(|this, _, _, cx| { this.toggle_camera(); cx.notify(); })));
         acts = acts.child(self.dock_button("c-set", Icon::Gear, "Call settings".into(), self.call.settings_open, false, &duo, cx)
             .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx))));
+        // rune: one ♪ button in the dock; its card opens beside the dock only when asked for (it used to float over the room)
+        if self.rune.now.is_some() {
+            let along = self.rune.along.is_some();
+            let label = if self.call.rune_open { "Hide rune".to_string() } else if along { "rune: listening along".to_string() } else { "rune: song, controls, listen along".to_string() };
+            acts = acts.child(self.dock_button("c-rune", Icon::Music, label, self.call.rune_open || along, false, &duo, cx)
+                .on_click(cx.listener(|this, _, _, cx| { this.call.rune_open = !this.call.rune_open; cx.notify(); })));
+        }
         if ptt {
             let held = snap.ptt_held;
             acts = acts.child(self.dock_button("c-ptt", Icon::Mic, "Hold to talk (or hold your push-to-talk key)".into(), held, false, &duo, cx)
@@ -176,7 +183,7 @@ impl Mega {
         if !muted && (snap.mic_quiet || snap.mic_system_muted == Some(true)) {
             notes = notes.child(div().id("c-mic-warn").child(note(if snap.mic_system_muted == Some(true) { "Others cannot hear you: your microphone is muted in your computer's sound settings.".into() } else { "Others cannot hear you: no sound is coming from your microphone.".into() }, true)));
         }
-        if let Some(r) = self.rune_segment(cx) { notes = notes.child(r); }
+        if self.call.rune_open { if let Some(r) = self.rune_segment(cx) { notes = notes.child(r); } }
         let explain = self.call.explain.then(|| self.explainer(&snap));
 
         // the column: the card centred on the window's height, the people hanging under it
