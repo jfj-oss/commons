@@ -61,19 +61,13 @@ impl Mega {
             .child(chip("settings", "settings").on_click(cx.listener(|this, _, window, cx| this.go(Level::Settings, window, cx))))
     }
 
-    /// An owner's choice of colours for the open room: a chip like the others, three bold presets after it, and the default back.
+    /// An owner's colours for the open room: a chip that opens the colours panel (square, hue, hex, presets, reset) on this room.
     fn colour_picker(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut row = h_flex().relative().gap_2().items_center();
-        if self.colours_open {
-            for (i, (_name, main, hi)) in look::PRESETS.iter().enumerate() {
-                let (m, h) = (*main, *hi);
-                row = row.child(div().id(SharedString::from(format!("preset-{i}"))).size(px(30.)).rounded_full().cursor_pointer().overflow_hidden().border_1().border_color(look::line())
-                    .child(div().size_full().bg(linear_gradient(135., linear_color_stop(rgb(m), 0.5), linear_color_stop(rgb(h), 0.5))))
-                    .on_click(cx.listener(move |this, _, window, cx| this.set_room_colours(Some((m, h)), window, cx))));
-            }
-            row = row.child(chip("preset-default", "default").on_click(cx.listener(|this, _, window, cx| this.set_room_colours(None, window, cx))));
-        }
-        row.child(chip("preset-open", "colours").on_click(cx.listener(|this, _, _, cx| { this.colours_open = !this.colours_open; cx.notify(); })))
+        chip("preset-open", "colours").on_click(cx.listener(|this, _, window, cx| {
+            if this.paint.open { this.paint_close(cx); return; }
+            let (Some(cid), Some(gid)) = (this.cid.clone(), this.gid.clone()) else { return };
+            this.paint_open_for(&cid, &gid, window, cx);
+        }))
     }
 
     /// Where the visible rows were drawn last time, taken before the list lays out (it cannot be asked while it does): each row's top
@@ -162,7 +156,7 @@ impl Mega {
         items.push((2, 2, chip_w("aa"), crate::cards::chip("b-aa", "aa").on_click(cx.listener(|this, _, _, cx| {
             this.prefs.chat_font = match this.prefs.chat_font { ChatFont::Bellefair => ChatFont::Raster, ChatFont::Raster => ChatFont::Bellefair }; this.prefs.save(); this.list.remeasure(); this.reading.full.clear(); cx.notify();
         })).into_any_element()));
-        if owner { items.push((5, 20, if self.colours_open { 300. } else { 96. }, self.colour_picker(cx).into_any_element())); }
+        if owner { items.push((5, 20, 96., self.colour_picker(cx).into_any_element())); }
         let rw = { let w = self.wall.room_rect.get().2; if w < 200. { 1000. } else { w } };
         let room = rw - 40. - 220.;
         // by importance, then as many as fit, then in their places
@@ -495,6 +489,7 @@ impl Render for Mega {
                 if this.call.resize.is_some() { if ev.pressed_button.is_none() { this.resize_end(window, cx); } else { this.resize_move(f32::from(ev.position.x), window, cx); } } }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| { this.paint_drag_end(cx); this.wall_pen_up(); this.resize_end(window, cx) }))
             .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                if this.paint_key(ev, window, cx) { cx.stop_propagation(); return; }
                 if this.files_key(ev, window, cx) { cx.stop_propagation(); return; }
                 if this.wall.on && this.wall.room_mode && ev.keystroke.key == "escape" { this.wall_off(); cx.notify(); cx.stop_propagation(); return; } this.ptt_key_event(ev.keystroke.key.as_str(), true, cx); }))
             .capture_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| { this.ptt_key_event(ev.keystroke.key.as_str(), false, cx); }))
@@ -524,10 +519,11 @@ impl Render for Mega {
                 let pop = self.call_popover(cx);
                 let rings = self.ring_overlay(cx);
                 let people = self.members_overlay(cx);
+                let picker = self.paint_panel(true, cx);
                 let cropper = self.avatar_overlay(cx);
                 let lightbox = self.light_overlay(window, cx);
                 let save = self.save_overlay(cx);
-                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(rings).children(cropper).children(save).children(lightbox)
+                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(lightbox)
             }
         }
     }

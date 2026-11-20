@@ -339,7 +339,9 @@ impl Mega {
                 .on_click(cx.listener(move |this, _, window, cx| this.set_style_for(cid.clone(), room.clone(), Some((m, h)), window, cx))));
         }
         let (cid, room) = (cid.clone(), room.clone());
+        let (c2, r2) = (cid.clone(), room.clone());
         row.child(pill(SharedString::from(format!("{prefix}-def")), false, "default").on_click(cx.listener(move |this, _, window, cx| this.set_style_for(cid.clone(), room.clone(), None, window, cx))))
+            .child(pill(SharedString::from(format!("{prefix}-custom")), false, "custom\u{2026}").on_click(cx.listener(move |this, _, window, cx| this.paint_open_for(&c2, &r2, window, cx))))
     }
 
     // ---- drawing ----

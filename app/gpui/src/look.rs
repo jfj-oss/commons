@@ -102,6 +102,12 @@ pub fn face(name: &str) -> Hsla { hsla((h(name) % 360) as f32 / 360., 0.78, 0.74
 pub fn presets() -> [(u32, u32); 8] { let mut o = [(0, 0); 8]; o.copy_from_slice(&DEF[..8]); o }
 /// A `#rrggbb` that parses (what an owner's style may hold).
 pub fn is_hex(s: &str) -> bool { s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit()) }
+/// A colour typed in the hex box: `#rrggbb`, or `#rgb` (each digit doubled).
+pub fn parse_any_hex(s: &str) -> Option<u32> {
+    let d = s.strip_prefix('#')?;
+    if !d.bytes().all(|b| b.is_ascii_hexdigit()) { return None; }
+    match d.len() { 6 => u32::from_str_radix(d, 16).ok(), 3 => { let e: String = d.chars().flat_map(|c| [c, c]).collect(); u32::from_str_radix(&e, 16).ok() } _ => None }
+}
 /// Hue (0..360), saturation and value (0..1) of a colour.
 pub fn to_hsv(c: u32) -> [f32; 3] {
     let [r, g, b] = ch(c).map(|v| v / 255.);
@@ -147,6 +153,17 @@ mod tests {
         assert_eq!(hi, 0xffffff, "a highlight too close to the card gives way to the other ink");
         let d = Duo { main: 0x101640, hi: 0x45f0d0 };
         assert_eq!(wall_ink(&d), [0xffffff, 0x45f0d0]);
+    }
+    #[::core::prelude::v1::test]
+    fn any_hex() { assert_eq!(parse_any_hex("#abc"), Some(0xaabbcc)); assert_eq!(parse_any_hex("#6A35ff"), Some(0x6a35ff)); assert_eq!(parse_any_hex("#ab"), None); assert_eq!(parse_any_hex("#abcd"), None); assert_eq!(parse_any_hex("abc"), None); assert_eq!(parse_any_hex("#ggg"), None); }
+    #[::core::prelude::v1::test]
+    fn contrast_rule_matches_the_page() {
+        // mega.js: contrast(a, b) = (max(lum)+.05)/(min(lum)+.05); the warning shows below 1.6
+        assert!((contrast(0x000000, 0xffffff) - 21.).abs() < 0.01);
+        assert!((contrast(0xffffff, 0xffffff) - 1.).abs() < 1e-6);
+        assert!(contrast(0x00a6a6, 0x00b8b8) < 1.6, "too close");
+        assert!(contrast(0x6a35ff, 0xff8c1a) >= 1.6);
+        assert!(contrast(0x101640, 0x45f0d0) >= 1.6);
     }
     #[::core::prelude::v1::test]
     fn hex_check() { assert!(is_hex("#00a6A6")); assert!(!is_hex("00a6a6")); assert!(!is_hex("#00a6")); assert!(!is_hex("#00a6gg")); }

@@ -313,7 +313,7 @@ impl Mega {
             .child(div().absolute().top_0().left_0().right_0().child(bar))
             .children(self.wall_hit(cx))
             .children(self.wall_toolbar(cx))
-            .children(self.paint_panel(cx))
+            .children(self.paint_panel(false, cx))
             .when(!notes.is_empty(), |d| d.child(v_flex().absolute().bottom(px(12.)).left(px(16.)).right(px(16.)).gap(px(6.)).items_center().children(notes.into_iter().map(|n| div().w_full().max_w(px(640.)).child(n)))))
             .into_any_element()
     }
@@ -446,7 +446,6 @@ impl Mega {
         let k = ev.keystroke.key.as_str();
         // drawing: Escape ends it (mega.js), and the column stays where it is
         if self.wall.on { if k == "escape" { self.wall_off(); cx.stop_propagation(); cx.notify(); } return; }
-        if self.paint.open && k == "escape" { self.paint_close(cx); cx.stop_propagation(); return; }
         let m = &ev.keystroke.modifiers;
         if m.control || m.alt || m.platform { return; }
         let now = self.nav_now(); let offs = self.nav.offs.clone();

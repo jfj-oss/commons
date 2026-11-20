@@ -23,7 +23,7 @@ fn code(k: &str) -> Option<(u32, bool)> {
     Some(match k {
         "enter" => (28, false), "space" | " " => (57, false), "backspace" => (14, false), "tab" => (15, false), "escape" => (1, false),
         "shift" => (42, false), "ctrl" => (29, false), "alt" => (56, false), "up" => (103, false), "down" => (108, false), "pageup" => (104, false), "pagedown" => (109, false),
-        "end" => (107, false), "left" => (105, false), "right" => (106, false), "`" => (41, false), "home" => (102, false), "-" => (12, false), "." => (52, false), "," => (51, false), "!" => (2, true), "?" => (53, true),
+        "end" => (107, false), "left" => (105, false), "right" => (106, false), "`" => (41, false), "home" => (102, false), "-" => (12, false), "." => (52, false), "," => (51, false), "!" => (2, true), "#" => (4, true), "?" => (53, true),
         _ => {
             let c = k.chars().next()?;
             let lower = c.to_ascii_lowercase();
@@ -35,7 +35,7 @@ fn code(k: &str) -> Option<(u32, bool)> {
 
 fn main() {
     let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
-    assert!(display == "wayland-megatest" || display == "wayland-uishot" || display == "wayland-updshot" || display == "wayland-selshot" || display == "wayland-callshot", "fakekeys only talks to a private test compositor (WAYLAND_DISPLAY=wayland-megatest, wayland-uishot or wayland-updshot), not {display:?}");
+    assert!(display == "wayland-megatest" || display == "wayland-uishot" || display == "wayland-updshot" || display == "wayland-selshot" || display == "wayland-callshot" || display == "wayland-pickshot", "fakekeys only talks to a private test compositor (WAYLAND_DISPLAY=wayland-megatest, wayland-uishot or wayland-updshot), not {display:?}");
     let conn = Connection::connect_to_env().expect("compositor");
     let mut q = conn.new_event_queue::<S>();
     let qh = q.handle();
