@@ -252,6 +252,7 @@ try {
   await waitSnap(x => x.rune.now && x.rune.now.title, 'rune shows', 20000);
   await nshot('native-rune');
   check('K50 what rune plays shows beside the card', !!(await snap()).rune.now, (await snap()).rune.now);
+  await click('c-rune'); await waitSnap(x => true, 'rune card open', 3000).catch(() => {});
   await click('rune-play'); await until(() => natRune.cmds.some(c => c.type === 'pause'), 8000, 'pause'); check('K51 the rune pause button reaches rune', true);
   await click('rune-play'); await until(() => natRune.cmds.some(c => c.type === 'resume'), 8000, 'resume'); check('K52 the rune play button reaches rune', true);
   await click('rune-next'); await until(() => natRune.cmds.some(c => c.type === 'next'), 8000, 'next'); check('K53 the rune next button reaches rune', true);
