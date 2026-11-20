@@ -7,9 +7,10 @@ use crate::model::Msg;
 use crate::prefs::{ChatFont, Saver};
 use crate::squircle as sq;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, Textarea};
+use gpui_kit::component::input::{Input, Paste, Textarea};
 use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{h_flex, v_flex, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -140,7 +141,7 @@ impl Mega {
             arrive: self.arrivals.progress(&m.id, now).map(|k| (k, (now * 60.) as u64)),
             hi: rgb(self.room_duo(self.gid.as_deref().unwrap_or("")).hi).into(),
             flights: self.flights.live.iter().filter(|f| f.msg == m.id).cloned().collect(),
-            now, k, day, new, pick: self.sel.now.and_then(|s| crate::select::range_in(s, ix, m.text.len())), texts: self.sel.texts.clone(),
+            now, k, day, new, pick: self.sel.now.and_then(|s| crate::select::range_in(s, ix, m.text.len())), texts: self.sel.texts.clone(), file: self.file_ctx(m).map(|mut c| { c.k = k; c }),
         };
         let el = row(m, prev, self.chat_font(), &self.holes, star, &fx);
         match full { Some(h) => div().w_full().h(px(h)).flex().flex_col().justify_center().overflow_hidden().opacity(op).child(el).into_any_element(), None => el }
@@ -173,7 +174,7 @@ impl Mega {
         items.into_iter().map(|i| i.3).collect()
     }
 
-    fn render_chat(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(gid) = self.gid.clone() else { return div().flex_1().into_any_element() };
         let found = self.channel(&gid).map(|(c, ch)| (if c.direct { c.name.clone() } else { ch.name.clone() }, if c.direct { "just the two of you".to_string() } else { format!("{} · {} people", c.name, c.members) }));
         let Some((title, sub)) = found else { return v_flex().flex_1().h_full().items_center().justify_center().text_color(look::mute()).child("This room is gone.").into_any_element() };
@@ -218,7 +219,12 @@ impl Mega {
         let jump = self.reading.remaining >= 260.;
         let has_text = !self.composer.read(cx).value().trim().is_empty();
         let bar_chips = self.room_bar(&gid, is_dm, owner, wall_btn, chat_cid, cx);
-        v_flex().flex_1().h_full().min_w_0().relative().bg(rgb(bd_back))
+        let drag_seen = self.files.drag_seen.clone();
+        let drop_hint = self.drop_overlay(rgb(duo.hi).into(), &title);
+        let files_layer = self.files_layer(window, cx);
+        v_flex().id("room").flex_1().h_full().min_w_0().relative().bg(rgb(bd_back))
+            .drag_over::<ExternalPaths>(move |s, _, _, _| { drag_seen.set(true); s })
+            .on_drop(cx.listener(|this, p: &ExternalPaths, window, cx| this.files_dropped(p.paths().to_vec(), window, cx)))
             .children(backdrop.map(|b| div().absolute().inset_0().child(b)))
             .child(wall_layer)
             .child(h_flex().flex_none().items_start().gap(px(10.)).px_5().pt_3().pb_1()
@@ -243,6 +249,9 @@ impl Mega {
                         // a translucent slip over the backdrop: a squircle fill and border, never a cut (the backdrop moves behind it)
                         .child(sq::back(22., hsla(0.71, 0.22, 0.07, 0.93))).child(hole(&holes))
                         .child(h_flex().relative().items_end().gap_2()
+                            .child(div().id("attach").relative().flex_none().mb_1().flex().items_center().justify_center().size(px(36.)).rounded_full().cursor_pointer().bg(hsla(0., 0., 1., 0.06)).tooltip(|window, cx| Tooltip::new("Send a file").build(window, cx))
+                                .child(crate::icons::icon(crate::icons::Icon::Clip, 18., look::mute())).child(self.files.hits.track("attach"))
+                                .on_click(cx.listener(|this, _, window, cx| this.files_attach(window, cx))))
                             .child(div().flex_1().min_w_0().child(Textarea::new(&self.composer).appearance(false).text_size(px(size)).line_height(px(lh))))
                             .child(div().id("send").flex_none().mb_1().flex().items_center().h(px(36.)).px(px(16.)).rounded_full().cursor_pointer().whitespace_nowrap()
                                 .font_family(look::F_UI).text_size(px(13.))
@@ -256,6 +265,8 @@ impl Mega {
                         .child(lock_icon()).child("end-to-end encrypted.").child(div().ml(px(3.)).child("shift+enter for a new line.")))))
             .children(wall_hit)
             .children(wall_bar)
+            .children(files_layer)
+            .child(drop_hint)
             .into_any_element()
     }
 
@@ -339,7 +350,7 @@ impl Mega {
 
 /// What is happening to one message right now (arrive.rs): its size tier, its glyph copy while it arrives, reactions flying to it.
 /// `k` is the reading zone's scale (reading.rs; 1 = whole), `day` the day line above it, `new` the "N new" line above it.
-pub struct RowFx { pub tier_px: Option<f32>, pub arrive: Option<(f64, u64)>, pub hi: Hsla, pub flights: Vec<crate::arrive::Flight>, pub now: f64, pub k: f32, pub day: Option<String>, pub new: Option<usize>, /** the selected part of the text, and where to keep its painted layout (select.rs) */ pub pick: Option<std::ops::Range<usize>>, pub texts: crate::select::Texts }
+pub struct RowFx { pub tier_px: Option<f32>, pub arrive: Option<(f64, u64)>, pub hi: Hsla, pub flights: Vec<crate::arrive::Flight>, pub now: f64, pub k: f32, pub day: Option<String>, pub new: Option<usize>, /** the selected part of the text, and where to keep its painted layout (select.rs) */ pub pick: Option<std::ops::Range<usize>>, pub texts: crate::select::Texts, /** the file of this message, if it has one (files.rs) */ pub file: Option<crate::files::FileCtx> }
 
 /// The widest the message column gets (mega-design.css: `--gutter` 58 + `--measure` 800 + 44 around it).
 pub const COLUMN: f32 = 902.;
@@ -413,7 +424,7 @@ pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f3
     if let Some((who, text)) = &m.reply {
         col = col.child(div().relative().child(hole(holes)).max_w_full().pl_2().border_l_2().border_color(look::line()).text_color(look::mute()).font_family(font).text_size(px(size * 0.7)).child(format!("{who}: {text}")));
     }
-    let body: AnyElement = if let Some((name, bytes)) = &m.file { div().relative().child(hole(holes)).max_w_full().text_color(look::mute()).text_size(px(16. * k)).child(format!("[file] {name} ({} KB){}", bytes / 1024, if m.text.is_empty() { String::new() } else { format!("  {}", m.text) })).into_any_element() }
+    let body: AnyElement = if let (Some(fi), Some(ctx)) = (&m.file, &fx.file) { crate::files::body(m, fi, ctx, holes) }
         else if let Some((kk, tick)) = fx.arrive {
             // the real words stay where they are (invisible, so the row keeps its size); a copy made of glyphs sits over them and resolves
             let (copy, real) = crate::arrive::compose(&m.text, kk, tick);
@@ -475,7 +486,7 @@ impl Render for Mega {
             window.request_animation_frame();
         }
         self.holes.borrow_mut().clear();
-        self.call.hits.clear();
+        self.call.hits.clear(); self.files.hits.clear();
         let base = div().id("root").size_full().bg(rgb(look::VOID)).text_color(look::paper()).font_family(look::F_UI).text_size(px(15.))
             // dragging the column's edge, and push-to-talk: the key never reaches the composer while that mode is on
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
@@ -483,8 +494,16 @@ impl Render for Mega {
                 if this.wall.pen { if ev.pressed_button.is_none() { this.wall_pen_up(); } else { this.wall_pen(ev.position, false, window, cx); } }
                 if this.call.resize.is_some() { if ev.pressed_button.is_none() { this.resize_end(window, cx); } else { this.resize_move(f32::from(ev.position.x), window, cx); } } }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| { this.paint_drag_end(cx); this.wall_pen_up(); this.resize_end(window, cx) }))
-            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| { if this.wall.on && this.wall.room_mode && ev.keystroke.key == "escape" { this.wall_off(); cx.notify(); cx.stop_propagation(); return; } this.ptt_key_event(ev.keystroke.key.as_str(), true, cx); }))
-            .capture_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| { this.ptt_key_event(ev.keystroke.key.as_str(), false, cx); }));
+            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                if this.files_key(ev, window, cx) { cx.stop_propagation(); return; }
+                if this.wall.on && this.wall.room_mode && ev.keystroke.key == "escape" { this.wall_off(); cx.notify(); cx.stop_propagation(); return; } this.ptt_key_event(ev.keystroke.key.as_str(), true, cx); }))
+            .capture_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| { this.ptt_key_event(ev.keystroke.key.as_str(), false, cx); }))
+            // Ctrl/Cmd+V in the box with a picture (or copied files) on the clipboard sends it; text still pastes as text. The box's own Paste
+            // action runs at the focused element, so this listens before it, on the way down.
+            .capture_action(cx.listener(|this, _: &Paste, window, cx| {
+                let fh = this.composer.focus_handle(cx);
+                if (fh.is_focused(window) || fh.contains_focused(window, cx)) && this.files_paste(window, cx) { cx.stop_propagation(); }
+            }));
         match self.screen {
             Screen::Starting => base,
             Screen::Welcome | Screen::Locked => base.child(self.render_sign_in(cx)),
@@ -493,7 +512,7 @@ impl Render for Mega {
                     Level::Home => self.render_home(window, cx),
                     Level::Server(cid) => self.render_server(&cid, window, cx),
                     Level::Chat => {
-                        h_flex().size_full().items_start().child(self.render_rail(window, cx)).child(self.render_chat(cx)).into_any_element()
+                        h_flex().size_full().items_start().child(self.render_rail(window, cx)).child(self.render_chat(window, cx)).into_any_element()
                     }
                     Level::Settings => self.render_settings(cx).into_any_element(),
                 };
@@ -506,7 +525,9 @@ impl Render for Mega {
                 let rings = self.ring_overlay(cx);
                 let people = self.members_overlay(cx);
                 let cropper = self.avatar_overlay(cx);
-                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(rings).children(cropper)
+                let lightbox = self.light_overlay(window, cx);
+                let save = self.save_overlay(cx);
+                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(rings).children(cropper).children(save).children(lightbox)
             }
         }
     }

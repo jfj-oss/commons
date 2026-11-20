@@ -5,7 +5,7 @@ use gpui_kit::*;
 
 /// The web's icon names.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Icon { Mic, MicOff, Phones, Screen, Cam, Leave, Gear, Lock, Bell, Pop, Mini, Play, Pause, Next, Prev }
+pub enum Icon { Mic, MicOff, Phones, Screen, Cam, Leave, Gear, Lock, Bell, Pop, Mini, Play, Pause, Next, Prev, Download, File, Clip, Close, Folder, Left, Right, Plus, Minus }
 
 /// One shape of an icon in the 20x20 box.
 enum S { Path(&'static str), Rect(f32, f32, f32, f32, f32), Circle(f32, f32, f32) }
@@ -29,6 +29,15 @@ fn shapes(i: Icon) -> &'static [S] {
         Icon::Pause => &[Path("M7 4.5v11M13 4.5v11")],
         Icon::Next => &[Path("M14 4.5v11M5 5l7 5-7 5z")],
         Icon::Prev => &[Path("M6 4.5v11M15 5l-7 5 7 5z")],
+        Icon::Download => &[Path("M10 3v9.5M6 9l4 4 4-4M4 16.5h12")],
+        Icon::File => &[Path("M5 2.5h6.5L15.5 6.5v11h-10.5zM11.5 2.5v4h4")],
+        Icon::Clip => &[Path("M15.5 9.5l-5.8 5.8a3.2 3.2 0 0 1-4.5-4.5l6.2-6.2a2.1 2.1 0 0 1 3 3l-6.1 6.1a1 1 0 0 1-1.5-1.5l5.4-5.4")],
+        Icon::Close => &[Path("M5 5l10 10M15 5L5 15")],
+        Icon::Folder => &[Path("M2.5 5.5a1.5 1.5 0 0 1 1.5-1.5h3.5l1.8 2H16a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5H4a1.5 1.5 0 0 1-1.5-1.5z")],
+        Icon::Left => &[Path("M12.5 4l-6 6 6 6")],
+        Icon::Right => &[Path("M7.5 4l6 6-6 6")],
+        Icon::Plus => &[Path("M10 4v12M4 10h12")],
+        Icon::Minus => &[Path("M4 10h12")],
     }
 }
 
@@ -145,7 +154,7 @@ mod tests {
     use super::*;
     #[::core::prelude::v1::test]
     fn every_icon_flattens_inside_its_box() {
-        for i in [Icon::Mic, Icon::MicOff, Icon::Phones, Icon::Screen, Icon::Cam, Icon::Leave, Icon::Gear, Icon::Lock, Icon::Bell, Icon::Pop, Icon::Mini, Icon::Play, Icon::Pause, Icon::Next, Icon::Prev] {
+        for i in [Icon::Mic, Icon::MicOff, Icon::Phones, Icon::Screen, Icon::Cam, Icon::Leave, Icon::Gear, Icon::Lock, Icon::Bell, Icon::Pop, Icon::Mini, Icon::Play, Icon::Pause, Icon::Download, Icon::File, Icon::Clip, Icon::Close, Icon::Folder, Icon::Left, Icon::Right, Icon::Plus, Icon::Minus, Icon::Next, Icon::Prev] {
             let ls = lines(i);
             assert!(!ls.is_empty(), "{i:?}");
             for l in ls { for (x, y) in l { assert!(x.is_finite() && y.is_finite() && (-0.5..=20.5).contains(&x) && (-0.5..=20.5).contains(&y), "{i:?} {x},{y}"); } }

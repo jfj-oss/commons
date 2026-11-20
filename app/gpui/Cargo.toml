@@ -38,7 +38,7 @@ base64 = "0.22"
 parking_lot = { version = "0.12", optional = true }
 getrandom = { version = "0.2", optional = true }
 # remote video drawn as images on Linux (videobench.rs now, calls/video.rs later): the versions GPUI already uses
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 smallvec = "1"
 # reads the glyph outlines of the room name that runs upward on the call card (vtext.rs); already in the lock file through gpui
 ttf-parser = "=0.25.1"
