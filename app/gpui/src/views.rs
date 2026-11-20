@@ -7,7 +7,7 @@ use crate::model::Msg;
 use crate::prefs::{ChatFont, Saver};
 use crate::squircle as sq;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, Textarea};
+use gpui_kit::component::input::{Input, Paste, Textarea};
 use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tooltip::Tooltip;
@@ -496,10 +496,14 @@ impl Render for Mega {
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| { this.paint_drag_end(cx); this.wall_pen_up(); this.resize_end(window, cx) }))
             .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 if this.files_key(ev, window, cx) { cx.stop_propagation(); return; }
-                // Ctrl/Cmd+V with a picture (or copied files) on the clipboard sends it; text pastes as text
-                if ev.keystroke.key == "v" && (ev.keystroke.modifiers.control || ev.keystroke.modifiers.platform) && this.files_paste(window, cx) { cx.stop_propagation(); return; }
                 if this.wall.on && this.wall.room_mode && ev.keystroke.key == "escape" { this.wall_off(); cx.notify(); cx.stop_propagation(); return; } this.ptt_key_event(ev.keystroke.key.as_str(), true, cx); }))
-            .capture_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| { this.ptt_key_event(ev.keystroke.key.as_str(), false, cx); }));
+            .capture_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| { this.ptt_key_event(ev.keystroke.key.as_str(), false, cx); }))
+            // Ctrl/Cmd+V in the box with a picture (or copied files) on the clipboard sends it; text still pastes as text. The box's own Paste
+            // action runs at the focused element, so this listens before it, on the way down.
+            .capture_action(cx.listener(|this, _: &Paste, window, cx| {
+                let fh = this.composer.focus_handle(cx);
+                if (fh.is_focused(window) || fh.contains_focused(window, cx)) && this.files_paste(window, cx) { cx.stop_propagation(); }
+            }));
         match self.screen {
             Screen::Starting => base,
             Screen::Welcome | Screen::Locked => base.child(self.render_sign_in(cx)),

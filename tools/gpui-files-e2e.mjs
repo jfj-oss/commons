@@ -153,8 +153,9 @@ try {
   await sleep(800); await shot('02-pictures'); await webScroll(A); await sleep(500); await wshot(A, '02-pictures');
 
   // a picture pasted: real Ctrl+V with the picture on the clipboard
-  await fk('move:640,420', 'click'); await sleep(400);   // a real press gives the window the serial Wayland wants before it may own the clipboard
+  await fk('move:600,806', 'click'); await sleep(400);   // a real click in the box: it gives the window the serial Wayland wants before it may own the clipboard, and the focus the paste is for
   await W.cmd('files_clip_image', { path: path.join(fx, 'wide.png') }); await sleep(700);
+  console.log('before paste: composer focused =', (await D()).composer_focused);
   await fk('key:ctrl+v'); await sleep(2500);
   const pasted = await soft(until(async () => { const l = await fileMsgs(A, N.account); return l.find(m => /^Pasted image \d{4}-\d\d-\d\d \d\d\.\d\d\.\d\d\.png$/.test(m.file.name)) || null; }, 45000, 'alice gets the pasted picture', 500));
   check('A6 Ctrl+V with a picture on the clipboard sends it, named like the web names a pasted picture', !timedOut(pasted), timedOut(pasted) ? pasted : pasted.file.name);
@@ -163,9 +164,14 @@ try {
     const dims = JSON.parse(spawnSync('python3', ['-c', `import io,json,sys;from PIL import Image;im=Image.open(io.BytesIO(sys.stdin.buffer.read()));print(json.dumps([im.width,im.height,im.format]))`], { input: pb }).stdout.toString() || '[]');
     check('A7 the pasted picture arrives whole (1800x1000 PNG, not resized or recompressed by the window)', J(dims) === '[1800,1000,"PNG"]' && pb.length === fs.statSync(path.join(fx, 'wide.png')).size, dims);
   }
+  if (process.env.STOP_AFTER === 'paste') throw new Error('stopped after the paste check');
   // text paste still works: nothing on the clipboard that is a picture is not taken
   await W.cmd('files_clip_text', { text: 'just words' }); await sleep(400);
   check('A6b text on the clipboard is not taken as a file: Ctrl+V leaves it to the box', (await W.cmd('files_paste')).took === false);
+  await fk('key:ctrl+v'); await sleep(700);
+  const typed = (await D()).composer;
+  check('A6c and a real Ctrl+V puts that text in the box as usual', typed === 'just words', typed);
+  await fk('key:ctrl+a', 'key:backspace'); await sleep(400);
 
   // video and audio
   await W.cmd('files_send', { paths: [path.join(fx, 'clip.mp4'), path.join(fx, 'tone.mp3')] });
@@ -239,6 +245,12 @@ try {
   await web(A, `(async () => { const f = new File([new Uint8Array(30 * 1024 * 1024).map((_, i) => (i * 31) & 255)], 'webbig.bin', { type: 'application/octet-stream' }); uploadFiles([f]); return true; })()`);
   await sleep(2500); await wshot(A, '04-upload-in-progress');
 
+  // the paperclip: a real click reaches its handler (the system dialog itself needs a desktop portal, which a private compositor has none of)
+  const attachHit = (await D()).hits.attach;
+  if (attachHit) { await fk(`move:${Math.round(attachHit.x + attachHit.w / 2)},${Math.round(attachHit.y + attachHit.h / 2)}`, 'click'); await sleep(1200); }
+  check('B11 the paperclip is on the composer and a real click on it is handled (the window stays up)', !!attachHit && attachHit.x < 400 && (await D()).xfers !== undefined, attachHit);
+  await W.cmd('open', { name: text.name });
+
   // ---------------------------------------------------------------- C. web -> window
   await W.cmd('open', { name: text.name }); await sleep(500);
   const webSend = async (srcName, name, mime) => {
@@ -276,6 +288,11 @@ try {
     await shot('09-lightbox-zoomed');
     await fk('key:-'); await sleep(300);
     const z2 = (await D()).light.zoom;
+    // drag to move a zoomed picture (real pointer): it moves and does not close
+    await W.cmd('files_light', { do: 'in' }); await sleep(300);
+    await fk('move:640,430', 'mousedown', 'move:700,460', 'move:740,480', 'mouseup'); await sleep(500);
+    const dragged = await D();
+    check('C6b dragging a zoomed picture moves it and leaves the lightbox open', dragged.light && (Math.abs(dragged.light.pan[0]) > 20 || Math.abs(dragged.light.pan[1]) > 10), dragged.light);
     await fk('key:0'); await sleep(300);
     const z3 = (await D()).light.zoom;
     check('C6 zoom in grows the picture, - shrinks it and 0 puts it back (real keys)', z1 > z0 && z2 < z1 && z3 === 1, { z0, z1, z2, z3 });
@@ -329,6 +346,9 @@ try {
   const card = (await D()).save;
   await shot('13-save-to');
   check('D1 Download opens the "save to" card for the file', card && card.name === 'from-alice.png', card);
+  await fk('key:escape'); await sleep(500);
+  check('D1b Esc closes the "save to" card without saving', (await D()).save === null && !fs.existsSync(path.join(sv, 'from-alice.png')));
+  await W.cmd('files_download', { name: 'from-alice.png' }); await sleep(400);
   await W.cmd('files_save', { folder: sv });
   const saved1 = await soft(until(async () => fs.existsSync(path.join(sv, 'from-alice.png')) ? true : null, 20000, 'saved', 300));
   check('D2 a small file is saved into the chosen folder, bytes identical', saved1 === true && shaFile(path.join(sv, 'from-alice.png')) === shaFile(path.join(fx, 'wide.png')));

@@ -200,15 +200,24 @@ fn poster(path: &Path, dur_ms: u64) -> Option<Ready> {
 
 // ---------------------------------------------------------------------------------------------- decrypted copies for playing
 
-/// tmpfs where there is one: a decrypted file does not stay on a disk.
-pub fn dir() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_dir()).unwrap_or_else(std::env::temp_dir);
-    base.join(format!("mega-gpui-media-{}", unsafe_uid()))
+/// tmpfs where there is one: a decrypted file does not stay on a disk. One folder per running program, so a second window never
+/// clears the first one's files; the folders of programs that are gone are removed at start.
+pub fn dir() -> PathBuf { base_dir().join(format!("mega-gpui-media-{}-{}", user_tag(), std::process::id())) }
+fn base_dir() -> PathBuf { std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_dir()).unwrap_or_else(std::env::temp_dir) }
+fn user_tag() -> String { std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "u".into()).chars().filter(|c| c.is_ascii_alphanumeric()).collect() }
+fn clean_dir() {
+    let _ = std::fs::remove_dir_all(dir());
+    let prefix = format!("mega-gpui-media-{}-", user_tag());
+    let Ok(rd) = std::fs::read_dir(base_dir()) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let Some(pid) = name.strip_prefix(&prefix).and_then(|p| p.parse::<u32>().ok()) else { continue };
+        let alive = if cfg!(target_os = "linux") { Path::new(&format!("/proc/{pid}")).exists() } else { e.metadata().and_then(|m| m.modified()).map(|t| t.elapsed().map(|d| d.as_secs() < 86_400).unwrap_or(true)).unwrap_or(true) };
+        if !alive && pid != std::process::id() { let _ = std::fs::remove_dir_all(e.path()); }
+    }
 }
-fn unsafe_uid() -> String { std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "u".into()).chars().filter(|c| c.is_ascii_alphanumeric()).collect() }
-fn clean_dir() { let _ = std::fs::remove_dir_all(dir()); }
-/// At exit and at start: no decrypted copy survives the app.
-pub fn clean_up() { clean_dir(); }
+/// At exit: no decrypted copy survives the app.
+pub fn clean_up() { let _ = std::fs::remove_dir_all(dir()); }
 pub fn safe_name(id: &str) -> String { id.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).take(80).collect() }
 
 pub fn media_of(id: &str) -> Option<Media> { with(|s| s.media.get(id).cloned()) }

@@ -445,6 +445,7 @@ impl Mega {
     pub fn open_room(&mut self, cid: String, gid: String, window: &mut Window, cx: &mut Context<Self>) {
         self.level = Level::Chat;
         if self.gid.as_deref() == Some(gid.as_str()) { cx.notify(); return; }
+        self.files.light = None; self.files.save = None; self.files.states.clear();
         self.bd = crate::backdrop::Bd::new(&gid); self.typing_ui = Default::default(); self.arrivals.clear(); self.flights.clear();
         let unread = self.channel(&gid).filter(|(c, _)| c.direct).map(|(_, ch)| ch.unread as usize).unwrap_or(0).max(if self.channel(&gid).is_some_and(|(c, _)| c.direct) { self.fake_dm_unread } else { 0 });
         self.dm_marks = (gid.clone(), unread);

@@ -568,7 +568,7 @@ impl Mega {
     }
 
     /// Tests (uitest.rs): what is held and where things are.
-    pub fn files_dump(&self) -> Value {
+    pub fn files_dump(&self, window: &Window, cx: &App) -> Value {
         let play = playback::status();
         json!({
             "xfers": xfer::live().iter().map(|x| { let s = x.snap(); json!({"key": x.key, "kind": if x.kind == Kind::Up { "up" } else { "down" }, "name": x.name, "bytes": s.bytes, "total": s.total, "paused": x.is_paused(), "idle": x.idle.load(std::sync::atomic::Ordering::Acquire), "cancelled": x.is_cancelled(), "state": s.state, "confirm": s.confirm, "path": s.path}) }).collect::<Vec<_>>(),
@@ -580,7 +580,7 @@ impl Mega {
             "play": { "cur": self.files.play.cur, "playing": self.files.play.playing, "want": self.files.play.want, "pos": self.files.play.pos, "err": self.files.play.err,
                       "status": play.as_ref().map(|s| json!({"id": s.id, "pos_ms": s.pos_ms, "ended": s.ended, "err": s.err, "frames": s.frames, "skipped": s.skipped})) },
             "media": self.win.msgs.iter().filter(|m| m.file.is_some()).filter_map(|m| media::media_of(&m.id).map(|d| json!({"id": m.id, "state": d.state, "err": d.err, "dur_ms": d.dur_ms, "audio": d.has_audio, "video": d.has_video, "poster": d.poster.as_ref().map(|p| [p.w, p.h])}))).collect::<Vec<_>>(),
-            "ffmpeg": media::has_ffmpeg(), "can_play": playback::can_play(),
+            "composer": self.composer.read(cx).value().to_string(), "composer_focused": self.composer.focus_handle(cx).is_focused(window) || self.composer.focus_handle(cx).contains_focused(window, cx), "ffmpeg": media::has_ffmpeg(), "can_play": playback::can_play(),
             "hits": self.files.hits.dump(),
             "msgs": self.win.msgs.iter().filter_map(|m| m.file.as_ref().map(|f| json!({"id": m.id, "name": f.name, "size": f.size, "mime": f.mime, "large": f.large.is_some(), "voice": f.voice.as_ref().map(|v| v.0), "mine": m.mine, "download": f.download.as_ref().map(|d| json!({"finished": d.finished, "path": d.path}))}))).collect::<Vec<_>>(),
         })
@@ -595,7 +595,7 @@ impl Mega {
         let by_name = |this: &Self, n: &str| this.win.msgs.iter().filter(|m| m.file.as_ref().is_some_and(|f| f.name == n || n.is_empty())).last().map(|m| m.id.clone());
         let key_of = |n: &str| xfer::live().into_iter().find(|x| x.name == n || x.key == n).map(|x| x.key.clone());
         match s("cmd").as_str() {
-            "files_dump" => self.files_dump(),
+            "files_dump" => self.files_dump(window, cx),
             "files_send" => { let p: Vec<PathBuf> = cmd["paths"].as_array().map(|l| l.iter().filter_map(|x| x.as_str().map(PathBuf::from)).collect()).unwrap_or_default(); self.files_dropped(p, window, cx); json!({"ok": true}) }
             "files_clip_image" => {
                 let bytes = std::fs::read(s("path")).unwrap_or_default();
@@ -619,7 +619,7 @@ impl Mega {
             }
             "files_light" => {
                 match s("do").as_str() { "close" => self.light_close(cx), "next" => self.light_step(1, cx), "prev" => self.light_step(-1, cx), "in" => self.light_zoom(1.25, cx), "out" => self.light_zoom(0.8, cx), _ => {} }
-                json!({"ok": true, "light": self.files_dump()["light"]})
+                json!({"ok": true, "light": self.files_dump(window, cx)["light"]})
             }
             "files_drag" => { self.files.fake_drag = cmd["on"].as_bool() == Some(true); cx.notify(); json!({"ok": true}) }
             "files_resume" => match xfer::parked().uploads.into_iter().find(|u| u["name"] == s("name").as_str() || u["id"] == s("name").as_str()) {
