@@ -143,6 +143,8 @@ impl Mega {
                 "do" => self.ui_do(&cmd, window, cx),
                 "paint" => { self.paint_toggle(window, cx); json!({"open": self.paint.open}) }
                 "paint_do" => self.paint_do(&cmd, window, cx),
+                "paint_for" => { self.paint_open_for(&s("cid"), &s("room"), window, cx); self.paint_state() }
+                "paint_state" => self.paint_state(),
                 "draw" => { match cmd["on"].as_bool() { Some(true) => self.wall_on(window, cx), Some(false) => self.wall_off(), None => self.wall_toggle(window, cx) } cx.notify(); json!({"on": self.wall.on, "key": self.wall.key}) }
                 "tool" => { if let Some(b) = cmd["brush"].as_u64() { self.wall.brush = b as u8; } if let Some(c) = cmd["col"].as_u64() { self.wall.col = c as u8; } json!({"ok": true}) }
                 "pen" => {
@@ -184,6 +186,14 @@ impl Mega {
         }
         cx.notify();
         let (m, h) = self.paint_cur();
-        json!({"ok": true, "open": self.paint.open, "cur": [look::hex(m), look::hex(h)], "back": self.paint.back_mode, "well": self.paint.well, "target": self.paint.target.as_ref().map(|t| t.name.clone()), "queue": self.paint_queue_len()})
+        let _ = (m, h);
+        self.paint_state()
+    }
+    /// The panel as it is: the colours, the warning, the square and hue strip in window pixels (for real pointer events).
+    fn paint_state(&mut self) -> Value {
+        let (m, h) = self.paint_cur();
+        let r = |b: Bounds<Pixels>| json!([f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)]);
+        json!({"ok": true, "open": self.paint.open, "external": self.paint.external, "cur": [look::hex(m), look::hex(h)], "warn": look::contrast(m, h) < 1.6, "hsv": self.paint.hsv, "back": self.paint.back_mode, "well": self.paint.well,
+            "target": self.paint.target.as_ref().map(|t| t.name.clone()), "queue": self.paint_queue_len(), "sv": r(self.paint.sv.get()), "hue": r(self.paint.hue.get())})
     }
 }

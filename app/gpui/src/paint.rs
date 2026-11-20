@@ -57,14 +57,24 @@ pub struct PaintUi {
     pub dim: Rc<Cell<Bounds<Pixels>>>,
     pub drag: Option<Drag>,
     pub scroll: ScrollHandle,
+    /// Opened from somewhere other than the focused card (the chat's header, the community settings): shown over everything and not following the focus.
+    pub external: bool,
+    /// What the target had when the panel started editing it, so Escape can put it back.
+    orig: Option<Orig>,
+    changed: bool,
+    /// The control the arrow keys nudge: the square or the hue strip, whichever was last pressed.
+    pub key_focus: Option<Drag>,
 }
+
+#[derive(Clone, Debug)]
+struct Orig { chosen: Option<(String, String)>, look: Look }
 
 impl PaintUi {
     pub fn new(window: &mut Window, cx: &mut Context<Mega>) -> (PaintUi, Subscription) {
         let hex = cx.new(|cx| InputState::new(window, cx).placeholder("#rrggbb"));
         let sub = cx.subscribe_in(&hex, window, |this: &mut Mega, _, ev: &InputEvent, window, cx| { if let InputEvent::Change = ev { this.paint_hex_changed(window, cx); } });
         (PaintUi { open: false, target: None, back_mode: false, well: 0, hsv: [0.; 3], hex, setting_hex: false, shown: HashMap::new(), looks: HashMap::new(), oracle: HashMap::new(), queue: vec![], saving: false, commit_at: None,
-            sv: Default::default(), hue: Default::default(), dim: Default::default(), drag: None, scroll: ScrollHandle::new() }, sub)
+            sv: Default::default(), hue: Default::default(), dim: Default::default(), drag: None, scroll: ScrollHandle::new(), external: false, orig: None, changed: false, key_focus: None }, sub)
     }
 }
 
@@ -90,8 +100,28 @@ impl Mega {
     pub fn paint_cur(&self) -> (u32, u32) {
         let Some(t) = &self.paint.target else { return (0, 0) };
         if self.paint.back_mode && t.kind == Kind::Text { if let Some((m, h)) = self.look_for(&t.cid, &t.gid).back.and_then(|(m, h)| Some((look::parse_hex(&m)?, look::parse_hex(&h)?))) { return (m, h); } }
-        let d = self.duo_for(&Self::target_id(t), self.snap.as_ref().and_then(|s| s.community(&t.cid)).and_then(|c| if t.kind == Kind::Community { c.colours.as_ref() } else { c.room_colours.iter().find(|(g, _)| g == &t.gid).map(|(_, d)| d) }));
+        let d = self.duo_for(&Self::target_id(t), self.chosen_of(t).as_ref());
         (d.main, d.hi)
+    }
+    /// The colours the owner chose for the card, as the snapshot has them (None: the default for its id).
+    fn chosen_of(&self, t: &Target) -> Option<(String, String)> {
+        self.snap.as_ref().and_then(|s| s.community(&t.cid)).and_then(|c| if t.kind == Kind::Community { c.colours.clone() } else { c.room_colours.iter().find(|(g, _)| g == &t.gid).map(|(_, d)| d.clone()) })
+    }
+    /// The panel's subject for a community's card (`gid` empty) or one of its rooms, for the places that are not a focused card.
+    pub fn ext_target(&self, cid: &str, gid: &str) -> Option<Target> {
+        let c = self.snap.as_ref()?.community(cid)?;
+        let (kind, id, name) = if gid.is_empty() { (Kind::Community, cid.to_string(), c.name.clone()) } else { let ch = c.channels.iter().find(|ch| ch.gid == gid)?; (if ch.kind == "voice" { Kind::Voice } else { Kind::Text }, gid.to_string(), ch.name.clone()) };
+        let t = Target { id: id.clone(), cid: cid.to_string(), gid: gid.to_string(), kind, fx_auto: ascii::auto_fx(&name), name, duo: Duo { main: 0, hi: 0 } };
+        let duo = self.duo_for(&id, self.chosen_of(&t).as_ref());
+        Some(Target { duo, ..t })
+    }
+    /// Open the panel on a card that is not the focused one, over whatever screen this is.
+    pub fn paint_open_for(&mut self, cid: &str, gid: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(t) = self.ext_target(cid, gid) else { return };
+        if !self.can_paint(&t) { return; }
+        self.paint.external = true; self.paint.open = true; self.paint.back_mode = false; self.paint.well = 0;
+        self.paint_set(t, window, cx);
+        cx.notify();
     }
     fn paint_well_colour(&self) -> u32 { let (m, h) = self.paint_cur(); if self.paint.well == 0 { m } else { h } }
 
@@ -100,14 +130,14 @@ impl Mega {
         if self.paint.open { self.paint_close(cx); return; }
         let Some(t) = self.nav.focus_card.clone() else { return };
         if !self.can_paint(&t) { return; }
-        self.paint.open = true; self.paint.back_mode = false; self.paint.well = 0;
+        self.paint.external = false; self.paint.open = true; self.paint.back_mode = false; self.paint.well = 0;
         self.paint_set(t, window, cx);
         cx.notify();
     }
-    pub fn paint_close(&mut self, cx: &mut Context<Self>) { self.paint.open = false; self.paint.drag = None; cx.notify(); }
+    pub fn paint_close(&mut self, cx: &mut Context<Self>) { self.paint.open = false; self.paint.external = false; self.paint.drag = None; self.paint.key_focus = None; cx.notify(); }
     /// The focus moved to another card while the panel is open (mega.js `PT.set`).
     pub fn paint_follow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.paint.open { return; }
+        if !self.paint.open || self.paint.external { return; }
         match self.nav.focus_card.clone() {
             None => self.paint_close(cx),
             Some(t) if self.paint.target.as_ref().is_some_and(|o| o.id == t.id) => { self.paint.target = Some(t); }
@@ -116,6 +146,9 @@ impl Mega {
         }
     }
     fn paint_set(&mut self, t: Target, window: &mut Window, cx: &mut Context<Self>) {
+        let id = Self::target_id(&t);
+        self.paint.orig = Some(Orig { chosen: self.chosen_of(&t), look: self.snap.as_ref().and_then(|s| s.community(&t.cid)).map(|c| c.look_of(&id)).unwrap_or_default() });
+        self.paint.changed = false; self.paint.commit_at = None;
         self.paint.target = Some(t);
         self.paint_resync(window, cx);
     }
@@ -127,6 +160,7 @@ impl Mega {
     fn paint_resync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let c = self.paint_well_colour();
         self.paint.hsv = look::to_hsv(c);
+        self.paint.key_focus = None;
         self.paint_set_hex(hexs(c), window, cx);
     }
     fn paint_set_hex(&mut self, v: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -141,6 +175,7 @@ impl Mega {
     fn paint_apply(&mut self, d: (u32, u32), window: &mut Window, cx: &mut Context<Self>) {
         let Some(t) = self.paint.target.clone() else { return };
         if !self.can_paint(&t) { return; }
+        self.paint.changed = true;
         if self.paint.back_mode && t.kind == Kind::Text {
             let mut l = self.look_for(&t.cid, &t.gid); l.back = Some((hexs(d.0), hexs(d.1)));
             self.paint.looks.insert(t.gid.clone(), LookHold { look: l, back_null: false, until: hold_for() });
@@ -174,6 +209,7 @@ impl Mega {
     fn paint_look(&mut self, f: impl FnOnce(&mut Look), back_null: bool, commit: bool) {
         let Some(t) = self.paint.target.clone() else { return };
         if !self.can_paint(&t) { return; }
+        self.paint.changed = true;
         let id = Self::target_id(&t);
         let mut l = self.look_for(&t.cid, &id);
         f(&mut l);
@@ -184,8 +220,7 @@ impl Mega {
         if self.paint.setting_hex || !self.paint.open { return; }
         let mut v = self.paint.hex.read(cx).value().trim().to_string();
         if !v.is_empty() && !v.starts_with('#') { v = format!("#{v}"); }
-        if !look::is_hex(&v) { return; }
-        let c = look::parse_hex(&v).unwrap_or(0);
+        let Some(c) = look::parse_any_hex(&v) else { return };
         self.paint.hsv = look::to_hsv(c);
         let mut d = self.paint_cur();
         if self.paint.well == 0 { d.0 = c; } else { d.1 = c; }
@@ -237,6 +272,7 @@ impl Mega {
     pub fn paint_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(t) = self.paint.target.clone() else { return };
         if !self.can_paint(&t) { return; }
+        self.paint.changed = false;
         let id = Self::target_id(&t);
         let d = look::DEF[(look::h(&id) as usize) % look::DEF.len()];
         self.paint.shown.insert(id.clone(), (d, hold_for()));
@@ -247,6 +283,45 @@ impl Mega {
         self.paint.back_mode = false;
         self.paint_resync(window, cx);
         cx.notify();
+    }
+    /// Escape: the colours, patterns and strength go back to what they were when the panel began on this card, and the panel closes.
+    pub fn paint_cancel(&mut self, cx: &mut Context<Self>) {
+        let (Some(t), Some(o)) = (self.paint.target.clone(), self.paint.orig.clone()) else { return self.paint_close(cx) };
+        if self.paint.changed && self.can_paint(&t) {
+            let id = Self::target_id(&t);
+            self.paint.commit_at = None;
+            let d = Duo::of(&id, o.chosen.as_ref());
+            self.paint.shown.insert(id.clone(), ((d.main, d.hi), hold_for()));
+            self.paint.queue.retain(|s| !matches!(s, Save::Style { cid, gid, .. } if *cid == t.cid && *gid == t.gid));
+            let (m, h) = o.chosen.clone().unwrap_or_default();
+            self.paint.queue.push(Save::Style { cid: t.cid.clone(), gid: t.gid.clone(), main: m, hi: h });
+            let back_null = o.look.back.is_none();
+            self.paint.looks.insert(id, LookHold { look: o.look.clone(), back_null, until: hold_for() });
+            self.paint_send_look(&t, back_null);
+            self.paint.changed = false;
+        }
+        self.paint_close(cx);
+    }
+    /// Keys while the panel is open: Escape cancels; the arrows nudge the square (both ways) or the hue strip (left and right), 10 steps with shift.
+    pub fn paint_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.paint.open { return false; }
+        let k = ev.keystroke.key.as_str();
+        if k == "escape" { self.paint_cancel(cx); return true; }
+        if self.paint.hex.read(cx).focus_handle(cx).is_focused(window) { return false; }
+        let Some(kind) = self.paint.key_focus else { return false };
+        let m = &ev.keystroke.modifiers;
+        if m.control || m.alt || m.platform { return false; }
+        let (dx, dy) = match k { "left" => (-1., 0.), "right" => (1., 0.), "up" => (0., 1.), "down" => (0., -1.), _ => return false };
+        let n = if m.shift { 5. } else { 1. };
+        let h = &mut self.paint.hsv;
+        match kind {
+            Drag::Sv => { h[1] = (h[1] + dx * 0.02 * n).clamp(0., 1.); h[2] = (h[2] + dy * 0.02 * n).clamp(0., 1.); }
+            Drag::Hue => { if dx == 0. { return false; } h[0] = (h[0] + dx * 1. * n * if m.shift { 2. } else { 1. }).clamp(0., 359.); }
+            Drag::Dim => return false,
+        }
+        self.paint_pick(window, cx);
+        self.paint.commit_at = Some(Instant::now() + Duration::from_millis(450));
+        true
     }
     pub fn paint_pattern(&mut self, which: &str, n: Option<usize>, cx: &mut Context<Self>) {
         match which { "card" => self.paint_look(|l| l.card = n, false, true), _ => self.paint_look(|l| l.chat = n, false, true) }
@@ -301,8 +376,9 @@ impl Mega {
 
     // ---- drawing the panel
     /// The panel, over the right of the card column (mega.css `#mega-paint`).
-    pub fn paint_panel(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.paint.open || !matches!(self.level, Level::Home | Level::Server(_)) { return None; }
+    /// `over`: the panel as an overlay on any screen (opened for a room or community from the chat or the settings), not on the card column.
+    pub fn paint_panel(&mut self, over: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.paint.open || self.paint.external != over || (!over && !matches!(self.level, Level::Home | Level::Server(_))) { return None; }
         let t = self.paint.target.clone()?;
         let paintable = self.can_paint(&t);
         let text = t.kind == Kind::Text;
@@ -348,7 +424,7 @@ impl Mega {
                     sq::fill(window, b, 18., linear_gradient(180., linear_color_stop(hsla(0., 0., 0., 0.), 0.), linear_color_stop(rgb(0x000000), 1.)));
                 }).absolute().top_0().left_0().size_full())
                 .child(div().absolute().left(relative(hsv[1])).top(relative(1. - hsv[2])).ml(px(-10.)).mt(px(-10.)).size(px(20.)).rounded_full().border_3().border_color(rgb(0xffffff)).bg(rgb(if well == 0 { cur.0 } else { cur.1 })))
-                .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| { this.paint.drag = Some(Drag::Sv); this.paint_drag_to(ev.position, window, cx); }));
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| { this.paint.drag = Some(Drag::Sv); this.paint.key_focus = Some(Drag::Sv); window.focus(&this.nav.focus, cx); this.paint_drag_to(ev.position, window, cx); }));
             body = body.child(sv);
             let hue_bounds = self.paint.hue.clone();
             let hue = div().id("mp-hue").relative().w_full().h(px(16.)).mt(px(2.)).cursor_pointer()
@@ -365,7 +441,7 @@ impl Mega {
                     for i in 1..5 { quad(window, i, seg * i as f32, seg * (i + 1) as f32, false); }
                 }).absolute().top_0().left_0().size_full())
                 .child(div().absolute().left(relative(hsv[0] / 359.)).top(px(-2.)).ml(px(-10.)).size(px(20.)).rounded_full().bg(rgb(0xffffff)).border_1().border_color(hsla(0., 0., 0., 0.5)))
-                .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| { this.paint.drag = Some(Drag::Hue); this.paint_drag_to(ev.position, window, cx); }));
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| { this.paint.drag = Some(Drag::Hue); this.paint.key_focus = Some(Drag::Hue); window.focus(&this.nav.focus, cx); this.paint_drag_to(ev.position, window, cx); }));
             body = body.child(hue);
             body = body.child(h_flex().w_full().items_center().gap(px(10.)).mt(px(16.)).text_color(mute).child("hex")
                 .child(div().flex_1().min_w_0().px(px(10.)).py(px(2.)).rounded(px(12.)).bg(hsla(0., 0., 1., 0.06)).border_1().border_color(look::line()).text_color(paper).font_family(look::F_MONO).text_size(px(14.))
@@ -411,14 +487,27 @@ impl Mega {
                 .when(back_mode && has_back, |d| d.child(chip("mp-same", "same as card").on_click(cx.listener(|this, _, window, cx| this.paint_same(window, cx)))))
                 .child(chip("mp-reset", "reset").on_click(cx.listener(|this, _, window, cx| this.paint_reset(window, cx)))));
         }
-        let (bx, _) = (0., 0.);
-        let _ = bx;
+        // the panel hides the window from the pointer (it occludes), so the window-level handlers cannot see a drag that stays over it:
+        // this one listens to the window's own events and follows the drag wherever the pointer is
+        let me = cx.entity();
+        let follow = canvas(|_, _, _| (), move |_, _, window, _| {
+            let m = me.clone();
+            window.on_mouse_event(move |ev: &MouseMoveEvent, phase, window, cx| {
+                if phase != DispatchPhase::Capture { return; }
+                m.update(cx, |this, cx| { if this.paint.drag.is_some() { if ev.pressed_button.is_none() { this.paint_drag_end(cx); } else { this.paint_drag_to(ev.position, window, cx); } } });
+            });
+            let m = me.clone();
+            window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                if phase != DispatchPhase::Capture { return; }
+                m.update(cx, |this, cx| this.paint_drag_end(cx));
+            });
+        }).absolute().size_0();
         Some(div().id("mp-panel").absolute().top(px(64.)).right(px(16.)).w(px(330.)).max_w_full().max_h(relative(1.)).occlude()
             .on_scroll_wheel(cx.listener(|_, _, _, cx| { cx.stop_propagation(); }))
             .child(div().id("mp-box").relative().w_full().max_h(px(self.nav.vp.get().1.max(300.) - 80.)).overflow_y_scroll().track_scroll(&self.paint.scroll).p(px(17.)).gap(px(12.)).flex().flex_col()
                 .font_family(look::F_UI).text_size(px(14.)).line_height(px(19.6)).text_color(paper)
                 .child(sq::back(30., rgb(0x15131b)))
-                .child(head).child(body)
+                .child(follow).child(head).child(body)
                 .child(sq::front(30., None, Some((1., look::line())), None)))
             .into_any_element())
     }

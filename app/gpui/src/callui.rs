@@ -473,7 +473,7 @@ impl Mega {
             "pttup" => self.call_cmd(Command::PushToTalk(false)),
             "volume" => { if let Some(a) = self.call.snap.peers.iter().find(|p| !p.me).and_then(|p| p.account.clone()) { self.call_cmd(Command::SetVolume { account: a, volume: v.parse().unwrap_or(1.) }); } }
             "level" => { match v { "home" => self.go(Level::Home, window, cx), "settings" => self.go(Level::Settings, window, cx), _ => {} } }
-            "colours" => { self.colours_open = !self.colours_open; cx.notify(); }
+            "colours" => { if self.paint.open { self.paint_close(cx); } else if let (Some(cid), Some(gid)) = (self.cid.clone(), self.gid.clone()) { self.paint_open_for(&cid, &gid, window, cx); } }
             "preset" => { let i: usize = v.parse().unwrap_or(99); let d = look::PRESETS.get(i).map(|p| (p.1, p.2)); self.set_room_colours(d, window, cx); }
             "dmunread" => { self.fake_dm_unread = v.parse().unwrap_or(0); cx.notify(); }
             "open" => { if let Some((cid, gid)) = self.snap.as_ref().and_then(|s| s.direct.iter().find(|d| d.name == v).map(|d| (d.id.clone(), d.room.clone()))) { self.open_room(cid, gid, window, cx); } }

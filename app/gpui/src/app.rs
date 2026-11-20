@@ -75,7 +75,6 @@ pub struct Mega {
     pub mem: crate::members::MembersUi,
     pub pending_link: Option<String>,
     /// The owner's colour presets are showing in the open room's header.
-    pub colours_open: bool,
     /// Checks only (`dmunread=N` step): pretend this many unread messages in every direct conversation, for the core reports none yet.
     pub fake_dm_unread: usize,
     /// A direct conversation's unread messages when it was opened: the last few rows carry a small star until it is left.
@@ -133,7 +132,7 @@ impl Mega {
         let (paint, paint_sub) = crate::paint::PaintUi::new(window, cx);
         subs.push(paint_sub);
         let mut this = Mega {
-            files: Default::default(), nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), colours_open: false, fake_dm_unread: 0, dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx),
+            files: Default::default(), nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), fake_dm_unread: 0, dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx),
             level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd: crate::backdrop::Bd::new(""), typing_ui: Default::default(), typing_at: Instant::now(), fake_hidden: false, holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
@@ -526,7 +525,6 @@ impl Mega {
     pub fn set_room_colours(&mut self, duo: Option<(u32, u32)>, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(cid), Some(gid)) = (self.cid.clone(), self.gid.clone()) else { return };
         let (main, hi) = duo.map(|(m, h)| (look::hex(m), look::hex(h))).unwrap_or_default();
-        self.colours_open = false;
         self.set_setting("set_style", json!({"cid": cid, "room": gid, "main": main, "hi": hi}), window, cx);
     }
     pub fn lock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
