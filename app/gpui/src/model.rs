@@ -45,6 +45,8 @@ pub struct Snapshot {
     pub rune_url: String, pub typing_enabled: bool, pub read_receipts: bool, pub share_listening: bool, pub outbox: u64,
     pub problems: Vec<String>,
     pub joining: Vec<Joining>, pub refused: Vec<Joining>,
+    /** the folder saved files go to by default */
+    pub download_dir: String,
 }
 
 fn duo(v: &Value) -> Option<(String, String)> {
@@ -83,6 +85,7 @@ impl Snapshot {
             communities, direct, rune_url: st(v, "rune_url"), typing_enabled: bo(v, "typing_enabled"), read_receipts: bo(v, "read_receipts"), share_listening: bo(v, "share_listening"), outbox: un(v, "outbox"),
             joining: v["joining"].as_array().map(|l| l.iter().map(|j| Joining { id: st(j, "id"), name: st(j, "name"), reason: String::new() }).collect()).unwrap_or_default(),
             refused: v["refused"].as_array().map(|l| l.iter().map(|j| Joining { id: st(j, "id"), name: st(j, "name"), reason: st(j, "reason") }).collect()).unwrap_or_default(),
+            download_dir: st(v, "download_dir"),
             problems: v["problems"].as_array().map(|l| l.iter().map(|p| st(p, "text")).collect()).unwrap_or_default(),
         }
     }
@@ -93,10 +96,33 @@ impl Snapshot {
 #[derive(Clone, Debug, Default)]
 pub struct Reaction { pub emoji: String, pub count: u64, pub mine: bool }
 
+/// An attachment as the core describes it (`file` of a message row): a large one stays on the relay until it is downloaded.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FileInfo {
+    pub name: String, pub size: u64, pub mime: String,
+    /// Over the small-file limit: `expires` is when the relay lets go of it; `download` is what the core holds of a save in progress or done.
+    pub large: Option<f64>, pub download: Option<Download>,
+    /// A voice message: its length and the 64 loudness bars of its waveform.
+    pub voice: Option<(u64, Vec<u8>)>,
+}
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Download { pub done: u64, pub chunks: u64, pub finished: bool, pub path: String, pub save_name: String }
+impl FileInfo {
+    pub fn parse(f: &Value) -> FileInfo {
+        let hex = |h: &str| -> Vec<u8> { (0..h.len() / 2).map(|i| u8::from_str_radix(&h[i * 2..i * 2 + 2], 16).unwrap_or(0)).collect() };
+        FileInfo {
+            name: st(f, "name"), size: un(f, "size"), mime: st(f, "mime"),
+            large: f.get("large").filter(|l| l.is_object()).map(|l| l["expires"].as_f64().unwrap_or(0.)),
+            download: f.get("download").filter(|d| d.is_object()).map(|d| Download { done: un(d, "done"), chunks: un(d, "chunks"), finished: bo(d, "finished"), path: st(d, "path"), save_name: st(d, "save_name") }),
+            voice: f.get("voice").filter(|v| v.is_object()).map(|v| (un(v, "ms"), hex(&st(v, "peaks")))),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Msg {
     pub id: String, pub sender: String, pub name: String, pub mine: bool, pub ts: u64, pub kind: String, pub text: String, pub status: String,
-    pub file: Option<(String, u64)>, pub reply: Option<(String, String)>, pub edited: bool, pub deleted: bool, pub reactions: Vec<Reaction>, pub read_by: Vec<String>,
+    pub file: Option<FileInfo>, pub reply: Option<(String, String)>, pub edited: bool, pub deleted: bool, pub reactions: Vec<Reaction>, pub read_by: Vec<String>,
     /** the sender's role in the community ("owner", "admin", "member"), the start of their account id, and whether another person here has the same name */
     pub role: String, pub tag: String, pub same_name: bool,
 }
@@ -104,7 +130,7 @@ impl Msg {
     pub fn parse(v: &Value) -> Msg {
         Msg {
             id: st(v, "id"), sender: st(v, "sender"), name: st(v, "name"), mine: bo(v, "mine"), ts: un(v, "ts"), kind: st(v, "kind"), text: st(v, "text"), status: st(v, "status"),
-            file: v.get("file").filter(|f| f.is_object()).map(|f| (st(f, "name"), un(f, "size"))),
+            file: v.get("file").filter(|f| f.is_object()).map(FileInfo::parse),
             reply: v.get("reply").filter(|r| r.is_object()).map(|r| (st(r, "name"), st(r, "text"))),
             edited: bo(v, "edited"), deleted: bo(v, "deleted"),
             reactions: v["reactions"].as_array().map(|l| l.iter().map(|r| Reaction { emoji: st(r, "emoji"), count: un(r, "count"), mine: bo(r, "mine") }).collect()).unwrap_or_default(),

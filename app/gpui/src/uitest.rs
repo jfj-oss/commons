@@ -9,6 +9,7 @@
 //!   {"cmd":"ring_all"}                          the ring button of the call bar
 //!   {"cmd":"join","name"}                       join the voice room with this name
 //!   {"cmd":"avatars"} {"cmd":"avatar_open","path"} {"cmd":"avatar_crop","zoom","x","y","circle"} {"cmd":"avatar_use"} {"cmd":"avatar_remove"} {"cmd":"avatar_poll"}   profile pictures: what is held and what the cropper shows; choose a file (what a drop does); crop; send; remove; look now
+//!   {"cmd":"files_dump"} files_send{paths} files_clip_image{path} files_paste files_pause/cancel/keep{name} files_open/play/seek/download{name} files_save{folder} files_light{do} files_drag{on} files_resume{name,path} files_drop_parked{id}   files, pictures and sound (files.rs)
 //!   {"cmd":"home"}  {"cmd":"server","name"}  {"cmd":"settings"}   back to the home screen; a community's rooms; settings
 //!   {"cmd":"leave"}  {"cmd":"open","name"}      leave the call; open a room (or a direct conversation) by name
 //!   {"cmd":"rune","what":"pause|resume|next|prev"}  {"cmd":"along"}   the rune controls of the call bar
@@ -156,6 +157,7 @@ impl Mega {
                 "join_text" => { let v = s("text"); self.mem.join_in.update(cx, |i, cx| i.set_value(v, window, cx)); self.join_submit(window, cx); json!({"ok": true}) }
                 "click" => match s("what").as_str() { "confirm" => { self.run_confirm(window, cx); json!({"ok": true}) } "cancel" => { self.mem.confirm = None; cx.notify(); json!({"ok": true}) } _ => json!({"error": "unknown button"}) },
                 "core" => { let core = self.core.clone(); let (m, a) = (s("method"), cmd["args"].clone()); match core.call(&m, a) { Ok(v) => json!({"ok": v}), Err(e) => json!({"error": e}) } }
+                other if other.starts_with("files_") => self.files_cmd(&cmd, window, cx),
                 other => json!({"error": format!("unknown command {other}")}),
             };
             let _ = tx.send(out);
