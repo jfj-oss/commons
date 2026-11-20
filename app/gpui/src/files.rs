@@ -165,7 +165,8 @@ impl Mega {
             let core = self.core.clone();
             std::thread::Builder::new().name("mega-xfers".into()).spawn(move || xfer::refresh_parked(&core)).ok();
         }
-        if redraw { cx.notify(); }
+        // a drag over the window: the drop hint is painted from the drag, so frames must keep coming
+        if redraw || cx.has_active_drag() { cx.notify(); }
     }
 
     /// A picture that arrived, a poster, a download that began or ended: the row measures itself again.
@@ -602,6 +603,7 @@ impl Mega {
                 cx.write_to_clipboard(ClipboardItem::new_image(&Image { format: fmt, bytes, id: 1 }));
                 json!({"ok": true})
             }
+            "files_clip_text" => { cx.write_to_clipboard(ClipboardItem::new_string(s("text"))); json!({"ok": true}) }
             "files_paste" => json!({"took": self.files_paste(window, cx)}),
             "files_pause" => match key_of(&s("name")) { Some(k) => { xfer::set_paused(&self.core, &k); json!({"ok": true}) } None => json!({"error": "no such transfer"}) },
             "files_cancel" => match key_of(&s("name")) { Some(k) => json!({"asked": xfer::cancel(&k, cmd["sure"].as_bool() == Some(true))}), None => json!({"error": "no such transfer"}) },

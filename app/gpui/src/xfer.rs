@@ -89,12 +89,22 @@ fn remove(x: &Arc<Xfer>) { LIVE.lock().unwrap().retain(|v| !Arc::ptr_eq(v, x)); 
 
 static TOASTS: Mutex<Vec<(String, Instant)>> = Mutex::new(Vec::new());
 /// A short notice (what the web shows as a toast).
-pub fn toast(s: impl Into<String>) { let mut t = TOASTS.lock().unwrap(); t.push((s.into(), Instant::now() + Duration::from_secs(6))); if t.len() > 4 { t.remove(0); } drop(t); bump(); }
+pub fn toast(s: impl Into<String>) {
+    let s = s.into();
+    LOG.lock().unwrap().push(s.clone());
+    let mut t = TOASTS.lock().unwrap();
+    t.retain(|(x, _)| *x != s);
+    t.push((s, Instant::now() + Duration::from_secs(6)));
+    if t.len() > 4 { t.remove(0); }
+    drop(t); bump();
+}
+/// Take a notice away early (the "Encrypting and uploading…" of a send that finished).
+pub fn untoast(s: &str) { TOASTS.lock().unwrap().retain(|(x, _)| x != s); bump(); }
 pub fn toasts() -> Vec<String> { let mut t = TOASTS.lock().unwrap(); t.retain(|(_, u)| *u > Instant::now()); t.iter().map(|(s, _)| s.clone()).collect() }
 /// Every notice ever shown in this run (tests).
 pub fn toast_log() -> Vec<String> { LOG.lock().unwrap().clone() }
 static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
-fn say(s: impl Into<String>) { let s = s.into(); LOG.lock().unwrap().push(s.clone()); toast(s); }
+fn say(s: impl Into<String>) { toast(s); }
 
 // ---------------------------------------------------------------------------------------------- small helpers
 
@@ -238,7 +248,9 @@ fn send_local(core: &Arc<Core>, gid: &str, l: Local) {
 
 fn send_small(core: &Arc<Core>, gid: &str, name: &str, mime: &str, data: &[u8]) {
     say("Encrypting and uploading…");
-    if let Err(e) = core.call("send_file", json!({"gid": gid, "name": name, "mime": mime, "data": b64u(data), "caption": ""})) { say(clean_err(&e)); }
+    let r = core.call("send_file", json!({"gid": gid, "name": name, "mime": mime, "data": b64u(data), "caption": ""}));
+    untoast("Encrypting and uploading…");
+    if let Err(e) = r { say(clean_err(&e)); }
     bump();
 }
 

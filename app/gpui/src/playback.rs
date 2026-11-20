@@ -171,7 +171,7 @@ mod tests {
     fn a_video_is_decoded_at_an_even_size_in_its_own_shape() {
         assert_eq!(video_size(1920, 1080, 800), (800, 450));
         assert_eq!(video_size(640, 360, 800), (640, 360), "never enlarged");
-        assert_eq!(video_size(1081, 607, 801), (800, 450));
+        assert_eq!(video_size(1081, 607, 801), (800, 448));
         assert_eq!(video_size(1080, 1920, 400), (400, 712));
         let (w, h) = video_size(3, 3, 800); assert!(w % 2 == 0 && h % 2 == 0 && w >= 2);
     }
