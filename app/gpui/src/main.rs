@@ -28,6 +28,7 @@ mod deck;
 mod popout;
 mod video;
 mod fonts;
+mod density;
 mod files;
 mod gamekeys;
 mod media;
