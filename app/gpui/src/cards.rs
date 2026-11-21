@@ -114,6 +114,7 @@ impl Mega {
     /// The pattern a card shows: the owner's choice if it names one this version knows, else the automatic one (mega.js `patOf`).
     pub fn look_fx(&self, cid: &str, id: &str, auto: usize) -> usize { self.look_for(cid, id).card.filter(|n| *n < ascii::FX_NAMES.len()).unwrap_or(auto) }
     /// The rooms (or the people) a card names under it: "3 people", "caught up", "waiting for keys"...
+    pub fn community_items_pub(&self) -> Vec<NavItem> { self.community_items() }
     fn community_items(&self) -> Vec<NavItem> {
         let snap = self.snap.clone().unwrap_or_default();
         let mut out = vec![];

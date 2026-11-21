@@ -43,8 +43,9 @@ keyboard for a minute each.
   polls `snapshot` and `messages` every 500 ms with the hash of what it holds, and the core answers "same" or a
   difference. This app does the same from one thread, and applies the differences to GPUI's virtual list.
 - Sign-in: unlock an existing account, or create one. The account folder is `COMMONS_DATA` as in the Tauri app;
-  without it the spike uses a folder of its own (`app.commons.chat.gpui-spike`) and only `MEGA_GPUI_REAL_PROFILE=1`
-  points it at the Tauri app's folder. **Nothing in this work touched the real account or the real relay.**
+  without it the app opens the Tauri app's folder (`app.commons.chat`; the spike once used a folder of its own, changed
+  when the native app became the real one). The core's lock keeps the two programs off one account at once. **Tests use
+  throwaway `COMMONS_DATA` folders only.**
 - Rooms, one room as a virtual list (GPUI `list`, bottom-aligned, only visible rows are laid out), live updates,
   typing, read marks, and the composer: multi-line, grows to 8 lines, Enter sends, Shift+Enter is a new line.
 - Phase 1 (done after the go): the current look and the rest of the list in PORT-PLAN.md marked "done".
@@ -199,7 +200,7 @@ Environment:
 | Variable | Meaning |
 | --- | --- |
 | `COMMONS_DATA`, `COMMONS_RELAY` | as in the Tauri app |
-| `MEGA_GPUI_REAL_PROFILE=1` | use the Tauri app's account folder. Close the Tauri app first: the core's folder lock refuses a second user anyway. **Not recommended yet**: this build cannot do most things, and it marks rooms read |
+| `COMMONS_DATA=<dir>` | use this account folder instead of the Tauri app's `app.commons.chat` (tests, a second profile) |
 | `MEGA_GPUI_NOTIFY_FILE=<file>` | write notifications to a file instead of showing them |
 | `MEGA_GPUI_PASS`, `MEGA_GPUI_OPEN`, `MEGA_GPUI_LIMIT`, `MEGA_GPUI_SCROLL`, `MEGA_GPUI_FRAMES`, `MEGA_BENCH_OUT` | measurement only (bench.rs). `MEGA_GPUI_PASS` puts a passphrase in the environment: throwaway accounts only |
 
