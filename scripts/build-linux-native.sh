@@ -17,9 +17,10 @@ W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 P=$W/$NAME
 mkdir -p "$P/icons"
 cp "$BIN" "$P/mega-gpui"; strip --strip-all "$P/mega-gpui"; chmod 755 "$P/mega-gpui"
+IM=(convert); command -v magick >/dev/null && IM=(magick)
 ICON=app/src-tauri/icons/icon.png
 for s in 16 24 32 48 64 128 256 512; do
-  if [ $s -eq 512 ]; then cp "$ICON" "$P/icons/$s.png"; else convert "$ICON" -resize ${s}x${s} "$P/icons/$s.png"; fi
+  if [ $s -eq 512 ]; then cp "$ICON" "$P/icons/$s.png"; else "${IM[@]}" "$ICON" -resize ${s}x${s} "$P/icons/$s.png"; fi
 done
 cp packaging/linux-native/install.sh packaging/linux-native/uninstall.sh packaging/linux-native/README.txt "$P/"
 chmod 755 "$P/install.sh" "$P/uninstall.sh"
