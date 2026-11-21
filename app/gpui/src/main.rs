@@ -45,6 +45,7 @@ mod ringui;
 mod runebar;
 mod uitest;
 mod prefs;
+mod titlebar;
 mod tour;
 mod update;
 mod updateui;
@@ -122,11 +123,16 @@ fn main() {
 
         // tests only: MEGA_GPUI_SIZE=1280x900 opens the window at that size (the window's content, without a title bar)
         let (ww, wh) = std::env::var("MEGA_GPUI_SIZE").ok().and_then(|v| { let (a, b) = v.split_once('x')?; Some((a.parse::<f32>().ok()?, b.parse::<f32>().ok()?)) }).unwrap_or((1100., 760.));
-        let bounds = Bounds::centered(None, size(px(ww), px(wh)), cx);
+        // the window draws its own frame and top row (titlebar.rs): the size asked for is the content's, so the frame is added
+        let ((ow, oh), (mw, mh)) = (titlebar::outer_for(ww, wh), titlebar::outer_for(ww.min(720.), wh.min(520.)));
+        let bounds = Bounds::centered(None, size(px(ow), px(oh)), cx);
         let opts = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(ww.min(720.)), px(wh.min(520.)))),
-            titlebar: Some(TitlebarOptions { title: Some("mega".into()), ..Default::default() }),
+            window_min_size: Some(size(px(mw), px(mh))),
+            // macOS keeps its own lights, transparent bar, drawn over our row; Linux draws everything itself
+            titlebar: Some(TitlebarOptions { title: Some("mega".into()), appears_transparent: true, traffic_light_position: Some(point(px(14.), px(12.))) }),
+            window_decorations: if cfg!(target_os = "linux") { Some(WindowDecorations::Client) } else { None },
+            app_owns_titlebar_drag: true,
             app_id: Some("app.commons.chat.gpui".into()),
             ..Default::default()
         };

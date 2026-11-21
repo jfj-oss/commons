@@ -69,7 +69,7 @@ impl Mega {
         let target = self.tour.hits.get(STEPS[i].0).filter(|r| r.2 > 4. && r.3 > 4.);
         // the places are read from the last frame; only what is drawn this frame writes them again
         self.tour.hits.clear();
-        let vp = window.viewport_size();
+        let vp = crate::titlebar::viewport(window);
         let (vw, vh) = (f32::from(vp.width), f32::from(vp.height));
         let bh = 150.;
         let (left, top, w) = match target { Some(r) => place(r, vw, vh, bh), None => (((vw - 320f32.min(vw - 24.)) / 2.).max(12.), ((vh - bh) / 2.).max(12.), 320f32.min(vw - 24.)) };

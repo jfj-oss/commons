@@ -212,7 +212,7 @@ impl Mega {
 
     /// Opens the menu for a room at a point of the window (right-click on a card or a dot).
     pub fn room_menu_open(&mut self, gid: &str, name: &str, at: Point<Pixels>, window: &Window, cx: &mut Context<Self>) {
-        let vp = window.viewport_size();
+        let vp = crate::titlebar::viewport(window);
         let at = point(at.x.min(vp.width - px(MENU_W + 8.)).max(px(8.)), at.y.min(vp.height - px(MENU_ROW * 7. + 20.)).max(px(8.)));
         state().menu = Some(Menu { gid: gid.to_string(), name: name.to_string(), at });
         cx.notify();

@@ -144,7 +144,7 @@ impl Mega {
         let (ob, ob_subs) = crate::onboard::Onboard::new(window, cx);
         let (dev, dev_subs) = crate::devices::DevUi::new(window, cx);
         subs.extend(ob_subs); subs.extend(dev_subs);
-        subs.push(cx.observe_window_activation(window, |this, window, cx| this.beat(window, cx)));
+        subs.push(cx.observe_window_activation(window, |this, window, cx| { crate::titlebar::set_edge(window.is_window_active(), cx); cx.notify(); this.beat(window, cx) }));
         let prefs = Prefs::load(&core.dir);
         let call = crate::callui::CallUi::new(prefs.deck_w, window, cx);
         let upd = crate::updateui::UpdateUi::new(&core.dir);

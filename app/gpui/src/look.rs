@@ -41,6 +41,10 @@ pub fn apply_theme(cx: &mut App) {
         t.primary_active = rgb(0xd8d5de).into();
         t.primary_foreground = rgb(0x0c0d12).into();
         t.font_family = F_UI.into();
+        // the window frame (titlebar.rs): Root draws a 1 px light edge of this colour at this radius, outside mega's dark band
+        t.window_border = crate::titlebar::edge_colour(true);
+        t.tokens.background = crate::titlebar::band_colour(true).into();
+        t.window_radius = px(crate::titlebar::R_EDGE);
     });
 }
 
