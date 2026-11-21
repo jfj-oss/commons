@@ -6,6 +6,8 @@
 //!   {"cmd":"accept"} {"cmd":"decline"}          the first ring card
 //!   {"cmd":"dial","peer","name"}                call a person (what "Call" on a direct conversation does)
 //!   {"cmd":"attend","on":false}               behave as a window nobody looks at (so notifications show)
+//!   {"cmd":"room_menu","name"} {"cmd":"room_pick","kind","secs"} {"cmd":"alerts"}   open the notification menu of a room by name (what a right-click does); press a row of it (mute|mentions|none); what the window holds about alerts, the sound and reading size choices
+//!   {"cmd":"pref","sound","read_size"}     set the sound (all|mentions|off) and/or the reading size (small|normal|large) for this run, as Settings does
 //!   {"cmd":"ring_all"}                          the ring button of the call bar
 //!   {"cmd":"join","name"}                       join the voice room with this name
 //!   {"cmd":"avatars"} {"cmd":"avatar_open","path"} {"cmd":"avatar_crop","zoom","x","y","circle"} {"cmd":"avatar_use"} {"cmd":"avatar_remove"} {"cmd":"avatar_poll"}   profile pictures: what is held and what the cropper shows; choose a file (what a drop does); crop; send; remove; look now
@@ -99,6 +101,20 @@ impl Mega {
                 "avatar_poll" => { self.avatar_poll(); json!({"ok": true}) }
                 "home" => { self.go(crate::app::Level::Home, window, cx); json!({"ok": true}) }
                 "attend" => { self.ring.unattended = cmd["on"].as_bool() == Some(false); json!({"ok": true}) }
+                "room_menu" => {
+                    let want = s("name");
+                    let g = self.snap.as_ref().and_then(|sn| sn.communities.iter().chain(sn.direct.iter()).find_map(|c| c.channels.iter().find(|ch| ch.name == want || c.name == want && c.direct).map(|ch| (ch.gid.clone(), ch.name.clone()))));
+                    match g { Some((g, n)) => { self.room_menu_open(&g, &n, point(px(300.), px(200.)), window, cx); json!({"ok": true, "gid": g}) } None => json!({"error": "no such room"}) }
+                }
+                "room_pick" => { self.room_menu_pick(&s("kind"), cmd["secs"].as_u64().unwrap_or(0), window, cx); json!({"ok": true}) }
+                "alerts" => self.alerts_dump(),
+                "pref" => {
+                    use crate::prefs::{ReadSize, Sound};
+                    match cmd["sound"].as_str() { Some("all") => self.prefs.msg_sound = Sound::All, Some("mentions") => self.prefs.msg_sound = Sound::Mentions, Some("off") => self.prefs.msg_sound = Sound::Off, _ => {} }
+                    match cmd["read_size"].as_str() { Some("small") => self.prefs.read_size = ReadSize::Small, Some("normal") => self.prefs.read_size = ReadSize::Normal, Some("large") => self.prefs.read_size = ReadSize::Large, _ => {} }
+                    self.list.remeasure(); self.reading.full.clear(); cx.notify();
+                    self.alerts_dump()
+                }
                 "ring_all" => { self.ring_all(window, cx); json!({"ok": true}) }
                 "join" => {
                     let want = s("name");

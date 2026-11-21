@@ -27,6 +27,8 @@ use std::time::Duration;
 pub enum Inbound {
     /// Bring the window forward; open this room when there is one.
     Open(Option<String>),
+    /// A second launch of the app (src/single.rs): bring the window forward, open this room, take this invite link.
+    Show { open: Option<String>, link: Option<String> },
     /// A quick reply was sent into a room (or could not be).
     Replied { gid: String, ok: bool },
 }

@@ -178,6 +178,10 @@ impl Mega {
                 .when(on && k > 0.5, |d| d.child(div().absolute().inset(px(-4.)).rounded(px(r + 4.)).border_2().border_color(look::paper())))
                 .when(picked, |d| d.child(div().absolute().inset(px(-4.)).rounded(px(r + 4.)).border_2().border_color(look::paper())))
                 .when(k < 0.5, |d| d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)))
+                .when_some(match &it.open { Open::Room(_, g) if !voice && !it.locked => Some((g.clone(), it.title.clone())), _ => None }, |d, (gid, name)| d.on_mouse_down(MouseButton::Right, cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.room_menu_open(&gid, &name, ev.position, window, cx);
+                })))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     match open.clone() {
                         // a click on a voice dot is an explicit join (or leave), as on the page: a voice room has no chat to open

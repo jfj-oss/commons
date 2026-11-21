@@ -64,6 +64,12 @@ impl Mega {
                     window.activate_window();
                     if let Some(g) = gid { if let Some(cid) = self.channel(&g).map(|(c, _)| c.id.clone()) { self.open_room(cid, g, window, cx); } }
                 }
+                Inbound::Show { open, link } => {
+                    // a second launch of the app (single.rs): raise this window, then do what it was asked
+                    window.activate_window();
+                    if let Some(g) = open { if let Some(cid) = self.channel(&g).map(|(c, _)| c.id.clone()) { self.open_room(cid, g, window, cx); } }
+                    if let Some(l) = link { self.join_with(l, window, cx); }
+                }
                 Inbound::Replied { ok, .. } => { if !ok { self.say("The quick reply could not be sent.", cx); } else { self.tick(window, cx); } }
             }
         }

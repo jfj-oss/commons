@@ -264,8 +264,9 @@ impl Mega {
             .into_any_element()
     }
 
-    fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snap = self.snap.clone().unwrap_or_default();
+        let alerts = self.alerts_settings(window, cx);
         let avatar_row = self.avatar_settings(cx);
         let back = if self.gid.is_some() { Level::Chat } else { Level::Home };
         let label = |t: &str| div().mt_4().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(t.to_string());
@@ -322,6 +323,7 @@ impl Mega {
                 .child(choice("nm-off", mode == "off", "Off").on_click(set_mode("off"))))
             .child(toggle("nt-text", show_text, "Show the message text in notifications", "notify_set"))
             .child(toggle("nt-ring", self.prefs.sound, "Play a sound when someone rings", "ring_sound"))
+            .child(alerts)
             .child(label("privacy"))
             .child(toggle("p-typing", snap.typing_enabled, "Show others when I am writing", "set_typing_enabled"))
             .child(toggle("p-read", snap.read_receipts, "Read receipts", "set_read_receipts"))
@@ -509,7 +511,7 @@ impl Render for Mega {
                     Level::Chat => {
                         h_flex().size_full().items_start().child(self.render_rail(window, cx)).child(self.render_chat(window, cx)).into_any_element()
                     }
-                    Level::Settings => self.render_settings(cx).into_any_element(),
+                    Level::Settings => self.render_settings(window, cx).into_any_element(),
                 };
                 let deck = self.deck_column(window, cx);
                 let show = self.deck_show_button(cx);
@@ -523,7 +525,7 @@ impl Render for Mega {
                 let cropper = self.avatar_overlay(cx);
                 let lightbox = self.light_overlay(window, cx);
                 let save = self.save_overlay(cx);
-                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(lightbox)
+                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(lightbox).children(self.room_menu_view(cx))
             }
         }
     }
