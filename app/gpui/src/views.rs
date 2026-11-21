@@ -585,6 +585,7 @@ impl Render for Mega {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !std::mem::replace(&mut self.first_frame_done, true) { window.on_next_frame(|_, _| crate::bench::mark("first_frame")); }
         crate::bench::drive(self, window, cx);
+        self.fly_step(window, cx);
         self.sel_autoscroll(window, cx);
         // arrivals and thrown reactions ask for a frame only while one is in the air; the frame after the last one draws the finished state
         if !(self.arrivals.is_idle() && self.flights.is_idle()) {
@@ -641,7 +642,7 @@ impl Render for Mega {
                 let lightbox = self.light_overlay(window, cx);
                 let save = self.save_overlay(cx);
                 let reminder = self.recovery_card(cx);
-                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(reminder).children(lightbox).children(self.dens_popup(cx)).children(self.room_menu_view(cx)).children(self.gk_modal(window, cx)).children(self.tour_view(window, cx))
+                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(reminder).children(lightbox).children(self.dens_popup(cx)).children(self.room_menu_view(cx)).children(self.gk_modal(window, cx)).children(self.tour_view(window, cx)).children(self.fly_layer())
             }
         }
     }

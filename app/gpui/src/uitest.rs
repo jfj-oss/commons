@@ -242,6 +242,7 @@ impl Mega {
                 }
                 "members" => self.members_dump(),
                 "nav" => self.nav_dump(),
+                "fly" => self.fly_dump(),
                 "rail" => self.rail_dump(),
                 "navplay" => { let now = self.epoch.elapsed().as_secs_f64(); self.nav.frames.clear(); self.nav.last_frame = None; self.nav.play = Some((now + cmd["secs"].as_f64().unwrap_or(3.), cmd["pps"].as_f64().unwrap_or(2400.) as f32, 1.)); cx.notify(); json!({"ok": true}) }
                 "railopen" => { if cmd["on"].as_bool() == Some(false) { self.rail.hover = false; self.rail_close_now(); } else { self.rail_open(); } cx.notify(); json!({"ok": true}) }

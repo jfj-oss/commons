@@ -94,12 +94,15 @@ pub struct NavUi {
     /// The glow under the pointer on the focused card: its cell and strength (ascii.rs `bloom`).
     pub bloom: (f64, f64, f64),
     pub origin: Rc<Cell<(f32, f32)>>,
+    /// The cards on screen as the last frame drew them: key, window box, the card's colour and its dot's (for the flight).
+    pub rects: Vec<(String, [f32; 4], u32, u32)>,
+    pub keys: Vec<String>,
 }
 
 impl NavUi {
     pub fn new(cx: &mut App) -> NavUi {
         NavUi { scroll: Scroll::default(), key: String::new(), n: 0, vh: 0., vp: Rc::new(Cell::new((0., 0.))), offs: vec![], opens: vec![], voices: vec![], told: None, focus: cx.focus_handle(), last_home: None, acc: 0.,
-            previews: HashMap::new(), prev_busy: false, frames: vec![], last_frame: None, play: None, focus_card: None, bloom: (0., 0., 0.), origin: Rc::new(Cell::new((0., 0.))) }
+            previews: HashMap::new(), prev_busy: false, frames: vec![], last_frame: None, play: None, focus_card: None, bloom: (0., 0., 0.), origin: Rc::new(Cell::new((0., 0.))), rects: vec![], keys: vec![] }
     }
 }
 
@@ -271,6 +274,8 @@ impl Mega {
         let clock = self.clock;
         let mut wall_spot = crate::wall::Spot::default();
         let mut wall_visible: Vec<String> = vec![];
+        let mut rects: Vec<(String, [f32; 4], u32, u32)> = vec![];
+        let org = self.nav.origin.get();
         for (i, it) in items.iter().enumerate() {
             let a = nav::dist(sc.offset, offs[i], slot);
             if let Some(sec) = it.section.filter(|_| sections[i]) {
@@ -287,8 +292,10 @@ impl Mega {
             let geo = Geo { x: (vw - cw * s) / 2., y: cyy - ch * s / 2., cw, ch, s, op: nav::opacity(a), live: nav::live(a), focus: i == sc.cur, settled: sc.settled == Some(i), grow: if i == sc.focus { sc.grow } else { 0. }, t: clock };
             if i == sc.cur { let o = self.nav.origin.get(); wall_spot = crate::wall::Spot { x: o.0 + geo.x, y: o.1 + geo.y, w: cw, h: ch, s }; }
             if let Some(k) = card_wall(it) { wall_visible.push(k); }
+            rects.push((it.key.clone(), [org.0 + geo.x, org.1 + geo.y, cw * s, ch * s], it.duo.main, { let c = Rgba::from(it.duo.dot()); (((c.r * 255.) as u32) << 16) | (((c.g * 255.) as u32) << 8) | (c.b * 255.) as u32 }));
             cards.push(self.nav_card(i, it, geo, cx));
         }
+        self.nav.rects = rects; self.nav.keys = items.iter().map(|x| x.key.clone()).collect();
         let focus_wall = items.get(sc.cur).and_then(card_wall);
         self.wall.room_mode = false;
         self.wall_focus(focus_wall, wall_spot, wall_visible);
@@ -315,7 +322,7 @@ impl Mega {
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.nav_key(ev, window, cx)))
             .child(measure)
             .children(labels)
-            .children(cards)
+            .child(div().absolute().inset_0().when(self.fly_hides_cards(), |d| d.opacity(0.)).children(cards))
             .child(dots)
             .child(div().absolute().top_0().left_0().right_0().child(bar))
             .children(self.wall_hit(cx))
@@ -497,8 +504,11 @@ impl Mega {
             return;
         }
         match o {
-            Open::Server(cid) => self.go(Level::Server(cid), window, cx),
-            Open::Room(cid, gid) => self.open_room(cid, gid, window, cx),
+            Open::Server(cid) => {
+                let key = self.nav.keys.get(i).cloned().unwrap_or_default();
+                if self.fly_expand(&key, Level::Server(cid.clone()), window) { cx.notify(); } else { self.go(Level::Server(cid), window, cx) }
+            }
+            Open::Room(cid, gid) => { self.fly_close(&cid, &gid); self.open_room(cid, gid, window, cx) }
             Open::Settings => self.go(Level::Settings, window, cx),
             Open::Admin(cid) => self.open_panel(crate::members::Panel::Admin(cid), window, cx),
         }

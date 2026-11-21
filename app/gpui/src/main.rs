@@ -35,6 +35,7 @@ mod media;
 mod playback;
 mod xfer;
 mod voice;
+mod flight;
 mod linen;
 mod members;
 mod onboard;
