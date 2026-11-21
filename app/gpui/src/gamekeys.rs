@@ -171,7 +171,7 @@ impl Mega {
         for (i, p) in picks.into_iter().enumerate() {
             let p2 = p.clone();
             chips = chips.child(div().id(SharedString::from(format!("gk-pick-{i}"))).relative().px(px(10.)).py(px(3.)).rounded_full().border_1().border_color(look::line()).cursor_pointer().font_family(look::F_UI).text_size(px(12.))
-                .child(p).child(hits.track(format!("gk-pick-{i}")))
+                .child(div().max_w(px(280.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(p)).child(hits.track(format!("gk-pick-{i}")))
                 .on_click(cx.listener(move |this, _, _, cx| { this.gk.d.add_program(&p2); cx.notify(); })));
         }
         let portal = d.portal;
@@ -188,7 +188,7 @@ impl Mega {
                 .on_click(cx.listener(|this, _, window, cx| this.rpc("game_keys_allow", json!({}), window, cx, |this, r, _, cx| { this.say(&match r { Ok(_) => "If macOS asked, switch mega on, then restart mega.".to_string(), Err(e) => e }, cx); })))))
             .when(d.portal_possible, |d| d.child(div().id("gk-portal").relative().flex().gap(px(10.)).items_start().cursor_pointer().font_family(look::F_UI).text_size(px(13.)).child(hits.track("gk-portal"))
                 .child(div().relative().mt(px(2.)).size(px(16.)).flex_none().rounded(px(4.)).border_1().border_color(look::line()).when(portal, |d| d.bg(look::paper())))
-                .child("Use system shortcuts (the desktop asks you once). Your game may stop receiving a key bound this way.")
+                .child(div().flex_1().min_w_0().child("Use system shortcuts (the desktop asks you once). Your game may stop receiving a key bound this way."))
                 .on_click(cx.listener(|this, _, _, cx| { this.gk.d.portal = !this.gk.d.portal; cx.notify(); }))))
             .children(g.error.clone().map(|e| div().id("gk-error").text_size(px(13.)).text_color(rgb(look::DANGER)).child(e)));
         let btn = |id: &'static str, label: &'static str, primary: bool| div().id(id).relative().h(px(34.)).px(px(18.)).flex().items_center().cursor_pointer().font_family(look::F_UI).text_size(px(14.)).font_weight(FontWeight::SEMIBOLD)
