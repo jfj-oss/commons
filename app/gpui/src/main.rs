@@ -29,6 +29,7 @@ mod popout;
 mod video;
 mod fonts;
 mod files;
+mod gamekeys;
 mod media;
 mod playback;
 mod xfer;

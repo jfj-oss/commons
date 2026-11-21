@@ -77,6 +77,8 @@ pub struct Mega {
     /// The owner's colour presets are showing in the open room's header.
     /// Checks only (`dmunread=N` step): pretend this many unread messages in every direct conversation, for the core reports none yet.
     pub fake_dm_unread: usize,
+    /// The game keys dialog (gamekeys.rs).
+    pub gk: crate::gamekeys::GameKeys,
     /// A direct conversation's unread messages when it was opened: the last few rows carry a small star until it is left.
     pub dm_marks: (String, usize),
     /// The first unread message of the open room and how many are new (the web's `S.firstNew`, `S.newCount`), and the unread count the room had when it was opened, until the messages come.
@@ -140,7 +142,7 @@ impl Mega {
         let (paint, paint_sub) = crate::paint::PaintUi::new(window, cx);
         subs.push(paint_sub);
         let mut this = Mega {
-            files: Default::default(), nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), fake_dm_unread: 0, dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx), msg: Default::default(), find, emoji,
+            files: Default::default(), nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), fake_dm_unread: 0, gk: crate::gamekeys::GameKeys::new(window, cx), dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx), msg: Default::default(), find, emoji,
             level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd: crate::backdrop::Bd::new(""), typing_ui: Default::default(), typing_at: Instant::now(), fake_hidden: false, holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),

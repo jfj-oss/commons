@@ -6088,6 +6088,7 @@ dependencies = [
  "blake2",
  "chrono",
  "commons-core",
+ "commons-gamekeys",
  "ed25519-dalek",
  "flate2",
  "futures",

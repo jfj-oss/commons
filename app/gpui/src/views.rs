@@ -347,6 +347,10 @@ impl Mega {
             .child(toggle("p-read", snap.read_receipts, "Read receipts", "set_read_receipts"))
             .child(toggle("p-pres", presence, "Show where I am on the cards", "presence"))
             .child(toggle("p-listen", snap.share_listening, "Share what I am listening to", "set_listening_sharing"))
+            .child(label("calls"))
+            .child(h_flex().gap_2().child(div().id("set-gamekeys").relative().px_3().py_1().cursor_pointer().child(sq::back(999., rgb(0x0b0a10))).child(sq::front(999., None, Some((1., look::line())), None)).child(div().relative().child("Game keys\u{2026}"))
+                .on_click(cx.listener(|this, _, window, cx| this.gk_open(window, cx)))))
+            .child(note("Mute yourself in mega while you talk to your game team."))
             .child(label("this device"))
             .child(note(&format!("Relay: {}", snap.relay)))
             .child(note(&format!("Account folder: {}", self.core.dir.display())))
@@ -604,7 +608,7 @@ impl Render for Mega {
                 let cropper = self.avatar_overlay(cx);
                 let lightbox = self.light_overlay(window, cx);
                 let save = self.save_overlay(cx);
-                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(lightbox).children(self.room_menu_view(cx))
+                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(lightbox).children(self.room_menu_view(cx)).children(self.gk_modal(window, cx))
             }
         }
     }

@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 commons-core = { path = "../../crates/core" }
+commons-gamekeys = { path = "../../crates/gamekeys" }
 serde_json = "1"
 # the updater (src/update.rs): the same download, archive and signature crates the core already uses
 ureq = "2"

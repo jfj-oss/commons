@@ -117,7 +117,10 @@ impl Mega {
             .child(self.setting("Voice", v_flex().gap(px(6.))
                 .child(sw("cs-echo", snap.echo_cancellation, "Echo cancellation", 0)).child(sw("cs-noise", snap.noise_suppression, "Noise suppression", 1)).child(sw("cs-agc", snap.auto_gain_control, "Automatic gain", 2))
                 .child(sw("cs-ptt", snap.push_to_talk, "Push to talk", 3))
-                .child(div().text_size(px(12.)).text_color(look::mute()).child(format!("Hold the {key_name} key while this window is focused, or the microphone button on the call card. {shortcuts}")))));
+                .child(div().text_size(px(12.)).text_color(look::mute()).child(format!("Hold the {key_name} key while this window is focused, or the microphone button on the call card. {shortcuts}")))))
+            .child(self.setting("Game keys", div().id("cs-gamekeys").relative().self_start().px(px(12.)).py(px(5.)).flex().items_center().cursor_pointer().font_family(look::F_UI).text_size(px(13.))
+                .child(sq::back(10., rgb(0x0b0a10))).child(sq::front(10., None, Some((1., look::line())), None)).child(div().relative().child("Game keys\u{2026}")).child(hits.track("cs-gamekeys"))
+                .on_click(cx.listener(|this, _, window, cx| { this.set_settings_open(false); this.gk_open(window, cx); }))));
         let panel = v_flex().id("call-settings-panel").relative().w(px(680.)).max_w_full().max_h(relative(0.88)).overflow_hidden().occlude()
             .child(sq::back(28., rgb(0x14131a))).child(sq::front(28., None, Some((1., look::line())), None)).on_click(|_, _, cx| cx.stop_propagation())
             .child(h_flex().relative().w_full().items_center().gap(px(10.)).px(px(22.)).py(px(12.)).border_b_1().border_color(look::line())
