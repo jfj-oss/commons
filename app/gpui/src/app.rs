@@ -88,6 +88,12 @@ pub struct Mega {
     pub reading: crate::reading::Ui,
     /// Selecting and copying message text (select.rs).
     pub sel: crate::select::Sel,
+    /// Reply, edit, the reaction picker, jumps and the older-messages window (msgact.rs).
+    pub msg: crate::msgact::MsgUi,
+    /// Searching messages (search.rs).
+    pub find: crate::search::SearchUi,
+    /// The emoji picker (emoji.rs).
+    pub emoji: crate::emoji::EmojiUi,
     /// The updater's state and cards (updateui.rs).
     pub upd: crate::updateui::UpdateUi,
     /// The card column of the home and community levels (cards.rs).
@@ -114,6 +120,8 @@ impl Mega {
         let set_name = cx.new(|cx| InputState::new(window, cx).placeholder("Your name"));
         let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 8).submit_on_enter(true).placeholder("Write a message"));
         let (mem, mem_subs) = crate::members::MembersUi::new(window, cx);
+        let (find, find_subs) = crate::search::SearchUi::new(window, cx);
+        let (emoji, emoji_subs) = crate::emoji::EmojiUi::new(window, cx, &core.dir);
         let mut subs = vec![
             cx.subscribe_in(&composer, window, |this: &mut Self, _, ev: &InputEvent, window, cx| match ev {
                 // Enter sends; Shift+Enter is a new line (the input inserts it itself and does not report it as a submit).
@@ -123,7 +131,7 @@ impl Mega {
             }),
             cx.subscribe_in(&pass, window, |this: &mut Self, _, ev: &InputEvent, window, cx| { if let InputEvent::PressEnter { .. } = ev { this.submit_sign_in(window, cx); } }),
         ];
-        subs.extend(mem_subs);
+        subs.extend(mem_subs); subs.extend(find_subs); subs.extend(emoji_subs);
         subs.push(cx.observe_window_activation(window, |this, window, cx| this.beat(window, cx)));
         let prefs = Prefs::load(&core.dir);
         let call = crate::callui::CallUi::new(prefs.deck_w, window, cx);
@@ -132,7 +140,7 @@ impl Mega {
         let (paint, paint_sub) = crate::paint::PaintUi::new(window, cx);
         subs.push(paint_sub);
         let mut this = Mega {
-            files: Default::default(), nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), fake_dm_unread: 0, dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx),
+            files: Default::default(), nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), fake_dm_unread: 0, dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx), msg: Default::default(), find, emoji,
             level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd: crate::backdrop::Bd::new(""), typing_ui: Default::default(), typing_at: Instant::now(), fake_hidden: false, holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
@@ -156,7 +164,7 @@ impl Mega {
         // Rings, what notifications ask of the window, rune in the call bar, the test port: a quarter-second clock.
         this._tasks.push(cx.spawn_in(window, async move |this, cx| loop {
             cx.background_executor().timer(Duration::from_millis(250)).await;
-            if this.update_in(cx, |this, window, cx| { this.ring_tick(window, cx); this.nav_focus_tick(window, cx); this.wall_tick(window, cx); this.paint_tick(window, cx); this.mem_tick(window, cx); this.rune_tick(window, cx); this.uitest_tick(window, cx); }).is_err() { break; }
+            if this.update_in(cx, |this, window, cx| { this.ring_tick(window, cx); this.nav_focus_tick(window, cx); this.wall_tick(window, cx); this.paint_tick(window, cx); this.mem_tick(window, cx); this.msg_tick(window, cx); this.search_tick(window, cx); this.rune_tick(window, cx); this.uitest_tick(window, cx); }).is_err() { break; }
         }));
         // The fields move at 20 frames a second on the cards and 10 behind a chat (25 while a ripple runs), as in mega.js;
         // not at all with the battery saver on, or while the window is not the active one.
@@ -330,13 +338,13 @@ impl Mega {
         let core = self.core.clone();
         let snap_if = self.snap_hash.clone();
         // nothing is read (or marked read) while the cards are showing
-        let room = self.gid.clone().filter(|_| self.level == Level::Chat).map(|gid| (gid, self.limit, self.win.hash.clone()));
+        let room = self.gid.clone().filter(|_| self.level == Level::Chat).map(|gid| (gid, self.limit, self.win.hash.clone(), self.msg.around.clone()));
         cx.spawn_in(window, async move |this, cx| {
             let out = core.clone().look(move |app| {
                 // The core answers "same" to the hash of what this window already holds, which is nearly every time.
                 let snap = app.call("snapshot", if snap_if.is_empty() { json!({}) } else { json!({"if": snap_if}) });
-                let msgs = room.map(|(gid, limit, have)| {
-                    let mut a = json!({"gid": gid, "limit": limit, "around": "", "delta": 1});
+                let msgs = room.map(|(gid, limit, have, around)| {
+                    let mut a = json!({"gid": gid, "limit": limit, "around": around, "delta": 1});
                     if !have.is_empty() { a["if"] = have.into(); }
                     (gid, app.call("messages", a))
                 });
@@ -383,18 +391,46 @@ impl Mega {
                 Ok(Change::InPlace { changed, appended }) => {
                     // a changed row is measured again; new rows are added at the end, and a list that was at the bottom stays there
                     for i in changed { if let Some(m) = self.win.msgs.get(i) { self.reading.full.remove(&m.id); self.reading.scaled.remove(&m.id); } self.list.splice(i..i + 1, 1); if i + 1 < was { self.list.splice(i + 1..i + 2, 1); } }
-                    if appended > 0 { if was > 0 { self.list.splice(was - 1..was, 1); } self.list.splice(was..was, appended); self.stir(appended); }
+                    if appended > 0 { if was > 0 { self.list.splice(was - 1..was, 1); } self.list.splice(was..was, appended); self.stir(appended); if !crate::reading::at_end(self.reading.remaining) { self.msg.below += appended; } }
                     cx.notify();
                 }
                 Ok(Change::Reset) => {
                     self.list.reset(self.win.msgs.len());
+                    self.after_reset();
                     if was == 0 && !self.win.msgs.is_empty() { bench::mark_with("room_loaded", json!({"rows": self.win.msgs.len()})); self.auto.room_loaded = true; }
                     cx.notify();
                 }
                 Err(()) => { self.win.hash.clear(); self.again = true; }
             }
+            if std::mem::take(&mut self.msg.say_gone) { self.say("That message is not on this device.", cx); }
             self.first_new();
             self.mark_read(window, cx);
+        }
+    }
+
+    /// A window that was replaced (older messages added before it, or the window around a jumped-to message): the reader's place comes back,
+    /// and a message that was asked for is lit (msgact.rs).
+    fn after_reset(&mut self) {
+        if let Some(want) = self.msg.want.clone().filter(|w| self.win.msgs.iter().any(|m| &m.id == w)) {
+            // the window holds it: the limit grows to hold the whole window from now on (app.js `S.limit = max(S.limit, length)`)
+            self.limit = self.limit.max(self.win.msgs.len());
+            self.msg.around.clear();
+            if let Some(ix) = self.win.msgs.iter().position(|m| m.id == want) {
+                self.list.scroll_to(ListOffset { item_ix: ix.saturating_sub(1), offset_in_item: px(0.) });
+                self.msg.flash = Some((want.clone(), self.now_secs()));
+                self.msg.keep = Some((want, px(0.)));
+                self.msg.want = None;
+            }
+            return;
+        }
+        if self.msg.want.is_some() && !self.msg.around.is_empty() {
+            // asked for, and the core's window does not hold it
+            self.msg.around.clear(); self.msg.want = None;
+            self.msg.say_gone = true;
+            return;
+        }
+        if let Some((id, off)) = self.msg.keep.take() {
+            if let Some(ix) = self.win.msgs.iter().position(|m| m.id == id) { self.list.scroll_to(ListOffset { item_ix: ix, offset_in_item: off }); }
         }
     }
 
@@ -452,6 +488,9 @@ impl Mega {
         self.cid = Some(cid);
         self.gid = Some(gid.clone());
         self.win = MsgWindow { key: gid.clone(), ..Default::default() };
+        if self.msg.edit.is_some() { self.composer.update(cx, |c, cx| c.set_value("", window, cx)); }
+        self.msg = Default::default();
+        self.limit = std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200);
         self.list = ListState::new(0, ListAlignment::Bottom, px(600.));
         // the reading zone follows the scroll: the rows are drawn again at every move
         let me = cx.entity();
@@ -474,11 +513,22 @@ impl Mega {
         if text.trim().is_empty() { return; }
         self.composer.update(cx, |c, cx| c.set_value("", window, cx));
         self.typing_sent = None;
-        self.rpc("send_text", json!({"gid": gid, "text": text.trim_end()}), window, cx, |this, r, window, cx| {
-            if let Err(e) = r { this.error = Some(e.into()); cx.notify(); }
-            this.list.scroll_to_end();
+        let (edit, reply) = (self.msg.edit.take(), self.msg.reply.take());
+        let (method, args) = match &edit {
+            Some(id) => ("edit", json!({"gid": gid, "id": id, "text": text.trim_end()})),
+            None => ("send_text", json!({"gid": gid, "text": text.trim_end(), "reply": reply.as_ref().map(|r| r.id.clone())})),
+        };
+        let was = (edit.clone(), reply.clone(), text.clone());
+        self.rpc(method, args, window, cx, move |this, r, window, cx| {
+            // a message that could not be sent comes back into the box (app.js `send`), with its reply or edit
+            if let Err(e) = r {
+                this.say(e, cx);
+                if this.composer.read(cx).value().is_empty() { this.msg.edit = was.0; this.msg.reply = was.1; let t = was.2; this.composer.update(cx, |c, cx| c.set_value(t, window, cx)); }
+            }
+            if edit.is_none() { this.list.scroll_to_end(); }
             this.tick(window, cx);
         });
+        cx.notify();
     }
     fn typing(&mut self, cx: &mut Context<Self>) {
         let Some(gid) = self.gid.clone() else { return };

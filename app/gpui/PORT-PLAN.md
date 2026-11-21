@@ -5,7 +5,7 @@ the web UI in `app/ui`. Both UIs talk to the same core through the same JSON API
 nothing here may change what the core does. Where the GPUI app needs something the core does not offer, the plan is
 to add it to the core for everyone, never to fork behaviour.
 
-Status words: **done** (works in `mega-gpui` today, checked in a headless run), **next** (plain work, no unknowns),
+Status as of 2026-11-20 (checked against the code in `app/gpui/src`, not against what was planned). Status words: **done** (works in `mega-gpui` today, checked in a headless run), **next** (plain work, no unknowns),
 **hard** (needs a component GPUI does not have, or real design), **web-only** (stays in the web UI; the GPUI app does
 not need it or hands off to it).
 
@@ -28,21 +28,21 @@ making" below, but it is not needed for the port.
 | Recovery key shown and "saved" (`recovery_key`, `recovery_saved`) | next | |
 | Lock | done | |
 | Relay moved / relay secret (`set_relay`, `set_relay_invite`) | next | |
-| Single instance (second launch raises the window) | next | Tauri plugin today; here a lock file + a local socket |
+| Single instance (second launch raises the window) | in progress (branch gpui-notify) | Tauri plugin today; here a lock file + a local socket |
 
 ## 2. Shell and navigation (mega.js)
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Home: community cards | done | a scrolling column; the web UI's carousel with a focused, enlarged card is **next** |
+| Home: community cards | done | cards.rs + nav.rs: the web's one column with a focused, enlarged card, the others shrink and fade, wheel notches and touchpad scroll snap |
 | Community level: room cards | done | two to a row |
 | Chat level: colour dots on the left rail, the open room as a pill, unread rings | done | |
-| Dots open into cards on scroll ("open rail") | next | |
+| Dots open into cards on scroll ("open rail") | done | rail.rs |
 | Card flight between levels (the card flies and becomes the page) | hard | GPUI has animation and springs but no shared-element transitions; done by hand with an overlay element |
-| Squircle corners | next | rounded corners today (what the web UI shows in browsers without `corner-shape`); a true superellipse is a `paint_path` |
-| "You" card, options room, "what's new" card (mega-new.js) | next | |
+| Squircle corners | done | squircle.rs: a true superellipse painted as a path (cards, the composer slip, reaction pills, panels) |
+| "You" card, options room, "what's new" card (mega-new.js) | partly | the "what's new" card (cards.rs) and the options room card (paint.rs knows it) are there; the "You" card is settings |
 | Tour (mega-tour.js) | next | |
-| Command palette / search across rooms (`search`) | next | |
+| Command palette / search across rooms (`search`) | see section 4 | built with the message search |
 | Window title with unread count | done | |
 | Phone gestures (mega-touch.js) | web-only | |
 
@@ -54,12 +54,12 @@ making" below, but it is not needed for the port.
 | Faces: FK Raster Roman Sharp / Rounded, FK Raster Grotesk Rounded, Bellefair, Figtree, IBM Plex Mono | done | fonts.rs; see "Fonts" below |
 | ASCII fields on cards: all 17 patterns, three tints, flowing around the words | done | ascii.rs: one glyph sprite per cell from GPUI's glyph atlas (instanced quads), 20 fps |
 | Room backdrop: dim field behind the chat, heat from activity, ripples on new messages and now and then | done | flows around every message, the title and the composer; 10 fps, 25 while a ripple runs |
-| Owner's look per room: pattern, dim level, backdrop colours (`set_look`, style document `looks`) | next | the data is in `snapshot`; the chooser UI is the work |
-| Colour picker for owners (`set_style`) | next | gpui-component has a colour picker |
-| Shared ASCII wall (mega-wall.js; `wall_get`, `wall_draw`, `wall_snapshot`, `set_wall`) | hard | drawing with the pointer onto the cell grid, live strokes over `live_send`, obstacle masks both ways. The core already merges and validates; the pen, pacing and toolbar are ~450 lines of JS to port |
-| ASCII message arrival (the text decodes from glyphs for 340 ms) | next | per-row animation on first paint |
-| Message "landing" spring, centre focus while reading back | next | |
-| Typing mascot over the composer | next | the words are there; the mascot is a small path animation |
+| Owner's look per room: pattern, dim level, backdrop colours (`set_look`, style document `looks`) | done | paint.rs (card and chat tiles, dim, backdrop colours, the Oracle's two switches) |
+| Colour picker for owners (`set_style`) | done | paint.rs: square, hue strip, hex box, presets, per card and per room, sent when the pointer is let go |
+| Shared ASCII wall (mega-wall.js; `wall_get`, `wall_draw`, `wall_snapshot`, `set_wall`) | done (wall.rs, tools/gpui-draw-e2e.mjs) | drawing with the pointer onto the cell grid, live strokes over `live_send`, obstacle masks both ways. The core already merges and validates; the pen, pacing and toolbar are ~450 lines of JS to port |
+| ASCII message arrival (the text decodes from glyphs for 340 ms) | done | arrive.rs, with thrown reactions and size tiers |
+| Message "landing" spring, centre focus while reading back | partly | the reading zone (reading.rs: rows shrink and fade away from the middle) is done; the landing spring is not |
+| Typing mascot over the composer | done | typing.rs |
 | Bloom under the pointer on a focused card | next | |
 | Music-reactive backdrop (mega-music.js) | hard | needs the call's audio (section 9) |
 | Battery saver holds everything still | done | |
@@ -74,20 +74,20 @@ making" below, but it is not needed for the port.
 | Typing indicator, sent and shown | done | |
 | Mark read with the `seen` flag; nothing read while cards show | done | |
 | Read receipts shown ("read by") | done | plain text; faces are next |
-| Reactions shown | done | adding one needs the emoji picker |
-| Reply quote shown | done | replying (swipe / button) is next |
+| Reactions shown, added and taken back | done | msgact.rs: chips as the web has them (yours filled with the room's bright colour, names on hover), the smile chip after them, the quick eight from a row's tools or the menu, and the whole set through "+" (emoji.rs). Checked both ways by tools/gpui-msg-e2e.mjs |
+| Reply quote shown, replying, jumping to the original | done | the quote is a button (hover: its line takes the room's colour) that scrolls to and lights the message; a source older than the window is asked for with `around`; reply bar over the composer with a cancel button and Escape |
 | Edited / deleted / pending / failed marks | done | |
-| Load older (limit grows by 200) and jump to a message (`around`) | next | keep the scroll position across a window that slides |
-| Day separators, "new" line, jump-to-bottom with count | next | |
-| Edit, delete, reply, react from a row (hover actions, context menu) | next | gpui-component has menus and popovers |
+| Load older (limit grows by 200) and jump to a message (`around`) | done | "Show earlier messages" above the first row, the reader's place kept (the message at the top of the view stays at the same offset); `around` for a quote or a search hit that is not held; the limit goes back to 200 on opening a room. Checked in e2e (230 messages, 200 then 400) |
+| Day separators, "new" line, jump-to-bottom with count | done | day lines and the "N new" line were there; the jump button now counts messages that arrived while reading back ("3 new", filled with the room's colour) |
+| Edit, delete, reply, react from a row (hover actions, context menu) | done | msgact.rs: four tools on a row while the pointer is over it (reply, react, edit own text, delete own or any as admin/owner; `file_delete` for a large file), right-click menu (quick reactions on top, Reply, Copy, Copy message, Edit, Delete, Select all; on pictures and files too), Up in an empty box edits your last message, Escape cancels. The core refuses what a role may not do; the buttons follow its rules |
 | **Selecting and copying message text** | done (`select.rs`) | Own implementation over the rows' `StyledText` layouts (gpui-component's selectable text cannot span rows of the list): drag within and across rows, double-click word, triple-click message, Ctrl+C / Ctrl+A, right-click menu (Copy, Copy message, Select all), edge autoscroll; the reading zone keeps the hovered and selected rows whole. Checked with real pointer events by `tools/gpui-select-e2e.mjs` |
-| Links (open with `open_link`, which checks them), mentions highlighted, mention counts | next | styled runs in a row; the checks stay in the core |
-| Markdown-ish formatting, code blocks | next | gpui-component renders Markdown natively |
-| Big-emoji / message size steps (`data-mz`) | next | |
-| Emoji picker | hard | none ready-made; a searchable virtual grid over an emoji table. Colour emoji render through the system font |
+| Links (open with `open_link`, which checks them), mentions highlighted | done | rich.rs + views.rs: the page's own rules (app.js `fmt`, `linkify`): trailing punctuation off an address, @Name and @FirstName of the room's people (members asked every 4 s), yours filled; a click opens through the core and copies the address when no browser starts. Mention rows carry the web's gradient and bar; mention counts on the rail and cards are not built |
+| Markdown-ish formatting | done | only what the page has: `**bold**`, `*italic*`, inline `code` (the page has no code blocks). The marks are removed and selection and copying work on the drawn words, as a browser's do |
+| Big-emoji / message size steps (`data-mz`) | done | arrive.rs `size_tier` (by length, as mega.js has it) |
+| Emoji picker | done | emoji.rs: search by Unicode name, recent (kept in gpui-emoji-recent.json), every group in a scrolling list of rows of eight, colour emoji from the system font; for a reaction ("+" after the quick eight) and for the composer (smile button). 1,386 single-codepoint emoji (emoji_table.rs, from the Unicode names and Noto Color Emoji's map); sequences (skin tones, flags, families) are not in it |
 | Emoji, CJK, right-to-left | done / check | colour emoji and CJK render (checked); RTL and complex scripts go through the system shaper, unverified |
 | Chat density per room (mega-new.js) | next | |
-| Search in a room | next | |
+| Search in a room and across rooms | done | search.rs: a "search" chip in the room's header, the page's 220 ms pause, results as the page lists them (community / room, who, words with the match marked), "this room" narrows them, a click opens the room and goes to the message |
 
 ## 5. Files, pictures, voice clips
 
@@ -108,10 +108,10 @@ making" below, but it is not needed for the port.
 | --- | --- | --- |
 | People list on home (one-to-one conversations from `snapshot.direct`), open and write | done | |
 | Start a one-to-one (`direct_call`), refuse a person (`direct_refuse`) | next | |
-| Members panel with roles, verification, safety numbers, devices (`members`, `safety`, `set_verified`, `devices`, `revoke_device`) | next | |
+| Members panel with roles, verification, safety numbers, devices (`members`, `safety`, `set_verified`, `devices`, `revoke_device`) | done | members.rs (members, roles, person card, safety number, verification; tools/gpui-members-e2e.mjs). The devices list is settings and is not built |
 | Live presence dots on cards, sent and received, in the web UI's wire format | done | checked both ways against a second account |
-| Who is in a call, on voice cards (`call_presence`) | done | names; speaking state is next |
-| "Listening to" status and listen-along (mega-listen.js; `listen_*`, `spotify_*`) | next | the core does the work; this is rows and buttons |
+| Who is in a call, on voice cards (`call_presence`) | done | names (presence.rs) |
+| "Listening to" status and listen-along (mega-listen.js; `listen_*`, `spotify_*`) | partly | the status shows on the people list and the rune bar (runebar.rs) has the call's listen-along; the standalone rows are not built |
 
 ## 7. Notifications
 
@@ -120,10 +120,10 @@ making" below, but it is not needed for the port.
 | System notifications for messages while the window is not looked at | done | the core's notifier and `NativeSink`, exactly as in the Tauri app; this app sends the heartbeat (`notify_beat`) with whether its window is active |
 | Mode (all / mentions / off) and "show text" | done | settings |
 | Per-room mute and mentions-only (`notify_room`) | next | a menu on the room |
-| Click on a notification opens the room | next | `NativeSink` takes a launcher path; needs the single-instance socket |
+| Click on a notification opens the room | in progress (branch gpui-notify) | the notification service with quick reply is in notifier.rs |
 | Sound (the two-note chime) | next | a 0.6 s synthesised chime through `cpal`; honours the sound setting. Not built: the brief forbids audible sound in tests |
 | Taskbar attention on a mention | next | |
-| Rings for voice rooms and direct calls (mega-ring.js; `ring_poll`, `ring_send`, `ring_end`) | next | shows and sounds; joining is section 9 |
+| Rings for voice rooms and direct calls (mega-ring.js; `ring_poll`, `ring_send`, `ring_end`) | done | ringui.rs + calls/ring.rs, tools/gpui-ring-e2e.mjs |
 
 ## 8. Settings and admin
 
@@ -136,12 +136,12 @@ making" below, but it is not needed for the port.
 | Reading size, sound, download folder, rune address | next | |
 | Devices and recovery, activity log (`notices`), history transfer (`history_*`) | next | |
 | Game keys: per-game push-to-mute (`game_keys_*`, `running_programs`) | next | the service is in the core (commons-gamekeys); needs calls to matter |
-| Server settings for owners and admins (mega-admin.js): rename, rooms, roles, kick, unban, invites, transfer | next | forms over existing core calls |
-| Create community, create room, invites by link and by password (mega-invite.js; QR) | next | |
-| Join by link or password, cancel a join | next | |
-| Updates (update-ui.js, `app/src-tauri/src/update.rs`) | hard | the Tauri updater plugin does download, signature check and restart today. The signature check is already in the core (`update.rs`, minisign); a native updater for an AppImage/tarball and a macOS bundle has to be written and tested. Until then: the release script ships it and the app only says "a newer version exists" |
+| Server settings for owners and admins (mega-admin.js): rename, rooms, roles, kick, unban, invites, transfer | done | members.rs (the owner's panel), checked by tools/gpui-members-e2e.mjs |
+| Create community, create room, invites by link and by password (mega-invite.js; QR) | done | members.rs (the QR is not drawn) |
+| Join by link or password, cancel a join | done | members.rs; an invite link on the command line is joined at start |
+| Updates (update-ui.js, `app/src-tauri/src/update.rs`) | done (update.rs, updateui.rs: what's new card, tools/gpui-update-test.sh) | the Tauri updater plugin does download, signature check and restart today. The signature check is already in the core (`update.rs`, minisign); a native updater for an AppImage/tarball and a macOS bundle has to be written and tested. Until then: the release script ships it and the app only says "a newer version exists" |
 
-## 9. Calls and screen share (design; nothing built)
+## 9. Calls and screen share (built; CALLS-PLAN.md has the state, this section is the original design)
 
 ### Where things stand today
 
@@ -254,7 +254,7 @@ Total for calls that match 0.3.11 on Linux: **about 5-8 weeks**; macOS adds 1-2.
 (the SDK downloads prebuilt binaries) but the binary grows by roughly 30-50 MB and the build needs the prebuilt
 archive for each target.
 
-## 10. Packaging and release (nothing done; `mega-gpui` is in no release script)
+## 10. Packaging and release (`mega-gpui` is in no release script; the native updater, update.rs, exists)
 
 | Item | Status | Notes |
 | --- | --- | --- |
