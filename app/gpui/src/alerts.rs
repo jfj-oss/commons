@@ -319,7 +319,7 @@ mod tests {
     fn s(rooms: Value) -> Value { json!({"mode": "all", "show_text": false, "rooms": rooms}) }
     fn unread(l: &[(&str, u64)]) -> HashMap<String, u64> { l.iter().map(|(g, n)| (g.to_string(), *n)).collect() }
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn a_mute_silences_everything_and_mentions_only_lets_the_named_through() {
         let st = s(json!({"m": {"kind": "muted", "until": null}, "t": {"kind": "muted", "until": 150.}, "o": {"kind": "mentions"}}));
         assert!(!sound_ok(&st, "m", false, 100.) && !sound_ok(&st, "m", true, 100.));
@@ -330,7 +330,7 @@ mod tests {
         assert_eq!((mark(&st, "m", 1.), mark(&st, "o", 1.), mark(&st, "free", 1.), mark(&st, "t", 200.)), (Some("muted"), Some("mentions only"), None, None));
     }
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn the_newest_unread_messages_are_searched_for_mentions_and_replies() {
         let list = vec![
             json!({"id": "1", "text": "hello", "mine": true}),
@@ -341,14 +341,14 @@ mod tests {
             json!({"id": "6", "text": "@Nat gone", "mine": false, "deleted": true}),
             json!({"id": "7", "text": "Ben joined @Nat", "kind": "member"}),
         ];
-        assert_eq!(mention_count(&list, 3, "Nat"), 1, "only the reply to my message is among the newest three (6 and 7 do not count)");
-        assert_eq!(mention_count(&list, 4, "Nat"), 1);
-        assert_eq!(mention_count(&list, 5, "Nat"), 2, "now the mention in 3 is inside the window");
+        assert_eq!(mention_count(&list, 2, "Nat"), 1, "the newest two are 5 (a reply to me) and 4");
+        assert_eq!(mention_count(&list, 3, "Nat"), 2, "...and 3 mentions me (6 and 7 never count)");
+        assert_eq!(mention_count(&list, 4, "Nat"), 3, "...and 2 too");
         assert_eq!(mention_count(&list, 0, "Nat"), 0);
-        assert_eq!(mention_count(&list, 9, "Nat"), 3, "the oldest unread one counts too");
+        assert_eq!(mention_count(&list, 9, "Nat"), 3, "my own message never counts");
     }
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn a_chime_is_due_for_a_new_message_somewhere_you_are_not_looking() {
         let mut t = Tracker::default();
         let quiet = |g: &str| g == "q";
@@ -365,7 +365,7 @@ mod tests {
         assert_eq!(t.fresh(&unread(&[("a", 0), ("b", 0), ("q", 1)]), None, true, quiet), None);
     }
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn mention_counts_are_made_once_per_change_and_a_rise_is_news() {
         let mut t = Tracker::default();
         let now = unread(&[("a", 2), ("b", 0)]);
