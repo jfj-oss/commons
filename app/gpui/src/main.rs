@@ -131,7 +131,8 @@ fn main() {
             window_min_size: Some(size(px(mw), px(mh))),
             // macOS keeps its own lights, transparent bar, drawn over our row; Linux draws everything itself
             titlebar: Some(TitlebarOptions { title: Some("mega".into()), appears_transparent: true, traffic_light_position: Some(point(px(14.), px(12.))) }),
-            window_decorations: if cfg!(target_os = "linux") { Some(WindowDecorations::Client) } else { None },
+            // MEGA_GPUI_SERVER_DECOR=1: let the compositor draw the frame (for comparing)
+            window_decorations: if cfg!(target_os = "linux") && std::env::var_os("MEGA_GPUI_SERVER_DECOR").is_none() { Some(WindowDecorations::Client) } else { None },
             app_owns_titlebar_drag: true,
             app_id: Some("app.commons.chat.gpui".into()),
             ..Default::default()

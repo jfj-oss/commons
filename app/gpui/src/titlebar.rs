@@ -2,8 +2,8 @@
 //!
 //! Layout, from the window's edge inward: the compositor-facing shadow margin and the 1 px light edge (both drawn by gpui_kit's
 //! Root, `window_border`; the theme's `window_radius` and `window_border` colour style them, see `look::apply_theme`), then the dark
-//! BAND (4 px) and, inside it, the content with ROUNDED inner corners. gpui clips to rectangles only, so the four inner corners are
-//! masks painted in the band's colour over the content. Maximized or tiled: no margin, edge, band or rounding (Root draws none).
+//! BAND (4 px) and, inside it, the content with ROUNDED inner corners. gpui clips to rectangles only, so the band is painted a second
+//! time over the content as a rounded border whose hole has the inner radius. Maximized or tiled: no margin, edge, band or rounding (Root draws none).
 //! The slim top row (`ROW`) holds the glossy traffic lights on the left and is the drag handle of the window. macOS keeps its native
 //! lights (appears_transparent), the row only leaves room for them.
 use crate::app::Mega;
@@ -34,8 +34,10 @@ pub fn edge_colour(active: bool) -> Hsla { hsla(0., 0., 1., if active { 0.15 } e
 /// Sets the theme's edge colour (the 1 px line Root draws) for the window's focus state.
 pub fn set_edge(active: bool, cx: &mut App) {
     use gpui_kit::component::Theme;
-    // Root paints its surface with the theme's background, and under the band's anti-aliased rim it would show as a dark ring: it is the band's colour
-    Theme::update(cx, |t| { t.window_border = edge_colour(active); t.tokens.background = band_colour(active).into(); });
+    // Root paints its surface (inside the edge line, at a radius that is one too round for the box) with the theme's background: left
+    // opaque it covers pieces of the edge arc. mega's own frame covers the whole window, so the surface is transparent.
+    let _ = active;
+    Theme::update(cx, |t| { t.window_border = edge_colour(active); t.tokens.background = transparent_black().into(); });
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -160,27 +162,6 @@ fn row(m: Mode, window: &Window, view: &Entity<Mega>) -> AnyElement {
     r.into_any_element()
 }
 
-/// One inner corner's mask: the square corner minus the quarter disc, painted in the band's colour. `which`: 0 tl, 1 tr, 2 bl, 3 br.
-fn mask(which: usize, r: f32, colour: Hsla) -> impl IntoElement {
-    let mut d = div().absolute().size(px(r)).child(canvas(|_, _, _| {}, move |b, _, window, _| {
-        let (dx, dy) = [(-1f32, -1f32), (1., -1.), (-1., 1.), (1., 1.)][which];
-        // circle centre, local to the r x r box
-        let (cx, cy) = (if dx < 0. { r } else { 0. }, if dy < 0. { r } else { 0. });
-        let at = |x: f32, y: f32| point(b.origin.x + px(x), b.origin.y + px(y));
-        let mut pb = PathBuilder::fill();
-        pb.move_to(at(cx + dx * r, cy + dy * r));
-        const N: usize = 28;
-        for i in 0..=N {
-            let t = std::f32::consts::FRAC_PI_2 * i as f32 / N as f32;
-            pb.line_to(at(cx + dx * r * t.cos(), cy + dy * r * t.sin()));
-        }
-        pb.close();
-        if let Ok(p) = pb.build() { window.paint_path(p, colour); }
-    }).size_full());
-    d = match which { 0 => d.left(px(BAND)).top(px(BAND)), 1 => d.right(px(BAND)).top(px(BAND)), 2 => d.left(px(BAND)).bottom(px(BAND)), _ => d.right(px(BAND)).bottom(px(BAND)) };
-    d
-}
-
 /// Wraps the page: the band, the rounded content and the top row. `page` is what used to fill the window.
 pub fn frame(window: &Window, page: AnyElement, view: Entity<Mega>) -> AnyElement {
     let m = mode(window);
@@ -194,7 +175,9 @@ pub fn frame(window: &Window, page: AnyElement, view: Entity<Mega>) -> AnyElemen
     let mut f = div().id("tb-frame").relative().flex().flex_col().size_full().bg(if framed { band } else { rgb(look::VOID).into() })
         .when(framed, |d| d.rounded(px(R_OUT)).p(px(BAND)))
         .child(inner);
-    if framed { for w in 0..4 { f = f.child(mask(w, R_IN, band)); } }
+    // the band again, on top of the content, as one rounded border: its outer radius is R_OUT and the border BAND wide, so the hole inside has
+    // radius R_IN: the content's four corners are rounded without clipping anything (gpui clips to rectangles only). One quad, no path.
+    if framed { f = f.child(div().absolute().top_0().left_0().size_full().rounded(px(R_OUT)).border(px(BAND)).border_color(band)); }
     f.into_any_element()
 }
 
