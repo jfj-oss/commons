@@ -329,7 +329,7 @@ impl Mega {
     pub fn render_pairing(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let p = self.ob.pair.clone().unwrap_or_default();
         let code = p.code.clone();
-        let cell = 5.0f32;
+        let cell = if p.dim > 0. { 260. / p.dim } else { 1. };
         let side = p.dim * cell;
         let squares = p.squares.clone();
         let qr = canvas(|_, _, _| (), move |b, _, window, _| {
