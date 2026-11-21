@@ -56,6 +56,7 @@ mod rich;
 mod search;
 mod emoji;
 mod emoji_table;
+mod emoji_seq;
 mod look;
 mod paint;
 mod wall;

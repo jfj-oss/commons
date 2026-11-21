@@ -1,6 +1,6 @@
 //! The emoji the picker offers: every single-codepoint emoji the system colour font draws, with its Unicode name for searching and a group.
-//! Generated from the Unicode names and Noto Color Emoji's character map (see PORT-PLAN.md); sequences (skin tones, flags, families) are not in it.
-pub const GROUPS: [&str; 8] = ["Smileys", "People", "Nature", "Food", "Activity", "Travel", "Objects", "Symbols"];
+//! Generated from the Unicode names and Noto Color Emoji's character map (see PORT-PLAN.md); sequences (skin tones, flags, families) are in emoji_seq.rs.
+pub const GROUPS: [&str; 9] = ["Smileys", "People", "Nature", "Food", "Activity", "Travel", "Objects", "Symbols", "Flags"];
 pub const EMOJI: &[(u8, &str, &str)] = &[
     (0, "😀", "grinning face"),
     (0, "😁", "grinning face with smiling eyes"),

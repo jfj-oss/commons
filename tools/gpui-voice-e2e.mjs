@@ -173,6 +173,29 @@ try {
   check('V16 the window plays the web clip', !timedOut(wp), wp);
   await W.cmd('files_play', { name: webRowName });
 
+  // ---------------------------------------------------------------- emoji sequences: picker (tones, flags, families) and rendering
+  const E = () => W.cmd('emoji');
+  const FAMILY = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}', JP = '\u{1F1EF}\u{1F1F5}', THUMB_MID = '\u{1F44D}\u{1F3FD}', TECH_DARK = '\u{1F469}\u{1F3FF}\u200D\u{1F4BB}';
+  await W.cmd('emoji_do', { what: 'open' }); await sleep(600);
+  await W.cmd('emoji_do', { what: 'query', q: 'flag japan' }); await sleep(400);
+  check('E1 searching "flag japan" finds the flag', (await E()).first === JP, (await E()).first);
+  await W.cmd('emoji_do', { what: 'query', q: 'family man woman girl' }); await sleep(400);
+  check('E2 searching a family finds the ZWJ sequence', (await E()).first === FAMILY, (await E()).first);
+  await W.cmd('emoji_do', { what: 'query', q: '' }); await W.cmd('emoji_do', { what: 'tone', n: 3 }); await sleep(500);
+  await shot('30-picker-tone'); 
+  await W.cmd('emoji_do', { what: 'query', q: 'thumbs up' }); await sleep(400);
+  check('E3 with tone 3 chosen, "thumbs up" shows the medium tone', (await E()).first === THUMB_MID && (await E()).tone === 3, (await E()).first);
+  await W.cmd('emoji_do', { what: 'query', q: 'woman technologist' }); await W.cmd('emoji_do', { what: 'tone', n: 5 }); await sleep(400);
+  check('E4 a profession sequence takes the tone inside the ZWJ sequence', (await E()).first === TECH_DARK, (await E()).first);
+  await W.cmd('emoji_do', { what: 'tone', n: 0 }); await W.cmd('emoji_do', { what: 'query', q: 'flag' }); await sleep(500); await shot('31-picker-flags');
+  await W.cmd('emoji_do', { what: 'close' });
+  const msg = `flags ${JP} family ${FAMILY} thumbs ${THUMB_MID} tech ${TECH_DARK}`;
+  await W.core('send_text', { gid: text.gid, text: msg });
+  await W.cmd('scroll', { end: true }); await sleep(1500); await shot('32-emoji-native');
+  await webScroll(B); await sleep(1000); await wshot(B, '32-emoji-web');
+  const bGot = (await msgsOf(B)).find(m => m.text === msg);
+  check('E5 the web client receives the sequences intact (code points identical)', !!bGot);
+
   res.finalToasts = (await D()).toasts;
   await W.cmd('quit').catch(() => { });
 } catch (e) { res.error = String(e.stack || e); console.log('ERROR', res.error); failed++; }

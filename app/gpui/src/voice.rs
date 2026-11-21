@@ -258,7 +258,7 @@ impl Mega {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{clock, to_peaks, wav};
     #[test] fn peaks_scale_the_loudest_to_255() { let s: Vec<f32> = (0..640).map(|i| if i == 100 { 0.5 } else { 0.1 }).collect(); let p = to_peaks(&s); assert_eq!(p.len(), 64); assert_eq!(*p.iter().max().unwrap(), 255); }
     #[test] fn silence_is_all_zero_bars() { assert_eq!(to_peaks(&[]), vec![0; 64]); }
     #[test] fn the_wav_header_says_16k_mono() { let w = wav(&[1, 2, 3]); assert_eq!(&w[..4], b"RIFF"); assert_eq!(w.len(), 44 + 6); assert_eq!(u32::from_le_bytes([w[24], w[25], w[26], w[27]]), 16000); }
