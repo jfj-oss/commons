@@ -419,7 +419,11 @@ impl Mega {
             .when_some(f, |d, f| d.child(div().absolute().inset_0().child(ascii::field(f))))
             .when(!marks_cells.is_empty(), |d| d.child(crate::wall::marks(crate::wall::Marks { cells: marks_cells.clone(), grid: wall_grid, ink: look::wall_ink(&it.duo), holes: Rc::new(vec![]), live: Some((live.clone(), nav::q(cell.0 * s), true)) })))
             .child(v_flex().absolute().inset_0().p(px(pad)).gap(px(12. * s)).child(top).child(mid).child(bottom));
+        let cur = self.nav.scroll.cur;
+        let tour_hits = self.tour.hits.clone();
         div().id(("card", i)).absolute().left(px(g.x)).top(px(g.y)).w(px(w)).h(px(h)).cursor_pointer()
+            .when(self.tour.open && i == cur, |d| d.child(tour_hits.track("tour-card")))
+            .when(self.tour.open && i == cur + 1, |d| d.child(tour_hits.track("tour-card2")))
             .child(slab)
             .child(sq::front(r, Some(rgb(look::VOID).into()), None, Some(spot)))
             .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {

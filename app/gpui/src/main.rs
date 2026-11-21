@@ -43,6 +43,7 @@ mod ringui;
 mod runebar;
 mod uitest;
 mod prefs;
+mod tour;
 mod update;
 mod updateui;
 mod presence;

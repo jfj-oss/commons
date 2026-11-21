@@ -47,7 +47,7 @@ impl Mega {
                 extra.push(chip("b-paint", "colours").on_click(cx.listener(|this, _, window, cx| this.paint_toggle(window, cx))).into_any_element());
             }
             if self.wall.key.as_ref().is_some_and(|k| self.wall_drawable(k)) {
-                extra.push(chip("b-draw", if self.wall.on { "drawing" } else { "draw" }).on_click(cx.listener(|this, _, window, cx| this.wall_toggle(window, cx))).into_any_element());
+                extra.push(chip("b-draw", if self.wall.on { "drawing" } else { "draw" }).relative().child(self.tour.hits.track("tour-draw")).on_click(cx.listener(|this, _, window, cx| this.wall_toggle(window, cx))).into_any_element());
             }
         }
         extra.extend(match self.level.clone() { Level::Server(cid) => self.community_buttons(&cid, cx), Level::Home => self.home_buttons(cx), _ => vec![] });
@@ -354,6 +354,10 @@ impl Mega {
             .child(h_flex().gap_2().child(div().id("set-gamekeys").relative().px_3().py_1().cursor_pointer().child(sq::back(999., rgb(0x0b0a10))).child(sq::front(999., None, Some((1., look::line())), None)).child(div().relative().child("Game keys\u{2026}"))
                 .on_click(cx.listener(|this, _, window, cx| this.gk_open(window, cx)))))
             .child(note("Mute yourself in mega while you talk to your game team."))
+            .child(label("quick tour"))
+            .child(h_flex().gap_2().child(div().id("tour-again").relative().px_3().py_1().cursor_pointer().child(sq::back(999., rgb(0x0b0a10))).child(sq::front(999., None, Some((1., look::line())), None)).child(div().relative().child("show the tour again"))
+                .on_click(cx.listener(|this, _, window, cx| { this.go(Level::Home, window, cx); this.tour_start(window, cx); }))))
+            .child(note("A short look at the cards, the dots and the call dock."))
             .child(label("this device"))
             .child(note(&format!("Relay: {}", snap.relay)))
             .child(note(&format!("Account folder: {}", self.core.dir.display())))
@@ -613,7 +617,7 @@ impl Render for Mega {
                 let cropper = self.avatar_overlay(cx);
                 let lightbox = self.light_overlay(window, cx);
                 let save = self.save_overlay(cx);
-                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(lightbox).children(self.dens_popup(cx)).children(self.room_menu_view(cx)).children(self.gk_modal(window, cx))
+                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(lightbox).children(self.dens_popup(cx)).children(self.room_menu_view(cx)).children(self.gk_modal(window, cx)).children(self.tour_view(window, cx))
             }
         }
     }
