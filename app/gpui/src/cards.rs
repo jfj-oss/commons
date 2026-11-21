@@ -220,7 +220,7 @@ impl Mega {
     fn render_cards(&mut self, key: String, items: Vec<NavItem>, start: usize, bar: AnyElement, home: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let now = self.epoch.elapsed().as_secs_f64();
         let (mw, mh) = self.nav.vp.get();
-        let (vw, vh) = if mw > 50. && mh > 50. { (mw, mh) } else { let s = window.viewport_size(); (f32::from(s.width), f32::from(s.height)) };
+        let (vw, vh) = if mw > 50. && mh > 50. { (mw, mh) } else { let s = crate::titlebar::viewport(window); (f32::from(s.width), f32::from(s.height)) };
         let sections: Vec<bool> = items.iter().enumerate().map(|(i, x)| x.section.is_some() && (i == 0 || items[i - 1].section != x.section)).collect();
         let offs = nav::offsets(vh, &sections);
         let still = self.still();

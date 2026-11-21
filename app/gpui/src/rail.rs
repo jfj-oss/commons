@@ -114,7 +114,7 @@ impl Mega {
         if c.direct { items.retain(|x| matches!(x.open, Open::Room(..))); }
         self.rail_tick(&items, window, cx);
         let k = self.rail.k.clamp(0., 1.);
-        let vh = f32::from(window.viewport_size().height);
+        let vh = f32::from(crate::titlebar::viewport(window).height);
         let active: Vec<bool> = items.iter().map(|x| matches!(&x.open, Open::Room(_, g) if self.gid.as_deref() == Some(g.as_str()))).collect();
         let g = geometry(items.len(), &active, vh, k, self.rail.off);
         let many = self.snap.as_ref().map(|s| s.communities.iter().filter(|c| !c.removed).count() > 1).unwrap_or(true) && !c.direct;

@@ -578,13 +578,13 @@ impl Render for Mega {
         if self.msg.flash.as_ref().is_some_and(|(_, t0)| self.now_secs() - t0 < crate::msgact::FLASH) { window.request_animation_frame(); }
         self.holes.borrow_mut().clear();
         self.call.hits.clear(); self.files.hits.clear();
-        let base = div().id("root").size_full().bg(rgb(look::VOID)).text_color(look::paper()).font_family(look::F_UI).text_size(px(15.))
+        let base = div().id("root").flex_1().min_h_0().w_full().relative().bg(rgb(look::VOID)).text_color(look::paper()).font_family(look::F_UI).text_size(px(15.))
             // dragging the column's edge, and push-to-talk: the key never reaches the composer while that mode is on
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
                 if this.paint.drag.is_some() { if ev.pressed_button.is_none() { this.paint_drag_end(cx); } else { this.paint_drag_to(ev.position, window, cx); } }
                 if this.wall.pen { if ev.pressed_button.is_none() { this.wall_pen_up(); } else { this.wall_pen(ev.position, false, window, cx); } }
                 if this.call.resize.is_some() { if ev.pressed_button.is_none() { this.resize_end(window, cx); } else { this.resize_move(f32::from(ev.position.x), window, cx); } } }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| { this.paint_drag_end(cx); this.wall_pen_up(); this.resize_end(window, cx) }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| { if crate::titlebar::released() { cx.notify(); } this.paint_drag_end(cx); this.wall_pen_up(); this.resize_end(window, cx) }))
             .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 if this.paint_key(ev, window, cx) { cx.stop_propagation(); return; }
                 if this.files_key(ev, window, cx) { cx.stop_propagation(); return; }
@@ -597,11 +597,11 @@ impl Render for Mega {
                 let fh = this.composer.focus_handle(cx);
                 if (fh.is_focused(window) || fh.contains_focused(window, cx)) && this.files_paste(window, cx) { cx.stop_propagation(); }
             }));
-        match self.screen {
-            Screen::Starting => base,
-            Screen::Welcome => base.child(self.render_onboard(cx)),
-            Screen::Pairing => base.child(self.render_pairing(cx)),
-            Screen::Locked => base.child(self.render_sign_in(cx)),
+        let page: AnyElement = match self.screen {
+            Screen::Starting => base.into_any_element(),
+            Screen::Welcome => base.child(self.render_onboard(cx)).into_any_element(),
+            Screen::Pairing => base.child(self.render_pairing(cx)).into_any_element(),
+            Screen::Locked => base.child(self.render_sign_in(cx)).into_any_element(),
             Screen::Main => {
                 let body: AnyElement = match self.level.clone() {
                     Level::Home => self.render_home(window, cx),
@@ -624,9 +624,10 @@ impl Render for Mega {
                 let lightbox = self.light_overlay(window, cx);
                 let save = self.save_overlay(cx);
                 let reminder = self.recovery_card(cx);
-                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(reminder).children(lightbox).children(self.dens_popup(cx)).children(self.room_menu_view(cx)).children(self.gk_modal(window, cx)).children(self.tour_view(window, cx))
+                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(reminder).children(lightbox).children(self.dens_popup(cx)).children(self.room_menu_view(cx)).children(self.gk_modal(window, cx)).children(self.tour_view(window, cx)).into_any_element()
             }
-        }
+        };
+        crate::titlebar::frame(window, page, cx.entity())
     }
 }
 

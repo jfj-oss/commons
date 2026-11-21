@@ -499,7 +499,7 @@ impl Mega {
             (None, Some(Pic::Ready(r))) => (Some(r.img.clone()), (r.w, r.h)),
             _ => (None, (0, 0)),
         };
-        let vp = window.viewport_size();
+        let vp = crate::titlebar::viewport(window);
         let (vw, vh) = (f32::from(vp.width), f32::from(vp.height));
         let (aw, ah) = ((vw - 120.).max(100.), (vh - 150.).max(100.));
         // the whole picture fits the window at zoom 1 (a small one is shown at its own size, as the page does)

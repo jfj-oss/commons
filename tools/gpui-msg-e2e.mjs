@@ -95,7 +95,7 @@ try {
   const paste = () => { const r = spawnSync(CLIP, [], { env: winEnv, encoding: 'utf8', timeout: 8000 }); if (r.stderr) console.log('clipread:', r.stderr.trim().slice(0, 200)); return r.stdout || ''; };
   const sel = () => W.cmd('selection');
   const md = () => W.cmd('msg');
-  const OFF = (process.env.SELECT_OFF || '140,78').split(',').map(Number);
+  const OFF = (process.env.SELECT_OFF || '135,63').split(',').map(Number);
   const at = (x, y) => `move:${Math.round(x + OFF[0])},${Math.round(y + OFF[1])}`;
   const rowOf = async id => (await sel()).rows.find(r => r.id === id);
   const hover = async id => { const r = await until(() => rowOf(id), 8000, 'row drawn ' + id); await fk(at(r.x + 10, r.y + r.h / 2)); await sleep(350); return r; };

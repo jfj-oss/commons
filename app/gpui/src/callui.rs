@@ -264,10 +264,10 @@ impl Mega {
     }
     pub fn set_deck_width(&mut self, w: f32, window: &Window, save: bool) {
         // 0 means "the default for this window" (a reset), kept as 0 so the default follows the window's size
-        self.call.deck_w = if w <= 0. { 0. } else { deck::clamp_width(w, f32::from(window.viewport_size().width)) };
+        self.call.deck_w = if w <= 0. { 0. } else { deck::clamp_width(w, f32::from(crate::titlebar::viewport(window).width)) };
         if save { self.prefs.deck_w = self.call.deck_w; self.prefs.save(); }
     }
-    pub fn deck_width(&self, window: &Window) -> f32 { deck::clamp_width(self.call.deck_w, f32::from(window.viewport_size().width)) }
+    pub fn deck_width(&self, window: &Window) -> f32 { deck::clamp_width(self.call.deck_w, f32::from(crate::titlebar::viewport(window).width)) }
 
     // ---- drawing ----
     /// One person's volume, beside the call card (the page's `.call-pop.vol`).
@@ -352,7 +352,7 @@ impl Mega {
         if self.call.deck_hidden { return None; }
         let w = self.deck_width(window);
         let order = self.call.ordered();
-        let vw = f32::from(window.viewport_size().width);
+        let vw = f32::from(crate::titlebar::viewport(window).width);
         let (lo, hi, _) = deck::limits(vw);
         let mut col = v_flex().id("deck").flex_none().w(px(w)).h_full().overflow_y_scroll().gap_3().px_3().pt_4().pb_3().bg(rgb(look::VOID));
         let hits = self.call.hits.clone();
@@ -371,7 +371,7 @@ impl Mega {
             }))
             .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| {
                 let k = ev.keystroke.key.as_str();
-                let vw = f32::from(window.viewport_size().width);
+                let vw = f32::from(crate::titlebar::viewport(window).width);
                 let w = match k {
                     "right" => deck::arrow(this.deck_width(window), vw, 1., ev.keystroke.modifiers.shift),
                     "left" => deck::arrow(this.deck_width(window), vw, -1., ev.keystroke.modifiers.shift),
