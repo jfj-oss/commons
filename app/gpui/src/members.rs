@@ -119,7 +119,7 @@ fn when(expires: f64) -> String {
     format!("expires in {}", if d > 0 { plural(d, "day") } else if h > 0 { plural(h, "hour") } else { plural(m.max(1), "minute") })
 }
 fn uses_text(n: Option<u64>) -> String { match n { None => "unlimited uses".into(), Some(n) => format!("{n} use{} left", if n == 1 { "" } else { "s" }) } }
-fn is_link(v: &str) -> bool { let v = v.trim().to_lowercase(); v.starts_with("commons:") || v.starts_with("http:") || v.starts_with("https:") }
+pub(crate) fn is_link(v: &str) -> bool { let v = v.trim().to_lowercase(); v.starts_with("commons:") || v.starts_with("http:") || v.starts_with("https:") }
 
 fn pill(id: impl Into<ElementId>, on: bool, text: impl Into<SharedString>) -> Stateful<Div> {
     div().id(id).px_3().py_1().rounded_full().border_1().cursor_pointer().font_family(look::F_NAME).text_size(px(13.)).border_color(if on { look::paper() } else { look::line() })

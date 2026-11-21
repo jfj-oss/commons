@@ -175,6 +175,7 @@ impl Mega {
             let fx = self.look_fx(&c.id, &ch.gid, auto);
             let pv = self.nav.previews.get(&ch.gid).filter(|p| !p.text.is_empty());
             let sub = if !ch.joined { "waiting for keys".to_string() } else if !ch.status.is_empty() && ch.status != "ok" { ch.status.clone() } else if voice { "voice".into() } else if ch.unread > 0 { "unread".into() } else { "caught up".into() };
+            let sub = match self.room_mark(&ch.gid).filter(|_| !voice) { Some(m) => format!("{sub} \u{b7} {m}"), None => sub };
             let num = if voice { here.len() as u64 } else { ch.unread };
             let hi_t = if !ch.joined || (voice && here.is_empty()) { 2. } else if voice { 0.76 } else { 0.9 - 0.22 * (ch.unread.min(12) as f64 / 12.) };
             out.push(NavItem { face: String::new(), key: ch.gid.clone(), cid: c.id.clone(), room: ch.gid.clone(), title: ch.name.clone(), sub, num, duo, fx, auto, locked: !ch.joined, voice,
@@ -362,6 +363,7 @@ impl Mega {
         } else { None };
         let spot = sq::spot();
         let spot2 = spot.clone();
+        let room_target = match &it.open { Open::Room(_, g) => Some((g.clone(), it.title.clone())), _ => None };
         let title_font = if g.settled { look::F_SHARP } else { look::F_BLEND };
         let looking: Vec<AnyElement> = it.looking.iter().take(crate::presence::SHOW).map(|n| crate::views::face_dot(n, 12. * s).into_any_element()).collect();
         let more = it.looking.len().saturating_sub(crate::presence::SHOW);
@@ -421,6 +423,11 @@ impl Mega {
                 if !sq::clicked(&spot2, ev, r) { return; }
                 this.nav_click(i, window, cx);
             }))
+            // a right-click on a room: its notification menu (mute, mentions only)
+            .when_some(room_target.filter(|_| !it.voice && !it.locked), |d, (gid, name)| d.on_mouse_down(MouseButton::Right, cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                this.room_menu_open(&gid, &name, ev.position, window, cx);
+            })))
             .into_any_element()
     }
 

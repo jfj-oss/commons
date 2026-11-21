@@ -5,6 +5,9 @@ mod arrive;
 mod avatars;
 mod reading;
 mod select;
+mod alerts;
+mod chime;
+mod single;
 mod ascii;
 mod backdrop;
 mod typing;
@@ -73,6 +76,16 @@ fn now_text() -> String {
 fn main() {
     log_panics();
     bench::mark("main");
+    // one window per account folder: a second start raises the first and ends (single.rs). A probe that runs headless
+    // is not a window and never takes the account's place.
+    #[cfg(feature = "calls")]
+    let window_wanted = !calls::headless::wanted();
+    #[cfg(not(feature = "calls"))]
+    let window_wanted = true;
+    let primary = if window_wanted {
+        let args: Vec<String> = std::env::args().collect();
+        match single::claim(&core::data_dir(), &single::ask_from_args(&args)) { single::Claim::Handed => return, single::Claim::First(p) => p }
+    } else { None };
     // a new version that keeps failing to start is replaced by the previous one (update.rs)
     update::guard_start(&core::data_dir());
     #[cfg(feature = "calls")]
@@ -93,6 +106,7 @@ fn main() {
             return;
         }
         let core = core::Core::open();
+        if let Some(p) = primary { p.serve(core.inbox.clone()); }
         let quit_core = core.clone();
         cx.on_app_quit(move |_| { let c = quit_core.clone(); async move { c.app.shutdown(); } }).detach();
 

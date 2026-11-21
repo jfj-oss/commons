@@ -7,9 +7,16 @@ use std::path::{Path, PathBuf};
 pub enum Saver { Auto, On, Off }
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ChatFont { Bellefair, Raster }
+/// The sound for new messages (the web's Settings choice): every message, mentions and replies only, or none.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Sound { All, Mentions, Off }
+/// How big the chat text reads on this device.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ReadSize { Small, Normal, Large }
+impl ReadSize { pub fn scale(self) -> f32 { match self { ReadSize::Small => 0.85, ReadSize::Normal => 1.0, ReadSize::Large => 1.2 } } }
 
 #[derive(Clone, Debug)]
-pub struct Prefs { pub saver: Saver, pub chat_font: ChatFont, pub presence: bool, /** the ring sound (off: rings only show) */ pub sound: bool, /** the cameras-and-screens column's width on this device, 0 = the default */ pub deck_w: f32, path: PathBuf }
+pub struct Prefs { pub saver: Saver, pub chat_font: ChatFont, pub presence: bool, /** the ring sound (off: rings only show) */ pub sound: bool, /** the cameras-and-screens column's width on this device, 0 = the default */ pub deck_w: f32, /** the chime for new messages */ pub msg_sound: Sound, /** the chat text's size */ pub read_size: ReadSize, path: PathBuf }
 
 impl Prefs {
     pub fn load(dir: &Path) -> Prefs {
@@ -20,6 +27,8 @@ impl Prefs {
             chat_font: if v["chat_font"].as_str() == Some("raster") { ChatFont::Raster } else { ChatFont::Bellefair },
             presence: v["presence"].as_bool() != Some(false),
             sound: v["sound"].as_bool() != Some(false),
+            msg_sound: match v["msg_sound"].as_str() { Some("mentions") => Sound::Mentions, Some("off") => Sound::Off, _ => Sound::All },
+            read_size: match v["read_size"].as_str() { Some("small") => ReadSize::Small, Some("large") => ReadSize::Large, _ => ReadSize::Normal },
             deck_w: v["deck_w"].as_f64().filter(|w| *w > 0. && *w < 20000.).unwrap_or(0.) as f32,
             path,
         }
@@ -30,6 +39,8 @@ impl Prefs {
             "chat_font": match self.chat_font { ChatFont::Bellefair => "bellefair", ChatFont::Raster => "raster" },
             "presence": self.presence,
             "sound": self.sound,
+            "msg_sound": match self.msg_sound { Sound::All => "all", Sound::Mentions => "mentions", Sound::Off => "off" },
+            "read_size": match self.read_size { ReadSize::Small => "small", ReadSize::Normal => "normal", ReadSize::Large => "large" },
             "deck_w": self.deck_w,
         });
         // the folder exists once there is an account; before that there is nothing worth remembering

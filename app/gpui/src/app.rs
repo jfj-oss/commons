@@ -362,6 +362,7 @@ impl Mega {
                 self.snap = Some(snap);
                 self.error = None;
                 self.after_snapshot(window, cx);
+                self.alerts_after_snapshot(window, cx);
                 cx.notify();
             }
             Err(e) if e == "locked" => { self.screen = Screen::Locked; cx.notify(); }
@@ -536,7 +537,7 @@ impl Mega {
             cx.notify();
         });
     }
-    pub fn chat_font(&self) -> (&'static str, f32, f32) { match self.prefs.chat_font { ChatFont::Bellefair => (look::F_BELLEFAIR, 30., 36.), ChatFont::Raster => (look::F_MSG, 24., 26.) } }
+    pub fn chat_font(&self) -> (&'static str, f32, f32) { let k = self.prefs.read_size.scale(); match self.prefs.chat_font { ChatFont::Bellefair => (look::F_BELLEFAIR, (30. * k).round(), (36. * k).round()), ChatFont::Raster => (look::F_MSG, (24. * k).round(), (26. * k).round()) } }
     pub fn set_setting(&mut self, method: &'static str, args: Value, window: &mut Window, cx: &mut Context<Self>) {
         self.rpc(method, args, window, cx, move |this, r, window, cx| {
             match r { Ok(v) => { if method.starts_with("notify_") { this.notify_settings = v; } this.error = None; } Err(e) => this.error = Some(e.into()) }
