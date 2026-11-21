@@ -341,7 +341,8 @@ impl Mega {
     pub fn sel_dump(&self) -> serde_json::Value {
         let texts = self.sel.texts.borrow();
         let rows: Vec<_> = texts.iter().filter_map(|(id, t)| { let ix = self.row_of(id)?; Some(serde_json::json!({"ix": ix, "id": id, "x": f32::from(t.bounds.left()), "y": f32::from(t.bounds.top()), "w": f32::from(t.bounds.size.width), "h": f32::from(t.bounds.size.height), "text": self.text_of(ix)})) }).collect();
-        serde_json::json!({"selected": self.sel_string(), "rows": rows, "menu": self.sel.menu.is_some()})
+        let menu_at = self.sel.menu.clone().map(|(at, id)| { let (e, items) = self.menu_layout(&id); let h = if e { MENU_EMOJI } else { 0. } + MENU_ROW * items.len() as f32 + 8.; let o = self.menu_origin(at, h); serde_json::json!({"x": f32::from(o.x), "y": f32::from(o.y), "items": items, "emoji": e}) });
+        serde_json::json!({"selected": self.sel_string(), "rows": rows, "menu": self.sel.menu.is_some(), "menu_at": menu_at})
     }
 }
 

@@ -157,8 +157,9 @@ try {
   await fk(at(r3.x + 30, r3.y + r3.h / 2), 'rclick'); await sleep(400);
   check('S8b right-click opens the menu', (await sel()).menu === true);
   await nshot('5b-menu');
-  // no selection: the items are "Copy message", "Select all"; the first is 4 + 15 px under the pointer
-  await fk(at(r3.x + 30 + 40, r3.y + r3.h / 2 + 19), 'click'); await sleep(500);
+  // no selection: the menu is the quick reactions (44 px), Reply, Copy message, Edit, Delete, Select all; "Copy message" is the second row: 4 + 44 + 30 + 15 px under the pointer
+  const mat = (await sel()).menu_at; const cmi = mat.items.indexOf('Copy message');
+  await fk(at(mat.x + 40, mat.y + 4 + 44 + 30 * cmi + 15), 'click'); await sleep(500);
   const cm = paste();
   check('S8c "Copy message" copies the whole message', cm === 'Third message from Alice.' && !(await sel()).menu, cm);
 
