@@ -64,6 +64,8 @@ pub fn from_env() -> Option<Arc<Queue>> {
     Some(q)
 }
 
+macro_rules! return_err { ($tx:expr, $m:expr) => {{ let _ = $tx.send(json!({"error": $m})); continue; }}; }
+
 impl Mega {
     pub fn uitest_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(q) = self.uitest.clone() else { return };
@@ -77,6 +79,45 @@ impl Mega {
                 "call_settings" => { if self.call.settings_open != (cmd["on"].as_bool() != Some(false)) { self.open_settings(window, cx); } json!({"ok": true}) }
                 "accept" => match self.ring.book.cards.first().map(|c| c.ring.clone()) { Some(r) => { self.ring_accept(&r, window, cx); json!({"ok": true}) } None => json!({"error": "no card"}) },
                 "decline" => match self.ring.book.cards.first().map(|c| c.ring.clone()) { Some(r) => { self.ring_decline(&r, cx); json!({"ok": true}) } None => json!({"error": "no card"}) },
+                "ob" => {
+                    // the first screens: {"cmd":"ob","what":"dump|mode|set|go|copy_key|over"...}
+                    use crate::onboard::Boot;
+                    match s("what").as_str() {
+                        "dump" => self.ob_dump(cx),
+                        "mode" => { let m = match s("mode").as_str() { "pw" => Boot::Invite, "new" => Boot::Create, "pair" => Boot::Pair, _ => Boot::Recover }; self.ob_show(m, window, cx); json!({"ok": true}) }
+                        "set" => {
+                            let v = s("value");
+                            let e = match s("field").as_str() { "ipw" => &self.ob.ipw, "link" => &self.ob.link, "name" => &self.ob.name, "pp" => &self.ob.pp, "pp2" => &self.ob.pp2, "relay" => &self.ob.relay, "secret" => &self.ob.secret, "rk" => &self.ob.rk, _ => return_err!(tx, "no such field") }.clone();
+                            e.update(cx, |i, cx| i.set_value(v, window, cx));
+                            if s("field") == "link" { self.ob_read_link(window, cx); }
+                            if s("field") == "pp" { self.ob.hint = crate::onboard::pp_strength(&s("value")); }
+                            json!({"ok": true})
+                        }
+                        "go" => { self.ob_go(window, cx); json!({"ok": true}) }
+                        "over" => { self.ob_start_over(window, cx); json!({"ok": true}) }
+                        "relay_open" => { self.ob.relay_open = true; cx.notify(); json!({"ok": true}) }
+                        _ => json!({"error": "unknown ob action"}),
+                    }
+                }
+                "dev" => {
+                    // devices, key, log, relay: {"cmd":"dev","what":"dump|open|code|approve|revoke|history|key|key_saved|relay|refuse"...}
+                    use crate::members::Panel;
+                    match s("what").as_str() {
+                        "dump" => self.dev_dump(cx),
+                        "open" => { let p = match s("which").as_str() { "key" => Panel::Key, "log" => Panel::Activity, _ => Panel::Devices }; self.dev_open(p, window, cx); json!({"ok": true}) }
+                        "close" => { self.close_panel(cx); json!({"ok": true}) }
+                        "code" => { let v = s("value"); self.dev.code.update(cx, |i, cx| i.set_value(v, window, cx)); self.dev_preview(window, cx); json!({"ok": true}) }
+                        "history_on" => { self.dev.send_history = cmd["on"].as_bool() != Some(false); json!({"ok": true}) }
+                        "approve" => { self.dev_approve(window, cx); json!({"ok": true}) }
+                        "revoke" => { self.dev_revoke(s("device"), window, cx); json!({"ok": true}) }
+                        "history" => { let m = match s("method").as_str() { "send" => "history_send", "decline" => "history_decline", _ => "history_dismiss" }; self.dev_history(m, s("device"), window, cx); json!({"ok": true}) }
+                        "key_pw" => { let v = s("value"); self.dev.key_pw.update(cx, |i, cx| i.set_value(v, window, cx)); self.dev_key_show(window, cx); json!({"ok": true}) }
+                        "key_saved" => { self.dev_key_saved(window, cx); json!({"ok": true}) }
+                        "relay_set" => { let (r, k) = (s("relay"), s("secret")); self.dev.relay.update(cx, |i, cx| i.set_value(r, window, cx)); self.dev.relay_secret.update(cx, |i, cx| i.set_value(k, window, cx)); self.dev_relay_save(window, cx); json!({"ok": true}) }
+                        "refuse" => { self.direct_refuse(s("account"), s("name"), cmd["on"].as_bool() != Some(false), window, cx); json!({"ok": true}) }
+                        _ => json!({"error": "unknown dev action"}),
+                    }
+                }
                 "dial" => { self.dial(s("peer"), s("name"), window, cx); json!({"ok": true}) }
                 "server" => {
                     let want = s("name");

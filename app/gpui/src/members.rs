@@ -37,6 +37,10 @@ pub enum Panel {
     Join,
     NewCommunity,
     Safety(Safety),
+    /// This account's devices and recovery key, and its activity log (devices.rs).
+    Devices,
+    Key,
+    Activity,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +56,7 @@ pub enum Act {
     Transfer { cid: String, account: String },
     Leave { cid: String },
     ClearWall { cid: String, room: String },
+    RevokeDevice { device: String },
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Confirm { pub title: String, pub body: String, pub label: String, pub act: Act }
@@ -121,16 +126,16 @@ fn when(expires: f64) -> String {
 fn uses_text(n: Option<u64>) -> String { match n { None => "unlimited uses".into(), Some(n) => format!("{n} use{} left", if n == 1 { "" } else { "s" }) } }
 pub(crate) fn is_link(v: &str) -> bool { let v = v.trim().to_lowercase(); v.starts_with("commons:") || v.starts_with("http:") || v.starts_with("https:") }
 
-fn pill(id: impl Into<ElementId>, on: bool, text: impl Into<SharedString>) -> Stateful<Div> {
+pub(crate) fn pill(id: impl Into<ElementId>, on: bool, text: impl Into<SharedString>) -> Stateful<Div> {
     div().id(id).px_3().py_1().rounded_full().border_1().cursor_pointer().font_family(look::F_NAME).text_size(px(13.)).border_color(if on { look::paper() } else { look::line() })
         .when(on, |d| d.bg(look::paper()).text_color(rgb(0x0c0d12))).child(text.into())
 }
-fn danger_pill(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Div> {
+pub(crate) fn danger_pill(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Div> {
     div().id(id).px_3().py_1().rounded_full().border_1().cursor_pointer().font_family(look::F_NAME).text_size(px(13.)).border_color(rgb(look::DANGER)).text_color(rgb(look::DANGER)).child(text.into())
 }
-fn label(t: &str) -> Div { div().mt_3().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(t.to_string()) }
-fn note(t: impl Into<SharedString>) -> Div { div().text_size(px(13.)).text_color(look::mute()).child(t.into()) }
-fn chip(t: &str, on: bool) -> Div { div().px_2().rounded_full().border_1().border_color(if on { look::paper() } else { look::line() }).font_family(look::F_NAME).text_size(px(11.)).text_color(if on { look::paper() } else { look::mute() }).child(t.to_string()) }
+pub(crate) fn label(t: &str) -> Div { div().mt_3().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(t.to_string()) }
+pub(crate) fn note(t: impl Into<SharedString>) -> Div { div().text_size(px(13.)).text_color(look::mute()).child(t.into()) }
+pub(crate) fn chip(t: &str, on: bool) -> Div { div().px_2().rounded_full().border_1().border_color(if on { look::paper() } else { look::line() }).font_family(look::F_NAME).text_size(px(11.)).text_color(if on { look::paper() } else { look::mute() }).child(t.to_string()) }
 fn small_avatar(account: &str, name: &str, size: f32) -> Div {
     if let Some(p) = crate::avatars::pic_view(account, size) { return p; }
     let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into());
@@ -198,7 +203,7 @@ impl Mega {
     }
 
     /// Do something to a community and say how it went; both the list and the snapshot are read again at once.
-    fn act(&mut self, method: &'static str, args: Value, ok: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn act(&mut self, method: &'static str, args: Value, ok: String, window: &mut Window, cx: &mut Context<Self>) {
         self.rpc(method, args, window, cx, move |this, r, window, cx| {
             match r { Ok(_) => this.mem.say = Some((ok, false, Instant::now())), Err(e) => this.mem.say = Some((format!("Could not do that: {}", e.trim_start_matches("[retry] ")), true, Instant::now())) }
             this.snap_hash.clear(); this.mem.members_at = None;
@@ -216,11 +221,12 @@ impl Mega {
             Act::DeleteRoom { cid, room } => { self.mem.room_edit = None; self.act("delete_channel", json!({"cid": cid, "room": room}), "Room deleted.".into(), window, cx) }
             Act::Transfer { cid, account } => self.act("transfer_ownership", json!({"cid": cid, "account": account}), "Ownership handed over.".into(), window, cx),
             Act::Leave { cid } => { self.act("leave", json!({"cid": cid}), "Leaving. It is done as soon as an admin has mega open.".into(), window, cx); self.mem.panel = None; self.go(Level::Home, window, cx); }
+            Act::RevokeDevice { device } => self.dev_revoke(device, window, cx),
             Act::ClearWall { cid, room } => self.act("set_wall", json!({"cid": cid, "room": room, "clear": true}), "Wall cleared.".into(), window, cx),
         }
         cx.notify();
     }
-    fn ask(&mut self, title: impl Into<String>, body: impl Into<String>, label: &str, act: Act, cx: &mut Context<Self>) {
+    pub(crate) fn ask(&mut self, title: impl Into<String>, body: impl Into<String>, label: &str, act: Act, cx: &mut Context<Self>) {
         self.mem.confirm = Some(Confirm { title: title.into(), body: body.into(), label: label.into(), act });
         cx.notify();
     }
@@ -360,6 +366,7 @@ impl Mega {
             Panel::Join => self.join_view(cx).into_any_element(),
             Panel::NewCommunity => self.new_view(cx).into_any_element(),
             Panel::Safety(s) => self.safety_view(s, cx).into_any_element(),
+            p @ (Panel::Devices | Panel::Key | Panel::Activity) => self.dev_panel(p, cx),
         } };
         let say = self.mem.say.clone();
         Some(div().id("mem-overlay").absolute().inset_0().flex().items_center().justify_center().occlude()
@@ -372,7 +379,7 @@ impl Mega {
             .into_any_element())
     }
 
-    fn title(&self, t: impl Into<SharedString>, sub: impl Into<SharedString>, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn title(&self, t: impl Into<SharedString>, sub: impl Into<SharedString>, cx: &mut Context<Self>) -> Div {
         h_flex().items_end().gap_3()
             .child(v_flex().flex_1().min_w_0().child(div().font_family(look::F_SHARP).text_size(px(44.)).line_height(px(42.)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(t.into()))
                 .child(div().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(sub.into())))
@@ -410,6 +417,7 @@ impl Mega {
                         .when(m.verified, |d| d.child(chip("verified", false))))
                     .child(div().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute())
                         .child(format!("{}{} device{}{}", if m.same_name { format!("{} · ", m.tag) } else { String::new() }, m.devices, if m.devices == 1 { "" } else { "s" }, if m.listening.is_empty() { String::new() } else { format!(" · {}", m.listening) }))))
+                .when(!m.me, |d| { let (a, n) = (m.account.clone(), m.name.clone()); d.child(pill(SharedString::from(format!("call-{}", m.account)), false, "call").on_click(cx.listener(move |this, _, window, cx| { cx.stop_propagation(); this.mem.panel = None; this.dial(a.clone(), n.clone(), window, cx); }))) })
                 .on_click(cx.listener(move |this, _, window, cx| this.open_panel(Panel::Person(cid.clone(), acct.clone()), window, cx))));
         }
         if ms.is_empty() { list = list.child(note("loading…")); }
@@ -417,6 +425,7 @@ impl Mega {
         v_flex().gap_3().child(self.title(format!("{} · people", c.name), format!("{} {}", ms.len(), if ms.len() == 1 { "person" } else { "people" }), cx))
             .when(!others.is_empty(), |d| d.child(note(if done > 0 { format!("You have verified {done} of {}.", others.len()) } else { "Nobody verified yet. Open a person to compare safety numbers.".to_string() })))
             .child(list)
+            .child(self.direct_section(cx))
             .child(h_flex().gap_2().flex_wrap().pt_2()
                 .when(is_admin(&c), |d| { let (a, b) = (cid.clone(), cid.clone()); d
                     .child(pill("p-invite", false, "Invite someone").on_click(cx.listener(move |this, _, window, cx| this.open_panel(Panel::Invite(a.clone()), window, cx))))
@@ -441,6 +450,8 @@ impl Mega {
             if let Some((dcid, room)) = direct { acts = acts.child(pill("pc-msg", false, "Message").on_click(cx.listener(move |this, _, window, cx| { this.mem.panel = None; this.open_room(dcid.clone(), room.clone(), window, cx); }))); }
             acts = acts.child(pill("pc-call", false, "Call").on_click(cx.listener(move |this, _, window, cx| { this.mem.panel = None; this.dial(a.clone(), n.clone(), window, cx); })));
             if in_call { let (a, n) = (m.account.clone(), m.name.clone()); acts = acts.child(pill("pc-vol", false, "Volume in the call").on_click(cx.listener(move |this, _, window, cx| { this.mem.panel = None; this.open_person(a.clone(), n.clone(), window, cx); }))); }
+            let (a, n, stopped) = (m.account.clone(), m.name.clone(), self.snap.as_ref().is_some_and(|s| s.direct_refused.iter().any(|(x, _)| *x == m.account)));
+            acts = acts.child(pill("pc-stop", false, if stopped { "Allow calls from them" } else { "Stop calls from them" }).on_click(cx.listener(move |this, _, window, cx| this.direct_refuse(a.clone(), n.clone(), !stopped, window, cx))));
             let (a, cc) = (m.account.clone(), cid.clone());
             acts = acts.child(pill("pc-safety", false, if m.verified { "Safety number (verified)" } else { "Verify safety number" }).on_click(cx.listener(move |this, _, window, cx| this.open_safety(cc.clone(), a.clone(), window, cx))));
         }
@@ -498,6 +509,38 @@ impl Mega {
                     let (cid, acct) = (cid.clone(), acct.clone());
                     this.rpc("set_verified", json!({"account": acct.clone(), "on": !verified}), window, cx, move |this, _, window, cx| { this.open_panel(Panel::Person(cid.clone(), acct.clone()), window, cx); });
                 }))))
+    }
+
+    /// Direct calls (mega-direct.js `areaHtml`): the people there has been a one-to-one call with, each with call and "stop calls" (their
+    /// calls to you then never ring), and those whose calls are stopped, with "allow".
+    fn direct_section(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(s) = self.snap.clone() else { return div().into_any_element() };
+        let mut col = v_flex().gap_1().child(label("direct calls"));
+        if s.directs.is_empty() && s.direct_refused.is_empty() { col = col.child(note("No direct calls yet. Press call on a person to call them.")); }
+        for d in &s.directs {
+            let (a, n, b, m) = (d.peer.clone(), d.name.clone(), d.peer.clone(), d.name.clone());
+            let ago = if d.last <= 0. { "no call yet".to_string() } else {
+                let t = (crate::xfer::unix() - d.last).max(0.);
+                if t < 60. { "just now".into() } else if t < 3600. { format!("{} min ago", (t / 60.).round()) } else if t < 86400. { format!("{} h ago", (t / 3600.).round()) } else { format!("{} d ago", (t / 86400.).round()) }
+            };
+            col = col.child(h_flex().id(SharedString::from(format!("dr-{}", d.peer))).gap_3().items_center().px_3().py_1().rounded(px(18.)).border_1().border_color(look::line())
+                .child(v_flex().flex_1().min_w_0().child(div().font_family(look::F_SHARP).text_size(px(20.)).line_height(px(22.)).child(d.name.clone()))
+                    .child(div().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(format!("{ago}{}", if d.supported { "" } else { " · older mega, cannot take calls" }))))
+                .child(pill(SharedString::from(format!("dr-call-{}", d.peer)), false, "call").on_click(cx.listener(move |this, _, window, cx| { this.mem.panel = None; this.dial(a.clone(), n.clone(), window, cx); })))
+                .child(pill(SharedString::from(format!("dr-stop-{}", d.peer)), false, "stop calls").on_click(cx.listener(move |this, _, window, cx| this.direct_refuse(b.clone(), m.clone(), true, window, cx)))));
+        }
+        for (acct, name) in &s.direct_refused {
+            let (a, n) = (acct.clone(), name.clone());
+            col = col.child(h_flex().id(SharedString::from(format!("drs-{acct}"))).gap_3().items_center().px_3().py_1().rounded(px(18.)).border_1().border_color(look::line())
+                .child(v_flex().flex_1().min_w_0().child(div().font_family(look::F_SHARP).text_size(px(20.)).line_height(px(22.)).child(name.clone())).child(div().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child("calls stopped")))
+                .child(pill(SharedString::from(format!("dr-allow-{acct}")), false, "allow").on_click(cx.listener(move |this, _, window, cx| this.direct_refuse(a.clone(), n.clone(), false, window, cx)))));
+        }
+        col.child(note("Direct calls are private between the two of you. They need a recent mega on both sides: an older one never rings. A call nobody answers ends after 30 seconds.")).into_any_element()
+    }
+    /// Stop (or allow again) one-to-one calls from a person: `direct_refuse`.
+    pub fn direct_refuse(&mut self, account: String, name: String, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let n = if name.is_empty() { "them".to_string() } else { name };
+        self.act("direct_refuse", json!({"account": account, "on": on}), if on { format!("Calls from {n} are stopped.") } else { format!("Calls from {n} are allowed again.") }, window, cx);
     }
 
     fn join_view(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -683,7 +726,7 @@ impl Mega {
     /// The small notes on the home screen about communities this account asked to join or was turned away from.
     pub fn joining_notes(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let Some(s) = self.snap.clone() else { return vec![] };
-        let mut out: Vec<AnyElement> = vec![];
+        let mut out: Vec<AnyElement> = self.history_notes(cx);
         for j in s.joining {
             let id = j.id.clone();
             out.push(h_flex().id(SharedString::from(format!("joining-{}", j.id))).gap_3().items_center().px_4().py_2().rounded(px(18.)).bg(rgb(look::SLIP)).border_1().border_color(look::line())
