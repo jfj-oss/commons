@@ -204,7 +204,7 @@ impl Mega {
         let dt = self.last_anim.elapsed().as_secs_f64();
         let mut draw = false;
         match self.level {
-            Level::Home | Level::Server(_) => { if dt >= 0.045 { self.clock += dt.min(0.1); draw = true; } }
+            Level::Home | Level::Server(_) => { if dt >= 0.045 { self.clock += dt.min(0.1); draw = true; self.nav.bloom.2 *= 0.95f64.powf(dt.min(0.1) / 0.04); } }
             Level::Chat => {
                 if dt >= if self.bd.busy() { 0.035 } else { 0.095 } { self.bd.step(dt.min(0.25), self.gid.as_deref().map(|g| self.bd_dim(g)).unwrap_or(100)); draw = true; }
                 // the rail's cards move too while it is open (their fields run on the page's clock)

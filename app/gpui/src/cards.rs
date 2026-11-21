@@ -91,13 +91,15 @@ pub struct NavUi {
     pub play: Option<(f64, f32, f32)>,
     /// The card in focus as the colours panel and the draw chip see it, and where the column sits in the window.
     pub focus_card: Option<crate::paint::Target>,
+    /// The glow under the pointer on the focused card: its cell and strength (ascii.rs `bloom`).
+    pub bloom: (f64, f64, f64),
     pub origin: Rc<Cell<(f32, f32)>>,
 }
 
 impl NavUi {
     pub fn new(cx: &mut App) -> NavUi {
         NavUi { scroll: Scroll::default(), key: String::new(), n: 0, vh: 0., vp: Rc::new(Cell::new((0., 0.))), offs: vec![], opens: vec![], voices: vec![], told: None, focus: cx.focus_handle(), last_home: None, acc: 0.,
-            previews: HashMap::new(), prev_busy: false, frames: vec![], last_frame: None, play: None, focus_card: None, origin: Rc::new(Cell::new((0., 0.))) }
+            previews: HashMap::new(), prev_busy: false, frames: vec![], last_frame: None, play: None, focus_card: None, bloom: (0., 0., 0.), origin: Rc::new(Cell::new((0., 0.))) }
     }
 }
 
@@ -361,6 +363,7 @@ impl Mega {
             let mut f = Field::card(it.fx, seed, it.duo, t, small);
             f.cell = (cell.0 * s, cell.1 * s); f.font_px = nav::q(fs * s); f.radius = r; f.emboss = still; if still { f.gate = 0.1; }
             f.hi_t = it.hi_t; f.live_holes = Some(live.clone());
+            if g.settled && self.nav.scroll.cur == i && self.nav.bloom.2 > 0.02 && !still { f.bloom = Some(self.nav.bloom); }
             if !marks_cells.is_empty() { f.avoid = Some((wall_grid, marks_cells.clone())); }
             Some(f)
         } else { None };
@@ -422,6 +425,8 @@ impl Mega {
         let cur = self.nav.scroll.cur;
         let tour_hits = self.tour.hits.clone();
         div().id(("card", i)).absolute().left(px(g.x)).top(px(g.y)).w(px(w)).h(px(h)).cursor_pointer()
+            .when(i == cur && g.settled, |d| { let o = self.nav.origin.clone(); let (cw_, ch_, gx, gy) = (cell.0 * s, cell.1 * s, g.x, g.y);
+                d.on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| { let p = o.get(); this.nav.bloom = (((f32::from(ev.position.x) - p.0 - gx) / cw_) as f64, ((f32::from(ev.position.y) - p.1 - gy) / ch_) as f64, 1.); cx.notify(); })) })
             .when(self.tour.open && i == cur, |d| d.child(tour_hits.track("tour-card")))
             .when(self.tour.open && i == cur + 1, |d| d.child(tour_hits.track("tour-card2")))
             .child(slab)
