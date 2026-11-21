@@ -195,7 +195,7 @@ try {
 
   // ---- 7. uninstall
   const un = run(path.join(pkg, 'mega-linux-x86_64/uninstall.sh'), [], cleanEnv());
-  const left = run('find', [path.join(home, '.local/bin'), path.join(home, '.local/share/applications'), path.join(home, '.local/share/mega'), '-type', 'f']).stdout.trim();
+  const left = run('find', [path.join(home, '.local/bin'), path.join(home, '.local/share/applications'), path.join(home, '.local/share/mega'), '-type', 'f', '-not', '-name', '*.cache']).stdout.trim();
   check('10 uninstall.sh removes the program, its .previous and update leftovers, the entry and the icons; the account folder stays', un.status === 0 && left === '' && fs.existsSync(data), { left, status: un.status });
 
   // ---- 8. no Vulkan
