@@ -216,9 +216,9 @@ try {
     await press('hit-0');
     check('Q2 clicking a hit goes to the message in its room', (await md()).flash === m2, (await md()).flash);
     await W.cmd('search_do', { what: 'open' }); await sleep(300);
-    await typeIn('history line 12'); await sleep(1500);
+    await typeIn('history line 177'); await sleep(1500);
     sd = await W.cmd('search');
-    const far = sd.hits.find(h => h.text === 'history line 12');
+    const far = sd.hits.find(h => h.text === 'history line 177');
     check('Q3 search reaches another room', !!far && far.room === 'long', sd.hits.slice(0, 3));
     await press('hit-' + sd.hits.indexOf(far)); await sleep(2500);
     d = await md();
