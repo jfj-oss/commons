@@ -124,14 +124,14 @@ pub fn add_chip(m: &crate::model::Msg, k: f32, c: &ActCtx) -> impl IntoElement {
 }
 
 /// The quote above a reply (app.js `.quote`): who and what it answers; click goes to it.
-pub fn quote(r: &Reply, font: &'static str, size: f32, c: &ActCtx) -> impl IntoElement {
+pub fn quote(r: &Reply, font: &'static str, c: &ActCtx) -> impl IntoElement {
     let id = r.id.clone();
     let key = format!("quote-{}", r.id);
-    h_flex().id(SharedString::from(key.clone())).relative().max_w_full().gap(px(6.)).pl_2().border_l_2().border_color(look::line()).hover(|s| s.border_color(look::paper())).cursor_pointer()
-        .text_color(look::mute()).items_baseline()
+    h_flex().id(SharedString::from(key.clone())).relative().max_w_full().flex_nowrap().items_center().gap(px(8.)).pl_2().border_l_2().border_color(look::line()).hover(|s| s.border_color(c.hi)).cursor_pointer()
+        .text_color(look::mute())
         .tooltip(|window, cx| Tooltip::new("Go to this message").build(window, cx))
-        .child(div().flex_none().font_family(look::F_NAME).text_size(px(12.)).text_color(look::paper()).child(r.name.clone()))
-        .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(font).text_size(px(size)).opacity(0.8).child(plain(&r.text)))
+        .child(div().flex_none().font_family(look::F_NAME).text_size(px(12.)).line_height(px(16.)).text_color(look::paper()).child(r.name.clone()))
+        .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(font).text_size(px(16.)).line_height(px(18.)).opacity(0.8).child(plain(&r.text)))
         .child(c.hits.track(key))
         .on_click(on(&c.me, move |this, window, cx| this.msg_goto(&id, window, cx)))
 }
@@ -208,7 +208,6 @@ impl Mega {
             self.list.scroll_to(ListOffset { item_ix: ix.saturating_sub(1), offset_in_item: px(0.) });
             self.msg.flash = Some((id.to_string(), self.now_secs()));
             self.msg.want = None;
-            window.request_animation_frame();
             cx.notify();
             return;
         }

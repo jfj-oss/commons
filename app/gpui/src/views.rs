@@ -476,7 +476,7 @@ pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f3
             .when(!m.read_by.is_empty(), |d| d.child(ticks(look::mute(), k))));
     }
     if let (Some(r), Some(c)) = (&m.reply, &fx.act) {
-        if !c.quote_gone { col = col.child(div().relative().child(hole(holes)).max_w_full().child(crate::msgact::quote(r, font, size * 0.7, c))); }
+        if !c.quote_gone { col = col.child(div().relative().child(hole(holes)).max_w_full().child(crate::msgact::quote(r, font, c))); }
     }
     let body: AnyElement = if let (Some(fi), Some(ctx)) = (&m.file, &fx.file) { crate::files::body(m, fi, ctx, holes) }
         else if let Some((kk, tick)) = fx.arrive {
@@ -556,6 +556,7 @@ impl Render for Mega {
             self.arrivals.step(now); self.flights.step(now);
             window.request_animation_frame();
         }
+        if self.msg.flash.as_ref().is_some_and(|(_, t0)| self.now_secs() - t0 < crate::msgact::FLASH) { window.request_animation_frame(); }
         self.holes.borrow_mut().clear();
         self.call.hits.clear(); self.files.hits.clear();
         let base = div().id("root").size_full().bg(rgb(look::VOID)).text_color(look::paper()).font_family(look::F_UI).text_size(px(15.))

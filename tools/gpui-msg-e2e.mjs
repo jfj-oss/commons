@@ -51,7 +51,7 @@ function sh(cmd, args, env, log) { const p = spawn(cmd, args, { env, stdio: ['ig
 
 
 const FAKE = process.env.MEGA_GPUI_FAKEKEYS || path.join(root, 'target/release/examples/fakekeys');
-const SOCK = 'wayland-selshot';
+const SOCK = 'wayland-uishot';
 try {
   await startServers(out, { livekit: false });
   const people = {}; let k = 0;
@@ -65,6 +65,7 @@ try {
   const ca = await ready(alice); await ready(bob);
   const gid = n => ca.channels.find(x => x.name === n).gid;
 
+  await until(async () => { const c = (await rpc(bob.port, 'snapshot')).communities.find(c => c.id === cid); return c && ['lounge', 'long'].every(n => c.channels.find(x => x.name === n && x.joined && x.status === 'ok')); }, 90000, 'Bob in both rooms', 500);
   // ---- the conversation Bob sees and Alice's window shows ----
   const bobMsgs = async (g = gid('lounge'), limit = 400) => (await rpc(bob.port, 'messages', { gid: g, limit })).messages;
   const bobHas = async (pred, what, ms = 20000) => until(async () => { const m = (await bobMsgs()).find(pred); return m || null; }, ms, what, 400);
@@ -94,12 +95,12 @@ try {
   const paste = () => { const r = spawnSync(CLIP, [], { env: winEnv, encoding: 'utf8', timeout: 8000 }); if (r.stderr) console.log('clipread:', r.stderr.trim().slice(0, 200)); return r.stdout || ''; };
   const sel = () => W.cmd('selection');
   const md = () => W.cmd('msg');
-  const OFF = (process.env.SELECT_OFF || '0,0').split(',').map(Number);
+  const OFF = (process.env.SELECT_OFF || '140,78').split(',').map(Number);
   const at = (x, y) => `move:${Math.round(x + OFF[0])},${Math.round(y + OFF[1])}`;
   const rowOf = async id => (await sel()).rows.find(r => r.id === id);
   const hover = async id => { const r = await until(() => rowOf(id), 8000, 'row drawn ' + id); await fk(at(r.x + 10, r.y + r.h / 2)); await sleep(350); return r; };
   const hit = async key => { const h = (await md()).hits[key]; if (!h) throw new Error('no hit ' + key); return h; };
-  const press = async key => { const h = await hit(key); await fk(at(h.x + h.w / 2, h.y + h.h / 2), 'click'); await sleep(500); };
+  const press = async key => { const h = await hit(key); await fk(at(h.x + h.w / 2, h.y + h.h / 2), 'sleep:300', 'click'); await sleep(500); };
   const typeIn = async t => { await fk('type:' + t); await sleep(300); };
   const aliceRow = id => md().then(m => m.msgs.find(x => x.id === id));
   try {
@@ -107,6 +108,7 @@ try {
     await W.cmd('open', { name: 'lounge' }); await sleep(3500);
     await until(async () => (await md()).msgs.length >= 2, 20000, 'messages in the window');
     await nshot('1-room');
+    if (process.env.PAUSE) { console.log('paused'); await sleep(Number(process.env.PAUSE) * 1000); }
 
     // ---- text: marks removed, links and mentions picked out ----
     const t1 = await aliceRow(m1);
@@ -131,7 +133,7 @@ try {
     const repId = rep.id;
 
     // quote click jumps to the original (flashes it)
-    await W.cmd('msg_do', { what: 'goto', id: m1 }); await sleep(300);
+    await W.cmd('msg_do', { what: 'goto', mid: m1 }); await sleep(300);
     await hover(repId);
     await press(`quote-${m2}`);
     check('A4 the quote jumps to and lights the message it answers', (await md()).flash === m2, (await md()).flash);
@@ -166,7 +168,7 @@ try {
     await hover(own.id); await press(`act-del-${own.id}`);
     await until(async () => (await bobMsgs()).find(m => m.id === own.id)?.deleted === true, 15000, 'Bob sees the delete', 400);
     check('A11 delete: Bob sees it deleted', true);
-    check('A12 no edit or delete tool on Bob\'s message', !(await (async () => { await hover(m2); return (await md()).hits[`act-del-${m2}`]; })()));
+    check('A12 an owner may delete Bob\'s message, and cannot edit it', await (async () => { await hover(m2); const h = (await md()).hits; return !!h[`act-del-${m2}`] && !h[`act-edit-${m2}`]; })());
 
     // ---- the right-click menu: reactions on top, actions below ----
     const r2 = await rowOf(m2);
@@ -177,7 +179,7 @@ try {
     await fk(at(r2.x + 30 + 8 + 1.5 * (284 - 16) / 8, r2.y + r2.h / 2 + 4 + 22), 'click'); await sleep(1200);
     const hm = await bobHas(m => m.id === m2 && m.reactions.some(r => r.emoji.startsWith('❤')), 'Bob sees the heart');
     check('M2 the menu reacts', !!hm);
-    await W.cmd('msg_do', { what: 'react', id: m2, emoji: hm.reactions.find(r => r.emoji.startsWith('❤')).emoji }); await sleep(800);
+    await W.cmd('msg_do', { what: 'react', mid: m2, emoji: hm.reactions.find(r => r.emoji.startsWith('❤')).emoji }); await sleep(800);
 
     // ---- Bob acts: edit, delete, react, reply; the window shows it ----
     const b1 = (await rpc(bob.port, 'send_text', { gid: gid('lounge'), text: 'bob first' })).id; await sleep(1200);
@@ -200,7 +202,7 @@ try {
     await W.cmd('msg_do', { what: 'older' }); await sleep(2500);
     d = await md();
     check('H2 "show earlier" grows the window by 200 and holds everything', d.limit === 400 && d.more === false && d.first !== keepId, { limit: d.limit, more: d.more });
-    await W.cmd('msg_do', { what: 'goto', id: d.first }); await sleep(800);
+    await W.cmd('msg_do', { what: 'goto', mid: d.first }); await sleep(800);
     check('H3 jump to a message that is held lights it', (await md()).flash === d.first);
     await nshot('11-history');
 
@@ -212,13 +214,13 @@ try {
     check('Q1 search finds the message with the words', sd.hits.some(h => h.id === m2), sd.hits.slice(0, 3));
     await nshot('12-search');
     await press('hit-0');
-    check('Q2 clicking a hit goes to the message in its room', (await md()).flash === m2 || true);
+    check('Q2 clicking a hit goes to the message in its room', (await md()).flash === m2, (await md()).flash);
     await W.cmd('search_do', { what: 'open' }); await sleep(300);
     await typeIn('history line 12'); await sleep(1500);
     sd = await W.cmd('search');
     const far = sd.hits.find(h => h.text === 'history line 12');
     check('Q3 search reaches another room', !!far && far.room === 'long', sd.hits.slice(0, 3));
-    await press('hit-0'); await sleep(2500);
+    await press('hit-' + sd.hits.indexOf(far)); await sleep(2500);
     d = await md();
     check('Q4 a hit in another room opens that room and lights the message', d.flash === far.id, d.flash);
     await nshot('13-search-jump');

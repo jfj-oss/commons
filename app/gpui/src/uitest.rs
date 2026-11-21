@@ -114,10 +114,10 @@ impl Mega {
                 "msg" => self.msg_dump(),
                 "search" => self.search_dump(),
                 "emoji" => self.emoji_dump(),
-                "emoji_do" => { match cmd["what"].as_str().unwrap_or("") { "open" => { self.emoji_open(crate::emoji::Target::Composer, point(px(0.), px(0.)), window, cx); } "close" => self.emoji_close(window, cx), "query" => { let q = s("q"); self.emoji.input.update(cx, |i, cx| i.set_value(q, window, cx)); } _ => {} } json!({"ok": true}) }
+                "emoji_do" => { match cmd["what"].as_str().unwrap_or("") { "open" => { self.emoji_open(crate::emoji::Target::Composer, point(px(0.), px(0.)), window, cx); } "close" => self.emoji_close(window, cx), "query" => { let q = s("q"); self.emoji.input.update(cx, |i, cx| i.set_value(q, window, cx)); self.emoji_rebuild(cx); } _ => {} } json!({"ok": true}) }
                 "search_do" => { match cmd["what"].as_str().unwrap_or("") { "open" => self.search_open(window, cx), "close" => self.search_close(window, cx), _ => {} } json!({"ok": true}) }
                 "msg_do" => {
-                    let id = s("id");
+                    let id = s("mid");
                     match cmd["what"].as_str().unwrap_or("") {
                         "reply" => self.msg_reply(&id, window, cx), "edit" => self.msg_edit(&id, window, cx), "delete" => self.msg_delete(&id, window, cx),
                         "react" => self.msg_react(&id, &s("emoji"), window, cx), "goto" => self.msg_goto(&id, window, cx), "older" => self.msg_older(window, cx), "cancel" => self.msg_cancel(window, cx),
