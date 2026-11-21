@@ -58,7 +58,7 @@ try {
   const A = people.alice, B = people.bob;
   for (const [n, p] of Object.entries(people)) await rpc(p.port, 'create_account', { name: n[0].toUpperCase() + n.slice(1), passphrase: PASS, relay: `http://127.0.0.1:${RELAY_PORT}` });
   const cid = (await rpc(A.port, 'create_community', { name: 'Test club' })).id;
-  const mk = async name => { const r = await rpc(A.port, 'create_channel', { cid, name, kind: 'text' }); return r.gid; };
+  const mk = async name => { const r = await rpc(A.port, 'create_channel', { cid, name, kind: 'text' }); return r.id; };
   const invite = async () => (await rpc(A.port, 'create_invite', { cid, uses: 6, ttl: 3600 })).link;
   await rpc(B.port, 'join', { link: await invite() });
   const rooms = {};
@@ -105,7 +105,7 @@ try {
 
   // ---------------------------------------------------------------- A. a message while the window is not looked at
   await W.cmd('attend', { on: false });
-  await W.cmd('home'); await sleep(800);
+  await W.cmd('home'); await sleep(4000);   // the window tells the core every 3 s whether it is looked at
   let n0 = notifs().length, c0 = chimes().length;
   await say(B, 'lounge', 'good evening everyone');
   const gotA = await soft(until(() => notifs().length > n0, 25000, 'notification raised', 300));
@@ -117,7 +117,7 @@ try {
   const attA = atts().length;
   check('A4 a plain message does not ask the taskbar for attention (only a mention does)', attA === 0, atts());
   // click through
-  const idA = nA.id;
+  const idA = nA ? nA.id : 0;
   mockSay(`action ${idA} default`);
   const openedA = await soft(until(async () => { const d = await W.dump(); return d.level === 'Chat' && d.gid === gidOf('lounge') ? d : null; }, 10000, 'click opens the room', 200));
   check('A5 clicking the notification opens that room in the window', !openedA.timeout, openedA.timeout || openedA.gid);
@@ -128,6 +128,7 @@ try {
   await say(B, 'other', 'hey @Nat are you there');
   await soft(until(() => atts().length > 0, 25000, 'attention asked', 300));
   check('B1 a mention while the window is not looked at asks the taskbar for attention', atts().length >= 1 && atts()[0].attention === true, atts());
+  await soft(until(() => notifs().length > n0, 20000, 'mention notification', 300));
   check('B2 ...raises a notification that says so', notifs().length > n0 && /mentioned you/.test(notifs()[n0].body), notifs().slice(n0).map(x => x.body));
   check('B3 ...and chimes', chimes().length > c0, chimes().slice(c0));
   const f1 = await shot('mention-away');
@@ -135,10 +136,13 @@ try {
 
   // ---------------------------------------------------------------- C. per-room mute from the room menu
   await W.cmd('home'); await sleep(500);
-  const mRes = await setRule('hush', 'mute', 0);
+  await W.cmd('server', { name: 'Test club' }); await sleep(1500);
+  await W.cmd('room_menu', { name: 'hush' }); await sleep(600);
+  const fm = await shot('room-menu'); check('C0 screenshot of the room menu', !!fm);
+  const mRes = await W.cmd('room_pick', { kind: 'mute', secs: 0 });
   const rC = await soft(until(async () => { const r = await rules(); return r[gidOf('hush')] ? r : null; }, 8000, 'rule saved', 200));
   check('C1 the room menu mutes a room (the core holds the rule: the same rule the web writes)', !rC.timeout && rC[gidOf('hush')].kind === 'muted' && mRes.ok, rC);
-  const f2 = await shot('rooms-muted');
+  await sleep(1500); const f2 = await shot('rooms-muted');
   await idle();
   n0 = notifs().length; c0 = chimes().length; const a0 = atts().length;
   await say(B, 'hush', 'psst'); await say(B, 'hush', 'psst @Nat even with a mention');
@@ -177,7 +181,7 @@ try {
 
   // ---------------------------------------------------------------- F. the window being looked at
   await W.cmd('attend', { on: true });
-  await W.cmd('open', { name: 'lounge' }); await sleep(1500); await idle();
+  await W.cmd('open', { name: 'lounge' }); await sleep(4000); await idle();
   c0 = chimes().length; const a1 = atts().length; n0 = notifs().length;
   await say(B, 'lounge', 'a message in the room you are reading');
   await sleep(6000);
