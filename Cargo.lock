@@ -6086,6 +6086,7 @@ version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
  "blake2",
+ "block2 0.6.2",
  "chrono",
  "commons-core",
  "commons-gamekeys",
@@ -6100,6 +6101,9 @@ dependencies = [
  "livekit",
  "log",
  "minisign-verify",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
+ "objc2-user-notifications",
  "parking_lot",
  "serde",
  "serde_json",
@@ -7017,6 +7021,7 @@ dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
  "objc2 0.6.5",
+ "objc2-core-location",
  "objc2-foundation 0.3.2",
 ]
 
