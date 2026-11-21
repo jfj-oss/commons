@@ -94,7 +94,11 @@ impl Snapshot {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Reaction { pub emoji: String, pub count: u64, pub mine: bool }
+pub struct Reaction { pub emoji: String, pub count: u64, pub mine: bool, pub names: Vec<String> }
+
+/// The message a reply answers (`reply` of a message row).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Reply { pub id: String, pub name: String, pub text: String }
 
 /// An attachment as the core describes it (`file` of a message row): a large one stays on the relay until it is downloaded.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -122,21 +126,28 @@ impl FileInfo {
 #[derive(Clone, Debug, Default)]
 pub struct Msg {
     pub id: String, pub sender: String, pub name: String, pub mine: bool, pub ts: u64, pub kind: String, pub text: String, pub status: String,
-    pub file: Option<FileInfo>, pub reply: Option<(String, String)>, pub edited: bool, pub deleted: bool, pub reactions: Vec<Reaction>, pub read_by: Vec<String>,
+    pub file: Option<FileInfo>, pub reply: Option<Reply>, pub seq: u64, pub edited: bool, pub deleted: bool, pub reactions: Vec<Reaction>, pub read_by: Vec<String>,
     /** the sender's role in the community ("owner", "admin", "member"), the start of their account id, and whether another person here has the same name */
     pub role: String, pub tag: String, pub same_name: bool,
+    /** the words as drawn (marks removed) and what is styled in them (rich.rs) */
+    pub rich: crate::rich::Parsed,
 }
 impl Msg {
+    /// The words as drawn: text messages and file captions are marked up like the page's `fmt`.
+    fn with_rich(mut self) -> Msg { if (self.kind == "text" || self.file.is_some()) && !self.text.is_empty() { self.rich = crate::rich::parse(&self.text); } else { self.rich.text = self.text.clone(); } self }
+    /// What is drawn and selected of this message.
+    pub fn shown(&self) -> &str { &self.rich.text }
     pub fn parse(v: &Value) -> Msg {
         Msg {
             id: st(v, "id"), sender: st(v, "sender"), name: st(v, "name"), mine: bo(v, "mine"), ts: un(v, "ts"), kind: st(v, "kind"), text: st(v, "text"), status: st(v, "status"),
             file: v.get("file").filter(|f| f.is_object()).map(FileInfo::parse),
-            reply: v.get("reply").filter(|r| r.is_object()).map(|r| (st(r, "name"), st(r, "text"))),
+            reply: v.get("reply").filter(|r| r.is_object()).map(|r| Reply { id: st(r, "id"), name: st(r, "name"), text: st(r, "text") }), seq: un(v, "seq"),
             edited: bo(v, "edited"), deleted: bo(v, "deleted"),
-            reactions: v["reactions"].as_array().map(|l| l.iter().map(|r| Reaction { emoji: st(r, "emoji"), count: un(r, "count"), mine: bo(r, "mine") }).collect()).unwrap_or_default(),
+            reactions: v["reactions"].as_array().map(|l| l.iter().map(|r| Reaction { emoji: st(r, "emoji"), count: un(r, "count"), mine: bo(r, "mine"), names: r["names"].as_array().map(|n| n.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default() }).collect()).unwrap_or_default(),
             read_by: v["read_by"].as_array().map(|l| l.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
             role: st(v, "role"), tag: st(v, "tag"), same_name: bo(v, "same_name"),
-        }
+            rich: Default::default(),
+        }.with_rich()
     }
 }
 
@@ -151,12 +162,19 @@ pub struct Window {
     pub more: bool,
     pub typing: Vec<String>,
     pub status: String,
+    /// The people of the room (and who I am), for picking out @mentions in the words.
+    pub names: Vec<String>,
+    pub me: String,
 }
 
 /// What changed in the list, for the virtual list: nothing, rows appended/changed in place, or everything.
 pub enum Change { Same, InPlace { changed: Vec<usize>, appended: usize }, Reset }
 
 impl Window {
+    /// Mark the @mentions of the people in the room in every message's words.
+    pub fn mark_all(&mut self) {
+        for m in &mut self.msgs { if m.rich.text.contains('@') { let mut p = if m.kind == "text" || m.file.is_some() { crate::rich::parse(&m.text) } else { continue }; crate::rich::mark_names(&mut p, &self.names, &self.me); m.rich = p; } }
+    }
     /// Apply an answer to `messages`. `Err(())` means the answer was a difference to a window this one does not hold: ask again in full.
     pub fn apply(&mut self, r: &Value) -> Result<Change, ()> {
         if r["same"].as_bool() == Some(true) { return Ok(Change::Same); }
@@ -176,6 +194,7 @@ impl Window {
                 raw = order.iter().filter_map(|id| raw.iter().find(|x| x["id"] == *id).cloned()).collect();
             }
             self.msgs = raw.iter().map(Msg::parse).collect();
+            self.mark_all();
             self.raw = raw;
             self.hash = st(r, "hash"); self.more = bo(r, "more"); self.typing = typing(r); self.status = st(r, "status");
             let prefix = self.msgs.len() >= old_ids.len() && self.msgs.iter().zip(old_ids.iter()).all(|(m, o)| &m.id == o);
@@ -185,6 +204,7 @@ impl Window {
         }
         self.raw = r["messages"].as_array().cloned().unwrap_or_default();
         self.msgs = self.raw.iter().map(Msg::parse).collect();
+        self.mark_all();
         self.hash = st(r, "hash"); self.more = bo(r, "more"); self.typing = typing(r); self.status = st(r, "status");
         Ok(Change::Reset)
     }

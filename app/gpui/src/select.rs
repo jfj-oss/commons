@@ -117,12 +117,14 @@ impl Sel {
     pub fn is_empty(&self) -> bool { self.now.is_none() }
 }
 
-pub const MENU_W: f32 = 168.;
+pub const MENU_W: f32 = 284.;
+/// The row of quick reactions on top of the menu of a message.
+pub const MENU_EMOJI: f32 = 44.;
 pub const MENU_ROW: f32 = 30.;
 
 impl Mega {
     fn row_of(&self, id: &str) -> Option<usize> { self.win.msgs.iter().position(|m| m.id == id) }
-    fn text_of(&self, ix: usize) -> &str { self.win.msgs.get(ix).map(|m| m.text.as_str()).unwrap_or("") }
+    fn text_of(&self, ix: usize) -> &str { self.win.msgs.get(ix).map(|m| m.shown()).unwrap_or("") }
 
     /// Work out the selection (row indexes may have moved since it was made): called after every change and when the room is drawn.
     pub fn sel_resolve(&mut self) {
@@ -169,13 +171,24 @@ impl Mega {
         let area = self.sel.area.get();
         // the menu: its own items act; anything else closes it
         if let Some((at, id)) = self.sel.menu.clone() {
-            let rows = self.menu_items().len() as f32;
-            let m = Bounds::new(at, size(px(MENU_W), px(MENU_ROW * rows + 8.)));
+            let (emoji, items) = self.menu_layout(&id);
+            let h = if emoji { MENU_EMOJI } else { 0. } + MENU_ROW * items.len() as f32 + 8.;
+            let at = self.menu_origin(at, h);
+            let m = Bounds::new(at, size(px(MENU_W), px(h)));
             if m.contains(&ev.position) {
                 if ev.button == MouseButton::Left {
-                    let k = ((f32::from(ev.position.y - at.y) - 4.) / MENU_ROW).floor().max(0.) as usize;
-                    let item = self.menu_items().get(k).copied();
-                    match item { Some("Copy") => self.sel_copy(cx), Some("Copy message") => self.copy_message(&id, cx), Some("Select all") => self.sel_all(window, cx), _ => {} }
+                    let dy = f32::from(ev.position.y - at.y) - 4.;
+                    if emoji && dy < MENU_EMOJI {
+                        let k = ((f32::from(ev.position.x - at.x) - 8.) / ((MENU_W - 16.) / 8.)).floor().max(0.) as usize;
+                        if let Some(e) = crate::msgact::QUICK.get(k) { self.msg_react(&id, e, window, cx); }
+                    } else {
+                        let k = ((dy - if emoji { MENU_EMOJI } else { 0. }) / MENU_ROW).floor().max(0.) as usize;
+                        match items.get(k).copied() {
+                            Some("Copy") => self.sel_copy(cx), Some("Copy message") => self.copy_message(&id, cx), Some("Select all") => self.sel_all(window, cx),
+                            Some("Reply") => self.msg_reply(&id, window, cx), Some("Edit") => self.msg_edit(&id, window, cx), Some("Delete") => self.msg_delete(&id, window, cx),
+                            _ => {}
+                        }
+                    }
                     self.sel.menu = None; cx.notify();
                 }
                 return;
@@ -204,7 +217,13 @@ impl Mega {
                 self.sel_resolve(); cx.notify();
             }
             MouseButton::Right => {
-                let Some((id, off)) = self.sel_hit(ev.position, true) else { return };
+                let Some((id, off)) = self.sel_hit(ev.position, true) else {
+                    // not on words (a picture, a file, the gap beside them): the menu of the message under the pointer
+                    if let Some(m) = self.sel_row_at(ev.position).and_then(|ix| self.win.msgs.get(ix)).filter(|m| !m.deleted && m.kind != "member" && m.kind != "notice") {
+                        let id = m.id.clone(); self.sel.clear(); self.sel.menu = Some((ev.position, id)); cx.notify();
+                    }
+                    return;
+                };
                 let ix = self.row_of(&id).unwrap_or(0);
                 // a right-click outside the selection drops it; the menu then offers the message
                 let inside = self.sel.now.is_some_and(|s| range_in(s, ix, self.text_of(ix).len()).is_some_and(|r| r.contains(&off.min(r.end.saturating_sub(1)))));
@@ -273,7 +292,7 @@ impl Mega {
         let rows: Vec<usize> = (0..self.win.msgs.len()).filter(|ix| self.selectable(*ix)).collect();
         let (Some(first), Some(last)) = (rows.first().copied(), rows.last().copied()) else { return };
         self.sel.anchor = Some(Anchor { id: self.win.msgs[first].id.clone(), a: 0, b: 0 });
-        self.sel.head = Some((self.win.msgs[last].id.clone(), self.win.msgs[last].text.len()));
+        self.sel.head = Some((self.win.msgs[last].id.clone(), self.win.msgs[last].shown().len()));
         self.sel.grain = Grain::Char; self.sel.dragging = false;
         window.focus(&self.sel.focus, cx);
         self.sel_resolve(); cx.notify();
@@ -284,7 +303,7 @@ impl Mega {
     /// What is selected, as it is copied.
     pub fn sel_string(&self) -> String {
         let Some(s) = self.sel.now else { return String::new() };
-        let rows: Vec<Option<(&str, &str)>> = (0..self.win.msgs.len()).map(|ix| self.selectable(ix).then(|| (self.win.msgs[ix].name.as_str(), self.win.msgs[ix].text.as_str()))).collect();
+        let rows: Vec<Option<(&str, &str)>> = (0..self.win.msgs.len()).map(|ix| self.selectable(ix).then(|| (self.win.msgs[ix].name.as_str(), self.win.msgs[ix].shown()))).collect();
         copy_text(s, &rows)
     }
 
@@ -294,16 +313,28 @@ impl Mega {
     }
 
     pub fn copy_message(&mut self, id: &str, cx: &mut Context<Self>) {
-        if let Some(m) = self.win.msgs.iter().find(|m| m.id == id) { if !m.text.is_empty() { cx.write_to_clipboard(ClipboardItem::new_string(m.text.clone())); } }
+        if let Some(m) = self.win.msgs.iter().find(|m| m.id == id) { if !m.text.is_empty() { cx.write_to_clipboard(ClipboardItem::new_string(m.shown().to_string())); } }
     }
 
-    /// The menu's items: "Copy" only when there is a selection.
-    pub fn menu_items(&self) -> Vec<&'static str> {
+    /// Where the menu is drawn: at the click, moved in when it would run out of the list's area.
+    pub fn menu_origin(&self, at: Point<Pixels>, h: f32) -> Point<Pixels> {
+        let area = self.sel.area.get();
+        let x = f32::from(at.x).min(f32::from(area.right()) - MENU_W - 8.).max(f32::from(area.left()) + 4.);
+        let y = f32::from(at.y).min(f32::from(area.bottom()) - h - 4.).max(f32::from(area.top()) + 4.);
+        point(px(x), px(y))
+    }
+
+    /// The menu of a message: the quick reactions on top, then what may be done with it (mega-touch.js `menuFor`, and Copy). "Copy" only with a selection.
+    pub fn menu_layout(&self, id: &str) -> (bool, Vec<&'static str>) {
         let mut v = vec![];
+        let Some(m) = self.win.msgs.iter().find(|m| m.id == id) else { return (false, v) };
+        v.push("Reply");
         if !self.sel.is_empty() { v.push("Copy"); }
-        v.push("Copy message");
-        v.push("Select all");
-        v
+        if !m.text.is_empty() { v.push("Copy message"); }
+        if m.mine && m.kind == "text" { v.push("Edit"); }
+        if m.mine || self.is_admin_here() { v.push("Delete"); }
+        if self.win.msgs.iter().any(|m| m.kind == "text") { v.push("Select all"); }
+        (true, v)
     }
 
     /// For the test port: the selection as copied, and the pixel where a character of a message is drawn.

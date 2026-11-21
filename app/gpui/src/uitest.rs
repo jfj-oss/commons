@@ -110,6 +110,17 @@ impl Mega {
                 "scroll" => { let mut dy = cmd["dy"].as_f64().unwrap_or(0.) as f32; if dy > 0. && self.reading.remaining < 1. { dy += self.reading.size.1; } if cmd["end"].as_bool() == Some(true) { self.list.scroll_to_end(); } else { self.list.scroll_by(px(-dy)); } cx.notify(); json!({"ok": true}) }
                 "reading" => self.reading_dump(),
                 "selection" => self.sel_dump(),
+                // message actions without a pointer: msg (what the composer holds and where the tools are) and msg_do {what: reply|edit|delete|react|goto|older|cancel, id, emoji}
+                "msg" => self.msg_dump(),
+                "msg_do" => {
+                    let id = s("id");
+                    match cmd["what"].as_str().unwrap_or("") {
+                        "reply" => self.msg_reply(&id, window, cx), "edit" => self.msg_edit(&id, window, cx), "delete" => self.msg_delete(&id, window, cx),
+                        "react" => self.msg_react(&id, &s("emoji"), window, cx), "goto" => self.msg_goto(&id, window, cx), "older" => self.msg_older(window, cx), "cancel" => self.msg_cancel(window, cx),
+                        o => { let o = o.to_string(); let _ = tx.send(json!({"error": format!("unknown {o}")})); continue; }
+                    }
+                    json!({"ok": true})
+                }
                 "clipboard" => json!({"text": cx.read_from_clipboard().and_then(|c| c.text())}),
                 "open" => {
                     let want = s("name");

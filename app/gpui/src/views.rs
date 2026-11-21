@@ -106,7 +106,9 @@ impl Mega {
         let Some(m) = self.win.msgs.get(ix) else { return div().into_any_element() };
         let prev = ix.checked_sub(1).and_then(|i| self.win.msgs.get(i));
         let star = self.dm_marks.0 == self.gid.clone().unwrap_or_default() && self.dm_marks.1 > 0 && ix + self.dm_marks.1 >= self.win.msgs.len() && !m.mine;
-        let me = self.snap.as_ref().map(|s| s.me_name.as_str()).unwrap_or("");
+        let me_name_owned = self.snap.as_ref().map(|s| s.me_name.clone()).unwrap_or_default();
+        let me_name = me_name_owned.as_str();
+        let me = me_name;
         let now = self.now_secs();
         let today = chrono::Local::now();
         let day = (m.ts > 0 && prev.map_or(true, |p| p.ts == 0 || day_words(p.ts, today) != day_words(m.ts, today))).then(|| day_words(m.ts, today));
@@ -135,7 +137,12 @@ impl Mega {
             arrive: self.arrivals.progress(&m.id, now).map(|k| (k, (now * 60.) as u64)),
             hi: rgb(self.room_duo(self.gid.as_deref().unwrap_or("")).hi).into(),
             flights: self.flights.live.iter().filter(|f| f.msg == m.id).cloned().collect(),
-            now, k, day, new, pick: self.sel.now.and_then(|s| crate::select::range_in(s, ix, m.text.len())), texts: self.sel.texts.clone(), file: self.file_ctx(m).map(|mut c| { c.k = k; c }),
+            now, k, day, new, pick: self.sel.now.and_then(|s| crate::select::range_in(s, ix, m.shown().len())), texts: self.sel.texts.clone(), file: self.file_ctx(m).map(|mut c| { c.k = k; c }),
+            act: self.files.me.clone().map(|me| {
+                let src = m.reply.as_ref().and_then(|r| self.win.msgs.iter().find(|x| x.id == r.id));
+                crate::msgact::ActCtx { me, hits: self.files.hits.clone(), can_edit: m.mine && m.kind == "text" && !m.deleted, can_delete: (m.mine || self.is_admin_here()) && !m.deleted, flash: self.flash_of(&m.id, now), mention: !m.mine && !m.deleted && (crate::arrive::mentions(&m.text, me_name) || src.is_some_and(|x| x.mine)),
+                    quote_gone: src.is_some_and(|x| x.deleted), older: ix == 0 && self.win.more, hi: rgb(self.room_duo(self.gid.as_deref().unwrap_or("")).hi).into() }
+            }),
         };
         let el = row(m, prev, self.chat_font(), &self.holes, star, &fx);
         match full { Some(h) => div().w_full().h(px(h)).flex().flex_col().justify_center().overflow_hidden().opacity(op).child(el).into_any_element(), None => el }
@@ -212,6 +219,11 @@ impl Mega {
         }).flatten();
         let jump = self.reading.remaining >= 260.;
         let has_text = !self.composer.read(cx).value().trim().is_empty();
+        let editing = self.msg.edit.is_some();
+        let reply_bar = self.reply_bar(cx);
+        let react_pop = self.react_pop(cx);
+        if crate::reading::at_end(self.reading.remaining) { self.msg.below = 0; }
+        let below = self.msg.below;
         let bar_chips = self.room_bar(&gid, is_dm, owner, wall_btn, chat_cid, cx);
         let drag_seen = self.files.drag_seen.clone();
         let drop_hint = self.drop_overlay(rgb(duo.hi).into(), &title);
@@ -232,16 +244,17 @@ impl Mega {
                 .child(list(self.list.clone(), cx.processor(|this, ix: usize, _, _| this.render_msg(ix))).size_full().pb(px(42.)))
                 .child(div().absolute().top_0().right_0().bottom_0().w(px(12.)).child(Scrollbar::vertical(&self.list)))
                 .children(float_day.map(|t| h_flex().absolute().top(px(6.)).left_0().right_0().justify_center().child(div().px(px(14.)).py(px(6.)).rounded_full().bg(rgb(0x1b1922)).border_1().border_color(look::line()).font_family(look::F_SHARP).text_size(px(14.)).text_color(look::mute()).child(t))))
-                .children(jump.then(|| h_flex().absolute().bottom(px(10.)).left_0().right_0().justify_center().child(div().id("jump").px(px(14.)).py(px(7.)).rounded_full().bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_UI).text_size(px(12.)).cursor_pointer().child("\u{2193} latest")
+                .children(jump.then(|| h_flex().absolute().bottom(px(10.)).left_0().right_0().justify_center().child(div().id("jump").px(px(14.)).py(px(7.)).rounded_full().bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_UI).text_size(px(12.)).cursor_pointer().when(below > 0, |d| d.bg(rgb(duo.hi)).text_color(rgb(look::VOID))).child(if below > 0 { format!("\u{2193} {below} new") } else { "\u{2193} latest".to_string() })
                     .on_click(cx.listener(|this, _, _, cx| { this.list.scroll_to_end(); cx.notify(); })))))
-                .children(self.sel_menu()))
+                .children(react_pop).children(self.sel_menu()))
             .child(h_flex().w_full().flex_none().justify_center().px_4()
                 .child(v_flex().w_full().max_w(px(COLUMN - 20.))
                     .children(typing_strip)
-                    .child(div().relative().w_full().px_2().py_1().border_1().border_color(hsla(0., 0., 0., 0.))
+                    .child(v_flex().relative().w_full().px_2().py_1().border_1().border_color(hsla(0., 0., 0., 0.))
                         .font_family(font)
                         // a translucent slip over the backdrop: a squircle fill and border, never a cut (the backdrop moves behind it)
                         .child(sq::back(22., hsla(0.71, 0.22, 0.07, 0.93))).child(hole(&holes))
+                        .children(reply_bar)
                         .child(h_flex().relative().items_end().gap_2()
                             .child(div().id("attach").relative().flex_none().mb_1().flex().items_center().justify_center().size(px(36.)).rounded_full().cursor_pointer().bg(hsla(0., 0., 1., 0.06)).tooltip(|window, cx| Tooltip::new("Send a file").build(window, cx))
                                 .child(crate::icons::icon(crate::icons::Icon::Clip, 18., look::mute())).child(self.files.hits.track("attach"))
@@ -251,7 +264,7 @@ impl Mega {
                                 .font_family(look::F_UI).text_size(px(13.))
                                 .when(has_text, |d| d.bg(look::paper()).text_color(rgb(look::VOID)))
                                 .when(!has_text, |d| d.bg(hsla(0., 0., 1., 0.06)).text_color(look::mute()))
-                                .child("send").on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))))
+                                .child(if editing { "save" } else { "send" }).on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))))
                         .child(sq::front(22., None, Some((1., look::line())), None)))
                     // the small print under the slip: who is writing, or what the room promises (web `#typing` and `#hint`)
                     .child(h_flex().h(px(22.)).px_3().gap(px(5.)).items_center().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute())
@@ -344,7 +357,7 @@ impl Mega {
 
 /// What is happening to one message right now (arrive.rs): its size tier, its glyph copy while it arrives, reactions flying to it.
 /// `k` is the reading zone's scale (reading.rs; 1 = whole), `day` the day line above it, `new` the "N new" line above it.
-pub struct RowFx { pub tier_px: Option<f32>, pub arrive: Option<(f64, u64)>, pub hi: Hsla, pub flights: Vec<crate::arrive::Flight>, pub now: f64, pub k: f32, pub day: Option<String>, pub new: Option<usize>, /** the selected part of the text, and where to keep its painted layout (select.rs) */ pub pick: Option<std::ops::Range<usize>>, pub texts: crate::select::Texts, /** the file of this message, if it has one (files.rs) */ pub file: Option<crate::files::FileCtx> }
+pub struct RowFx { pub tier_px: Option<f32>, pub arrive: Option<(f64, u64)>, pub hi: Hsla, pub flights: Vec<crate::arrive::Flight>, pub now: f64, pub k: f32, pub day: Option<String>, pub new: Option<usize>, /** the selected part of the text, and where to keep its painted layout (select.rs) */ pub pick: Option<std::ops::Range<usize>>, pub texts: crate::select::Texts, /** the file of this message, if it has one (files.rs) */ pub file: Option<crate::files::FileCtx>, /** the tools, chips and quote of this message (msgact.rs) */ pub act: Option<crate::msgact::ActCtx> }
 
 /// The widest the message column gets (mega-design.css: `--gutter` 58 + `--measure` 800 + 44 around it).
 pub const COLUMN: f32 = 902.;
@@ -363,6 +376,40 @@ fn ticks(color: Hsla, k: f32) -> impl IntoElement {
     }).w(px(13. * k)).h(px(9. * k)).flex_none()
 }
 
+/// The row's painted text layout, looked up when a click comes (it is stored while the row paints).
+fn el_layout(id: &str, texts: &crate::select::Texts) -> LayoutCell { LayoutCell { id: id.to_string(), texts: texts.clone() } }
+struct LayoutCell { id: String, texts: crate::select::Texts }
+impl LayoutCell { fn get(&self) -> Option<gpui_kit::TextLayout> { self.texts.borrow().get(&self.id).map(|t| t.layout.clone()) } }
+
+/// The runs of a message's words: the room's font, with bold, italic, code, links and mentions picked out, and the selection behind (rich.rs).
+fn text_runs(p: &crate::rich::Parsed, family: &'static str, hi: Hsla, ink: Hsla, pick: Option<std::ops::Range<usize>>, pick_bg: Hsla) -> Vec<TextRun> {
+    use crate::rich::Kind;
+    let n = p.text.len();
+    let mut cuts = vec![0, n];
+    for s in &p.spans { cuts.push(s.r.start.min(n)); cuts.push(s.r.end.min(n)); }
+    if let Some(r) = &pick { cuts.push(r.start.min(n)); cuts.push(r.end.min(n)); }
+    cuts.sort_unstable(); cuts.dedup(); cuts.retain(|c| p.text.is_char_boundary(*c));
+    let mut runs = Vec::with_capacity(cuts.len());
+    for w in cuts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if a == b { continue; }
+        let (mut f, mut color, mut bg, mut ul) = (font(family), ink, None, None);
+        for s in &p.spans {
+            if !(s.r.start <= a && b <= s.r.end) { continue; }
+            match &s.k {
+                Kind::Bold => f.weight = FontWeight::BOLD,
+                Kind::Italic => f.style = FontStyle::Italic,
+                Kind::Code => { f = font(look::F_MONO); bg = Some(hsla(0., 0., 1., 0.07)); }
+                Kind::Link(_) => { color = hi; ul = Some(UnderlineStyle { thickness: px(1.), color: Some(hi), wavy: false }); }
+                Kind::At(me) => { f.weight = FontWeight::MEDIUM; if *me { bg = Some(hi); color = rgb(look::VOID).into(); } else { color = hi; } }
+            }
+        }
+        if pick.as_ref().is_some_and(|r| r.start <= a && b <= r.end) { bg = Some(pick_bg); }
+        runs.push(TextRun { len: b - a, font: f, color, background_color: bg, underline: ul, strikethrough: None });
+    }
+    runs
+}
+
 /// A small outlined tag next to a name (mega-polish.css `.chip`: "owner", "admin").
 fn tag(text: String, k: f32) -> Div {
     div().px(px(8. * k)).rounded_full().border_1().border_color(look::line()).text_color(look::mute()).text_size(px(11. * k)).line_height(px(16. * k)).child(text)
@@ -373,6 +420,14 @@ fn day_line(text: String, holes: &Holes) -> Div {
     let hair = || div().flex_1().h(px(1.)).bg(hsla(0., 0., 1., 0.08));
     h_flex().w_full().items_center().gap(px(14.)).mt(px(18.)).mb(px(8.)).px_2().text_color(look::mute())
         .child(hair()).child(div().relative().font_family(look::F_SHARP).text_size(px(14.)).line_height(px(14.)).child(text).child(hole(holes))).child(hair())
+}
+
+/// The line above the oldest message held while there are older ones (app.js `Show earlier messages`).
+fn older_line(c: &crate::msgact::ActCtx) -> impl IntoElement {
+    let me = c.me.clone();
+    h_flex().w_full().justify_center().mt(px(10.)).child(div().id("older").relative().px(px(14.)).py(px(6.)).rounded_full().cursor_pointer().font_family(look::F_UI).text_size(px(12.)).text_color(look::mute())
+        .bg(hsla(0., 0., 1., 0.06)).hover(|s| s.bg(hsla(0., 0., 1., 0.12))).child("Show earlier messages").child(c.hits.track("older"))
+        .on_click(crate::msgact::on(&me, |this, window, cx| this.msg_older(window, cx))))
 }
 
 /// The "N new" line (mega-polish.css `.newline`): in the room's bright colour, a line after it.
@@ -415,28 +470,39 @@ pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f3
             .child(div().text_color(look::mute()).child(clock(m.ts)))
             .when(!m.read_by.is_empty(), |d| d.child(ticks(look::mute(), k))));
     }
-    if let Some((who, text)) = &m.reply {
-        col = col.child(div().relative().child(hole(holes)).max_w_full().pl_2().border_l_2().border_color(look::line()).text_color(look::mute()).font_family(font).text_size(px(size * 0.7)).child(format!("{who}: {text}")));
+    if let (Some(r), Some(c)) = (&m.reply, &fx.act) {
+        if !c.quote_gone { col = col.child(div().relative().child(hole(holes)).max_w_full().child(crate::msgact::quote(r, font, size * 0.7, c))); }
     }
     let body: AnyElement = if let (Some(fi), Some(ctx)) = (&m.file, &fx.file) { crate::files::body(m, fi, ctx, holes) }
         else if let Some((kk, tick)) = fx.arrive {
             // the real words stay where they are (invisible, so the row keeps its size); a copy made of glyphs sits over them and resolves
-            let (copy, real) = crate::arrive::compose(&m.text, kk, tick);
+            let (copy, real) = crate::arrive::compose(m.shown(), kk, tick);
             let ink = look::paper();
             div().relative().child(hole(holes)).max_w_full().font_family(font).text_size(px(size)).line_height(px(lh))
-                .child(div().text_color(hsla(0., 0., 0., 0.)).child(m.text.clone()))
+                .child(div().text_color(hsla(0., 0., 0., 0.)).child(m.shown().to_string()))
                 .child(div().absolute().top_0().left_0().size_full().overflow_hidden().text_color(fx.hi)
                     .child(StyledText::new(copy).with_highlights([(0..real, HighlightStyle { color: Some(ink), ..Default::default() })])))
                 .into_any_element()
         }
         else if m.kind == "text" && m.file.is_none() && !m.text.is_empty() {
-            // the words are a StyledText so a selection can colour part of them and the painted layout can be asked where a pointer is
-            let hi = fx.hi.opacity(0.4);
-            let st = StyledText::new(m.text.clone()).with_highlights(fx.pick.clone().map(|r| (r, HighlightStyle { background_color: Some(hi), ..Default::default() })));
+            // the words are a StyledText so a selection can colour part of them and the painted layout can be asked where a pointer is;
+            // links, mentions, bold, italic and code are runs of it (rich.rs)
+            let runs = text_runs(&m.rich, font, fx.hi, look::paper(), fx.pick.clone(), fx.hi.opacity(0.4));
+            let st = StyledText::new(m.shown().to_string()).with_runs(runs);
             let (layout, texts, id) = (st.layout().clone(), fx.texts.clone(), m.id.clone());
-            div().relative().child(hole(holes)).max_w_full().font_family(font).text_size(px(size)).line_height(px(lh)).child(st)
-                .child(canvas(|_, _, _| {}, move |b, _, _, _| { texts.borrow_mut().insert(id.clone(), crate::select::RowText { layout: layout.clone(), bounds: layout.bounds() }); let _ = b; }).absolute().top_0().left_0().size_full())
-                .into_any_element()
+            let links = crate::rich::links(&m.rich);
+            let el = div().id(SharedString::from(format!("txt-{}", m.id))).relative().child(hole(holes)).max_w_full().font_family(font).text_size(px(size)).line_height(px(lh)).child(st)
+                .child(canvas(|_, _, _| {}, move |b, _, _, _| { texts.borrow_mut().insert(id.clone(), crate::select::RowText { layout: layout.clone(), bounds: layout.bounds() }); let _ = b; }).absolute().top_0().left_0().size_full());
+            match (&fx.act, links.is_empty()) {
+                (Some(c), false) => {
+                    let lay = el_layout(&m.id, &fx.texts);
+                    el.cursor_pointer().on_click(crate::msgact::on_at(&c.me, move |this, p, window, cx| {
+                        let Some(off) = lay.get().and_then(|l| l.index_for_position(p).ok()) else { return };
+                        if let Some((_, url)) = links.iter().find(|(r, _)| r.contains(&off)) { this.open_link(url, window, cx); }
+                    })).into_any_element()
+                }
+                _ => el.into_any_element(),
+            }
         }
         else { div().relative().child(hole(holes)).max_w_full().font_family(font).text_size(px(size)).line_height(px(lh)).child(m.text.clone()).into_any_element() };
     col = col.child(body);
@@ -449,10 +515,11 @@ pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f3
             let mut t = crate::arrive::Flights::default(); t.live = fx.flights.clone(); t.shown(&m.id, &r.emoji, fx.now, r.count)
         };
         if let Some(f) = fx.flights.iter().find(|f| f.emoji == r.emoji) { flying.push((i, f.clone())); }
-        let pill = div().relative().px_1p5().border_1().border_color(hsla(0., 0., 0., 0.)).text_size(px(13. * k)).child(format!("{} {}", r.emoji, shown.unwrap_or(r.count)))
-            .child(sq::front(999., None, Some((1., if r.mine { look::paper() } else { look::line() })), None));
+        let Some(c) = &fx.act else { continue };
+        let pill = crate::msgact::chip(m, r, shown.unwrap_or(r.count), k, c);
         foot = foot.child(if shown.is_none() { pill.opacity(0.) } else { pill });
     }
+    if let (Some(c), false) = (&fx.act, m.reactions.is_empty()) { foot = foot.child(crate::msgact::add_chip(m, k, c)); }
     if !flying.is_empty() { foot = foot.child(flight_spot(landing.clone())); }
     if m.edited { foot = foot.child(div().text_color(look::mute()).text_size(px(11. * k)).child("edited")); }
     if m.mine && (m.status == "pending" || m.status == "failed") { foot = foot.child(div().text_color(look::mute()).text_size(px(11. * k)).child(m.status.clone())); }
@@ -460,12 +527,17 @@ pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f3
     if !m.read_by.is_empty() && !head { foot = foot.child(div().flex().items_center().h(px(14.)).child(ticks(look::mute(), k))); }
     let has_foot = !m.reactions.is_empty() || m.edited || (!m.read_by.is_empty() && !head) || (m.mine && (m.status == "pending" || m.status == "failed"));
     if has_foot { foot = foot.child(hole(holes)); }
-    v_flex().w_full().when_some(fx.day.clone(), |d, t| d.child(line(day_line(t, holes)))).when_some(fx.new, |d, n| d.child(line(new_line(n, fx.hi, holes))))
-        .child(line(h_flex().relative().items_start().gap_3().px(px(10.)).pb_1().when(head, |d| d.pt(px(10.)))
+    let group = SharedString::from(format!("row-{}", m.id));
+    let older = fx.act.as_ref().is_some_and(|c| c.older);
+    v_flex().w_full().when(older, |d| d.child(older_line(fx.act.as_ref().unwrap()))).when_some(fx.day.clone(), |d, t| d.child(line(day_line(t, holes)))).when_some(fx.new, |d, n| d.child(line(new_line(n, fx.hi, holes))))
+        .child(line(h_flex().relative().group(group.clone()).items_start().gap_3().px(px(10.)).pb_1().when(head, |d| d.pt(px(10.)))
+            .when_some(fx.act.as_ref().filter(|c| c.mention), |d, c| d.child(div().absolute().inset_0().bg(linear_gradient(90., linear_color_stop(c.hi.opacity(0.14), 0.), linear_color_stop(c.hi.opacity(0.), 0.86)))).child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(c.hi)))
+            .when_some(fx.act.as_ref().filter(|c| c.flash > 0.), |d, c| d.child(div().absolute().inset_0().rounded(px(10.)).bg(c.hi.opacity(0.22 * c.flash))))
             .when(!flying.is_empty(), |d| d.child(flight_layer(flying, landing, fx.now, fx.hi)))
             .when(star, |d| d.child(div().absolute().left(px(-12.)).top(px(if head { 22. } else { 8. })).text_size(px(13.)).text_color(look::paper()).opacity(0.8).child("✦")))
             .child(if head { avatar(&m.sender, &m.name, 36. * k).mt_1() } else { div().w(px(36. * k)).flex_none() })
-            .child(col.child(foot)))).into_any_element()
+            .child(col.child(foot))
+            .when_some(fx.act.as_ref().filter(|c| c.can_act()), |d, c| d.child(crate::msgact::tools(m, c, group.clone()))))).into_any_element()
 }
 
 impl Render for Mega {
@@ -491,6 +563,7 @@ impl Render for Mega {
             .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 if this.paint_key(ev, window, cx) { cx.stop_propagation(); return; }
                 if this.files_key(ev, window, cx) { cx.stop_propagation(); return; }
+                if this.msg_key(ev, window, cx) { cx.stop_propagation(); return; }
                 if this.wall.on && this.wall.room_mode && ev.keystroke.key == "escape" { this.wall_off(); cx.notify(); cx.stop_propagation(); return; } this.ptt_key_event(ev.keystroke.key.as_str(), true, cx); }))
             .capture_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| { this.ptt_key_event(ev.keystroke.key.as_str(), false, cx); }))
             // Ctrl/Cmd+V in the box with a picture (or copied files) on the clipboard sends it; text still pastes as text. The box's own Paste
@@ -543,11 +616,16 @@ fn sel_watch(area: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>, cx: &mut Contex
 impl Mega {
     /// The right-click menu over a message: Copy (a selection), Copy message, Select all. Items are read by position in `sel_down`.
     fn sel_menu(&self) -> Option<AnyElement> {
-        let (at, _) = self.sel.menu.clone()?;
+        let (at, id) = self.sel.menu.clone()?;
         let area = self.sel.area.get();
-        let items = self.menu_items();
-        Some(v_flex().absolute().left(at.x - area.left()).top(at.y - area.top()).w(px(crate::select::MENU_W)).py(px(4.)).rounded(px(10.)).bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_UI).text_size(px(13.))
-            .children(items.into_iter().map(|t| div().h(px(crate::select::MENU_ROW)).px(px(14.)).flex().items_center().child(t))).into_any_element())
+        let (emoji, items) = self.menu_layout(&id);
+        let h = if emoji { crate::select::MENU_EMOJI } else { 0. } + crate::select::MENU_ROW * items.len() as f32 + 8.;
+        let o = self.menu_origin(at, h);
+        let (x, y) = (f32::from(o.x - area.left()), f32::from(o.y - area.top()));
+        let mine: Vec<String> = self.msg_of(&id).map(|m| m.reactions.iter().filter(|r| r.mine).map(|r| r.emoji.clone()).collect()).unwrap_or_default();
+        Some(v_flex().id("msg-menu").absolute().left(px(x)).top(px(y)).w(px(crate::select::MENU_W)).py(px(4.)).rounded(px(10.)).bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_UI).text_size(px(13.))
+            .when(emoji, |d| d.child(h_flex().h(px(crate::select::MENU_EMOJI)).px(px(8.)).items_center().children(crate::msgact::QUICK.iter().map(|e| div().flex().items_center().justify_center().w(px((crate::select::MENU_W - 16.) / 8.)).h(px(36.)).rounded(px(10.)).text_size(px(20.)).when(mine.iter().any(|m| m == e), |d| d.bg(hsla(0., 0., 1., 0.16))).child(e.to_string())))))
+            .children(items.into_iter().map(|t| div().h(px(crate::select::MENU_ROW)).px(px(14.)).flex().items_center().when(t == "Delete", |d| d.text_color(rgb(look::DANGER))).child(t))).into_any_element())
     }
 }
 

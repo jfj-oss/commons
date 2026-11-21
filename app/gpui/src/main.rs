@@ -42,6 +42,8 @@ mod update;
 mod updateui;
 mod presence;
 mod views;
+mod msgact;
+mod rich;
 mod look;
 mod paint;
 mod wall;

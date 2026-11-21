@@ -5,7 +5,7 @@ use gpui_kit::*;
 
 /// The web's icon names.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Icon { Mic, MicOff, Phones, Screen, Cam, Leave, Gear, Lock, Bell, Pop, Mini, Play, Pause, Next, Prev, Download, File, Clip, Close, Folder, Left, Right, Plus, Minus, Music }
+pub enum Icon { Mic, MicOff, Phones, Screen, Cam, Leave, Gear, Lock, Bell, Pop, Mini, Play, Pause, Next, Prev, Download, File, Clip, Close, Folder, Left, Right, Plus, Minus, Music, Reply, Smile, Pencil, Trash, Search }
 
 /// One shape of an icon in the 20x20 box.
 enum S { Path(&'static str), Rect(f32, f32, f32, f32, f32), Circle(f32, f32, f32) }
@@ -40,6 +40,12 @@ fn shapes(i: Icon) -> &'static [S] {
         Icon::Right => &[Path("M7.5 4l6 6-6 6")],
         Icon::Plus => &[Path("M10 4v12M4 10h12")],
         Icon::Minus => &[Path("M4 10h12")],
+        // the web sprite's own `i-reply`, `i-smile`, `i-pencil`, `i-trash` (app/ui/index.html)
+        Icon::Reply => &[Path("M8 4.5 3.5 9 8 13.5M4 9h7.5a5 5 0 0 1 5 5v1.5")],
+        Icon::Smile => &[Path("M16 10.5a6.7 6.7 0 1 1-6.5-7M6.7 11.7c.7 1 1.7 1.5 2.8 1.5C10.6 13.2 11.6 12.7 12.3 11.7M7.2 8.2v.1M11.8 8.2v.1M15.5 2.5v5M13 5h5")],
+        Icon::Pencil => &[Path("m13.2 3.6 3.2 3.2L7 16.2l-4 .9.9-4zM11.3 5.5l3.2 3.2")],
+        Icon::Trash => &[Path("M3.5 5.5h13M8 5.5V3.5h4v2M5.3 5.5l.8 11h7.8l.8-11M8.5 9v4M11.5 9v4")],
+        Icon::Search => &[Circle(8.8, 8.8, 5.3), Path("m12.8 12.8 4 4")],
     }
 }
 
