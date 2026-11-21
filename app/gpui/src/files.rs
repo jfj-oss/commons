@@ -104,6 +104,7 @@ fn act(me: &WeakEntity<Mega>, f: impl Fn(&mut Mega, &mut Window, &mut Context<Me
 impl Mega {
     pub fn files_init(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.files.me = Some(cx.entity().downgrade());
+        self.voice_init(window, cx);
         media::init(self.core.clone());
         // the picture clock: playback moves at the speed of its frames, nothing else asks for them
         let t = cx.spawn_in(window, async move |this, cx| loop {

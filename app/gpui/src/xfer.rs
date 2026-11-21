@@ -73,6 +73,7 @@ static LIVE: Mutex<Vec<Arc<Xfer>>> = Mutex::new(Vec::new());
 static GEN: AtomicU64 = AtomicU64::new(1);
 /// Bumped on every change anybody could see; the window redraws when it sees a new number.
 pub fn generation() -> u64 { GEN.load(Ordering::Acquire) }
+pub fn bump_pub() { bump(); }
 fn bump() { GEN.fetch_add(1, Ordering::AcqRel); }
 pub fn live() -> Vec<Arc<Xfer>> { LIVE.lock().unwrap().clone() }
 pub fn find(key: &str) -> Option<Arc<Xfer>> { LIVE.lock().unwrap().iter().find(|x| x.key == key).cloned() }

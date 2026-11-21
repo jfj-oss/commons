@@ -267,6 +267,7 @@ impl Mega {
                 "join_text" => { let v = s("text"); self.mem.join_in.update(cx, |i, cx| i.set_value(v, window, cx)); self.join_submit(window, cx); json!({"ok": true}) }
                 "click" => match s("what").as_str() { "confirm" => { self.run_confirm(window, cx); json!({"ok": true}) } "cancel" => { self.mem.confirm = None; cx.notify(); json!({"ok": true}) } _ => json!({"error": "unknown button"}) },
                 "core" => { let core = self.core.clone(); let (m, a) = (s("method"), cmd["args"].clone()); match core.call(&m, a) { Ok(v) => json!({"ok": v}), Err(e) => json!({"error": e}) } }
+                other if other.starts_with("voice") => self.voice_cmd(&cmd, window, cx),
                 other if other.starts_with("files_") => self.files_cmd(&cmd, window, cx),
                 other => json!({"error": format!("unknown command {other}")}),
             };

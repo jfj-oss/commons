@@ -34,6 +34,7 @@ mod gamekeys;
 mod media;
 mod playback;
 mod xfer;
+mod voice;
 mod linen;
 mod members;
 mod onboard;
