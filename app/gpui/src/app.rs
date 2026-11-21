@@ -92,6 +92,8 @@ pub struct Mega {
     pub msg: crate::msgact::MsgUi,
     /// Searching messages (search.rs).
     pub find: crate::search::SearchUi,
+    /// The emoji picker (emoji.rs).
+    pub emoji: crate::emoji::EmojiUi,
     /// The updater's state and cards (updateui.rs).
     pub upd: crate::updateui::UpdateUi,
     /// The card column of the home and community levels (cards.rs).
@@ -119,6 +121,7 @@ impl Mega {
         let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 8).submit_on_enter(true).placeholder("Write a message"));
         let (mem, mem_subs) = crate::members::MembersUi::new(window, cx);
         let (find, find_subs) = crate::search::SearchUi::new(window, cx);
+        let (emoji, emoji_subs) = crate::emoji::EmojiUi::new(window, cx, &core.dir);
         let mut subs = vec![
             cx.subscribe_in(&composer, window, |this: &mut Self, _, ev: &InputEvent, window, cx| match ev {
                 // Enter sends; Shift+Enter is a new line (the input inserts it itself and does not report it as a submit).
@@ -128,7 +131,7 @@ impl Mega {
             }),
             cx.subscribe_in(&pass, window, |this: &mut Self, _, ev: &InputEvent, window, cx| { if let InputEvent::PressEnter { .. } = ev { this.submit_sign_in(window, cx); } }),
         ];
-        subs.extend(mem_subs); subs.extend(find_subs);
+        subs.extend(mem_subs); subs.extend(find_subs); subs.extend(emoji_subs);
         subs.push(cx.observe_window_activation(window, |this, window, cx| this.beat(window, cx)));
         let prefs = Prefs::load(&core.dir);
         let call = crate::callui::CallUi::new(prefs.deck_w, window, cx);
@@ -137,7 +140,7 @@ impl Mega {
         let (paint, paint_sub) = crate::paint::PaintUi::new(window, cx);
         subs.push(paint_sub);
         let mut this = Mega {
-            files: Default::default(), nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), fake_dm_unread: 0, dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx), msg: Default::default(), find,
+            files: Default::default(), nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), fake_dm_unread: 0, dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx), msg: Default::default(), find, emoji,
             level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd: crate::backdrop::Bd::new(""), typing_ui: Default::default(), typing_at: Instant::now(), fake_hidden: false, holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),

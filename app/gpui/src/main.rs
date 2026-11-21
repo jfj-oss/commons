@@ -45,6 +45,8 @@ mod views;
 mod msgact;
 mod rich;
 mod search;
+mod emoji;
+mod emoji_table;
 mod look;
 mod paint;
 mod wall;

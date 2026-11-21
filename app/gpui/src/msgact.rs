@@ -282,7 +282,7 @@ impl Mega {
         let (at, id) = self.msg.pop.clone()?;
         let area = self.sel.area.get();
         let m = self.msg_of(&id)?;
-        let w = 8. * 34. + 14.;
+        let w = 9. * 34. + 14.;
         let x = (f32::from(at.x - area.left()) + 14. - w).clamp(8., (f32::from(area.size.width) - w - 8.).max(8.));
         let above = f32::from(at.y - area.top()) - 52.;
         let y = if above > 8. { above } else { f32::from(at.y - area.top()) + 12. };
@@ -295,7 +295,13 @@ impl Mega {
                 div().id(SharedString::from(key.clone())).relative().flex().items_center().justify_center().size(px(32.)).rounded(px(12.)).cursor_pointer().text_size(px(20.)).when(on_, |d| d.bg(hsla(0., 0., 1., 0.16)))
                     .hover(|s| s.bg(hsla(0., 0., 1., 0.1))).child(em.to_string()).child(self.files.hits.track(key))
                     .on_click(cx.listener(move |this, _, window, cx| this.msg_react(&mid, &e, window, cx)))
-            }));
+            }))
+            .child({
+                let mid = id.clone();
+                div().id("pop-more").relative().flex().items_center().justify_center().size(px(32.)).rounded(px(12.)).cursor_pointer().hover(|s| s.bg(hsla(0., 0., 1., 0.1)))
+                    .tooltip(|window, cx| Tooltip::new("More emoji").build(window, cx)).child(icon(Icon::Plus, 16., look::mute())).child(self.files.hits.track("pop-more"))
+                    .on_click(on_at(&self.files.me.clone().unwrap(), move |this, p, window, cx| this.emoji_open(crate::emoji::Target::React(mid.clone()), p, window, cx)))
+            });
         Some(div().absolute().inset_0().id("react-back").on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.msg.pop = None; cx.notify(); }))
             .on_mouse_down(MouseButton::Right, cx.listener(|this, _, _, cx| { this.msg.pop = None; cx.notify(); }))
             .child(row).into_any_element())
