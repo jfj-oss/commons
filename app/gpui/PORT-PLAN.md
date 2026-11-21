@@ -21,13 +21,13 @@ making" below, but it is not needed for the port.
 | --- | --- | --- |
 | Unlock with passphrase (app.js `boot`) | done | |
 | Create account on a relay (name, passphrase) | done | uses the default relay or a typed address |
-| First screen with invite password (mega-invite.js `first`) | next | `create_account_password`, `password_strength`, `suggest_password` |
-| Paste an invite link / relay link (`parse_link`) | next | |
-| Recover with a recovery key (`recover_account`) | next | |
-| Pair a new device: code, QR, approve (`start_pairing`, `pairing_*`, `approve_pairing`) | next | the QR is an SVG string from the core; GPUI draws SVG |
-| Recovery key shown and "saved" (`recovery_key`, `recovery_saved`) | next | |
+| First screen with invite password (mega-invite.js `first`) | done (onboard.rs) | `create_account_password`, `password_strength`, `suggest_password` |
+| Paste an invite link / relay link (`parse_link`) | done (onboard.rs; also Members > join) | |
+| Recover with a recovery key (`recover_account`) | done (onboard.rs) | |
+| Pair a new device: code, QR, approve (`start_pairing`, `pairing_*`, `approve_pairing`) | done (onboard.rs: QR from the core's SVG drawn as squares; devices.rs: approve with check digits) | the QR is an SVG string from the core; GPUI draws SVG |
+| Recovery key shown and "saved" (`recovery_key`, `recovery_saved`) | done (devices.rs: corner card until saved, panel behind the device password) | |
 | Lock | done | |
-| Relay moved / relay secret (`set_relay`, `set_relay_invite`) | next | |
+| Relay moved / relay secret (`set_relay`, `set_relay_invite`) | done (settings: relay address and sign-up secret) | |
 | Single instance (second launch raises the window) | in progress (branch gpui-notify) | Tauri plugin today; here a lock file + a local socket |
 
 ## 2. Shell and navigation (mega.js)
@@ -107,8 +107,8 @@ making" below, but it is not needed for the port.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | People list on home (one-to-one conversations from `snapshot.direct`), open and write | done | |
-| Start a one-to-one (`direct_call`), refuse a person (`direct_refuse`) | next | |
-| Members panel with roles, verification, safety numbers, devices (`members`, `safety`, `set_verified`, `devices`, `revoke_device`) | done | members.rs (members, roles, person card, safety number, verification; tools/gpui-members-e2e.mjs). The devices list is settings and is not built |
+| Start a one-to-one (`direct_call`), refuse a person (`direct_refuse`) | done (call on a person's row and card; direct list with stop calls / allow in People) | |
+| Members panel with roles, verification, safety numbers, devices (`members`, `safety`, `set_verified`, `devices`, `revoke_device`) | done | members.rs (members, roles, person card, safety number, verification; tools/gpui-members-e2e.mjs). Devices, revoke, history transfer and the activity log are in devices.rs (Settings: Devices and recovery, Activity log); tools/gpui-onboard-e2e.mjs |
 | Live presence dots on cards, sent and received, in the web UI's wire format | done | checked both ways against a second account |
 | Who is in a call, on voice cards (`call_presence`) | done | names (presence.rs) |
 | "Listening to" status and listen-along (mega-listen.js; `listen_*`, `spotify_*`) | partly | the status shows on the people list and the rune bar (runebar.rs) has the call's listen-along; the standalone rows are not built |

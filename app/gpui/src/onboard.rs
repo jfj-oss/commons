@@ -286,7 +286,7 @@ impl Mega {
         div().id("boot-scroll").size_full().overflow_y_scroll().child(v_flex().w_full().min_h_full().items_center().justify_center().py_8().gap_3()
             .child(div().font_family(look::F_SHARP).text_size(px(96.)).line_height(px(96.)).child("mega"))
             .child(div().max_w(px(420.)).text_center().text_color(look::mute()).child(tag.to_string()))
-            .child(v_flex().id("boot-card").w(px(380.)).gap_2().children(fields).child(relay_box)
+            .child(v_flex().id("boot-card").w(px(420.)).gap_2().p_6().rounded(px(30.)).bg(rgb(look::SLIP)).border_1().border_color(look::line()).children(fields).child(relay_box)
                 .when_some(err, |d, e| d.child(div().id("ob-err").text_size(px(13.)).text_color(rgb(look::DANGER)).child(e)))
                 .child(div().pt_2().child(Button::new("ob-go").primary().w_full().label(if busy { "Working…".to_string() } else { go.to_string() }).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.ob_go(window, cx))))))
             .child(div().max_w(px(560.)).mt_2().child(links))).into_any_element()
@@ -351,5 +351,25 @@ impl Mega {
     pub fn ob_dump(&self, cx: &App) -> Value {
         json!({"screen": format!("{:?}", self.screen), "mode": format!("{:?}", self.ob.mode), "err": self.ob.err, "busy": self.ob.busy, "hint": self.ob.hint, "note": self.ob.link_note,
                "relay": self.ob.relay.read(cx).value().to_string(), "pair": self.ob.pair.as_ref().map(|p| json!({"code": p.code, "check": p.check, "squares": p.squares.len(), "dim": p.dim})), "kept": !self.ob.kept.is_empty()})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pp_strength, qr_squares};
+    #[test]
+    fn the_cores_qr_becomes_squares() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><rect x="0" y="0" width="24" height="24" fill="#fff"/><path fill="#000" d="M4 4h8v8H4V4M12 16h8v8H12V16"/></svg>"##;
+        let (dim, sq) = qr_squares(svg).unwrap();
+        assert_eq!(dim, 24.);
+        assert_eq!(sq, vec![[4., 4., 8., 8.], [12., 16., 8., 8.]]);
+        assert!(qr_squares("").is_none());
+    }
+    #[test]
+    fn password_strength_words() {
+        assert_eq!(pp_strength(""), "");
+        assert!(pp_strength("abc").starts_with("Too short"));
+        assert!(pp_strength("password").starts_with("Weak"));
+        assert_eq!(pp_strength("correct horse battery staple"), "Strong.");
     }
 }
