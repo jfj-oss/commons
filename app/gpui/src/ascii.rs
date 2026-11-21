@@ -97,6 +97,8 @@ pub struct Field {
     /// The three tints (soft, mid, bright) when they are not simply the duo mixed 0.3, 0.6, 1 (the room's backdrop, mega.js `bdColours`), and the brighter three under a ripple.
     pub tints: Option<[Hsla; 3]>,
     pub lit: Option<[Hsla; 3]>,
+    /// A soft glow under the pointer on the focused card (mega.js `bloom`): the pointer's cell, and how strong it still is (1 right after a move, then it fades).
+    pub bloom: Option<(f64, f64, f64)>,
 }
 
 /// Boxes the backdrop must leave free, filled in during a frame's layout pass and read when the field is painted after it.
@@ -110,7 +112,7 @@ pub fn hole(h: &Holes) -> impl IntoElement {
 
 impl Field {
     pub fn card(fx: usize, seed: u32, duo: look::Duo, t: f64, small: bool) -> Field {
-        Field { fx, seed, duo, t, cell: if small { (8., 13.) } else { (10., 17.) }, font_px: if small { 11. } else { 14. }, gate: 0.2, hi_t: 0.9, alpha: 1., radius: 0., ripples: vec![], holes: vec![], live_holes: None, emboss: false, avoid: None, tints: None, lit: None }
+        Field { fx, seed, duo, t, cell: if small { (8., 13.) } else { (10., 17.) }, font_px: if small { 11. } else { 14. }, gate: 0.2, hi_t: 0.9, alpha: 1., radius: 0., ripples: vec![], holes: vec![], live_holes: None, emboss: false, avoid: None, tints: None, lit: None, bloom: None }
     }
 }
 
@@ -193,6 +195,7 @@ pub fn field(f: Field) -> impl IntoElement {
                     let (xf, yf) = (x as f64, y as f64);
                     let mut v = fx(f.fx, xf, yf, f.t, cols as f64, rows as f64, &col);
                     let mut lit = 0f64;
+                    if let Some((mx, my, b)) = f.bloom { let (dx, dy) = (xf - mx, (yf - my) * 1.8); v += b * (-(dx * dx + dy * dy) / 90.).exp() * 0.85; }
                     for q in &f.ripples {
                         let (qx, qy) = if q.frac { (q.x * cols as f64, q.y * rows as f64) } else { (q.x, q.y) };
                         let d = (xf - qx).hypot((yf - qy) * 1.7) - q.r;

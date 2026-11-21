@@ -467,7 +467,7 @@ impl Mega {
     pub fn wall_room_button(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let key = self.wall.key.clone()?;
         if !self.wall_drawable(&key) { return None; }
-        Some(crate::cards::chip("b-draw-room", if self.wall.on { "drawing" } else { "draw" }).on_click(cx.listener(|this, _, window, cx| this.wall_toggle(window, cx))).into_any_element())
+        Some(crate::cards::chip("b-draw-room", if self.wall.on { "drawing" } else { "draw" }).relative().child(self.tour.hits.track("tour-draw")).on_click(cx.listener(|this, _, window, cx| this.wall_toggle(window, cx))).into_any_element())
     }
     /// A room is open (or not): its wall is the one under the focus.
     pub fn wall_room_focus(&mut self, gid: Option<String>) {

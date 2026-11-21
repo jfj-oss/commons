@@ -47,7 +47,7 @@ impl Mega {
                 extra.push(chip("b-paint", "colours").on_click(cx.listener(|this, _, window, cx| this.paint_toggle(window, cx))).into_any_element());
             }
             if self.wall.key.as_ref().is_some_and(|k| self.wall_drawable(k)) {
-                extra.push(chip("b-draw", if self.wall.on { "drawing" } else { "draw" }).on_click(cx.listener(|this, _, window, cx| this.wall_toggle(window, cx))).into_any_element());
+                extra.push(chip("b-draw", if self.wall.on { "drawing" } else { "draw" }).relative().child(self.tour.hits.track("tour-draw")).on_click(cx.listener(|this, _, window, cx| this.wall_toggle(window, cx))).into_any_element());
             }
         }
         extra.extend(match self.level.clone() { Level::Server(cid) => self.community_buttons(&cid, cx), Level::Home => self.home_buttons(cx), _ => vec![] });
@@ -132,8 +132,10 @@ impl Mega {
         }
         self.reading.last.insert(ix, (k, op));
         if full.is_some() { self.reading.scaled.insert(m.id.clone()); } else { self.reading.scaled.remove(&m.id); }
+        let dens = self.dens_params();
         let fx = RowFx {
-            tier_px: crate::arrive::tier_px(crate::arrive::size_tier(m, me)),
+            dens,
+            tier_px: match &dens { Some(d) => match crate::arrive::size_tier(m, me) { 0 => None, t => Some(d.tier[t as usize - 1]) }, None => crate::arrive::tier_px(crate::arrive::size_tier(m, me)) },
             arrive: self.arrivals.progress(&m.id, now).map(|k| (k, (now * 60.) as u64)),
             hi: rgb(self.room_duo(self.gid.as_deref().unwrap_or("")).hi).into(),
             flights: self.flights.live.iter().filter(|f| f.msg == m.id).cloned().collect(),
@@ -164,6 +166,7 @@ impl Mega {
         items.push((2, 2, chip_w("aa"), crate::cards::chip("b-aa", "aa").on_click(cx.listener(|this, _, _, cx| {
             this.prefs.chat_font = match this.prefs.chat_font { ChatFont::Bellefair => ChatFont::Raster, ChatFont::Raster => ChatFont::Bellefair }; this.prefs.save(); this.list.remeasure(); this.reading.full.clear(); cx.notify();
         })).into_any_element()));
+        items.push((3, 3, chip_w("density"), crate::cards::chip("b-dens", "density").on_click(cx.listener(|this, _, window, cx| this.dens_toggle(window, cx))).into_any_element()));
         if owner { items.push((5, 20, 96., self.colour_picker(cx).into_any_element())); }
         let rw = { let w = self.wall.room_rect.get().2; if w < 200. { 1000. } else { w } };
         let room = rw - 40. - 220.;
@@ -348,6 +351,14 @@ impl Mega {
             .child(toggle("p-read", snap.read_receipts, "Read receipts", "set_read_receipts"))
             .child(toggle("p-pres", presence, "Show where I am on the cards", "presence"))
             .child(toggle("p-listen", snap.share_listening, "Share what I am listening to", "set_listening_sharing"))
+            .child(label("calls"))
+            .child(h_flex().gap_2().child(div().id("set-gamekeys").relative().px_3().py_1().cursor_pointer().child(sq::back(999., rgb(0x0b0a10))).child(sq::front(999., None, Some((1., look::line())), None)).child(div().relative().child("Game keys\u{2026}"))
+                .on_click(cx.listener(|this, _, window, cx| this.gk_open(window, cx)))))
+            .child(note("Mute yourself in mega while you talk to your game team."))
+            .child(label("quick tour"))
+            .child(h_flex().gap_2().child(div().id("tour-again").relative().px_3().py_1().cursor_pointer().child(sq::back(999., rgb(0x0b0a10))).child(sq::front(999., None, Some((1., look::line())), None)).child(div().relative().child("show the tour again"))
+                .on_click(cx.listener(|this, _, window, cx| { this.go(Level::Home, window, cx); this.tour_start(window, cx); }))))
+            .child(note("A short look at the cards, the dots and the call dock."))
             .child(label("this device"))
             .child(h_flex().gap_2().flex_wrap().mt_2()
                 .child(Button::new("set-devices").label("Devices and recovery").on_click(cx.listener(|this, _, window, cx| this.dev_open(crate::members::Panel::Devices, window, cx))))
@@ -368,7 +379,7 @@ impl Mega {
 
 /// What is happening to one message right now (arrive.rs): its size tier, its glyph copy while it arrives, reactions flying to it.
 /// `k` is the reading zone's scale (reading.rs; 1 = whole), `day` the day line above it, `new` the "N new" line above it.
-pub struct RowFx { pub tier_px: Option<f32>, pub arrive: Option<(f64, u64)>, pub hi: Hsla, pub flights: Vec<crate::arrive::Flight>, pub now: f64, pub k: f32, pub day: Option<String>, pub new: Option<usize>, /** the selected part of the text, and where to keep its painted layout (select.rs) */ pub pick: Option<std::ops::Range<usize>>, pub texts: crate::select::Texts, /** the file of this message, if it has one (files.rs) */ pub file: Option<crate::files::FileCtx>, /** the tools, chips and quote of this message (msgact.rs) */ pub act: Option<crate::msgact::ActCtx> }
+pub struct RowFx { pub dens: Option<crate::density::Dens>, pub tier_px: Option<f32>, pub arrive: Option<(f64, u64)>, pub hi: Hsla, pub flights: Vec<crate::arrive::Flight>, pub now: f64, pub k: f32, pub day: Option<String>, pub new: Option<usize>, /** the selected part of the text, and where to keep its painted layout (select.rs) */ pub pick: Option<std::ops::Range<usize>>, pub texts: crate::select::Texts, /** the file of this message, if it has one (files.rs) */ pub file: Option<crate::files::FileCtx>, /** the tools, chips and quote of this message (msgact.rs) */ pub act: Option<crate::msgact::ActCtx> }
 
 /// The widest the message column gets (mega-design.css: `--gutter` 58 + `--measure` 800 + 44 around it).
 pub const COLUMN: f32 = 902.;
@@ -462,6 +473,7 @@ pub fn day_words(ts: u64, now: chrono::DateTime<chrono::Local>) -> String {
 /// One message. `prev` decides whether the face and name are shown again (same person within five minutes: no).
 pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f32), holes: &Holes, star: bool, fx: &RowFx) -> AnyElement {
     let k = fx.k;
+    let (size, lh) = match &fx.dens { Some(d) => (d.base, (d.base * lh / size).round()), None => (size, lh) };
     let (size, lh) = match fx.tier_px { Some(p) => (p, (p * 1.05).round()), None => (size, lh) };
     let (size, lh) = (size * k, (lh * k).round());
     let line = |inner: Div| h_flex().w_full().justify_center().child(inner.w_full().max_w(px(COLUMN)));
@@ -542,6 +554,7 @@ pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f3
     let older = fx.act.as_ref().is_some_and(|c| c.older);
     v_flex().w_full().when(older, |d| d.child(older_line(fx.act.as_ref().unwrap()))).when_some(fx.day.clone(), |d, t| d.child(line(day_line(t, holes)))).when_some(fx.new, |d, n| d.child(line(new_line(n, fx.hi, holes))))
         .child(line(h_flex().relative().group(group.clone()).items_start().gap_3().px(px(10.)).pb_1().when(head, |d| d.pt(px(10.)))
+            .when_some(fx.dens, |d, n| d.pb(px(4. + n.pad)).pt(px(n.pad)).when(head, |d| d.pt(px(n.gap + n.pad))))
             .when_some(fx.act.as_ref().filter(|c| c.mention), |d, c| d.child(div().absolute().inset_0().bg(linear_gradient(90., linear_color_stop(c.hi.opacity(0.14), 0.), linear_color_stop(c.hi.opacity(0.), 0.86)))).child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(c.hi)))
             .when_some(fx.act.as_ref().filter(|c| c.flash > 0.), |d, c| d.child(div().absolute().inset_0().rounded(px(10.)).bg(c.hi.opacity(0.22 * c.flash))))
             .when(!flying.is_empty(), |d| d.child(flight_layer(flying, landing, fx.now, fx.hi)))
@@ -611,7 +624,7 @@ impl Render for Mega {
                 let lightbox = self.light_overlay(window, cx);
                 let save = self.save_overlay(cx);
                 let reminder = self.recovery_card(cx);
-                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(reminder).children(lightbox).children(self.room_menu_view(cx))
+                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(reminder).children(lightbox).children(self.dens_popup(cx)).children(self.room_menu_view(cx)).children(self.gk_modal(window, cx)).children(self.tour_view(window, cx))
             }
         }
     }

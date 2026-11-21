@@ -131,6 +131,9 @@ fn unread_map(sn: &crate::model::Snapshot) -> HashMap<String, u64> {
     m
 }
 
+/// The unread messages of this room that mention me or answer me (0 when none, or not counted yet): the `@N` on cards, the badge on dots.
+pub fn mention_of(gid: &str) -> u64 { state().tracker.mention.get(gid).copied().unwrap_or(0) }
+
 pub const MENU_W: f32 = 232.;
 pub const MENU_ROW: f32 = 34.;
 const OPTIONS: [(&str, u64, &str); 4] = [("mute", 3600, "Mute for 1 hour"), ("mute", 28800, "Mute for 8 hours"), ("mute", 0, "Mute until I unmute"), ("mentions", 0, "Mentions only")];

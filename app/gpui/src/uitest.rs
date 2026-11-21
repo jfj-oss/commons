@@ -140,6 +140,42 @@ impl Mega {
                 "avatar_use" => { self.avatar_use(window, cx); json!({"ok": true}) }
                 "avatar_remove" => { self.avatar_remove(window, cx); json!({"ok": true}) }
                 "avatar_poll" => { self.avatar_poll(); json!({"ok": true}) }
+                // the cards of the current screen as drawn: title, unread, mentions (`@N`)
+                "cards" => {
+                    let items = match (&self.level, self.snap.as_ref()) {
+                        (crate::app::Level::Home, _) => self.community_items_pub(),
+                        (crate::app::Level::Server(cid), Some(sn)) => sn.communities.iter().find(|c| &c.id == cid).map(|c| self.room_items(c)).unwrap_or_default(),
+                        _ => vec![],
+                    };
+                    json!({"cards": items.iter().map(|i| json!({"title": i.title, "num": i.num, "at": i.at, "voice": i.voice})).collect::<Vec<_>>(), "level": format!("{:?}", self.level)})
+                }
+                // chat density: set the stop of the open room (and "all" for every room) and say what it gives
+                "density" => {
+                    if let Some(n) = cmd["level"].as_f64() { if let Some(g) = self.gid.clone() { if let Some(a) = cmd["all"].as_bool() { let shown = self.density_now(); self.prefs.set_dens_all(&g, a, shown); } self.set_density(crate::density::clamp(n as f32, self.prefs.chat_font == crate::prefs::ChatFont::Raster), cx); } }
+                    if let Some(f) = cmd["font"].as_str() { self.prefs.chat_font = if f == "raster" { crate::prefs::ChatFont::Raster } else { crate::prefs::ChatFont::Bellefair }; self.list.remeasure(); self.reading.full.clear(); }
+                    if let Some(m) = cmd["menu"].as_bool() { if m != self.dens.open { self.dens_toggle(window, cx); } }
+                    json!({"level": self.density_now(), "all": self.prefs.dens_all, "params": self.dens_params().map(|d| json!({"base": d.base, "tier": d.tier, "gap": d.gap, "pad": d.pad})), "menu": self.dens.open, "hits": self.dens.hits.dump()})
+                }
+                "gk" => {
+                    match cmd["what"].as_str().unwrap_or("") {
+                        "open" => self.gk_open(window, cx),
+                        "close" => self.gk_close(cx),
+                        "add" => { let n = s("name"); self.gk.d.add_program(&n); cx.notify(); }
+                        _ => {}
+                    }
+                    json!({"open": self.gk.open, "rows": self.gk.d.rows.iter().map(|r| json!({"process": r.process, "key": r.key, "mode": r.mode})).collect::<Vec<_>>(), "any": {"key": self.gk.d.any.key, "mode": self.gk.d.any.mode}, "capture": self.gk.capture, "error": self.gk.error, "programs": self.gk.programs, "portal": self.gk.d.portal, "note": self.gk.d.note, "hits": self.gk.hits.dump()})
+                }
+                "tour" => {
+                    match cmd["what"].as_str().unwrap_or("") {
+                        "start" => self.tour_start(window, cx),
+                        "end" => self.tour_end(true, cx),
+                        "reset" => { self.prefs.tour_seen = false; self.prefs.save(); }
+                        _ => {}
+                    }
+                    self.tour_dump()
+                }
+                "screen" => json!({"screen": format!("{:?}", self.screen), "error": self.error.as_ref().map(|e| e.to_string()), "dir": self.core.dir.display().to_string(), "level": format!("{:?}", self.level)}),
+                "bloom" => json!({"bloom": [self.nav.bloom.0, self.nav.bloom.1, self.nav.bloom.2], "cur": self.nav.scroll.cur}),
                 "home" => { self.go(crate::app::Level::Home, window, cx); json!({"ok": true}) }
                 "attend" => { self.ring.unattended = cmd["on"].as_bool() == Some(false); json!({"ok": true}) }
                 "room_menu" => {
