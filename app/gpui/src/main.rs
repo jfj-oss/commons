@@ -34,6 +34,8 @@ mod playback;
 mod xfer;
 mod linen;
 mod members;
+mod onboard;
+mod devices;
 mod squircle;
 mod model;
 mod notifier;

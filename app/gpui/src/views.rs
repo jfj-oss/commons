@@ -285,6 +285,7 @@ impl Mega {
     fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snap = self.snap.clone().unwrap_or_default();
         let alerts = self.alerts_settings(window, cx);
+        let relay_box = self.relay_settings(cx);
         let avatar_row = self.avatar_settings(cx);
         let back = if self.gid.is_some() { Level::Chat } else { Level::Home };
         let label = |t: &str| div().mt_4().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(t.to_string());
@@ -348,7 +349,10 @@ impl Mega {
             .child(toggle("p-pres", presence, "Show where I am on the cards", "presence"))
             .child(toggle("p-listen", snap.share_listening, "Share what I am listening to", "set_listening_sharing"))
             .child(label("this device"))
-            .child(note(&format!("Relay: {}", snap.relay)))
+            .child(h_flex().gap_2().flex_wrap().mt_2()
+                .child(Button::new("set-devices").label("Devices and recovery").on_click(cx.listener(|this, _, window, cx| this.dev_open(crate::members::Panel::Devices, window, cx))))
+                .child(Button::new("set-log").label("Activity log").on_click(cx.listener(|this, _, window, cx| this.dev_open(crate::members::Panel::Activity, window, cx)))))
+            .child(relay_box)
             .child(note(&format!("Account folder: {}", self.core.dir.display())))
             .child(note(&format!("mega-gpui {} (spike), core {}", env!("CARGO_PKG_VERSION"), "0.3.11")))
             .child(h_flex().mt_2().child(Button::new("lock").label("Lock").on_click(cx.listener(|this, _, window, cx| this.lock(window, cx)))))
@@ -582,7 +586,9 @@ impl Render for Mega {
             }));
         match self.screen {
             Screen::Starting => base,
-            Screen::Welcome | Screen::Locked => base.child(self.render_sign_in(cx)),
+            Screen::Welcome => base.child(self.render_onboard(cx)),
+            Screen::Pairing => base.child(self.render_pairing(cx)),
+            Screen::Locked => base.child(self.render_sign_in(cx)),
             Screen::Main => {
                 let body: AnyElement = match self.level.clone() {
                     Level::Home => self.render_home(window, cx),
@@ -604,7 +610,8 @@ impl Render for Mega {
                 let cropper = self.avatar_overlay(cx);
                 let lightbox = self.light_overlay(window, cx);
                 let save = self.save_overlay(cx);
-                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(lightbox).children(self.room_menu_view(cx))
+                let reminder = self.recovery_card(cx);
+                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(reminder).children(lightbox).children(self.room_menu_view(cx))
             }
         }
     }

@@ -47,7 +47,15 @@ pub struct Snapshot {
     pub joining: Vec<Joining>, pub refused: Vec<Joining>,
     /** the folder saved files go to by default */
     pub download_dir: String,
+    /// A new account's recovery key has not been saved yet (the corner card asks until it is); this account's device was revoked; the relay's sign-up secret is kept.
+    pub recovery_unsaved: bool, pub revoked: bool, pub relay_secret: bool,
+    /// One-to-one calls: who there is (`direct` of the snapshot, with the last call and whether their mega can take calls) and whose calls are stopped.
+    pub directs: Vec<DirectInfo>, pub direct_refused: Vec<(String, String)>,
+    /// History for a new device (docs/history-transfer.md): the snapshot's `history` as it is.
+    pub history: Value,
 }
+#[derive(Clone, Debug, Default)]
+pub struct DirectInfo { pub id: String, pub peer: String, pub name: String, pub last: f64, pub supported: bool }
 
 fn duo(v: &Value) -> Option<(String, String)> {
     let (m, h) = (st(v, "main"), st(v, "hi"));
@@ -86,6 +94,10 @@ impl Snapshot {
             joining: v["joining"].as_array().map(|l| l.iter().map(|j| Joining { id: st(j, "id"), name: st(j, "name"), reason: String::new() }).collect()).unwrap_or_default(),
             refused: v["refused"].as_array().map(|l| l.iter().map(|j| Joining { id: st(j, "id"), name: st(j, "name"), reason: st(j, "reason") }).collect()).unwrap_or_default(),
             download_dir: st(v, "download_dir"),
+            recovery_unsaved: bo(&v["me"], "recovery_unsaved"), revoked: bo(v, "revoked"), relay_secret: bo(v, "relay_secret"),
+            directs: v["direct"].as_array().map(|l| l.iter().map(|d| DirectInfo { id: st(d, "id"), peer: st(d, "peer"), name: st(d, "name"), last: d["last"].as_f64().unwrap_or(0.), supported: d["supported"].as_bool().unwrap_or(true) }).collect()).unwrap_or_default(),
+            direct_refused: v["direct_refused"].as_array().map(|l| l.iter().map(|d| (st(d, "account"), st(d, "name"))).collect()).unwrap_or_default(),
+            history: v["history"].clone(),
             problems: v["problems"].as_array().map(|l| l.iter().map(|p| st(p, "text")).collect()).unwrap_or_default(),
         }
     }

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Screen { Starting, Welcome, Locked, Main }
+pub enum Screen { Starting, Welcome, Pairing, Locked, Main }
 
 /// Where the window is, once signed in: the community cards, one community's room cards, a room, or settings.
 #[derive(Clone, PartialEq, Debug)]
@@ -30,6 +30,9 @@ pub struct Mega {
     pub name: Entity<InputState>,
     pub relay: Entity<InputState>,
     pub default_relay: String,
+    /// The first screens (onboard.rs) and the account's devices, recovery key and log (devices.rs).
+    pub ob: crate::onboard::Onboard,
+    pub dev: crate::devices::DevUi,
     // the rooms
     pub snap: Option<Snapshot>,
     pub snap_hash: String,
@@ -132,6 +135,9 @@ impl Mega {
             cx.subscribe_in(&pass, window, |this: &mut Self, _, ev: &InputEvent, window, cx| { if let InputEvent::PressEnter { .. } = ev { this.submit_sign_in(window, cx); } }),
         ];
         subs.extend(mem_subs); subs.extend(find_subs); subs.extend(emoji_subs);
+        let (ob, ob_subs) = crate::onboard::Onboard::new(window, cx);
+        let (dev, dev_subs) = crate::devices::DevUi::new(window, cx);
+        subs.extend(ob_subs); subs.extend(dev_subs);
         subs.push(cx.observe_window_activation(window, |this, window, cx| this.beat(window, cx)));
         let prefs = Prefs::load(&core.dir);
         let call = crate::callui::CallUi::new(prefs.deck_w, window, cx);
@@ -140,7 +146,7 @@ impl Mega {
         let (paint, paint_sub) = crate::paint::PaintUi::new(window, cx);
         subs.push(paint_sub);
         let mut this = Mega {
-            files: Default::default(), nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), fake_dm_unread: 0, dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx), msg: Default::default(), find, emoji,
+            ob, dev, files: Default::default(), nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), fake_dm_unread: 0, dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx), msg: Default::default(), find, emoji,
             level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd: crate::backdrop::Bd::new(""), typing_ui: Default::default(), typing_at: Instant::now(), fake_hidden: false, holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
@@ -164,7 +170,7 @@ impl Mega {
         // Rings, what notifications ask of the window, rune in the call bar, the test port: a quarter-second clock.
         this._tasks.push(cx.spawn_in(window, async move |this, cx| loop {
             cx.background_executor().timer(Duration::from_millis(250)).await;
-            if this.update_in(cx, |this, window, cx| { this.ring_tick(window, cx); this.nav_focus_tick(window, cx); this.wall_tick(window, cx); this.paint_tick(window, cx); this.mem_tick(window, cx); this.msg_tick(window, cx); this.search_tick(window, cx); this.rune_tick(window, cx); this.uitest_tick(window, cx); }).is_err() { break; }
+            if this.update_in(cx, |this, window, cx| { this.ring_tick(window, cx); this.nav_focus_tick(window, cx); this.wall_tick(window, cx); this.paint_tick(window, cx); this.mem_tick(window, cx); this.dev_tick(window, cx); this.ob_tick(window, cx); this.msg_tick(window, cx); this.search_tick(window, cx); this.rune_tick(window, cx); this.uitest_tick(window, cx); }).is_err() { break; }
         }));
         // The fields move at 20 frames a second on the cards and 10 behind a chat (25 while a ripple runs), as in mega.js;
         // not at all with the battery saver on, or while the window is not the active one.
@@ -267,14 +273,21 @@ impl Mega {
         }).detach();
     }
 
-    fn look_at_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn look_at_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.rpc("state", json!({}), window, cx, |this, r, window, cx| {
             match r {
                 Ok(s) => {
                     this.default_relay = s["default_relay"].as_str().unwrap_or("").to_string();
-                    if s["locked"].as_bool() == Some(false) { this.enter(window, cx); }
+                    if s["locked"].as_bool() == Some(false) {
+                        // unlocked with no identity yet: a device that waits for another to approve it
+                        if s["has_identity"].as_bool() == Some(false) { this.ob_resume_pairing(window, cx); } else { this.enter(window, cx); }
+                    }
                     else if s["exists"].as_bool() == Some(true) { this.screen = Screen::Locked; this.pass.update(cx, |p, cx| p.focus(window, cx)); }
-                    else { this.screen = Screen::Welcome; this.name.update(cx, |p, cx| p.focus(window, cx)); }
+                    else {
+                        // an invite link given on the command line is the first screen's link box
+                        let first = if let Some(l) = this.pending_link.take() { this.ob.link.update(cx, |i, cx| i.set_value(l, window, cx)); this.ob_read_link(window, cx); crate::onboard::Boot::Create } else { crate::onboard::Boot::Invite };
+                        this.ob_show(first, window, cx);
+                    }
                     if this.screen == Screen::Locked { if let Some(p) = this.auto.pass.take() { this.unlock_with(p, window, cx); } }
                 }
                 Err(e) => this.error = Some(e.into()),
@@ -286,40 +299,21 @@ impl Mega {
     fn submit_sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy { return; }
         let pass = self.pass.read(cx).value().to_string();
-        match self.screen {
-            Screen::Locked => self.unlock_with(pass, window, cx),
-            Screen::Welcome => {
-                let (name, relay) = (self.name.read(cx).value().to_string(), self.relay.read(cx).value().to_string());
-                self.busy = true; self.error = None; cx.notify();
-                // an invite link given on the command line: its server and sign-up secret make the account, and it is used to join afterwards
-                if let Some(link) = self.pending_link.clone() {
-                    self.rpc("parse_link", json!({"link": link}), window, cx, move |this, r, window, cx| {
-                        let (relay, secret) = match r { Ok(v) => (v["relay"].as_str().unwrap_or("").to_string(), v["secret"].as_str().unwrap_or("").to_string()), Err(e) => { this.busy = false; this.error = Some(e.into()); cx.notify(); return; } };
-                        this.rpc("create_account", json!({"relay": relay, "passphrase": pass, "name": name, "invite": secret}), window, cx, |this, r, window, cx| {
-                            this.busy = false;
-                            match r { Ok(_) => this.enter(window, cx), Err(e) => this.error = Some(e.into()) }
-                            cx.notify();
-                        });
-                    });
-                    return;
-                }
-                self.rpc("create_account", json!({"relay": relay, "passphrase": pass, "name": name, "invite": ""}), window, cx, |this, r, window, cx| {
-                    this.busy = false;
-                    match r { Ok(_) => this.enter(window, cx), Err(e) => this.error = Some(e.into()) }
-                    cx.notify();
-                });
-            }
-            _ => {}
-        }
+        if self.screen == Screen::Locked { self.unlock_with(pass, window, cx); }
     }
     fn unlock_with(&mut self, pass: String, window: &mut Window, cx: &mut Context<Self>) {
         self.busy = true; self.error = None; cx.notify();
         self.rpc("unlock", json!({"passphrase": pass}), window, cx, |this, r, window, cx| {
             this.busy = false;
-            match r { Ok(_) => this.enter(window, cx), Err(e) => this.error = Some(e.into()) }
+            match r {
+                // an account that never finished pairing opens on the code again
+                Ok(_) => this.rpc("state", json!({}), window, cx, |this, r, window, cx| { if r.is_ok_and(|s| s["has_identity"].as_bool() == Some(false)) { this.ob_resume_pairing(window, cx); } else { this.enter(window, cx); } }),
+                Err(e) => this.error = Some(e.into()),
+            }
             cx.notify();
         });
     }
+    pub fn enter_account(&mut self, window: &mut Window, cx: &mut Context<Self>) { self.enter(window, cx); }
     fn enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pass.update(cx, |p, cx| p.set_value("", window, cx));
         self.screen = Screen::Main;
@@ -328,6 +322,9 @@ impl Mega {
         self.tick(window, cx);
         self.start_ui_steps(window, cx);
         if let Some(l) = self.pending_link.take() { self.join_with(l, window, cx); }
+        if let Some(n) = self.dev.say_on_enter.take() { self.say(n, cx); }
+        if std::mem::take(&mut self.dev.open_key_on_enter) { self.dev_open(crate::members::Panel::Key, window, cx); }
+        self.dev_relay_fill(window, cx);
     }
 
     // ---- the look every half second ----
@@ -541,17 +538,15 @@ impl Mega {
 
     // ---- drawing ----
     pub fn render_sign_in(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let welcome = self.screen == Screen::Welcome;
         v_flex().size_full().items_center().justify_center().gap_3()
             .child(div().font_family(look::F_SHARP).text_size(px(96.)).line_height(px(96.)).child("mega"))
-            .child(div().text_color(look::mute()).child(if welcome { "Make an account on this computer." } else { "Enter your passphrase." }))
+            .child(div().text_color(look::mute()).child("Private group chat. Only your devices can read it."))
             .child(v_flex().w(px(340.)).gap_2()
-                .when(welcome, |d| d.child(Input::new(&self.name)).child(Input::new(&self.relay)))
-                .child(Input::new(&self.pass))
-                .child(Button::new("go").primary().label(if self.busy { "Working…" } else if welcome { "Create account" } else { "Unlock" }).disabled(self.busy)
+                .child(div().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child("Passphrase for this device"))
+                .child(Input::new(&self.pass).mask_toggle())
+                .child(Button::new("go").primary().label(if self.busy { "Working…" } else { "Unlock" }).disabled(self.busy)
                     .on_click(cx.listener(|this, _, window, cx| this.submit_sign_in(window, cx)))))
-            .when_some(self.error.clone(), |d, e| d.child(div().max_w(px(520.)).text_color(rgb(look::DANGER)).child(e)))
-            .when(welcome && !self.default_relay.is_empty(), |d| d.child(div().text_sm().text_color(look::mute()).child(format!("Relay: {} (leave the address empty to use it)", self.default_relay))))
+            .when_some(self.error.clone(), |d, e| d.child(div().id("sign-err").max_w(px(520.)).text_color(rgb(look::DANGER)).child(e)))
     }
 }
 
