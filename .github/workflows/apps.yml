@@ -42,3 +42,21 @@ jobs:
           name: ${{ matrix.name }}
           path: out/${{ matrix.name }}
           if-no-files-found: error
+
+  # The native (GPUI) app for Linux: a stripped tarball with install.sh / uninstall.sh (packaging/linux-native). Runs next to
+  # the Tauri builds and replaces nothing. Built on the oldest runner so the glibc it links is old. Not yet run on GitHub.
+  native-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux packages
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config cmake clang libssl-dev libasound2-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig1-dev libfreetype6-dev libvulkan-dev libdbus-1-dev libpulse-dev libglib2.0-dev libgbm-dev imagemagick
+      - name: Build and pack
+        run: scripts/build-linux-native.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mega-linux-x86_64.tar.gz
+          path: dist/mega-linux-x86_64.tar.gz
+          if-no-files-found: error
