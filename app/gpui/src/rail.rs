@@ -140,6 +140,9 @@ impl Mega {
             let picked = self.rail.pick == Some(i);
             // the open list scales cards by their distance from its middle
             let sc = if k > 0. { let s = open_scale(y + h / 2., mid, listh / 2.); lerp(1., s, k) } else { 1. };
+            // a mention beats the dot larger and rings it in the room's highlight; the open list gets a small badge instead
+            let at_ring = it.at > 0 && it.num > 0 && !it.voice && !on && k < 0.5;
+            let sc = if at_ring { sc * 1.14 } else { sc };
             let (cx_, cy_) = (x + w / 2., y + h / 2.);
             let (w2, h2) = (w * sc, h * sc);
             let (x2, y2) = (cx_ - w2 / 2., cy_ - h2 / 2.);
@@ -175,6 +178,8 @@ impl Mega {
                         .when(!num_s.is_empty(), |d| d.child(div().absolute().right(px(12.)).bottom(px(8.)).opacity(label_op).font_family(look::F_SHARP).text_size(px(36.)).line_height(px(30.)).text_color(ink).child(num_s.clone())))
                         .when(it.voice, |d| d.child(div().absolute().left(px(14.)).right(px(14.)).top(px(11.)).opacity(label_op).font_family(look::F_UI).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(ink).overflow_hidden().whitespace_nowrap().text_ellipsis().child(if it.here.is_empty() { "empty".to_string() } else { it.here.join(", ") }))))
                     .when(unread && k < 0.5, |d| d.child(div().absolute().inset_0().rounded_full().shadow(vec![BoxShadow { color: col.opacity(0.7), offset: point(px(0.), px(0.)), blur_radius: px(12.), spread_radius: px(0.), inset: false }]))))
+                .when(at_ring, |d| d.child(div().absolute().inset(px(-4.)).rounded_full().border_2().border_color(col)))
+                .when(it.at > 0 && !on && k > 0.5, |d| d.child(div().absolute().top(px(-7.)).right(px(-9.)).min_w(px(15.)).h(px(15.)).px(px(3.)).rounded(px(8.)).bg(look::paper()).text_color(rgb(look::VOID)).font_family(look::F_UI).text_size(px(10.)).line_height(px(15.)).font_weight(FontWeight::BOLD).child(if it.at > 99 { "99+".to_string() } else { it.at.to_string() })))
                 .when(on && k > 0.5, |d| d.child(div().absolute().inset(px(-4.)).rounded(px(r + 4.)).border_2().border_color(look::paper())))
                 .when(picked, |d| d.child(div().absolute().inset(px(-4.)).rounded(px(r + 4.)).border_2().border_color(look::paper())))
                 .when(k < 0.5, |d| d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)))

@@ -273,7 +273,7 @@ impl Mega {
                 Ok(s) => {
                     this.default_relay = s["default_relay"].as_str().unwrap_or("").to_string();
                     if s["locked"].as_bool() == Some(false) { this.enter(window, cx); }
-                    else if s["exists"].as_bool() == Some(true) { this.screen = Screen::Locked; this.pass.update(cx, |p, cx| p.focus(window, cx)); }
+                    else if s["exists"].as_bool() == Some(true) { this.screen = Screen::Locked; if crate::core::profile_busy(&this.core.dir) { this.error = Some(crate::core::BUSY_TEXT.into()); } this.pass.update(cx, |p, cx| p.focus(window, cx)); }
                     else { this.screen = Screen::Welcome; this.name.update(cx, |p, cx| p.focus(window, cx)); }
                     if this.screen == Screen::Locked { if let Some(p) = this.auto.pass.take() { this.unlock_with(p, window, cx); } }
                 }
@@ -297,7 +297,7 @@ impl Mega {
                         let (relay, secret) = match r { Ok(v) => (v["relay"].as_str().unwrap_or("").to_string(), v["secret"].as_str().unwrap_or("").to_string()), Err(e) => { this.busy = false; this.error = Some(e.into()); cx.notify(); return; } };
                         this.rpc("create_account", json!({"relay": relay, "passphrase": pass, "name": name, "invite": secret}), window, cx, |this, r, window, cx| {
                             this.busy = false;
-                            match r { Ok(_) => this.enter(window, cx), Err(e) => this.error = Some(e.into()) }
+                            match r { Ok(_) => this.enter(window, cx), Err(e) => this.error = Some(crate::core::friendly_error(&e).into()) }
                             cx.notify();
                         });
                     });

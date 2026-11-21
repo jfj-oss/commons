@@ -18,9 +18,11 @@ pub struct Core {
     looks: std::sync::Mutex<std::sync::mpsc::Sender<Box<dyn FnOnce(&App) + Send>>>,
 }
 
-/// Where the account lives. `COMMONS_DATA` as in the Tauri app. Without it the spike uses a folder of its own, so it can
-/// never touch the real one by accident; `MEGA_GPUI_REAL_PROFILE=1` opts into the Tauri app's folder (the core's lock on
-/// the folder still keeps two programs from using one account at once).
+/// Where the account lives: the same folder as the Tauri app (`app.commons.chat`), so this app opens the account that
+/// is already there. `COMMONS_DATA` overrides it (tests, a second profile), as in the Tauri app. The core's folder lock
+/// (client.rs `lock_dir`, taken when the account is unlocked or created) keeps the two programs off one account at the
+/// same time: the second one gets "this account is already open in another Megatron window or process". Nothing here
+/// reads or rewrites the folder before that unlock.
 pub fn data_dir() -> PathBuf {
     if let Ok(d) = std::env::var("COMMONS_DATA") { return PathBuf::from(d); }
     let base = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).filter(|p| p.is_absolute())
@@ -29,7 +31,41 @@ pub fn data_dir() -> PathBuf {
             if cfg!(target_os = "macos") { h.join("Library/Application Support") } else { h.join(".local/share") }
         }))
         .unwrap_or_else(|| PathBuf::from("."));
-    if std::env::var("MEGA_GPUI_REAL_PROFILE").as_deref() == Ok("1") { base.join("app.commons.chat") } else { base.join("app.commons.chat.gpui-spike") }
+    base.join("app.commons.chat")
+}
+
+/// True when another program (the older Tauri app, or another mega) holds the account folder's lock right now. Looks
+/// only: the lock is taken and dropped at once, and nothing is created when the folder or its lock file is missing.
+pub fn profile_busy(dir: &std::path::Path) -> bool {
+    let Ok(f) = std::fs::OpenOptions::new().write(true).open(dir.join("lock")) else { return false };
+    matches!(f.try_lock(), Err(std::fs::TryLockError::WouldBlock))
+}
+pub const BUSY_TEXT: &str = "mega is already open on this account (the older mega app or another window). Close it first, then try again.";
+
+/// The core's refusal when the lock is taken, in words that say what to do.
+pub fn friendly_error(e: &str) -> String {
+    if e.contains("already open in another") { BUSY_TEXT.to_string() } else { e.to_string() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn busy_when_lock_held_and_never_creates() {
+        let d = std::env::temp_dir().join(format!("mega-busy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(!profile_busy(&d));
+        assert!(!d.exists(), "looking must not create the folder");
+        std::fs::create_dir_all(&d).unwrap();
+        assert!(!profile_busy(&d) && !d.join("lock").exists());
+        let held = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(d.join("lock")).unwrap();
+        held.try_lock().unwrap();
+        assert!(profile_busy(&d));
+        drop(held);
+        assert!(!profile_busy(&d));
+        assert_eq!(friendly_error("this account is already open in another Megatron window or process; close that one first"), BUSY_TEXT);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
 
 impl Core {
