@@ -95,7 +95,19 @@ impl Core {
                     hub.set_sink(n.clone());
                     notifier = Some(n);
                 }
-                #[cfg(not(all(feature = "calls", target_os = "linux")))]
+                #[cfg(target_os = "macos")]
+                {
+                    // macOS: UNUserNotificationCenter with a delegate, so a click opens the room (macnotify.rs)
+                    let weak = Arc::downgrade(&app);
+                    let reply: crate::notifier::Reply = Arc::new(move |gid, text| {
+                        let app = weak.upgrade().ok_or("closing")?;
+                        app.call("send_text", serde_json::json!({"gid": gid, "text": text})).map(|_| ())
+                    });
+                    let n = crate::notifier::Notifier::start(crate::notifier::Bus::from_env(), reply, inbox.clone());
+                    hub.set_sink(n.clone());
+                    notifier = Some(n);
+                }
+                #[cfg(not(any(all(feature = "calls", target_os = "linux"), target_os = "macos")))]
                 hub.set_sink(Arc::new(commons_core::notify::NativeSink::new(&hub, None, "app.commons.chat")));
             }
         }

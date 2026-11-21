@@ -54,6 +54,13 @@ zune-jpeg = { version = "=0.5.15", optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "=5.19.0", optional = true }
 
+# macOS notifications with a click that opens the room (macnotify.rs): the versions Cargo.lock already holds (gpui's own).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.5"
+objc2-foundation = "=0.3.2"
+objc2-user-notifications = "=0.3.2"
+block2 = "=0.6.2"
+
 # CALLS-PLAN.md step 0: a Rust participant driven by tools/gpui-call-interop.mjs.
 [[example]]
 name = "call_probe"

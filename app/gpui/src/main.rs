@@ -57,6 +57,9 @@ mod emoji;
 mod emoji_table;
 mod look;
 mod paint;
+mod nowindow;
+#[cfg(target_os = "macos")]
+mod macnotify;
 mod wall;
 #[cfg(feature = "calls")]
 mod videobench;
@@ -130,7 +133,7 @@ fn main() {
             app_id: Some("app.commons.chat.gpui".into()),
             ..Default::default()
         };
-        gpui_kit::open_window(opts, cx, |window, cx| cx.new(|cx| app::Mega::new(core, window, cx))).expect("window");
+        if let Err(e) = gpui_kit::open_window(opts, cx, |window, cx| cx.new(|cx| app::Mega::new(core, window, cx))) { nowindow::fail(&format!("{e:#}"), &core::data_dir()); }
         cx.activate(true);
     });
 }

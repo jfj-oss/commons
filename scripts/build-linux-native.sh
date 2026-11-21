@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Builds the native (GPUI) mega for Linux into a tarball: dist/mega-linux-x86_64.tar.gz (or -aarch64). Inside: the stripped
-# binary, hicolor icons made from the Tauri app's icon, the desktop entry template, install.sh and uninstall.sh.
+# binary, hicolor icons made from the Tauri app's icon, the desktop entry template, install.sh and uninstall.sh. Next to it
+# the same stripped binary alone, dist/mega-gpui-linux-x86_64: that is the file the self-updater replaces itself with
+# (scripts/publish-update.sh signs it and puts it in the feed as linux-gpui-x86_64).
 #   scripts/build-linux-native.sh [--no-build]     (--no-build packs an existing target/release/mega-gpui)
-# MEGA_GPUI_VERSION (default: the Tauri app's version) is what the app compares against the update feed.
+# MEGA_GPUI_VERSION (default: the Tauri app's version) is what the app compares against the update feed. COMMONS_OUT picks
+# another output folder than dist/. MEGA_GPUI_UPDATE_PUBKEY (tests only) swaps the update key the build trusts.
 # Build on the oldest system you support (the binary links the system's glibc and needs Vulkan at run time).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -25,6 +28,8 @@ done
 cp packaging/linux-native/install.sh packaging/linux-native/uninstall.sh packaging/linux-native/README.txt "$P/"
 chmod 755 "$P/install.sh" "$P/uninstall.sh"
 echo "$VER" > "$P/VERSION"
-mkdir -p dist
-tar -C "$W" -czf "dist/$NAME.tar.gz" "$NAME"
-echo "dist/$NAME.tar.gz  ($(du -h "dist/$NAME.tar.gz" | cut -f1), version $VER)"
+OUT=$(realpath -m "${COMMONS_OUT:-dist}")
+mkdir -p "$OUT"
+tar -C "$W" -czf "$OUT/$NAME.tar.gz" "$NAME"
+cp "$P/mega-gpui" "$OUT/mega-gpui-linux-$ARCH"
+echo "$OUT/$NAME.tar.gz  ($(du -h "$OUT/$NAME.tar.gz" | cut -f1), version $VER) and $OUT/mega-gpui-linux-$ARCH (the update file)"

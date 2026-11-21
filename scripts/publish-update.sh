@@ -9,8 +9,14 @@
 #   options:  --notes "text"                   shown to friends in the update prompt
 #             --min-version X.Y.Z              apps older than this are told they must update (the relay's
 #                                              --min-app-version, if set, wins)
-#             --only linux,windows,mac         build only these (the others get no update this time)
-#             --skip-mac                       go on without the Mac when it is off, away or low on battery
+#             --only linux,windows,mac,linux-native,mac-native
+#                                              build only these (the others get no update this time). The two
+#                                              "-native" ones are the native (GPUI) app: a Linux executable built
+#                                              in Docker (scripts/build-linux-native-docker.sh) and a macOS bundle
+#                                              built on the Mac (scripts/build-mac-native.sh), fed as
+#                                              linux-gpui-x86_64 and darwin-gpui-aarch64 (docs/UPDATES.md)
+#             --skip-mac                       go on without the Mac (mac and mac-native) when it is off, away or low
+#                                              on battery
 #             --same-version                   no bump: add systems to the version already published, e.g. the Mac
 #                                              after it was skipped:  scripts/publish-update.sh --same-version --only mac
 #
@@ -20,14 +26,17 @@
 #
 # For tests only: COMMONS_UPDATE_SCRATCH=1 leaves the repository's version alone (the version goes in through
 # COMMONS_TAURI_CONFIG), COMMONS_UPDATE_DIST picks another output folder, COMMONS_UPDATE_KEY another key, and
-# COMMONS_UPDATE_PUBKEY_FILE builds the apps with another public key.
+# COMMONS_UPDATE_PUBKEY_FILE builds the apps with another public key. COMMONS_UPDATE_TEST_SIGNER=<dir> signs with the
+# throwaway signer (crates/core/examples/minisign-test-sign.rs) and the key pair in <dir> instead of the Tauri CLI and the
+# real key, and COMMONS_UPDATE_PREBUILT=<dir> builds nothing: it takes the finished files (the names the builds write:
+# mega-gpui-linux-x86_64, mega-macos-arm64.app.tar.gz, ...) from <dir>. tools/gpui-update-e2e.sh uses both.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 die() { printf 'publish-update: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
-WHAT=patch NOTES='' MIN='' ONLY=linux,windows,mac SKIP_MAC=0 SAME=0
+WHAT=patch NOTES='' MIN='' ONLY=linux,windows,mac,linux-native,mac-native SKIP_MAC=0 SAME=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --notes) NOTES=$2; shift 2 ;;
@@ -44,6 +53,8 @@ want() { [[ ",$ONLY," == *",$1,"* ]]; }
 is_ver() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; }
 
 KEY=${COMMONS_UPDATE_KEY:-$HOME/.config/commons/updater.key}
+TEST_SIGNER=${COMMONS_UPDATE_TEST_SIGNER:-}
+PREBUILT=${COMMONS_UPDATE_PREBUILT:-}
 DIST=$(realpath -m "${COMMONS_UPDATE_DIST:-dist}")
 SCRATCH=${COMMONS_UPDATE_SCRATCH:-}
 CLI=$ROOT/tools/node_modules/.bin/tauri
@@ -53,12 +64,14 @@ MAC_KEY=${COMMONS_MAC_KEY:-$HOME/.ssh/macbook-air}
 MAC_JOBS=${COMMONS_MAC_JOBS:-}   # e.g. 6: build on the Mac's fast cores (only sensible on power); empty = the light default
 
 # ---- checks first, so nothing is half done when one fails
-[ -s "$KEY" ] || die "no updater key at $KEY. Restore it from your backup (docs/UPDATES.md); a new key would not be accepted by apps already out there."
-[ -e "$KEY.password" ] || die "no key password file at $KEY.password"
-for f in "$KEY" "$KEY.password"; do [ "$(stat -c %a "$f")" = 600 ] || die "$f must be mode 600 (chmod 600 $f)"; done
-[ -x "$CLI" ] || (cd tools && npm ci)
+if [ -z "$TEST_SIGNER" ]; then
+  [ -s "$KEY" ] || die "no updater key at $KEY. Restore it from your backup (docs/UPDATES.md); a new key would not be accepted by apps already out there."
+  [ -e "$KEY.password" ] || die "no key password file at $KEY.password"
+  for f in "$KEY" "$KEY.password"; do [ "$(stat -c %a "$f")" = 600 ] || die "$f must be mode 600 (chmod 600 $f)"; done
+  [ -x "$CLI" ] || (cd tools && npm ci)
+fi
 command -v jq >/dev/null || die "jq is needed"
-if want linux || want windows; then command -v docker >/dev/null || die "Docker is needed for the Linux and Windows builds"; fi
+if [ -z "$PREBUILT" ] && { want linux || want windows || want linux-native; }; then command -v docker >/dev/null || die "Docker is needed for the Linux and Windows builds"; fi
 [ -z "$MIN" ] || is_ver "$MIN" || die "--min-version wants a version like 0.2.0"
 
 CUR=$(jq -r .version "$CONF")
@@ -86,10 +99,10 @@ mac_ok() {
   [ "${pct:-0}" -gt 40 ] && return 0
   echo "the Mac is on battery at ${pct:-?}%"; return 1
 }
-if want mac; then
+if [ -z "$PREBUILT" ] && { want mac || want mac-native; }; then
   if ! why=$(mac_ok); then
     [ $SKIP_MAC = 1 ] || die "$why. Plug it in, or pass --skip-mac (Mac friends then get this version later)."
-    say "Skipping the Mac: $why."; ONLY=${ONLY//mac/}
+    say "Skipping the Mac: $why."; ONLY=$(tr ',' '\n' <<<"$ONLY" | grep -vx -e mac -e mac-native | paste -sd, -)
   fi
 fi
 
@@ -111,21 +124,27 @@ rm -rf "$STAGE"; mkdir -p "$STAGE"
 LOGS=$STAGE/logs; mkdir -p "$LOGS"
 JOBS=${COMMONS_BUILD_JOBS:-4}
 heavy() { systemd-run --user --scope -q -p MemoryMax=6G "$@"; }
+build() { [ -z "$PREBUILT" ] && want "$1"; }   # finished files given in COMMONS_UPDATE_PREBUILT: nothing is built
+[ -z "$PREBUILT" ] || { [ -d "$PREBUILT" ] || die "no folder $PREBUILT"; cp -a "$PREBUILT"/. "$STAGE/"; }
 
 # ---- builds, one at a time (memory)
-if want linux; then
+if build linux; then
   say "Building Linux (log: $LOGS/linux.log)"
   COMMONS_OUT=$STAGE COMMONS_BUILD_JOBS=$JOBS heavy scripts/build-appimage-portable.sh > "$LOGS/linux.log" 2>&1 || die "Linux build failed: $LOGS/linux.log"
   say "Building the Linux browser version (log: $LOGS/linux-browser.log)"
   COMMONS_OUT=$STAGE COMMONS_BUILD_JOBS=$JOBS heavy scripts/build-linux-browser.sh > "$LOGS/linux-browser.log" 2>&1 || die "Linux browser build failed: $LOGS/linux-browser.log"
 fi
-if want windows; then
+if build windows; then
   say "Building Windows (log: $LOGS/windows.log)"
   COMMONS_OUT=$STAGE COMMONS_BUILD_JOBS=$JOBS heavy scripts/build-windows.sh > "$LOGS/windows.log" 2>&1 || die "Windows build failed: $LOGS/windows.log"
   say "Building the Windows browser version (log: $LOGS/windows-browser.log)"
   COMMONS_OUT=$STAGE COMMONS_BUILD_JOBS=$JOBS heavy scripts/build-windows-browser.sh > "$LOGS/windows-browser.log" 2>&1 || die "Windows browser build failed: $LOGS/windows-browser.log"
 fi
-if want mac; then
+if build linux-native; then
+  say "Building the native Linux app (log: $LOGS/linux-native.log)"
+  COMMONS_OUT=$STAGE COMMONS_BUILD_JOBS=$JOBS MEGA_GPUI_VERSION=$NEW ${PUBFILE:+MEGA_GPUI_UPDATE_PUBKEY=$TRUSTED} heavy scripts/build-linux-native-docker.sh > "$LOGS/linux-native.log" 2>&1 || die "native Linux build failed: $LOGS/linux-native.log"
+fi
+if build mac || build mac-native; then
   say "Building macOS on $MAC (log: $LOGS/mac.log)"
   mac_ok >/dev/null || die "the Mac is no longer fit to build (unplugged and at 40% or below?)"
   rsync -a --delete -e "ssh -i $MAC_KEY -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=8" --exclude /target --exclude /target-docker --exclude /dist --exclude /data --exclude /.git \
@@ -133,6 +152,7 @@ if want mac; then
     || die "could not copy the source to the Mac: $LOGS/mac.log"
   # Two jobs at background priority (scripts/build-mac.sh), and stopped if the Mac drops to 40% on battery. The
   # browser version is built the same way, after the app.
+  W_TAURI=0; W_NATIVE=0; build mac && W_TAURI=1; build mac-native && W_NATIVE=1
   ssh -i "$MAC_KEY" -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$MAC" 'zsh -s' >> "$LOGS/mac.log" 2>&1 <<MAC || die "macOS build failed: $LOGS/mac.log"
 export PATH=\$HOME/.cargo/bin:\$PATH
 cd ~/commons-build || exit 2
@@ -152,18 +172,35 @@ run_guarded() {
   done
   wait \$B
 }
-run_guarded publish-build.log scripts/build-mac.sh || { rc=\$?; tail -40 publish-build.log; exit \$rc; }
-run_guarded publish-browser-build.log scripts/build-mac-browser.sh || { rc=\$?; tail -40 publish-browser-build.log; exit \$rc; }
-cd dist && rm -f Megatron.app.tar.gz && COPYFILE_DISABLE=1 tar -czf Megatron.app.tar.gz Megatron.app && ls -la
+if [ $W_TAURI = 1 ]; then
+  run_guarded publish-build.log scripts/build-mac.sh || { rc=\$?; tail -40 publish-build.log; exit \$rc; }
+  run_guarded publish-browser-build.log scripts/build-mac-browser.sh || { rc=\$?; tail -40 publish-browser-build.log; exit \$rc; }
+  cd dist && rm -f Megatron.app.tar.gz && COPYFILE_DISABLE=1 tar -czf Megatron.app.tar.gz Megatron.app && ls -la && cd ..
+fi
+if [ $W_NATIVE = 1 ]; then
+  # the native app: dist/mega.app and dist/mega-macos-arm64.app.tar.gz (the self-updater's file as well)
+  export MEGA_GPUI_VERSION='$NEW' ${PUBFILE:+MEGA_GPUI_UPDATE_PUBKEY='$TRUSTED'} COMMONS_MAC_JOBS='${MAC_JOBS:-2}'
+  run_guarded publish-native-build.log scripts/build-mac-native.sh || { rc=\$?; tail -40 publish-native-build.log; exit \$rc; }
+fi
 MAC
-  scp -q -i "$MAC_KEY" -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$MAC:commons-build/dist/Megatron-macos-arm64.dmg" "$MAC:commons-build/dist/Megatron.app.tar.gz" "$MAC:commons-build/dist/Megatron-macos-browser.zip" "$MAC:commons-build/dist/Megatron-macos-browser.tar.gz" "$STAGE/" || die "could not fetch the macOS build"
-  mv "$STAGE/Megatron.app.tar.gz" "$STAGE/Megatron-macos-arm64.app.tar.gz"
+  if [ $W_TAURI = 1 ]; then
+    scp -q -i "$MAC_KEY" -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$MAC:commons-build/dist/Megatron-macos-arm64.dmg" "$MAC:commons-build/dist/Megatron.app.tar.gz" "$MAC:commons-build/dist/Megatron-macos-browser.zip" "$MAC:commons-build/dist/Megatron-macos-browser.tar.gz" "$STAGE/" || die "could not fetch the macOS build"
+    mv "$STAGE/Megatron.app.tar.gz" "$STAGE/Megatron-macos-arm64.app.tar.gz"
+  fi
+  if [ $W_NATIVE = 1 ]; then
+    scp -q -i "$MAC_KEY" -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$MAC:commons-build/dist/mega-macos-arm64.app.tar.gz" "$STAGE/mega-macos-arm64.app.tar.gz" || die "could not fetch the native macOS build"
+  fi
 fi
 
 # ---- sign (the password goes through the environment, never the command line)
 sign() {
-  TAURI_SIGNING_PRIVATE_KEY_PATH=$KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat "$KEY.password")" "$CLI" signer sign --app-version "$NEW" "$1" > "$LOGS/sign.log" 2>&1 \
-    || die "signing $1 failed: $LOGS/sign.log"
+  if [ -n "$TEST_SIGNER" ]; then
+    cargo run -q -p commons-core --example minisign-test-sign -- sign "$TEST_SIGNER" "$1" "$NEW" > "$1.sig.tmp" 2> "$LOGS/sign.log" || die "signing $1 failed: $LOGS/sign.log"
+    mv "$1.sig.tmp" "$1.sig"
+  else
+    TAURI_SIGNING_PRIVATE_KEY_PATH=$KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat "$KEY.password")" "$CLI" signer sign --app-version "$NEW" "$1" > "$LOGS/sign.log" 2>&1 \
+      || die "signing $1 failed: $LOGS/sign.log"
+  fi
   [ "$(keyid_sig "$1.sig")" = "$WANT_ID" ] || die "$1 was signed with a key the apps do not trust (key id $(keyid_sig "$1.sig"), apps trust $WANT_ID)"
 }
 declare -A UP=()    # platform -> file in the staging folder
@@ -175,13 +212,16 @@ want linux   && UP[linux-browser-x86_64]=Megatron-linux-browser.tar.gz
 want windows && UP[windows-x86_64]=Megatron-windows-x64-setup.exe
 want windows && UP[windows-browser-x86_64]=Megatron-windows-browser.tar.gz
 want mac     && UP[darwin-aarch64]=Megatron-macos-arm64.app.tar.gz
+# The native (GPUI) app has platform keys of its own, which no other app looks for (update.rs, docs/UPDATES.md).
+want linux-native && UP[linux-gpui-x86_64]=mega-gpui-linux-x86_64
+want mac-native   && UP[darwin-gpui-aarch64]=mega-macos-arm64.app.tar.gz
 want mac     && UP[darwin-browser-aarch64]=Megatron-macos-browser.tar.gz
 [ ${#UP[@]} -gt 0 ] || die "nothing to publish"
 for p in "${!UP[@]}"; do [ -s "$STAGE/${UP[$p]}" ] || die "missing build output ${UP[$p]}"; sign "$STAGE/${UP[$p]}"; done
 
 # ---- into dist/: versioned update files first, then friends' downloads, the manifest last
 mkdir -p "$DIST/update"
-upname() { case $1 in linux-x86_64) echo "Megatron_${NEW}_x86_64.AppImage" ;; linux-browser-x86_64) echo "Megatron_${NEW}_linux-browser.tar.gz" ;; windows-x86_64) echo "Megatron_${NEW}_x64-setup.exe" ;; windows-browser-x86_64) echo "Megatron_${NEW}_windows-browser.tar.gz" ;; darwin-aarch64) echo "Megatron_${NEW}_aarch64.app.tar.gz" ;; darwin-browser-aarch64) echo "Megatron_${NEW}_macos-browser.tar.gz" ;; esac; }
+upname() { case $1 in linux-x86_64) echo "Megatron_${NEW}_x86_64.AppImage" ;; linux-browser-x86_64) echo "Megatron_${NEW}_linux-browser.tar.gz" ;; windows-x86_64) echo "Megatron_${NEW}_x64-setup.exe" ;; windows-browser-x86_64) echo "Megatron_${NEW}_windows-browser.tar.gz" ;; darwin-aarch64) echo "Megatron_${NEW}_aarch64.app.tar.gz" ;; darwin-browser-aarch64) echo "Megatron_${NEW}_macos-browser.tar.gz" ;; linux-gpui-x86_64) echo "Megatron_${NEW}_gpui-x86_64" ;; darwin-gpui-aarch64) echo "Megatron_${NEW}_gpui-aarch64.app.tar.gz" ;; esac; }
 platforms='{}'
 for p in "${!UP[@]}"; do
   n=$(upname "$p")
@@ -189,7 +229,7 @@ for p in "${!UP[@]}"; do
   platforms=$(jq -c --arg p "$p" --arg u "update/$n" --rawfile s "$STAGE/${UP[$p]}.sig" '. + {($p): {url: $u, signature: $s}}' <<<"$platforms")
 done
 mkdir -p "$DIST/.previous"
-for f in Megatron-linux-x86_64.AppImage Megatron-linux-browser.tar.gz Megatron-windows-x64-setup.exe Megatron-windows-browser.zip Megatron-macos-arm64.dmg Megatron-macos-browser.zip; do
+for f in Megatron-linux-x86_64.AppImage Megatron-linux-browser.tar.gz Megatron-windows-x64-setup.exe Megatron-windows-browser.zip Megatron-macos-arm64.dmg Megatron-macos-browser.zip mega-linux-x86_64.tar.gz mega-macos-arm64.app.tar.gz; do
   [ -s "$STAGE/$f" ] || continue
   [ -e "$DIST/$f" ] && cp --reflink=auto -p "$DIST/$f" "$DIST/.previous/$f"
   cp --reflink=auto "$STAGE/$f" "$DIST/.$f.tmp" && chmod 755 "$DIST/.$f.tmp" && mv "$DIST/.$f.tmp" "$DIST/$f"

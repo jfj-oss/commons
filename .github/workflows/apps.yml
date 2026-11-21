@@ -60,3 +60,26 @@ jobs:
           name: mega-linux-x86_64.tar.gz
           path: dist/mega-linux-x86_64.tar.gz
           if-no-files-found: error
+      # the file the app's self-updater swaps itself for. It is NOT signed here: signing is done on the owner's PC with the
+      # updater key (scripts/publish-update.sh, docs/UPDATES.md), which never goes to GitHub.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mega-gpui-linux-x86_64
+          path: dist/mega-gpui-linux-x86_64
+          if-no-files-found: error
+
+  # The native (GPUI) app for macOS (Apple silicon): mega.app, ad-hoc signed, zipped as mega-macos-arm64.app.tar.gz (the
+  # self-updater's file too; unsigned by the updater key here, see above). Needs only Rust and the Xcode command line tools.
+  native-mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and bundle
+        run: scripts/build-mac-native.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mega-macos-arm64.app.tar.gz
+          path: dist/mega-macos-arm64.app.tar.gz
+          if-no-files-found: error

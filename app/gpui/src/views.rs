@@ -316,7 +316,7 @@ impl Mega {
                         "presence" => { this.prefs.presence = v; this.prefs.save(); cx.notify(); }
                         "ring_sound" => { this.prefs.sound = v; this.prefs.save(); cx.notify(); }
                         "notify_set" => this.set_setting("notify_set", json!({"show_text": v}), window, cx),
-                        "set_listening_sharing" => this.set_setting(method, json!({"on": v, "rune": ""}), window, cx),
+                        "set_listening_sharing" => { let r = this.snap.as_ref().map(|s| s.rune_url.clone()).unwrap_or_default(); this.set_setting(method, json!({"on": v, "rune": r}), window, cx) }
                         _ => this.set_setting(method, json!({"on": v}), window, cx),
                     }
                 });
@@ -351,6 +351,10 @@ impl Mega {
             .child(toggle("p-read", snap.read_receipts, "Read receipts", "set_read_receipts"))
             .child(toggle("p-pres", presence, "Show where I am on the cards", "presence"))
             .child(toggle("p-listen", snap.share_listening, "Share what I am listening to", "set_listening_sharing"))
+            .child(label("rune address"))
+            .child(h_flex().gap_2().child(div().w(px(280.)).child(Input::new(&self.set_rune)))
+                .child(Button::new("save-rune").label("Save").on_click(cx.listener(|this, _, window, cx| this.rune_address_save(window, cx)))))
+            .child(note("Where rune answers on this device. Song title and artist go to your communities, end to end encrypted. Nothing else is read or sent."))
             .child(label("calls"))
             .child(h_flex().gap_2().child(div().id("set-gamekeys").relative().px_3().py_1().cursor_pointer().child(sq::back(999., rgb(0x0b0a10))).child(sq::front(999., None, Some((1., look::line())), None)).child(div().relative().child("Game keys\u{2026}"))
                 .on_click(cx.listener(|this, _, window, cx| this.gk_open(window, cx)))))
