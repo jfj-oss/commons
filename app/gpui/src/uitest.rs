@@ -112,6 +112,8 @@ impl Mega {
                 "selection" => self.sel_dump(),
                 // message actions without a pointer: msg (what the composer holds and where the tools are) and msg_do {what: reply|edit|delete|react|goto|older|cancel, id, emoji}
                 "msg" => self.msg_dump(),
+                "search" => self.search_dump(),
+                "search_do" => { match cmd["what"].as_str().unwrap_or("") { "open" => self.search_open(window, cx), "close" => self.search_close(window, cx), _ => {} } json!({"ok": true}) }
                 "msg_do" => {
                     let id = s("id");
                     match cmd["what"].as_str().unwrap_or("") {

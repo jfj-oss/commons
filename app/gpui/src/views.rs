@@ -160,6 +160,7 @@ impl Mega {
                 items.push(([0, 3, 4][i.min(2)], 10 + i as u8, chip_w(["people", "invite", "manage"][i.min(2)]), b));
             }
         }
+        items.push((1, 4, chip_w("search"), self.search_chip(cx)));
         items.push((2, 2, chip_w("aa"), crate::cards::chip("b-aa", "aa").on_click(cx.listener(|this, _, _, cx| {
             this.prefs.chat_font = match this.prefs.chat_font { ChatFont::Bellefair => ChatFont::Raster, ChatFont::Raster => ChatFont::Bellefair }; this.prefs.save(); this.list.remeasure(); this.reading.full.clear(); cx.notify();
         })).into_any_element()));
@@ -270,6 +271,7 @@ impl Mega {
                     .child(h_flex().h(px(22.)).px_3().gap(px(5.)).items_center().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute())
                         .child(hole(&holes))
                         .child(lock_icon()).child("end-to-end encrypted.").child(div().ml(px(3.)).child("shift+enter for a new line.")))))
+            .children(self.search_overlay(cx))
             .children(wall_hit)
             .children(wall_bar)
             .children(files_layer)

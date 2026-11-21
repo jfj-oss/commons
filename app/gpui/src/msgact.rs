@@ -304,6 +304,6 @@ impl Mega {
     /// For the test port: what the composer is doing and where the tools are.
     pub fn msg_dump(&self) -> serde_json::Value {
         json!({"reply": self.msg.reply.as_ref().map(|r| json!({"id": r.id, "name": r.name, "text": r.text})), "edit": self.msg.edit, "pop": self.msg.pop.as_ref().map(|(_, id)| id), "flash": self.msg.flash.as_ref().map(|(id, _)| id),
-            "below": self.msg.below, "limit": self.limit, "more": self.win.more, "hits": self.files.hits.dump()})
+            "below": self.msg.below, "msgs": self.win.msgs.iter().rev().take(40).map(|m| json!({"id": m.id, "text": m.shown(), "raw": m.text, "mine": m.mine, "edited": m.edited, "deleted": m.deleted, "reply": m.reply.as_ref().map(|r| r.id.clone()), "reactions": m.reactions.iter().map(|r| json!({"emoji": r.emoji, "count": r.count, "mine": r.mine})).collect::<Vec<_>>(), "spans": m.rich.spans.len()})).collect::<Vec<_>>(), "first": self.win.msgs.first().map(|m| m.id.clone()), "limit": self.limit, "more": self.win.more, "hits": self.files.hits.dump()})
     }
 }

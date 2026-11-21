@@ -44,6 +44,7 @@ mod presence;
 mod views;
 mod msgact;
 mod rich;
+mod search;
 mod look;
 mod paint;
 mod wall;

@@ -90,6 +90,8 @@ pub struct Mega {
     pub sel: crate::select::Sel,
     /// Reply, edit, the reaction picker, jumps and the older-messages window (msgact.rs).
     pub msg: crate::msgact::MsgUi,
+    /// Searching messages (search.rs).
+    pub find: crate::search::SearchUi,
     /// The updater's state and cards (updateui.rs).
     pub upd: crate::updateui::UpdateUi,
     /// The card column of the home and community levels (cards.rs).
@@ -116,6 +118,7 @@ impl Mega {
         let set_name = cx.new(|cx| InputState::new(window, cx).placeholder("Your name"));
         let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 8).submit_on_enter(true).placeholder("Write a message"));
         let (mem, mem_subs) = crate::members::MembersUi::new(window, cx);
+        let (find, find_subs) = crate::search::SearchUi::new(window, cx);
         let mut subs = vec![
             cx.subscribe_in(&composer, window, |this: &mut Self, _, ev: &InputEvent, window, cx| match ev {
                 // Enter sends; Shift+Enter is a new line (the input inserts it itself and does not report it as a submit).
@@ -125,7 +128,7 @@ impl Mega {
             }),
             cx.subscribe_in(&pass, window, |this: &mut Self, _, ev: &InputEvent, window, cx| { if let InputEvent::PressEnter { .. } = ev { this.submit_sign_in(window, cx); } }),
         ];
-        subs.extend(mem_subs);
+        subs.extend(mem_subs); subs.extend(find_subs);
         subs.push(cx.observe_window_activation(window, |this, window, cx| this.beat(window, cx)));
         let prefs = Prefs::load(&core.dir);
         let call = crate::callui::CallUi::new(prefs.deck_w, window, cx);
@@ -134,7 +137,7 @@ impl Mega {
         let (paint, paint_sub) = crate::paint::PaintUi::new(window, cx);
         subs.push(paint_sub);
         let mut this = Mega {
-            files: Default::default(), nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), fake_dm_unread: 0, dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx), msg: Default::default(),
+            files: Default::default(), nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), fake_dm_unread: 0, dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx), msg: Default::default(), find,
             level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd: crate::backdrop::Bd::new(""), typing_ui: Default::default(), typing_at: Instant::now(), fake_hidden: false, holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
@@ -158,7 +161,7 @@ impl Mega {
         // Rings, what notifications ask of the window, rune in the call bar, the test port: a quarter-second clock.
         this._tasks.push(cx.spawn_in(window, async move |this, cx| loop {
             cx.background_executor().timer(Duration::from_millis(250)).await;
-            if this.update_in(cx, |this, window, cx| { this.ring_tick(window, cx); this.nav_focus_tick(window, cx); this.wall_tick(window, cx); this.paint_tick(window, cx); this.mem_tick(window, cx); this.msg_tick(window, cx); this.rune_tick(window, cx); this.uitest_tick(window, cx); }).is_err() { break; }
+            if this.update_in(cx, |this, window, cx| { this.ring_tick(window, cx); this.nav_focus_tick(window, cx); this.wall_tick(window, cx); this.paint_tick(window, cx); this.mem_tick(window, cx); this.msg_tick(window, cx); this.search_tick(window, cx); this.rune_tick(window, cx); this.uitest_tick(window, cx); }).is_err() { break; }
         }));
         // The fields move at 20 frames a second on the cards and 10 behind a chat (25 while a ripple runs), as in mega.js;
         // not at all with the battery saver on, or while the window is not the active one.
