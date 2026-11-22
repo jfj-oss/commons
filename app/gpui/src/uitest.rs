@@ -224,7 +224,7 @@ impl Mega {
                 "msg" => self.msg_dump(),
                 "search" => self.search_dump(),
                 "emoji" => self.emoji_dump(),
-                "emoji_do" => { match cmd["what"].as_str().unwrap_or("") { "open" => { self.emoji_open(crate::emoji::Target::Composer, point(px(0.), px(0.)), window, cx); } "close" => self.emoji_close(window, cx), "query" => { let q = s("q"); self.emoji.input.update(cx, |i, cx| i.set_value(q, window, cx)); self.emoji_rebuild(cx); } _ => {} } json!({"ok": true}) }
+                "emoji_do" => { match cmd["what"].as_str().unwrap_or("") { "open" => { self.emoji_open(crate::emoji::Target::Composer, point(px(0.), px(0.)), window, cx); } "close" => self.emoji_close(window, cx), "tone" => { let t = cmd["n"].as_u64().unwrap_or(0) as u8; self.emoji_set_tone(t, cx); } "pick" => { let e = s("e"); self.emoji_pick(&e, window, cx); } "query" => { let q = s("q"); self.emoji.input.update(cx, |i, cx| i.set_value(q, window, cx)); self.emoji_rebuild(cx); } _ => {} } json!({"ok": true}) }
                 "search_do" => { match cmd["what"].as_str().unwrap_or("") { "open" => self.search_open(window, cx), "close" => self.search_close(window, cx), _ => {} } json!({"ok": true}) }
                 "msg_do" => {
                     let id = s("mid");
@@ -259,6 +259,7 @@ impl Mega {
                 }
                 "members" => self.members_dump(),
                 "nav" => self.nav_dump(),
+                "fly" => self.fly_dump(),
                 "rail" => self.rail_dump(),
                 "navplay" => { let now = self.epoch.elapsed().as_secs_f64(); self.nav.frames.clear(); self.nav.last_frame = None; self.nav.play = Some((now + cmd["secs"].as_f64().unwrap_or(3.), cmd["pps"].as_f64().unwrap_or(2400.) as f32, 1.)); cx.notify(); json!({"ok": true}) }
                 "railopen" => { if cmd["on"].as_bool() == Some(false) { self.rail.hover = false; self.rail_close_now(); } else { self.rail_open(); } cx.notify(); json!({"ok": true}) }
@@ -284,6 +285,7 @@ impl Mega {
                 "join_text" => { let v = s("text"); self.mem.join_in.update(cx, |i, cx| i.set_value(v, window, cx)); self.join_submit(window, cx); json!({"ok": true}) }
                 "click" => match s("what").as_str() { "confirm" => { self.run_confirm(window, cx); json!({"ok": true}) } "cancel" => { self.mem.confirm = None; cx.notify(); json!({"ok": true}) } _ => json!({"error": "unknown button"}) },
                 "core" => { let core = self.core.clone(); let (m, a) = (s("method"), cmd["args"].clone()); match core.call(&m, a) { Ok(v) => json!({"ok": v}), Err(e) => json!({"error": e}) } }
+                other if other.starts_with("voice") => self.voice_cmd(&cmd, window, cx),
                 other if other.starts_with("files_") => self.files_cmd(&cmd, window, cx),
                 other => json!({"error": format!("unknown command {other}")}),
             };

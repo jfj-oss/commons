@@ -87,7 +87,7 @@ pub fn is_link(v: &str) -> bool { let v = v.trim().to_lowercase(); v.starts_with
 fn linkish(id: &'static str, text: &str) -> Stateful<Div> {
     div().id(id).font_family(look::F_NAME).text_size(px(13.)).text_color(look::mute()).cursor_pointer().underline().hover(|d| d.text_color(look::paper())).child(text.to_string())
 }
-fn lab(t: &str) -> Div { div().mt_3().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(t.to_string()) }
+fn lab(t: &str) -> Div { div().relative().mt_3().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(t.to_lowercase()) }
 fn small(t: impl Into<SharedString>) -> Div { div().text_size(px(13.)).text_color(look::mute()).child(t.into()) }
 
 impl Onboard {
@@ -264,7 +264,7 @@ impl Mega {
 
     // ---- drawing ----
     fn ob_links(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let mut row = h_flex().flex_wrap().gap_x_4().gap_y_1().justify_center();
+        let mut row = v_flex().items_start().gap(px(8.));
         let items: [(Boot, &'static str, &'static str); 4] = [(Boot::Invite, "l-pw", "I have an invite password"), (Boot::Create, "l-new", "I have an invite link, or I am starting a new community"), (Boot::Pair, "l-pair", "This is a new device for my account"), (Boot::Recover, "l-rec", "I only have a recovery key")];
         for (m, id, t) in items {
             if m == self.ob.mode { continue; }
@@ -283,13 +283,30 @@ impl Mega {
                 .when(open, |d| d.child(Input::new(&self.ob.relay)).when(self.ob.mode != Boot::Invite, |d| d.child(lab("Invite secret (only if this relay asks for one)")).child(Input::new(&self.ob.secret))))
         };
         let err = self.ob.err.clone();
-        div().id("boot-scroll").size_full().overflow_y_scroll().child(v_flex().w_full().min_h_full().items_center().justify_center().py_8().gap_3()
-            .child(div().font_family(look::F_SHARP).text_size(px(96.)).line_height(px(96.)).child("mega"))
-            .child(div().max_w(px(420.)).text_center().text_color(look::mute()).child(tag.to_string()))
-            .child(v_flex().id("boot-card").w(px(420.)).gap_2().p_6().rounded(px(30.)).bg(rgb(look::SLIP)).border_1().border_color(look::line()).children(fields).child(relay_box)
-                .when_some(err, |d, e| d.child(div().id("ob-err").text_size(px(13.)).text_color(rgb(look::DANGER)).child(e)))
-                .child(div().pt_2().child(Button::new("ob-go").primary().w_full().label(if busy { "Working…".to_string() } else { go.to_string() }).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.ob_go(window, cx))))))
-            .child(div().max_w(px(560.)).mt_2().child(links))).into_any_element()
+        // the page's first screen (mega-polish.css `html.mega #boot`, `.boot-card`, `.brand`): one card on the void with a faint glow
+        // at the top, the key crest (a paper square with a keyhole), the name in the sharp face, then the fields, left aligned
+        let crest = div().relative().flex_none().size(px(44.)).mb(px(14.)).rounded(px(15.)).bg(look::paper()).child(
+            div().absolute().top(px(12.)).left(px(15.)).w(px(14.)).h(px(20.))
+                .child(div().absolute().top_0().left(px(1.)).size(px(12.)).rounded_full().bg(rgb(look::VOID)))
+                .child(div().absolute().top(px(8.)).left(px(3.5)).w(px(7.)).h(px(12.)).rounded(px(1.5)).bg(rgb(look::VOID))));
+        let go_label = if busy { "working…".to_string() } else { go.to_lowercase() };
+        let card = v_flex().id("boot-card").relative().w_full().max_w(px(430.)).px(px(30.)).pt(px(30.)).pb(px(24.)).gap_2()
+            .child(crate::squircle::back(34., rgb(0x17151e)))
+            .child(crest)
+            .child(div().relative().font_family(look::F_SHARP).text_size(px(72.)).line_height(px(80.)).child("mega"))
+            .child(div().relative().font_family(look::F_MSG).text_size(px(18.)).line_height(px(21.)).text_color(look::mute()).mb(px(6.)).child(tag.to_string()))
+            .children(fields).child(relay_box)
+            .when_some(err, |d, e| d.child(div().relative().id("ob-err").text_size(px(13.)).text_color(rgb(look::DANGER)).child(e)))
+            .child(h_flex().relative().pt_2().child(div().id("ob-go").flex().items_center().justify_center().h(px(42.)).px(px(22.)).w_auto().rounded_full().cursor_pointer()
+                .when(!busy, |d| d.bg(look::paper()).text_color(rgb(look::VOID))).when(busy, |d| d.bg(hsla(0., 0., 1., 0.12)).text_color(look::mute()))
+                .font_family(look::F_UI).text_size(px(14.)).child(go_label)
+                .on_click(cx.listener(|this, _, window, cx| this.ob_go(window, cx)))))
+            .child(div().relative().pt_2().child(links))
+            .child(crate::squircle::front(34., None, Some((1., look::line())), None));
+        div().id("boot-scroll").size_full().overflow_y_scroll().bg(rgb(look::VOID)).relative()
+            .child(div().absolute().top_0().left_0().right_0().h(px(460.)).bg(linear_gradient(180., linear_color_stop(hsla(0., 0., 1., 0.06), 0.), linear_color_stop(hsla(0., 0., 1., 0.), 1.))))
+            .child(v_flex().relative().w_full().min_h_full().items_center().justify_center().py_8().px_4().child(card))
+            .into_any_element()
     }
 
     pub fn render_onboard(&mut self, cx: &mut Context<Self>) -> AnyElement {

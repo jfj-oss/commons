@@ -117,6 +117,10 @@ pub struct Mega {
     pub av: crate::avatars::AvatarUi,
     /// Files, pictures, the lightbox and the player (files.rs).
     pub files: crate::files::FilesUi,
+    /// Recording a voice message (voice.rs).
+    pub voice: crate::voice::VoiceUi,
+    /// The card flight between levels (flight.rs).
+    pub fly: crate::flight::FlyUi,
     pub(crate) _tasks: Vec<Task<()>>,
     pub(crate) _subs: Vec<Subscription>,
 }
@@ -155,7 +159,7 @@ impl Mega {
         let (paint, paint_sub) = crate::paint::PaintUi::new(window, cx);
         subs.push(paint_sub);
         let mut this = Mega {
-            ob, dev, files: Default::default(), nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), fake_dm_unread: 0, tour: crate::tour::TourUi::new(cx), dens: crate::density::DensUi::new(window, cx), gk: crate::gamekeys::GameKeys::new(window, cx), dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx), msg: Default::default(), find, emoji,
+            ob, dev, files: Default::default(), voice: Default::default(), fly: Default::default(), nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), fake_dm_unread: 0, tour: crate::tour::TourUi::new(cx), dens: crate::density::DensUi::new(window, cx), gk: crate::gamekeys::GameKeys::new(window, cx), dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx), msg: Default::default(), find, emoji,
             level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd: crate::backdrop::Bd::new(""), typing_ui: Default::default(), typing_at: Instant::now(), fake_hidden: false, holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name, set_rune,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
@@ -567,6 +571,7 @@ pub fn clock(ts: u64) -> String {
 
 impl Mega {
     pub fn go(&mut self, level: Level, window: &mut Window, cx: &mut Context<Self>) {
+        if self.level == Level::Chat { if let Level::Server(c) = &level { let c = c.clone(); self.fly_open(&c, window); } }
         if level == Level::Settings { let n = self.snap.as_ref().map(|s| s.me_name.clone()).unwrap_or_default(); self.set_name.update(cx, |i, cx| i.set_value(n, window, cx)); let r = self.snap.as_ref().map(|s| s.rune_url.clone()).unwrap_or_default(); self.set_rune.update(cx, |i, cx| i.set_value(r, window, cx)); }
         if level == Level::Chat { self.composer.update(cx, |c, cx| c.focus(window, cx)); }
         if let Level::Server(c) = &level { self.nav.last_home = Some(c.clone()); }

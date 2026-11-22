@@ -232,6 +232,18 @@ impl Mega {
         let drag_seen = self.files.drag_seen.clone();
         let drop_hint = self.drop_overlay(rgb(duo.hi).into(), &title);
         let files_layer = self.files_layer(window, cx);
+        let vbar = self.voice_bar(cx);
+        let recording = vbar.is_some();
+        let vwatch = if recording {
+            let me = cx.entity().downgrade();
+            let (m1, m2, m3) = (me.clone(), me.clone(), me);
+            Some(canvas(|_, _, _| {}, move |_, _, window, _| {
+                let m1 = m1.clone(); let m2 = m2.clone(); let m3 = m3.clone();
+                window.on_mouse_event(move |_: &MouseUpEvent, ph, w, cx| { if ph == DispatchPhase::Capture { let _ = m1.update(cx, |t, cx| t.voice_release(w, cx)); } });
+                window.on_mouse_event(move |ev: &MouseMoveEvent, ph, _, cx| { if ph == DispatchPhase::Capture { let p = ev.position; let _ = m2.update(cx, |t, cx| t.voice_move(p, cx)); } });
+                window.on_key_event(move |ev: &KeyDownEvent, ph, w, cx| { if ph == DispatchPhase::Capture && ev.keystroke.key == "escape" { let _ = m3.update(cx, |t, cx| t.voice_finish(false, w, cx)); } });
+            }).absolute().size_0())
+        } else { None };
         v_flex().id("room").flex_1().h_full().min_w_0().relative().bg(rgb(bd_back))
             .drag_over::<ExternalPaths>(move |s, _, _, _| { drag_seen.set(true); s })
             .on_drop(cx.listener(|this, p: &ExternalPaths, window, cx| this.files_dropped(p.paths().to_vec(), window, cx)))
@@ -259,7 +271,8 @@ impl Mega {
                         // a translucent slip over the backdrop: a squircle fill and border, never a cut (the backdrop moves behind it)
                         .child(sq::back(22., hsla(0.71, 0.22, 0.07, 0.93))).child(hole(&holes))
                         .children(reply_bar)
-                        .child(h_flex().relative().items_end().gap_2()
+                        .children(vbar)
+                        .child(h_flex().relative().items_end().gap_2().when(recording, |d| d.hidden())
                             .child(div().id("attach").relative().flex_none().mb_1().flex().items_center().justify_center().size(px(36.)).rounded_full().cursor_pointer().bg(hsla(0., 0., 1., 0.06)).tooltip(|window, cx| Tooltip::new("Send a file").build(window, cx))
                                 .child(crate::icons::icon(crate::icons::Icon::Clip, 18., look::mute())).child(self.files.hits.track("attach"))
                                 .on_click(cx.listener(|this, _, window, cx| this.files_attach(window, cx))))
@@ -267,6 +280,9 @@ impl Mega {
                                 .child(crate::icons::icon(crate::icons::Icon::Smile, 18., look::mute())).child(self.files.hits.track("emoji-btn"))
                                 .on_click(cx.listener(|this, ev: &ClickEvent, window, cx| { let at = ev.mouse_position().unwrap_or_default(); this.emoji_open(crate::emoji::Target::Composer, at, window, cx); })))
                             .child(div().flex_1().min_w_0().child(Textarea::new(&self.composer).appearance(false).text_size(px(size)).line_height(px(lh))))
+                            .child(div().id("mic").relative().flex_none().mb_1().flex().items_center().justify_center().size(px(36.)).rounded_full().cursor_pointer().bg(hsla(0., 0., 1., 0.06)).tooltip(|window, cx| Tooltip::new("Record a voice message: hold to record, let go to send").build(window, cx))
+                                .child(crate::icons::icon(crate::icons::Icon::Mic, 18., look::mute())).child(self.files.hits.track("mic"))
+                                .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, w, cx| { cx.stop_propagation(); this.voice_press(Some(ev.position), w, cx); })))
                             .child(div().id("send").flex_none().mb_1().flex().items_center().h(px(36.)).px(px(16.)).rounded_full().cursor_pointer().whitespace_nowrap()
                                 .font_family(look::F_UI).text_size(px(13.))
                                 .when(has_text, |d| d.bg(look::paper()).text_color(rgb(look::VOID)))
@@ -281,6 +297,7 @@ impl Mega {
             .children(wall_hit)
             .children(wall_bar)
             .children(files_layer)
+            .children(vwatch)
             .child(drop_hint)
             .into_any_element()
     }
@@ -587,6 +604,7 @@ impl Render for Mega {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !std::mem::replace(&mut self.first_frame_done, true) { window.on_next_frame(|_, _| crate::bench::mark("first_frame")); }
         crate::bench::drive(self, window, cx);
+        self.fly_step(window, cx);
         self.sel_autoscroll(window, cx);
         // arrivals and thrown reactions ask for a frame only while one is in the air; the frame after the last one draws the finished state
         if !(self.arrivals.is_idle() && self.flights.is_idle()) {
@@ -643,7 +661,7 @@ impl Render for Mega {
                 let lightbox = self.light_overlay(window, cx);
                 let save = self.save_overlay(cx);
                 let reminder = self.recovery_card(cx);
-                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(reminder).children(lightbox).children(self.dens_popup(cx)).children(self.room_menu_view(cx)).children(self.gk_modal(window, cx)).children(self.tour_view(window, cx)).into_any_element()
+                base.child(h_flex().size_full().items_start().children(deck).child(div().flex_1().min_w_0().h_full().pr(px(pr)).child(body))).children(show).children(dock).children(pop).children(settings).children(people).children(picker).children(rings).children(cropper).children(save).children(reminder).children(lightbox).children(self.dens_popup(cx)).children(self.room_menu_view(cx)).children(self.gk_modal(window, cx)).children(self.tour_view(window, cx)).children(self.fly_layer()).into_any_element()
             }
         };
         crate::titlebar::frame(window, page, cx.entity())
