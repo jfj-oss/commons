@@ -205,9 +205,9 @@ impl Mega {
         let shadow = if k > 0.02 { vec![BoxShadow { color: hsla(0., 0., 0., 0.6 * k), offset: point(px(0.), px(0.)), blur_radius: px(60.), spread_radius: px(0.), inset: false }] } else { vec![] };
         let items_for_wheel = items.clone();
         let panel = div().id("rail").absolute().left_0().top_0().w(px(g.w)).h(px(vh)).overflow_hidden().bg(rgba(if k > 0.5 { 0x08070bf0 } else { 0x08070be6 })).shadow(shadow)
-            .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
+            .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
                 this.rail.hover = *hovered;
-                if *hovered { this.rail.leave_at = None; } else if this.rail.open { this.rail.leave_at = Some(this.rail_now() + LEAVE_AFTER); window.request_animation_frame(); cx.notify(); }
+                if *hovered { this.rail.leave_at = None; } else if this.rail.open { this.rail.leave_at = Some(this.rail_now() + LEAVE_AFTER); cx.notify(); }
             }))
             .on_scroll_wheel(cx.listener(move |this, ev: &ScrollWheelEvent, _, cx| { this.rail_wheel(ev, &items_for_wheel, cx); cx.stop_propagation(); }))
             .when(tour_on, |d| d.child(tour_hits.track("tour-rail")))

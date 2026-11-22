@@ -15,6 +15,7 @@ publish = false
 livekit = { path = "app/gpui/vendor/livekit" }
 libwebrtc = { path = "app/gpui/vendor/libwebrtc" }
 webrtc-sys = { path = "app/gpui/vendor/webrtc-sys" }
+gpui-pre = { path = "app/gpui/vendor/gpui-pre" }
 
 [profile.release]
 lto = "thin"

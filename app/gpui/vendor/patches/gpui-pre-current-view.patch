@@ -1,0 +1,14 @@
+--- a/src/window.rs	2006-07-23 21:21:28.000000000 -0400
++++ b/src/window.rs	2026-11-22 18:50:31.664380605 -0500
+@@ -5600,7 +5600,10 @@
+     /// Get the entity ID for the currently rendering view
+     pub fn current_view(&self) -> EntityId {
+         self.invalidator.debug_assert_paint_or_prepaint();
+-        self.rendered_entity_stack.last().copied().unwrap()
++        // mega patch (vendor/patches/gpui-pre-current-view.patch): asked outside any view's render or paint (an event
++        // handler, a list measuring rows from a scroll event), fall back to the window's root view instead of panicking.
++        // Every caller only uses the id to notify it, so the worst case is one extra redraw.
++        self.rendered_entity_stack.last().copied().or_else(|| self.root.as_ref().map(|r| r.entity_id())).expect("no view in this window")
+     }
+ 
+     #[inline]
