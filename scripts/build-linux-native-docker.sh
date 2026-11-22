@@ -14,6 +14,14 @@ docker run --rm --memory=8g --cpus="${COMMONS_BUILD_JOBS:-4}" -v "$PWD":/src -v 
   apt-get update -qq
   # the same list as the native-linux job in .github/workflows/apps.yml
   apt-get install -y -qq curl ca-certificates build-essential pkg-config cmake clang libssl-dev libasound2-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig1-dev libfreetype6-dev libvulkan-dev libdbus-1-dev libpulse-dev libglib2.0-dev libgbm-dev imagemagick >/dev/null
+  # the LiveKit WebRTC build ships a hermetic libc++ that needs clang 21; 22.04 has 14, so take LLVM'"'"'s own packages
+  if ! command -v clang-21 >/dev/null; then
+    apt-get install -y -qq gnupg lsb-release >/dev/null
+    curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+    echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" > /etc/apt/sources.list.d/llvm.list
+    apt-get update -qq && apt-get install -y -qq clang-21 lld-21 >/dev/null
+  fi
+  export CC=clang-21 CXX=clang++-21
   command -v cargo >/dev/null || curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
   [ -n "$MEGA_GPUI_VERSION" ] || unset MEGA_GPUI_VERSION
   [ -n "$MEGA_GPUI_UPDATE_PUBKEY" ] || unset MEGA_GPUI_UPDATE_PUBKEY
