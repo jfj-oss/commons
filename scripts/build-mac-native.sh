@@ -17,8 +17,8 @@ A=dist/mega.app
 rm -rf "$A"; mkdir -p "$A/Contents/MacOS" "$A/Contents/Resources"
 cp "$BIN" "$A/Contents/MacOS/mega-gpui"; chmod 755 "$A/Contents/MacOS/mega-gpui"
 strip -x "$A/Contents/MacOS/mega-gpui" 2>/dev/null || true
-# the icon: the Tauri app's .icns (a full-bleed square, so the system masks it to its own shape)
-cp app/src-tauri/icons/icon.icns "$A/Contents/Resources/icon.icns"
+# the icon: the bull in the same squircle as rune, on Apple's 824 px icon grid
+cp packaging/native-icon/icon.icns "$A/Contents/Resources/icon.icns"
 cat > "$A/Contents/Info.plist" <<P
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

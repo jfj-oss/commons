@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the native (GPUI) mega for Linux into a tarball: dist/mega-linux-x86_64.tar.gz (or -aarch64). Inside: the stripped
-# binary, hicolor icons made from the Tauri app's icon, the desktop entry template, install.sh and uninstall.sh.
+# binary, hicolor icons made from packaging/native-icon (the bull in the same squircle as rune), the desktop entry template, install.sh and uninstall.sh.
 #   scripts/build-linux-native.sh [--no-build]     (--no-build packs an existing target/release/mega-gpui)
 # MEGA_GPUI_VERSION (default: the Tauri app's version) is what the app compares against the update feed.
 # Build on the oldest system you support (the binary links the system's glibc and needs Vulkan at run time).
@@ -18,7 +18,7 @@ P=$W/$NAME
 mkdir -p "$P/icons"
 cp "$BIN" "$P/mega-gpui"; strip --strip-all "$P/mega-gpui"; chmod 755 "$P/mega-gpui"
 IM=(convert); command -v magick >/dev/null && IM=(magick)
-ICON=app/src-tauri/icons/icon.png
+ICON=packaging/native-icon/mega-native.png
 for s in 16 24 32 48 64 128 256 512; do
   if [ $s -eq 512 ]; then cp "$ICON" "$P/icons/$s.png"; else "${IM[@]}" "$ICON" -resize ${s}x${s} "$P/icons/$s.png"; fi
 done
