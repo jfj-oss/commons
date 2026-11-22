@@ -69,6 +69,45 @@ pub fn auto_fx(name: &str) -> usize { [4, 3, 0, 5, 2][(look::h(name) % 5) as usi
 #[derive(Clone, Copy, Debug)]
 pub struct Ripple { pub x: f64, pub y: f64, pub r: f64, pub s: f64, pub v: f64, pub band: f64, pub fade: f64, /** x and y are fractions of the field's columns and rows, not cells */ pub frac: bool }
 
+/// A drop of water falling into the backdrop (backdrop.rs `Bd::drop_in`): `t` seconds since it started to fall. It falls for
+/// `DROP_FALL` seconds as a short bright streak, then a crown of spray jumps up from where it landed and falls back; the rings
+/// it leaves are ordinary `Ripple`s that the backdrop's clock sends out.
+#[derive(Clone, Copy, Debug)]
+pub struct Drop { /** where it lands, as fractions of the columns and rows */ pub x: f64, pub y: f64, pub t: f64, pub s: f64, pub seed: u32 }
+pub const DROP_FALL: f64 = 0.55;
+/// How long the spray is in the air after the landing.
+pub const SPRAY: f64 = 0.9;
+
+/// The cells a drop lights this frame, in cells of a cols x rows field, each with its brightness.
+pub fn drop_cells(d: &Drop, cols: f64, rows: f64) -> Vec<(i64, i64, f64)> {
+    let (lx, ly) = (d.x * cols, d.y * rows);
+    let mut out = vec![];
+    if d.t < DROP_FALL {
+        // the fall: from about a third of the room above, speeding up (p squared), with a short fading tail
+        let p = d.t / DROP_FALL;
+        let fall = (rows * 0.35).max(6.);
+        let head = ly - fall * (1. - p * p);
+        let tail = 1. + 3. * p;
+        for i in 0..=(tail as i64) { out.push((lx.round() as i64, (head - i as f64).round() as i64, d.s * (1. - i as f64 / (tail + 1.)))); }
+        return out;
+    }
+    let a = d.t - DROP_FALL;
+    // the splash: the landing cell flashes, then a crown of spray flies up and out and falls back under gravity
+    if a < 0.22 { let f = d.s * (1. - a / 0.22); for (dx, dy) in [(0, 0), (-1, 0), (1, 0)] { out.push((lx.round() as i64 + dx, ly.round() as i64 + dy, f)); } }
+    if a < SPRAY {
+        let n = 7;
+        for i in 0..n {
+            let h = |k: f64| { let v = ((d.seed as f64) * 0.37 + i as f64 * 12.9898 + k * 78.233).sin() * 43758.5453; v - v.floor() };
+            let side = if i % 2 == 0 { 1. } else { -1. };
+            let (vx, vy) = (side * (2.5 + h(1.) * 7.), -(7. + h(2.) * 7.));   // cells a second; up is negative
+            let (x, y) = (lx + vx * a, ly + vy * a + 0.5 * 26. * a * a);
+            if y > ly + 0.5 { continue; }   // back in the water
+            out.push((x.round() as i64, y.round() as i64, d.s * 0.9 * (1. - a / SPRAY)));
+        }
+    }
+    out
+}
+
 #[derive(Clone)]
 pub struct Field {
     pub fx: usize,
@@ -85,6 +124,8 @@ pub struct Field {
     /// Corner radius of the squircle the field lies on: cells outside its corners are left out.
     pub radius: f32,
     pub ripples: Vec<Ripple>,
+    /// Drops of water falling in (the room's backdrop only).
+    pub drops: Vec<Drop>,
     /// Boxes (relative to the field) the pattern flows around: the words on a card.
     pub holes: Vec<Bounds<Pixels>>,
     /// The same, in window coordinates, gathered while this frame was laid out: the words of a chat (see `hole`).
@@ -112,7 +153,7 @@ pub fn hole(h: &Holes) -> impl IntoElement {
 
 impl Field {
     pub fn card(fx: usize, seed: u32, duo: look::Duo, t: f64, small: bool) -> Field {
-        Field { fx, seed, duo, t, cell: if small { (8., 13.) } else { (10., 17.) }, font_px: if small { 11. } else { 14. }, gate: 0.2, hi_t: 0.9, alpha: 1., radius: 0., ripples: vec![], holes: vec![], live_holes: None, emboss: false, avoid: None, tints: None, lit: None, bloom: None }
+        Field { fx, seed, duo, t, cell: if small { (8., 13.) } else { (10., 17.) }, font_px: if small { 11. } else { 14. }, gate: 0.2, hi_t: 0.9, alpha: 1., radius: 0., ripples: vec![], drops: vec![], holes: vec![], live_holes: None, emboss: false, avoid: None, tints: None, lit: None, bloom: None }
     }
 }
 
@@ -185,6 +226,9 @@ pub fn field(f: Field) -> impl IntoElement {
         let rad = f.radius;
         // cells outside the squircle's corners are left out (the card's own cut corners then only have to tidy the edge)
         let outside_corner = |x: f32, y: f32| -> bool { rad > 0. && !crate::squircle::contains(x, y, 0., 0., w, h, rad) };
+        // the drops' bright cells this frame (a handful at most)
+        let mut wet: std::collections::HashMap<(i64, i64), f64> = Default::default();
+        for d in &f.drops { for (x, y, s) in drop_cells(d, cols as f64, rows as f64) { let e = wet.entry((x, y)).or_default(); *e = e.max(s); } }
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             for y in 0..rows {
                 for x in 0..cols {
@@ -201,6 +245,7 @@ pub fn field(f: Field) -> impl IntoElement {
                         let d = (xf - qx).hypot((yf - qy) * 1.7) - q.r;
                         if d * d < q.band * 5. { let e = (-d * d / q.band).exp() * q.s; v += e; lit = lit.max(e); }
                     }
+                    if let Some(&s) = wet.get(&(x as i64, y as i64)) { v = v.max(0.3) + s; lit = lit.max(s); }
                     if v < f.gate { continue; }
                     let Some(g) = r.glyphs[((v * 10.) as usize).min(9)] else { continue };
                     if f.emboss {

@@ -22,6 +22,8 @@
 //!   {"cmd":"core","method","args"}              a call to the core as this account
 //!   {"cmd":"paint"}  {"cmd":"paint_do","what",...}   the colours panel: open/close it; hex value | mode card/back | well 0/1 | preset n | tile which n | dim n | oracle quiet/draw | reset | same
 //!   {"cmd":"saver","mode":"on|off|auto"}  {"cmd":"hidden","on"}   the battery saver for this run (not saved); pretend the window is hidden
+//!   {"cmd":"seen_marks"} {"cmd":"hover","x","y"}   where the read marks are drawn; move the pointer there (window pixels)
+//!   {"cmd":"drop","x","y"}   a drop of water falls into the open room's backdrop at (x, y), fractions of the room
 //!   {"cmd":"stir"}  {"cmd":"bd"}   a new message's ripple in the open room; the room backdrop's clock, heat and ripples
 //!   {"cmd":"draw","on"}  {"cmd":"tool","brush","col"}  {"cmd":"pen","points":[[x,y],...]}  {"cmd":"wall"}   drawing mode, the brush, a stroke in window pixels, what the wall holds
 //!   {"cmd":"wall_do","what"}                     lock | clear (the owner's buttons; clear asks twice)
@@ -129,6 +131,13 @@ impl Mega {
                 "saver" => { self.prefs.saver = match s("mode").as_str() { "on" => crate::prefs::Saver::On, "off" => crate::prefs::Saver::Off, _ => crate::prefs::Saver::Auto }; cx.notify(); json!({"ok": true, "still": self.still()}) }
                 "hidden" => { self.fake_hidden = cmd["on"].as_bool() == Some(true); json!({"ok": true}) }
                 "stir" => { self.stir(2); cx.notify(); json!({"ok": true}) }
+                "seen_marks" => json!({"marks": crate::views::SEEN_AT.with(|s| s.borrow().iter().map(|(id, b)| json!({"id": id, "x": f32::from(b.origin.x), "y": f32::from(b.origin.y), "w": f32::from(b.size.width), "h": f32::from(b.size.height)})).collect::<Vec<_>>())}),
+                "hover" => {
+                    let p = point(px(cmd["x"].as_f64().unwrap_or(0.) as f32), px(cmd["y"].as_f64().unwrap_or(0.) as f32));
+                    window.defer(cx, move |window, cx| { window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: p, pressed_button: None, modifiers: Modifiers::default() }), cx); });
+                    json!({"ok": true})
+                }
+                "drop" => { let d = self.gid.as_deref().map(|g| self.bd_dim(g)).unwrap_or(100); self.bd.drop_in(cmd["x"].as_f64().unwrap_or(0.5), cmd["y"].as_f64().unwrap_or(0.5), d); cx.notify(); json!({"ok": true, "drops": self.bd.drops.len()}) }
                 "bd" => json!({"t": self.bd.t, "heat": self.bd.heat, "ripples": self.bd.rips.len(), "busy": self.bd.busy(), "next_rip": self.bd.next_rip, "visible": window.is_visible(), "typing": self.win.typing, "still": self.still(), "dim": self.gid.as_deref().map(|g| self.bd_dim(g))}),
                 "avatars" => self.avatar_dump(),
                 "avatar_open" => { self.avatar_open(std::path::PathBuf::from(s("path")), window, cx); json!({"ok": true}) }

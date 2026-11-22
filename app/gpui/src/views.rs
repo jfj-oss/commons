@@ -385,6 +385,21 @@ pub struct RowFx { pub dens: Option<crate::density::Dens>, pub tier_px: Option<f
 pub const COLUMN: f32 = 902.;
 
 /// The double check of a read message (app.js `RR_ICON`, a 15 by 10 drawing).
+thread_local! {
+    /// Where each message's seen mark was last laid out, in window pixels (the UI test points at it).
+    pub static SEEN_AT: std::cell::RefCell<std::collections::HashMap<String, Bounds<Pixels>>> = Default::default();
+}
+
+/// The double check, with the names of who has read up to here when it is pointed at (like the web's read mark).
+fn seen_mark(m: &Msg, k: f32) -> impl IntoElement {
+    let tip = SharedString::from(format!("Seen by {}", m.read_by.join(", ")));
+    let id = m.id.clone();
+    div().id(SharedString::from(format!("seen-{}", m.id))).relative().flex().items_center().px(px(2.)).py(px(2.)).cursor_default()
+        .child(ticks(look::mute(), k))
+        .child(canvas(move |b, _, _| SEEN_AT.with(|s| { s.borrow_mut().insert(id.clone(), b); }), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx))
+}
+
 fn ticks(color: Hsla, k: f32) -> impl IntoElement {
     canvas(|_, _, _| {}, move |b, _, window, _| {
         let (sx, sy) = (f32::from(b.size.width) / 15., f32::from(b.size.height) / 10.);
@@ -491,7 +506,7 @@ pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f3
             .when(m.role == "owner" || m.role == "admin", |d| d.child(tag(m.role.clone(), k)))
             .when(m.same_name && !m.tag.is_empty(), |d| d.child(tag(m.tag.clone(), k)))
             .child(div().text_color(look::mute()).child(clock(m.ts)))
-            .when(!m.read_by.is_empty(), |d| d.child(ticks(look::mute(), k))));
+            .when(!m.read_by.is_empty(), |d| d.child(seen_mark(m, k))));
     }
     if let (Some(r), Some(c)) = (&m.reply, &fx.act) {
         if !c.quote_gone { col = col.child(div().relative().child(hole(holes)).max_w_full().child(crate::msgact::quote(r, font, c))); }
@@ -547,7 +562,7 @@ pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f3
     if m.edited { foot = foot.child(div().text_color(look::mute()).text_size(px(11. * k)).child("edited")); }
     if m.mine && (m.status == "pending" || m.status == "failed") { foot = foot.child(div().text_color(look::mute()).text_size(px(11. * k)).child(m.status.clone())); }
     // a continuation row has no name line to carry the double check: it sits in the small print
-    if !m.read_by.is_empty() && !head { foot = foot.child(div().flex().items_center().h(px(14.)).child(ticks(look::mute(), k))); }
+    if !m.read_by.is_empty() && !head { foot = foot.child(div().flex().items_center().h(px(14.)).child(seen_mark(m, k))); }
     let has_foot = !m.reactions.is_empty() || m.edited || (!m.read_by.is_empty() && !head) || (m.mine && (m.status == "pending" || m.status == "failed"));
     if has_foot { foot = foot.child(hole(holes)); }
     let group = SharedString::from(format!("row-{}", m.id));

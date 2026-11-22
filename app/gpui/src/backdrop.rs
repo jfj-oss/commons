@@ -4,7 +4,7 @@
 //! Like the page's `bdLoop` it never stops: a quiet room still drifts (ten pictures a second, twenty-five while a ring runs) and every
 //! fourteen to twenty-eight seconds a gentle ring leaves from somewhere in the room. It pauses while the window is hidden, and the
 //! battery saver draws the faint tone-on-tone emboss the cards use, and never moves.
-use crate::ascii::{Field, Ripple};
+use crate::ascii::{Drop, Field, Ripple, DROP_FALL};
 use crate::look::{self, Duo};
 use gpui_kit::*;
 
@@ -16,20 +16,20 @@ const TEXT: u32 = 0xe9e7ef;
 
 /// The open room's backdrop clock: the pattern's time, the room's heat and the ripples running now.
 #[derive(Clone, Debug)]
-pub struct Bd { pub t: f64, pub heat: f64, pub rips: Vec<Ripple>, /** seconds until the next idle ring */ pub next_rip: f64, rng: u64 }
+pub struct Bd { pub t: f64, pub heat: f64, pub rips: Vec<Ripple>, /** drops of water falling in, and the rings each still has to send */ pub drops: Vec<(Drop, u8)>, /** seconds until the next idle ring */ pub next_rip: f64, rng: u64 }
 
 impl Bd {
     pub fn new(gid: &str) -> Bd { Bd::seeded(gid, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1)) }
     /// The same with a fixed seed for the random idle rings (tests).
     pub fn seeded(gid: &str, seed: u64) -> Bd {
-        let mut b = Bd { t: (look::h(gid) % 90) as f64, heat: HEAT_FLOOR, rips: vec![], next_rip: 0., rng: seed | 1 };
+        let mut b = Bd { t: (look::h(gid) % 90) as f64, heat: HEAT_FLOOR, rips: vec![], drops: vec![], next_rip: 0., rng: seed | 1 };
         b.next_rip = 5. + b.rand() * 6.;   // the first one comes sooner (`bdStart`)
         b
     }
     /// 0..1 (xorshift: the idle rings only need to look random).
     fn rand(&mut self) -> f64 { let mut x = self.rng; x ^= x << 13; x ^= x >> 7; x ^= x << 17; self.rng = x; (x >> 11) as f64 / (1u64 << 53) as f64 }
     /// A ring is running: the picture is drawn at 25 frames a second instead of 10.
-    pub fn busy(&self) -> bool { !self.rips.is_empty() }
+    pub fn busy(&self) -> bool { !self.rips.is_empty() || !self.drops.is_empty() }
     /// `bdLoop`: the time runs faster the hotter the room is, heat cools with a half life of 18 seconds, rings travel out and fade,
     /// and every 14 to 28 seconds a gentle ring comes from somewhere in the room (`idleRipple`).
     pub fn step(&mut self, dt: f64, dim: u32) {
@@ -39,13 +39,36 @@ impl Bd {
         if self.next_rip <= 0. {
             self.next_rip = 14. + self.rand() * 14.;
             if dim > 0 {
-                if self.rips.len() > 6 { self.rips.remove(0); }
                 let (x, y) = (0.15 + 0.7 * self.rand(), 0.2 + 0.6 * self.rand());
-                self.rips.push(Ripple { x, y, r: 0., s: 0.5 * lv(dim), v: 26., band: 8., fade: 0.3, frac: true });
+                // most idle moments are a drop of water falling in; the rest the old gentle ring
+                if self.rand() < 0.65 { self.drop_in(x, y, dim); }
+                else {
+                    if self.rips.len() > 6 { self.rips.remove(0); }
+                    self.rips.push(Ripple { x, y, r: 0., s: 0.5 * lv(dim), v: 26., band: 8., fade: 0.3, frac: true });
+                }
             }
         }
+        // a landed drop sends three rings, a third of a second apart, each fainter and wider than the one before
+        let mut new = vec![];
+        for (d, sent) in &mut self.drops {
+            d.t += dt;
+            while *sent < 3 && d.t >= DROP_FALL + *sent as f64 * 0.34 {
+                let i = *sent as f64;
+                new.push(Ripple { x: d.x, y: d.y, r: 0., s: d.s * 0.75 * 0.62f64.powf(i), v: 15. + 3. * i, band: 2.2 + 1.2 * i, fade: 0.32, frac: true });
+                *sent += 1;
+            }
+        }
+        for q in new { if self.rips.len() > 8 { self.rips.remove(0); } self.rips.push(q); }
+        self.drops.retain(|(d, sent)| *sent < 3 || d.t < DROP_FALL + crate::ascii::SPRAY);
         for q in &mut self.rips { q.r += q.v * dt; q.s *= q.fade.powf(dt); }
         self.rips.retain(|q| q.s > 0.04 && q.r < 400.);
+    }
+    /// A drop of water falls in at (fx, fy), fractions of the room.
+    pub fn drop_in(&mut self, fx: f64, fy: f64, dim: u32) {
+        if dim == 0 { return; }
+        if self.drops.len() > 3 { self.drops.remove(0); }
+        let seed = (self.rand() * 1e6) as u32;
+        self.drops.push((Drop { x: fx, y: fy, t: 0., s: 0.8 * lv(dim).min(1.4), seed }, 0));
     }
     /// `bdHeat`
     pub fn warm(&mut self, n: f64, dim: u32) { self.heat = (self.heat + n * lv(dim)).min(1.); }
@@ -95,6 +118,7 @@ pub fn field(gid: &str, fx: usize, duo: Duo, dim: u32, bd: &Bd, still: bool, hol
     f.tints = Some(t); f.lit = Some(lit);
     f.gate = (0.46 - 0.26 * bd.heat) / l.max(1.);
     f.ripples = bd.rips.clone();
+    f.drops = bd.drops.iter().map(|(d, _)| *d).collect();
     f
 }
 
@@ -119,9 +143,14 @@ mod tests {
     fn a_quiet_room_keeps_drifting_and_rings_by_itself() {
         let mut b = Bd::seeded("g", 7);
         assert!(!b.busy());
-        let (mut t, mut rings, mut last) = (b.t, 0, 0usize);
-        for _ in 0..(120 * 10) { b.step(0.1, 100); assert!(b.t > t, "every step the pattern moves"); t = b.t; if b.rips.len() > last { rings += 1; } last = b.rips.len(); }
-        assert!(rings >= 3 && rings <= 9, "in two minutes a handful of idle rings: {rings}");
+        let (mut t, mut rings, mut last, mut drops) = (b.t, 0, b.next_rip, 0);
+        for _ in 0..(120 * 10) {
+            b.step(0.1, 100); assert!(b.t > t, "every step the pattern moves"); t = b.t;
+            // an idle moment (a ring or a drop) resets the countdown upward
+            if b.next_rip > last { rings += 1; if b.drops.iter().any(|(d, _)| d.t < 0.11) { drops += 1; } } last = b.next_rip;
+        }
+        assert!(rings >= 3 && rings <= 9, "in two minutes a handful of idle moments: {rings}");
+        assert!(drops >= 1, "some of them are drops of water");
         let mut c = Bd::seeded("g", 7);
         c.ripple(0.3, 0.8, 0.72, false, 100); c.warm(0.24, 100);
         assert!(c.busy() && c.heat > HEAT_FLOOR);
@@ -129,10 +158,27 @@ mod tests {
         assert!(c.heat <= HEAT_FLOOR + 1e-3, "a busy room cools back to its floor");
     }
     #[::core::prelude::v1::test]
+    fn a_drop_falls_splashes_and_leaves_three_rings() {
+        let mut b = Bd::seeded("g", 5);
+        b.next_rip = 1e9;
+        b.drop_in(0.5, 0.5, 100);
+        assert!(b.busy());
+        let cells = |b: &Bd| crate::ascii::drop_cells(&b.drops[0].0, 100., 40.);
+        let fall0 = cells(&b)[0].1;
+        b.step(0.3, 100);
+        assert!(cells(&b)[0].1 > fall0, "the drop moves down");
+        assert!(b.rips.is_empty(), "no ring before it lands");
+        for _ in 0..12 { b.step(0.1, 100); }
+        assert_eq!(b.rips.len(), 3, "three rings once it has landed");
+        assert!(b.rips[0].s > b.rips[1].s && b.rips[1].s > b.rips[2].s, "each ring fainter");
+        for _ in 0..100 { b.step(0.1, 100); }
+        assert!(b.drops.is_empty() && b.rips.is_empty() && !b.busy(), "all calm again");
+    }
+    #[::core::prelude::v1::test]
     fn strength_zero_makes_no_idle_rings() {
         let mut b = Bd::seeded("g", 3);
         for _ in 0..1000 { b.step(0.1, 0); }
-        assert!(b.rips.is_empty());
+        assert!(b.rips.is_empty() && b.drops.is_empty());
     }
     #[::core::prelude::v1::test]
     fn strength_zero_makes_no_ripples_and_a_hotter_room_gates_lower() {
