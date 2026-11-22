@@ -59,6 +59,8 @@ pub struct Mega {
     last_anim: Instant,
     pub notify_settings: Value,
     pub set_name: Entity<InputState>,
+    /// Settings: the rune address (core `set_listening_sharing`'s `rune`).
+    pub set_rune: Entity<InputState>,
     // the open room
     pub win: MsgWindow,
     pub limit: usize,
@@ -127,6 +129,7 @@ impl Mega {
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("Your name"));
         let relay = cx.new(|cx| InputState::new(window, cx).placeholder("Relay address (https://…)"));
         let set_name = cx.new(|cx| InputState::new(window, cx).placeholder("Your name"));
+        let set_rune = cx.new(|cx| InputState::new(window, cx).placeholder("http://127.0.0.1:4545"));
         let composer = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 8).submit_on_enter(true).placeholder("Write a message"));
         let (mem, mem_subs) = crate::members::MembersUi::new(window, cx);
         let (find, find_subs) = crate::search::SearchUi::new(window, cx);
@@ -153,7 +156,7 @@ impl Mega {
         subs.push(paint_sub);
         let mut this = Mega {
             ob, dev, files: Default::default(), nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), fake_dm_unread: 0, tour: crate::tour::TourUi::new(cx), dens: crate::density::DensUi::new(window, cx), gk: crate::gamekeys::GameKeys::new(window, cx), dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx), msg: Default::default(), find, emoji,
-            level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd: crate::backdrop::Bd::new(""), typing_ui: Default::default(), typing_at: Instant::now(), fake_hidden: false, holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name,
+            level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd: crate::backdrop::Bd::new(""), typing_ui: Default::default(), typing_at: Instant::now(), fake_hidden: false, holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name, set_rune,
             core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
             list: ListState::new(0, ListAlignment::Bottom, px(600.)), composer, typing_sent: None, ticking: false, again: false, first_frame_done: false,
@@ -564,7 +567,7 @@ pub fn clock(ts: u64) -> String {
 
 impl Mega {
     pub fn go(&mut self, level: Level, window: &mut Window, cx: &mut Context<Self>) {
-        if level == Level::Settings { let n = self.snap.as_ref().map(|s| s.me_name.clone()).unwrap_or_default(); self.set_name.update(cx, |i, cx| i.set_value(n, window, cx)); }
+        if level == Level::Settings { let n = self.snap.as_ref().map(|s| s.me_name.clone()).unwrap_or_default(); self.set_name.update(cx, |i, cx| i.set_value(n, window, cx)); let r = self.snap.as_ref().map(|s| s.rune_url.clone()).unwrap_or_default(); self.set_rune.update(cx, |i, cx| i.set_value(r, window, cx)); }
         if level == Level::Chat { self.composer.update(cx, |c, cx| c.focus(window, cx)); }
         if let Level::Server(c) = &level { self.nav.last_home = Some(c.clone()); }
         if matches!(level, Level::Home | Level::Server(_)) { window.focus(&self.nav.focus, cx); }
@@ -589,6 +592,12 @@ impl Mega {
         });
     }
     pub fn chat_font(&self) -> (&'static str, f32, f32) { let k = self.prefs.read_size.scale(); match self.prefs.chat_font { ChatFont::Bellefair => (look::F_BELLEFAIR, (30. * k).round(), (36. * k).round()), ChatFont::Raster => (look::F_MSG, (24. * k).round(), (26. * k).round()) } }
+    /// Settings, "rune address": saved with the sharing switch as it is (the core checks the address: http(s), a host, no credentials).
+    pub fn rune_address_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let url = self.set_rune.read(cx).value().to_string();
+        let on = self.snap.as_ref().is_some_and(|s| s.share_listening);
+        self.set_setting("set_listening_sharing", json!({"on": on, "rune": url}), window, cx);
+    }
     pub fn set_setting(&mut self, method: &'static str, args: Value, window: &mut Window, cx: &mut Context<Self>) {
         self.rpc(method, args, window, cx, move |this, r, window, cx| {
             match r { Ok(v) => { if method.starts_with("notify_") { this.notify_settings = v; } this.error = None; } Err(e) => this.error = Some(e.into()) }

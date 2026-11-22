@@ -127,6 +127,13 @@ impl Mega {
                     let c = self.snap.as_ref().and_then(|sn| sn.communities.iter().find(|c| c.name == want || want.is_empty()).map(|c| c.id.clone()));
                     match c { Some(cid) => { self.go(crate::app::Level::Server(cid), window, cx); json!({"ok": true}) } None => json!({"error": "no such community"}) }
                 }
+                "update" => {
+                    // the native updater's state (tools/gpui-update-e2e.sh): its phase, the version this build is, where it installs, the notes it will show
+                    let (phase, ver) = match &self.upd.phase { crate::update::Phase::Idle => ("idle", String::new()), crate::update::Phase::Checking => ("checking", String::new()), crate::update::Phase::Available(r) => ("available", r.version.clone()), crate::update::Phase::Downloading(r) => ("downloading", r.version.clone()), crate::update::Phase::Ready(v) => ("ready", v.clone()), crate::update::Phase::Failed(e) => ("failed", e.clone()) };
+                    json!({"phase": phase, "detail": ver, "current": self.upd.current, "enabled": self.upd.enabled, "target": format!("{:?}", self.upd.target), "whatsnew": self.upd.whatsnew().map(|(v, n)| json!({"version": v, "notes": n})), "rolled_back": self.upd.state.rolled_back, "boot": self.upd.state.boot.as_ref().map(|(v, t)| json!({"version": v, "tries": t})), "pid": std::process::id()})
+                }
+                "update_do" => { match s("what").as_str() { "install" => self.update_install(window, cx), "later" => self.update_later(cx), "restart" => self.update_restart(cx), "dismiss" => self.whatsnew_dismiss(cx), _ => return_err!(tx, "no such update action") } json!({"ok": true}) }
+                "rune_addr" => { let v = s("value"); self.set_rune.update(cx, |i, cx| i.set_value(v, window, cx)); self.rune_address_save(window, cx); json!({"ok": true}) }
                 "settings" => { self.go(crate::app::Level::Settings, window, cx); json!({"ok": true}) }
                 "saver" => { self.prefs.saver = match s("mode").as_str() { "on" => crate::prefs::Saver::On, "off" => crate::prefs::Saver::Off, _ => crate::prefs::Saver::Auto }; cx.notify(); json!({"ok": true, "still": self.still()}) }
                 "hidden" => { self.fake_hidden = cmd["on"].as_bool() == Some(true); json!({"ok": true}) }

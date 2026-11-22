@@ -57,7 +57,9 @@ const KNOWN: usize = 64;
 
 #[cfg(target_os = "linux")]
 pub use linux::Notifier;
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+pub use crate::macnotify::Notifier;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub use other::Notifier;
 
 /// The text of a note as a service that reads markup must get it.
@@ -221,7 +223,7 @@ mod linux {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod other {
     use super::*;
     /// Elsewhere the core's own native sink shows messages; there is no quick reply here (yet).

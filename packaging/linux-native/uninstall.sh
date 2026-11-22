@@ -8,7 +8,7 @@ BIN="$PREFIX/bin"
 DATA="${XDG_DATA_HOME:-$PREFIX/share}"
 [ "$PREFIX" = "$HOME/.local" ] && DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
 ID=app.commons.chat.gpui
-rm -f "$BIN/mega-gpui" "$BIN/mega-gpui.previous" "$DATA/applications/$ID.desktop"
+rm -f "$BIN/mega-gpui" "$BIN/mega-gpui.previous" "$BIN"/.mega-gpui.* "$DATA/applications/$ID.desktop"
 rm -f "$DATA"/icons/hicolor/*/apps/"$ID".png
 rm -rf "$DATA/mega"
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$DATA/icons/hicolor" 2>/dev/null || true

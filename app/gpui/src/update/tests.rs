@@ -192,13 +192,16 @@ fn bundle_tar(entries: &[(&str, &str)]) -> Vec<u8> {
     gz.finish().unwrap()
 }
 
+/// What codesign needs to accept a bundle on macOS (the test only checks the swap, not the program).
+const PLIST: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>mega-gpui</string><key>CFBundleIdentifier</key><string>app.commons.chat.gpui.test</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>";
+
 #[test]
 fn a_bundle_is_swapped_and_can_go_back() {
     let d = tmp("bundle");
     let app = d.join("Megatron.app");
     std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
     std::fs::write(app.join("Contents/MacOS/mega-gpui"), "old").unwrap();
-    let new = bundle_tar(&[("Megatron.app/", ""), ("Megatron.app/Contents/", ""), ("Megatron.app/Contents/MacOS/", ""), ("Megatron.app/Contents/MacOS/mega-gpui", "new"), ("Megatron.app/Contents/Resources/", ""), ("Megatron.app/Contents/Resources/link", "->../MacOS/mega-gpui")]);
+    let new = bundle_tar(&[("Megatron.app/", ""), ("Megatron.app/Contents/", ""), ("Megatron.app/Contents/MacOS/", ""), ("Megatron.app/Contents/Info.plist", PLIST), ("Megatron.app/Contents/MacOS/mega-gpui", "new"), ("Megatron.app/Contents/Resources/", ""), ("Megatron.app/Contents/Resources/link", "->../MacOS/mega-gpui")]);
     install_bundle(&app, &new).unwrap();
     assert_eq!(std::fs::read_to_string(app.join("Contents/MacOS/mega-gpui")).unwrap(), "new");
     assert_eq!(std::fs::read_to_string(d.join("Megatron.previous.app/Contents/MacOS/mega-gpui")).unwrap(), "old");

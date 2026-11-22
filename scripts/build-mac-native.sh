@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builds the native (GPUI) mega as "mega.app" on a Mac (Apple silicon or Intel): dist/mega.app and dist/mega-macos-<arch>.app.tar.gz.
+# Builds the native (GPUI) mega as "mega.app" on a Mac (Apple silicon or Intel): dist/mega.app and dist/mega-macos-<arch>.app.tar.gz
+# (that tarball is also the self-updater's file: scripts/publish-update.sh signs it and feeds it as darwin-gpui-<arch>).
 # Needs only Rust and the Xcode command line tools. Ad-hoc signed (Apple silicon refuses unsigned code); the app seals itself
 # again after a self-update. The bundle matches the manual install "/Applications/mega native.app": same layout, the
 # executable is Contents/MacOS/mega-gpui, the version is MEGA_GPUI_VERSION.

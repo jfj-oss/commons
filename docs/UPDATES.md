@@ -49,7 +49,7 @@ relay address its account uses, so the same manifest works however friends reach
 tests; the https rule above is enforced by our own code before the plugin is called.
 
 How it installs: Linux replaces the AppImage file in place (keep it where it was first put, writable). Windows runs the
-new installer (per user, no administrator rights) and the app restarts. macOS swaps the `Megatron.app` bundle (works when
+new installer (per user, no administrator rights) and the app restarts. macOS swaps the `mega.app` bundle (works when
 it was dragged to Applications; not from inside the dmg). The app then restarts, and asks for the passphrase as after any start.
 
 ## The browser versions (Linux, Windows, macOS)
@@ -218,7 +218,7 @@ never see it.
 | System | Feed platform key | File (in `dist/update/`) |
 | --- | --- | --- |
 | Linux x86_64 | `linux-gpui-x86_64` | `Megatron_<version>_gpui-x86_64`, the `mega-gpui` executable |
-| macOS Apple silicon | `darwin-gpui-aarch64` | `Megatron_<version>_gpui-aarch64.app.tar.gz`, one `Megatron.app` |
+| macOS Apple silicon | `darwin-gpui-aarch64` | `Megatron_<version>_gpui-aarch64.app.tar.gz`, one `mega.app` |
 
 (Linux aarch64 and macOS Intel have keys too, `linux-gpui-aarch64` and `darwin-gpui-x86_64`, for when those are built.
 Windows has no native build yet and does not check.)
@@ -240,10 +240,10 @@ tests' throwaway key; it is not read at run time.)
 - Linux: the new executable is written next to the running one (`.mega-gpui.update-new`, synced, mode 755), the running
   one is kept as `mega-gpui.previous` (a hard link, so nothing moves), and one `rename` puts the new file in place. The
   running process keeps its old file open and goes on unharmed. The folder has to be writable.
-- macOS: the `.app.tar.gz` is unpacked next to `Megatron.app` (files, folders and links that stay inside the app; any
+- macOS: the `.app.tar.gz` is unpacked next to the installed `.app` (files, folders and links that stay inside the app; any
   other entry refuses the whole update), sealed again ad hoc (`codesign --force --deep --sign -`, then `--verify`; the
   build is not Developer ID signed, so it is the same right-click, Open the first time as the other macOS downloads), and
-  swapped for the old bundle with two renames. The old one is kept as `Megatron.previous.app`. Not from inside the dmg.
+  swapped for the old bundle with two renames. The old one is kept as `<name>.previous.app`. Not from inside the dmg.
 
 The person is then told the version is installed and offered **Restart now**. "Restart" waits for the end of a call and
 is never done by itself; otherwise the new version simply runs the next time mega is opened.
@@ -256,23 +256,37 @@ says once that the new version did not start well. The state is `gpui-update.jso
 the first launch of the new version shows them as a card on Home, with Dismiss. They are shown only if the running
 version is the one the notes are for, and only once.
 
-**Publishing the native build.**
+**Publishing the native build.** `scripts/publish-update.sh` does it with the other apps, with the same key and in the same
+step: its `--only` list has two more names, `linux-native` and `mac-native`, both on by default (`--skip-mac` drops the Mac's;
+`--only linux,windows,mac` leaves the native app out this time).
 
-```sh
-scripts/publish-update.sh minor --notes "..."      # the Tauri apps first: this makes the version and the notes
-MEGA_GPUI_VERSION=0.4.0 cargo build --release -p mega-gpui     # on the oldest system you support
-scripts/publish-gpui.sh --version 0.4.0 --binary target/release/mega-gpui --dry-run   # look first
-scripts/publish-gpui.sh --version 0.4.0 --binary target/release/mega-gpui              # then for real
-# on the Mac: scripts/publish-gpui.sh --version 0.4.0 --app path/to/Megatron.app
-```
+- `linux-native`: `scripts/build-linux-native-docker.sh` builds in Ubuntu 22.04 (like the AppImage; glibc 2.35) with
+  `MEGA_GPUI_VERSION` set to the new version, and leaves `mega-linux-x86_64.tar.gz` (the friends' download, copied to `dist/`)
+  and `mega-gpui-linux-x86_64`, the stripped executable the app swaps itself for (signed, `dist/update/Megatron_<v>_gpui-x86_64`,
+  feed key `linux-gpui-x86_64`).
+- `mac-native`: on the Mac, `scripts/build-mac-native.sh` (after the Tauri build, under the same battery guard) makes `mega.app`
+  and `mega-macos-arm64.app.tar.gz` (signed, `dist/update/Megatron_<v>_gpui-aarch64.app.tar.gz`, feed key `darwin-gpui-aarch64`).
 
-`publish-gpui.sh` refuses unless `latest.json` already announces exactly that version (a feed holding only a native
-entry would take the other apps' updates away), signs with the same updater key as `publish-update.sh`, checks the
-signature carries the key the apps trust, copies the file, and adds only its own platform entry, last. `--dry-run` signs
-and copies nothing and does not read the key.
+Nothing is published unless every build and signature passed, and the key id of each signature is checked against the key the
+apps trust. `scripts/publish-gpui.sh` still adds a native build to a version that is already published (a Mac that was
+skipped, a rebuild): it refuses unless `latest.json` already announces exactly that version, so a feed holding only a native entry
+never takes the other apps' updates away. `--dry-run` signs and copies nothing and does not read the key.
+`.github/workflows/apps.yml` has the jobs `native-linux` and `native-mac` that build the same files on GitHub; they are never
+signed there (the updater key does not go to GitHub): download them, or build on your own machines as above.
 
-**Tests.** `cargo test -p mega-gpui --bin mega-gpui update::` (version order, platform keys, entry choice, signature
-accept and reject with a throwaway key, atomic replace and rollback of a binary and of a bundle, hostile archives, state
-and start counting). `tools/gpui-update-test.sh` adds the end-to-end run against a private relay (`COMMONS_TEST_PORT_OFFSET`
-1400+): `publish-gpui.sh` with a throwaway key into a scratch `dist/`, a local `commons-relay` serving it, and the check,
-download, verification and install against it.
+**Bundle and program names (macOS).** The bundle is `mega.app`, id `app.commons.chat.gpui`, executable `Contents/MacOS/mega-gpui`.
+The id is the one the earlier hand-made "mega native.app" had, so the permissions given to it (microphone, camera, notifications) carry
+over. The updater replaces the bundle at whatever name it is installed under (`mega native.app` stays `mega native.app`), it does not
+rename it. Move `mega native.app` to the Trash and put `mega.app` in `/Applications` once; nothing else needs doing.
+
+**Tests.** `tools/gpui-update-e2e.mjs` is the whole loop on one Linux machine (about 6 minutes, two release builds): a throwaway
+key pair (never the real one), builds 0.9.0 and 0.9.1 that trust it, `publish-update.sh` with the test signer into a scratch
+`dist/`, a local relay serving it, the 0.9.0 tarball installed with its own `install.sh` into a throwaway HOME, the app started in a
+private headless KWin: it offers 0.9.1, downloads, checks, installs (the old file kept as `mega-gpui.previous`), "Restart now"
+starts 0.9.1 which shows the notes once and confirms its start after 20 seconds; a 0.9.2 signed with another key is refused with the
+installed file unchanged; `uninstall.sh` leaves nothing; and with no Vulkan driver the app says so in words (stderr, `logs/no-window.txt`,
+a dialog) and exits. `COMMONS_TEST_PORT_OFFSET=5700 node tools/gpui-update-e2e.mjs`.
+`cargo test -p mega-gpui --bin mega-gpui update::` has the unit tests (version order, platform keys, entry choice, signature accept
+and reject with a throwaway key, atomic replace and rollback of a binary and of a bundle (on a Mac it signs for real), hostile
+archives, state and start counting), and `tools/gpui-update-test.sh` the publish-gpui.sh checks and the end-to-end test against a
+private relay.
