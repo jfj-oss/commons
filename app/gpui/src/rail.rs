@@ -1,8 +1,8 @@
 //! The rail beside a chat (app/ui/mega.js "the dots", mega.css `#mega-rail`): a narrow strip with a home dot and one dot per room
 //! (a round dot for a text room, a ring for a voice room, a tall pill for the open room, glowing while unread). The wheel over it
 //! walks the text rooms right on the dots (the rail stays narrow); the room it stops on opens after a short pause, so passing over
-//! a room does not mark it read. The dot under the pointer, the one the wheel is on and a room just opened stretch to the right
-//! into a label with the room's name.
+//! a room does not mark it read. While the pointer is over the rail every dot stretches to the right into a label with its room's
+//! name; otherwise the dot the wheel is on and a room just opened do.
 use crate::app::{Level, Mega};
 use crate::ascii::{self, Field};
 use crate::cards::{NavItem, Open};
@@ -43,9 +43,13 @@ pub struct RailUi {
     opened_at: f64,
     /** which dot wears the label, and since when (it grows out of the dot) */
     flag: Option<(String, f64)>,
+    /** when the pointer came over the rail (all the labels grow from then) */
+    hover_at: f64,
+    /** the pointer is over one of the labels (they lie outside the rail's strip) */
+    label_hover: bool,
 }
 impl Default for RailUi {
-    fn default() -> Self { RailUi { open: false, k: 0., hover: false, leave_at: None, off: 0., sum: 0., step_at: -1., pick: None, pick_at: 0., last: None, over: None, seen_gid: None, opened_at: -10., flag: None } }
+    fn default() -> Self { RailUi { open: false, k: 0., hover: false, leave_at: None, off: 0., sum: 0., step_at: -1., pick: None, pick_at: 0., last: None, over: None, seen_gid: None, opened_at: -10., flag: None, hover_at: 0., label_hover: false } }
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
@@ -111,7 +115,7 @@ impl Mega {
         if let Some(t) = self.rail.leave_at { if now >= t && !self.rail.hover { self.rail_close(); } }
         if self.rail.seen_gid != self.gid { self.rail.seen_gid = self.gid.clone(); if self.gid.is_some() { self.rail.opened_at = now; } }
         let just = now - self.rail.opened_at < JUST_OPENED;
-        let growing = self.rail.flag.as_ref().is_some_and(|(_, t)| now - t < FLAG_GROW);
+        let growing = self.rail.flag.as_ref().is_some_and(|(_, t)| now - t < FLAG_GROW) || (self.rail.hover && now - self.rail.hover_at < FLAG_GROW + 0.05);
         if just || growing { window.request_animation_frame(); }
         let want = if self.rail.open { 1. } else { 0. };
         // eases toward the target, a fifth of the way a frame (about half a second at 60 frames)
@@ -219,50 +223,80 @@ impl Mega {
                 }))
                 .into_any_element());
         }
-        // the name label: the dot under the pointer, else the one the wheel is on, else the room just opened (rail closed only)
+        // the name labels: every dot while the pointer is over the rail; otherwise the dot the wheel is on, or the room just opened
         let now = self.rail_now();
         let just = now - self.rail.opened_at < JUST_OPENED;
-        let who = if k > 0.05 { None } else {
-            self.rail.over.filter(|&i| i < items.len())
-                .or(self.rail.pick)
-                .or_else(|| just.then(|| active.iter().position(|a| *a)).flatten())
+        let all = (self.rail.hover || self.rail.label_hover) && k < 0.05;
+        let who: Vec<usize> = if k > 0.05 { vec![] } else if all { (0..items.len()).collect() } else {
+            self.rail.pick.or_else(|| just.then(|| active.iter().position(|a| *a)).flatten()).into_iter().collect()
         };
-        let flag = who.and_then(|i| {
+        let one_since = match (who.first(), all) {
+            (Some(&i), false) => { let key = items[i].key.clone(); Some(match &self.rail.flag { Some((k_, t)) if *k_ == key => *t, _ => { self.rail.flag = Some((key, now)); now } }) }
+            _ => { self.rail.flag = None; None }
+        };
+        let since = if all { self.rail.hover_at } else { one_since.unwrap_or(now) };
+        let t = if still { 1. } else { ((now - since) / FLAG_GROW).clamp(0., 1.) as f32 };
+        let e = 1. - (1. - t) * (1. - t) * (1. - t);
+        let over = self.rail.over;
+        let mut labels: Vec<AnyElement> = vec![];
+        let mut reach = 0f32;
+        for i in who {
             let it = &items[i];
-            if it.title.is_empty() { return None; }
-            let key = it.key.clone();
-            let since = match &self.rail.flag { Some((k_, t)) if *k_ == key => *t, _ => { self.rail.flag = Some((key.clone(), now)); now } };
+            if it.title.is_empty() { continue; }
             let (x, y, w, h) = g.items[i];
-            let fh = 26f32.max(h.min(30.));
+            // in the full list the labels sit 4 px apart on the dots' 26 px pitch; one label alone is a little taller
+            let (fh, fs) = if all { (22f32, 13f32) } else { (26f32.max(h.min(30.)), 14f32) };
             let text = SharedString::from(if it.voice && !it.here.is_empty() { format!("{}  \u{00b7}  {}", it.title, it.here.join(", ")) } else { it.title.clone() });
             let run = TextRun { len: text.len(), font: font(look::F_UI), color: gpui_kit::black(), background_color: None, underline: None, strikethrough: None };
-            let tw = f32::from(window.text_system().shape_line(text.clone(), px(14.), &[run], None).width);
-            let full = w + 10. + tw + 14.;
-            let t = if self.still() { 1. } else { ((now - since) / FLAG_GROW).clamp(0., 1.) as f32 };
-            let e = 1. - (1. - t) * (1. - t) * (1. - t);
+            let tw = f32::from(window.text_system().shape_line(text.clone(), px(fs), &[run], None).width);
+            let full = w + 9. + tw + 12.;
             let fw = lerp(w, full, e);
-            let bg = it.duo.field();
-            let ink = it.duo.ink();
-            Some(div().absolute().left(px(x)).top(px(y + h / 2. - fh / 2.)).w(px(fw)).h(px(fh)).rounded(px(fh / 2.)).bg(bg).overflow_hidden()
+            reach = reach.max(x + full);
+            let lit = active[i] || over == Some(i) || self.rail.pick == Some(i);
+            let unread = it.num > 0 && !it.voice && !active[i];
+            let (bg, ink) = (it.duo.field(), it.duo.ink());
+            let open = it.open.clone();
+            let voice = it.voice && !it.locked;
+            labels.push(div().id(("rail-label", i)).absolute().cursor_pointer().left(px(x)).top(px(y + h / 2. - fh / 2.)).w(px(fw)).h(px(fh)).rounded(px(fh / 2.)).bg(bg).overflow_hidden()
+                .opacity(if it.locked { 0.45 } else if all && !lit && !unread { 0.82 } else { 1. })
                 .shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.45), offset: point(px(0.), px(2.)), blur_radius: px(10.), spread_radius: px(0.), inset: false }])
-                .child(div().absolute().left(px(w + 10.)).top_0().h_full().flex().items_center().whitespace_nowrap()
-                    .opacity(((t - 0.35) / 0.65).clamp(0., 1.)).font_family(look::F_UI).text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(ink).child(text))
-                .into_any_element())
-        });
-        if flag.is_none() { self.rail.flag = None; }
+                .when(lit && all, |d| d.border_2().border_color(look::paper()))
+                .child(div().absolute().left(px(w + 9.)).top_0().h_full().flex().items_center().whitespace_nowrap()
+                    .opacity(((t - 0.35) / 0.65).clamp(0., 1.)).font_family(look::F_UI).text_size(px(fs)).font_weight(if lit || unread { FontWeight::BOLD } else { FontWeight::SEMIBOLD }).text_color(ink).child(text))
+                .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
+                    this.rail.label_hover = *hovered;
+                    if *hovered { this.rail.over = Some(i); } else if this.rail.over == Some(i) { this.rail.over = None; }
+                    cx.notify();
+                }))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    match open.clone() {
+                        Open::Room(_, g) if voice => { if this.call.in_call() && this.call.snap.gid.as_deref() == Some(g.as_str()) { this.leave_call(cx); } else { this.join_call(g, window, cx); } }
+                        Open::Room(c, g) => { if this.gid.as_deref() != Some(g.as_str()) { this.open_room(c, g, window, cx); } }
+                        Open::Settings => this.go(Level::Settings, window, cx),
+                        Open::Admin(c) => this.open_panel(crate::members::Panel::Admin(c), window, cx),
+                        Open::Server(c) => this.go(Level::Server(c), window, cx),
+                    }
+                }))
+                .into_any_element());
+        }
+        // while the pointer is over it the rail itself widens to hold every name; a single label floats over the chat
+        let wide = if all { lerp(g.w, (reach + 14.).max(g.w), e) } else { g.w };
+        let (inside, flag) = if all { (labels, None) } else { (vec![], (!labels.is_empty()).then(|| div().absolute().top_0().left_0().size_full().children(labels).into_any_element())) };
         let shadow = if k > 0.02 { vec![BoxShadow { color: hsla(0., 0., 0., 0.6 * k), offset: point(px(0.), px(0.)), blur_radius: px(60.), spread_radius: px(0.), inset: false }] } else { vec![] };
         let items_for_wheel = items.clone();
-        let panel = div().id("rail").absolute().left_0().top_0().w(px(g.w)).h(px(vh)).overflow_hidden().bg(rgba(if k > 0.5 { 0x08070bf0 } else { 0x08070be6 })).shadow(shadow)
+        let panel = div().id("rail").absolute().left_0().top_0().w(px(wide)).h(px(vh)).overflow_hidden().bg(rgba(if k > 0.5 { 0x08070bf0 } else { 0x08070be6 })).shadow(shadow)
             .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
+                if *hovered && !this.rail.hover { this.rail.hover_at = this.rail_now(); }
                 this.rail.hover = *hovered;
                 if *hovered { this.rail.leave_at = None; } else if this.rail.open { this.rail.leave_at = Some(this.rail_now() + LEAVE_AFTER); cx.notify(); }
             }))
             .on_scroll_wheel(cx.listener(move |this, ev: &ScrollWheelEvent, _, cx| { this.rail_wheel(ev, &items_for_wheel, cx); cx.stop_propagation(); }))
             .when(tour_on, |d| d.child(tour_hits.track("tour-rail")))
-            .children(kids);
+            .children(kids)
+            .children(inside);
         // the strip keeps its closed width in the layout; the open rail floats over the chat
         div().relative().w(px(CLOSED_W)).h_full().flex_none().child(deferred(panel).with_priority(2))
-            .when_some(flag, |d, f| d.child(deferred(div().absolute().top_0().left_0().size_full().child(f)).with_priority(3)))
+            .when_some(flag, |d, f| d.child(deferred(f).with_priority(3)))
             .into_any_element()
     }
 
