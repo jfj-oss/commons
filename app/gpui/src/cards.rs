@@ -67,7 +67,12 @@ pub struct NewsRow { pub cid: String, pub gid: String, pub comm: String, pub roo
 pub struct Prev { pub sig: String, pub at: Option<Instant>, pub who: String, pub text: String, pub ts: u64 }
 
 /// The column's state: where it is scrolled, what it holds, how big it is.
+/// After the wheel brought the column up from a chat's rail, the card in focus opens this long after the wheel stops (seconds).
+pub const PEEK_OPEN: f64 = 1.0;
+
 pub struct NavUi {
+    /** the column was reached by the wheel over a chat's rail: when the wheel last moved; the card in focus opens a second after it stops */
+    pub peek: Option<f64>,
     pub scroll: Scroll,
     pub key: String,
     pub n: usize,
@@ -101,7 +106,7 @@ pub struct NavUi {
 
 impl NavUi {
     pub fn new(cx: &mut App) -> NavUi {
-        NavUi { scroll: Scroll::default(), key: String::new(), n: 0, vh: 0., vp: Rc::new(Cell::new((0., 0.))), offs: vec![], opens: vec![], voices: vec![], told: None, focus: cx.focus_handle(), last_home: None, acc: 0.,
+        NavUi { peek: None, scroll: Scroll::default(), key: String::new(), n: 0, vh: 0., vp: Rc::new(Cell::new((0., 0.))), offs: vec![], opens: vec![], voices: vec![], told: None, focus: cx.focus_handle(), last_home: None, acc: 0.,
             previews: HashMap::new(), prev_busy: false, frames: vec![], last_frame: None, play: None, focus_card: None, bloom: (0., 0., 0.), origin: Rc::new(Cell::new((0., 0.))), rects: vec![], keys: vec![] }
     }
 }
@@ -255,6 +260,16 @@ impl Mega {
         // the focused card tells friends where we are once it has settled
         let told = self.nav.scroll.settled.filter(|i| *i < items.len());
         if told != self.nav.told { self.nav.told = told; self.focus_card(told.map(|i| (items[i].cid.clone(), items[i].room.clone()))); }
+        // reached from a chat's rail by the wheel: a second after the wheel stops, the text room in focus opens
+        if let Some(t0) = self.nav.peek {
+            if home { self.nav.peek = None; }
+            else if now - t0 >= PEEK_OPEN {
+                if let Some(i) = told {
+                    self.nav.peek = None;
+                    if let (Open::Room(c, g), false, false) = (items[i].open.clone(), items[i].voice, items[i].locked) { self.open_room(c, g, window, cx); }
+                } else { window.request_animation_frame(); }
+            } else { window.request_animation_frame(); }
+        }
         let sc = self.nav.scroll.clone();
         self.nav.offs = offs.clone();
         self.nav.opens = items.iter().map(|x| x.open.clone()).collect();
@@ -458,6 +473,7 @@ impl Mega {
     pub fn nav_wheel(&mut self, ev: &ScrollWheelEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if self.wall.on { cx.stop_propagation(); return; }
         let now = self.nav_now();
+        if self.nav.peek.is_some() { self.nav.peek = Some(now); }
         let offs = self.nav.offs.clone();
         match ev.delta {
             ScrollDelta::Pixels(p) => { let dy = -f32::from(p.y); if dy != 0. { self.nav.scroll.wheel_px(dy, &offs, now); } }

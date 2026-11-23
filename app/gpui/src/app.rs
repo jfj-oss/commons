@@ -571,6 +571,7 @@ pub fn clock(ts: u64) -> String {
 
 impl Mega {
     pub fn go(&mut self, level: Level, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(level, Level::Server(_)) { self.nav.peek = None; }
         // back from a chat: the column starts again on the room that was open (the dots fly out to exactly there)
         if self.level == Level::Chat { if let Level::Server(c) = &level { let c = c.clone(); self.nav.key.clear(); self.fly_open(&c, window); } }
         if level == Level::Settings { let n = self.snap.as_ref().map(|s| s.me_name.clone()).unwrap_or_default(); self.set_name.update(cx, |i, cx| i.set_value(n, window, cx)); let r = self.snap.as_ref().map(|s| s.rune_url.clone()).unwrap_or_default(); self.set_rune.update(cx, |i, cx| i.set_value(r, window, cx)); }

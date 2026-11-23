@@ -88,7 +88,7 @@ impl Mega {
     fn rail_wheel(&mut self, ev: &ScrollWheelEvent, items: &[NavItem], window: &mut Window, cx: &mut Context<Self>) {
         let now = self.rail_now();
         if self.level == Level::Chat {
-            if let Some(cid) = self.cid.clone() { self.rail.over = None; self.rail.hover = false; self.go(Level::Server(cid), window, cx); }
+            if let Some(cid) = self.cid.clone() { self.rail.over = None; self.rail.hover = false; self.go(Level::Server(cid), window, cx); self.nav.peek = Some(now); }
             return;
         }
         let dy = match ev.delta { ScrollDelta::Pixels(p) => -f32::from(p.y), ScrollDelta::Lines(l) => -l.y * 100. };
