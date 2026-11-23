@@ -144,6 +144,12 @@ impl Mega {
                     window.defer(cx, move |window, cx| { window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: p, pressed_button: None, modifiers: Modifiers::default() }), cx); });
                     json!({"ok": true})
                 }
+                "wheel" => {
+                    let p = point(px(cmd["x"].as_f64().unwrap_or(0.) as f32), px(cmd["y"].as_f64().unwrap_or(0.) as f32));
+                    let dy = cmd["dy"].as_f64().unwrap_or(-120.) as f32;
+                    window.defer(cx, move |window, cx| { window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: p, pressed_button: None, modifiers: Modifiers::default() }), cx); window.dispatch_event(PlatformInput::Scroll(ScrollEvent { position: p, delta: ScrollDelta::Pixels(point(px(0.), px(dy))), modifiers: Modifiers::default(), touch_phase: TouchPhase::Moved, source: Default::default() }), cx); });
+                    json!({"ok": true})
+                }
                 "drop" => { let d = self.gid.as_deref().map(|g| self.bd_dim(g)).unwrap_or(100); self.bd.drop_in(cmd["x"].as_f64().unwrap_or(0.5), cmd["y"].as_f64().unwrap_or(0.5), d); cx.notify(); json!({"ok": true, "drops": self.bd.drops.len()}) }
                 "bd" => json!({"t": self.bd.t, "heat": self.bd.heat, "ripples": self.bd.rips.len(), "busy": self.bd.busy(), "next_rip": self.bd.next_rip, "visible": window.is_visible(), "typing": self.win.typing, "still": self.still(), "dim": self.gid.as_deref().map(|g| self.bd_dim(g))}),
                 "avatars" => self.avatar_dump(),

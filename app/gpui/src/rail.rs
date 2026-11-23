@@ -1,7 +1,8 @@
 //! The rail beside a chat (app/ui/mega.js "the dots", mega.css `#mega-rail`): a narrow strip with a home dot and one dot per room
-//! (a round dot for a text room, a ring for a voice room, a tall pill for the open room, glowing while unread). Scrolling the
-//! wheel over it opens the dots into cards (a live field and the name on each) and walks the text rooms; the room it stops on
-//! opens after a short pause, so passing over a room does not mark it read. It closes when the pointer leaves.
+//! (a round dot for a text room, a ring for a voice room, a tall pill for the open room, glowing while unread). The wheel over it
+//! walks the text rooms right on the dots (the rail stays narrow); the room it stops on opens after a short pause, so passing over
+//! a room does not mark it read. The dot under the pointer, the one the wheel is on and a room just opened stretch to the right
+//! into a label with the room's name.
 use crate::app::{Level, Mega};
 use crate::ascii::{self, Field};
 use crate::cards::{NavItem, Open};
@@ -19,6 +20,9 @@ const STEP_GAP: f64 = 0.14;
 /// The room under the wheel opens after this long without another step.
 const PICK_AFTER: f64 = 0.32;
 const LEAVE_AFTER: f64 = 0.38;
+/// A room just opened shows its name this long; a label grows out of its dot in this long.
+const JUST_OPENED: f64 = 1.8;
+const FLAG_GROW: f64 = 0.18;
 
 /// The rail's state: how far it is open (0..1, a spring), the list's scroll while open, and the wheel's pick.
 pub struct RailUi {
@@ -32,9 +36,16 @@ pub struct RailUi {
     pub pick: Option<usize>,
     pick_at: f64,
     last: Option<(String, f64)>,
+    /** the dot under the pointer */
+    pub over: Option<usize>,
+    /** the room open now and when it became so (for its name label) */
+    seen_gid: Option<String>,
+    opened_at: f64,
+    /** which dot wears the label, and since when (it grows out of the dot) */
+    flag: Option<(String, f64)>,
 }
 impl Default for RailUi {
-    fn default() -> Self { RailUi { open: false, k: 0., hover: false, leave_at: None, off: 0., sum: 0., step_at: -1., pick: None, pick_at: 0., last: None } }
+    fn default() -> Self { RailUi { open: false, k: 0., hover: false, leave_at: None, off: 0., sum: 0., step_at: -1., pick: None, pick_at: 0., last: None, over: None, seen_gid: None, opened_at: -10., flag: None } }
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
@@ -68,10 +79,9 @@ impl Mega {
     pub fn rail_close_now(&mut self) { self.rail_close(); }
     fn rail_close(&mut self) { if self.rail.open { self.rail.open = false;  self.rail.off = 0.; self.rail.pick = None; self.rail.leave_at = None; } }
 
-    /// The wheel over the rail: opens it and walks the text rooms (mega.js `rail.addEventListener('wheel')`).
+    /// The wheel over the rail walks the text rooms on the dots themselves (the rail does not open).
     fn rail_wheel(&mut self, ev: &ScrollWheelEvent, items: &[NavItem], cx: &mut Context<Self>) {
         let now = self.rail_now();
-        self.rail_open();
         let dy = match ev.delta { ScrollDelta::Pixels(p) => -f32::from(p.y), ScrollDelta::Lines(l) => -l.y * 100. };
         self.rail.sum += dy;
         if self.rail.sum.abs() < STEP_PX || now - self.rail.step_at < STEP_GAP { cx.notify(); return; }
@@ -83,7 +93,8 @@ impl Mega {
         let last = self.rail.last.as_ref().filter(|(_, t)| now - t < 4.).and_then(|(k, _)| text.iter().position(|&i| &items[i].key == k));
         let from = self.rail.pick.and_then(|p| text.iter().position(|&i| i == p)).or(last).unwrap_or(here);
         let next = (from as i32 + step).clamp(0, text.len() as i32 - 1) as usize;
-        if next == from && self.rail.pick.is_none() { self.rail.off = (self.rail.off + step as f32 * 110.).clamp(0., (open_content(items.len()) - 200.).max(0.)); cx.notify(); return; }
+        if next == from && self.rail.pick.is_none() && !self.rail.open { return; }
+        if next == from && self.rail.pick.is_none() && self.rail.open { self.rail.off = (self.rail.off + step as f32 * 110.).clamp(0., (open_content(items.len()) - 200.).max(0.)); cx.notify(); return; }
         self.rail.pick = Some(text[next]); self.rail.pick_at = now;
         cx.notify();
     }
@@ -98,6 +109,10 @@ impl Mega {
             }
         }
         if let Some(t) = self.rail.leave_at { if now >= t && !self.rail.hover { self.rail_close(); } }
+        if self.rail.seen_gid != self.gid { self.rail.seen_gid = self.gid.clone(); if self.gid.is_some() { self.rail.opened_at = now; } }
+        let just = now - self.rail.opened_at < JUST_OPENED;
+        let growing = self.rail.flag.as_ref().is_some_and(|(_, t)| now - t < FLAG_GROW);
+        if just || growing { window.request_animation_frame(); }
         let want = if self.rail.open { 1. } else { 0. };
         // eases toward the target, a fifth of the way a frame (about half a second at 60 frames)
         if (self.rail.k - want).abs() > 1e-3 {
@@ -152,7 +167,6 @@ impl Mega {
             let col = it.duo.dot();
             let unread = it.num > 0 && !it.voice && !on;
             let r = lerp(if it.title == "options" { 4. } else if on { 8. } else { 7. }, 62., k) * sc;
-            let tip = it.title.clone();
             let voice = it.voice && !it.locked;
             let open = it.open.clone();
             let keep = k > 0.01;
@@ -185,7 +199,10 @@ impl Mega {
                 .when(it.at > 0 && !on && k > 0.5, |d| d.child(div().absolute().top(px(-7.)).right(px(-9.)).min_w(px(15.)).h(px(15.)).px(px(3.)).rounded(px(8.)).bg(look::paper()).text_color(rgb(look::VOID)).font_family(look::F_UI).text_size(px(10.)).line_height(px(15.)).font_weight(FontWeight::BOLD).child(if it.at > 99 { "99+".to_string() } else { it.at.to_string() })))
                 .when(on && k > 0.5, |d| d.child(div().absolute().inset(px(-4.)).rounded(px(r + 4.)).border_2().border_color(look::paper())))
                 .when(picked, |d| d.child(div().absolute().inset(px(-4.)).rounded(px(r + 4.)).border_2().border_color(look::paper())))
-                .when(k < 0.5, |d| d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)))
+                .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
+                    if *hovered { this.rail.over = Some(i); } else if this.rail.over == Some(i) { this.rail.over = None; }
+                    cx.notify();
+                }))
                 .when_some(match &it.open { Open::Room(_, g) if !voice && !it.locked => Some((g.clone(), it.title.clone())), _ => None }, |d, (gid, name)| d.on_mouse_down(MouseButton::Right, cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
                     this.room_menu_open(&gid, &name, ev.position, window, cx);
@@ -202,6 +219,37 @@ impl Mega {
                 }))
                 .into_any_element());
         }
+        // the name label: the dot under the pointer, else the one the wheel is on, else the room just opened (rail closed only)
+        let now = self.rail_now();
+        let just = now - self.rail.opened_at < JUST_OPENED;
+        let who = if k > 0.05 { None } else {
+            self.rail.over.filter(|&i| i < items.len())
+                .or(self.rail.pick)
+                .or_else(|| just.then(|| active.iter().position(|a| *a)).flatten())
+        };
+        let flag = who.and_then(|i| {
+            let it = &items[i];
+            if it.title.is_empty() { return None; }
+            let key = it.key.clone();
+            let since = match &self.rail.flag { Some((k_, t)) if *k_ == key => *t, _ => { self.rail.flag = Some((key.clone(), now)); now } };
+            let (x, y, w, h) = g.items[i];
+            let fh = 26f32.max(h.min(30.));
+            let text = SharedString::from(if it.voice && !it.here.is_empty() { format!("{}  \u{00b7}  {}", it.title, it.here.join(", ")) } else { it.title.clone() });
+            let run = TextRun { len: text.len(), font: font(look::F_UI), color: gpui_kit::black(), background_color: None, underline: None, strikethrough: None };
+            let tw = f32::from(window.text_system().shape_line(text.clone(), px(14.), &[run], None).width);
+            let full = w + 10. + tw + 14.;
+            let t = if self.still() { 1. } else { ((now - since) / FLAG_GROW).clamp(0., 1.) as f32 };
+            let e = 1. - (1. - t) * (1. - t) * (1. - t);
+            let fw = lerp(w, full, e);
+            let bg = it.duo.field();
+            let ink = it.duo.ink();
+            Some(div().absolute().left(px(x)).top(px(y + h / 2. - fh / 2.)).w(px(fw)).h(px(fh)).rounded(px(fh / 2.)).bg(bg).overflow_hidden()
+                .shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.45), offset: point(px(0.), px(2.)), blur_radius: px(10.), spread_radius: px(0.), inset: false }])
+                .child(div().absolute().left(px(w + 10.)).top_0().h_full().flex().items_center().whitespace_nowrap()
+                    .opacity(((t - 0.35) / 0.65).clamp(0., 1.)).font_family(look::F_UI).text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(ink).child(text))
+                .into_any_element())
+        });
+        if flag.is_none() { self.rail.flag = None; }
         let shadow = if k > 0.02 { vec![BoxShadow { color: hsla(0., 0., 0., 0.6 * k), offset: point(px(0.), px(0.)), blur_radius: px(60.), spread_radius: px(0.), inset: false }] } else { vec![] };
         let items_for_wheel = items.clone();
         let panel = div().id("rail").absolute().left_0().top_0().w(px(g.w)).h(px(vh)).overflow_hidden().bg(rgba(if k > 0.5 { 0x08070bf0 } else { 0x08070be6 })).shadow(shadow)
@@ -213,7 +261,9 @@ impl Mega {
             .when(tour_on, |d| d.child(tour_hits.track("tour-rail")))
             .children(kids);
         // the strip keeps its closed width in the layout; the open rail floats over the chat
-        div().relative().w(px(CLOSED_W)).h_full().flex_none().child(deferred(panel).with_priority(2)).into_any_element()
+        div().relative().w(px(CLOSED_W)).h_full().flex_none().child(deferred(panel).with_priority(2))
+            .when_some(flag, |d, f| d.child(deferred(div().absolute().top_0().left_0().size_full().child(f)).with_priority(3)))
+            .into_any_element()
     }
 
     fn room_items_for_rail(&self, c: &crate::model::Community) -> Vec<NavItem> {
@@ -224,7 +274,7 @@ impl Mega {
 
     /// For the test port.
     pub fn rail_dump(&self) -> serde_json::Value {
-        serde_json::json!({"open": self.rail.open, "k": self.rail.k, "off": self.rail.off, "pick": self.rail.pick, "hover": self.rail.hover})
+        serde_json::json!({"open": self.rail.open, "k": self.rail.k, "off": self.rail.off, "pick": self.rail.pick, "hover": self.rail.hover, "over": self.rail.over, "flag": self.rail.flag.as_ref().map(|f| f.0.clone()), "gid": self.gid})
     }
 }
 
