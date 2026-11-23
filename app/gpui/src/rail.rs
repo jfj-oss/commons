@@ -1,6 +1,6 @@
 //! The rail beside a chat (app/ui/mega.js "the dots", mega.css `#mega-rail`): a narrow strip with a home dot and one dot per room
 //! (a round dot for a text room, a ring for a voice room, a tall pill for the open room, glowing while unread). The wheel over it
-//! walks the text rooms right on the dots (the rail stays narrow); the room it stops on opens after a short pause, so passing over
+//! beside a chat goes to the community's rooms (the card column) and scrolls there; elsewhere it walks the text rooms on the dots; the room it stops on opens after a short pause, so passing over
 //! a room does not mark it read. While the pointer is over the rail every dot stretches to the right into a label with its room's
 //! name; otherwise the dot the wheel is on and a room just opened do.
 use crate::app::{Level, Mega};
@@ -83,9 +83,14 @@ impl Mega {
     pub fn rail_close_now(&mut self) { self.rail_close(); }
     fn rail_close(&mut self) { if self.rail.open { self.rail.open = false;  self.rail.off = 0.; self.rail.pick = None; self.rail.leave_at = None; } }
 
-    /// The wheel over the rail walks the text rooms on the dots themselves (the rail does not open).
-    fn rail_wheel(&mut self, ev: &ScrollWheelEvent, items: &[NavItem], cx: &mut Context<Self>) {
+    /// The wheel over the rail beside a chat goes to the community's rooms (the card column, centred on this room, the dots
+    /// flying out into the cards); the wheel then scrolls the cards there. Beside anything else it walks the text rooms on the dots.
+    fn rail_wheel(&mut self, ev: &ScrollWheelEvent, items: &[NavItem], window: &mut Window, cx: &mut Context<Self>) {
         let now = self.rail_now();
+        if self.level == Level::Chat {
+            if let Some(cid) = self.cid.clone() { self.rail.over = None; self.rail.hover = false; self.go(Level::Server(cid), window, cx); }
+            return;
+        }
         let dy = match ev.delta { ScrollDelta::Pixels(p) => -f32::from(p.y), ScrollDelta::Lines(l) => -l.y * 100. };
         self.rail.sum += dy;
         if self.rail.sum.abs() < STEP_PX || now - self.rail.step_at < STEP_GAP { cx.notify(); return; }
@@ -264,7 +269,7 @@ impl Mega {
                 this.rail.hover = *hovered;
                 if *hovered { this.rail.leave_at = None; } else if this.rail.open { this.rail.leave_at = Some(this.rail_now() + LEAVE_AFTER); cx.notify(); }
             }))
-            .on_scroll_wheel(cx.listener(move |this, ev: &ScrollWheelEvent, _, cx| { this.rail_wheel(ev, &items_for_wheel, cx); cx.stop_propagation(); }))
+            .on_scroll_wheel(cx.listener(move |this, ev: &ScrollWheelEvent, window, cx| { this.rail_wheel(ev, &items_for_wheel, window, cx); cx.stop_propagation(); }))
             .when(tour_on, |d| d.child(tour_hits.track("tour-rail")))
             .children(kids);
         // the strip keeps its closed width in the layout; the open rail floats over the chat

@@ -147,7 +147,8 @@ impl Mega {
                 "wheel" => {
                     let p = point(px(cmd["x"].as_f64().unwrap_or(0.) as f32), px(cmd["y"].as_f64().unwrap_or(0.) as f32));
                     let dy = cmd["dy"].as_f64().unwrap_or(-120.) as f32;
-                    window.defer(cx, move |window, cx| { window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: p, pressed_button: None, modifiers: Modifiers::default() }), cx); window.dispatch_event(PlatformInput::Scroll(ScrollEvent { position: p, delta: ScrollDelta::Pixels(point(px(0.), px(dy))), modifiers: Modifiers::default(), touch_phase: TouchPhase::Moved, source: Default::default() }), cx); });
+                    let cmd_lines = cmd["lines"].as_bool() == Some(true);
+                    window.defer(cx, move |window, cx| { window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: p, pressed_button: None, modifiers: Modifiers::default() }), cx); window.dispatch_event(PlatformInput::Scroll(ScrollEvent { position: p, delta: if cmd_lines { ScrollDelta::Lines(point(0., dy / 40.)) } else { ScrollDelta::Pixels(point(px(0.), px(dy))) }, modifiers: Modifiers::default(), touch_phase: TouchPhase::Moved, source: Default::default() }), cx); });
                     json!({"ok": true})
                 }
                 "drop" => { let d = self.gid.as_deref().map(|g| self.bd_dim(g)).unwrap_or(100); self.bd.drop_in(cmd["x"].as_f64().unwrap_or(0.5), cmd["y"].as_f64().unwrap_or(0.5), d); cx.notify(); json!({"ok": true, "drops": self.bd.drops.len()}) }
