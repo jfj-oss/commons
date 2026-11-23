@@ -17,8 +17,11 @@ use std::time::Duration;
 /// A native build is tens of MB; anything near this is not one.
 pub const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_UNPACKED_BYTES: u64 = 1024 * 1024 * 1024;
-/// How often the feed is read: on start (a little after unlocking) and then every four hours. "Later" waits as long.
-pub const CHECK_EVERY: Duration = Duration::from_secs(4 * 3600);
+/// How often the feed is read: on start (a little after unlocking) and then every half hour (a tiny file), so a new
+/// version reaches an app that stays open soon after it is published.
+pub const CHECK_EVERY: Duration = Duration::from_secs(30 * 60);
+/// "Later" waits this long before offering again.
+pub const LATER: Duration = Duration::from_secs(4 * 3600);
 /// A new version that does not stay up this long (counted from its start) was not a good start.
 pub const BOOT_CONFIRM: Duration = Duration::from_secs(20);
 /// This many starts of a new version without one lasting [`BOOT_CONFIRM`]: the previous one is put back.

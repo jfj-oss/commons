@@ -2,7 +2,7 @@
 //! offers a newer version, shows the download, asks "Restart now?", and, once, shows what is new in the version that
 //! was just installed. No menu, no dialog: nothing else in the app changes.
 //!
-//! Rules (docs/UPDATES.md): the feed is read a little after unlocking and every four hours; nothing is offered while a
+//! Rules (docs/UPDATES.md): the feed is read a little after unlocking and every half hour; nothing is offered while a
 //! call runs on this device; nothing restarts the app except the person's own click on "Restart now" (and that is not
 //! possible during a call); an installed update that is not restarted into simply runs at the next start.
 use crate::app::{Mega, Screen};
@@ -94,7 +94,7 @@ impl Mega {
     pub fn update_later(&mut self, cx: &mut Context<Self>) {
         let required = matches!(&self.upd.phase, Phase::Available(r) if r.required);
         self.upd.phase = Phase::Idle;
-        self.upd.next_check = Instant::now() + if required { Duration::from_secs(3600) } else { update::CHECK_EVERY };
+        self.upd.next_check = Instant::now() + if required { Duration::from_secs(3600) } else { update::LATER };
         cx.notify();
     }
 
@@ -120,7 +120,7 @@ impl Mega {
                         this.upd.state.save(&this.core.dir);
                         this.upd.phase = Phase::Ready(rel.version);
                     }
-                    Err(e) => { this.upd.next_check = Instant::now() + update::CHECK_EVERY; this.upd.phase = Phase::Failed(e); }
+                    Err(e) => { this.upd.next_check = Instant::now() + update::LATER; this.upd.phase = Phase::Failed(e); }
                 }
                 cx.notify();
             });

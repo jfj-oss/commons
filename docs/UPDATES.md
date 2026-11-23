@@ -223,7 +223,7 @@ never see it.
 (Linux aarch64 and macOS Intel have keys too, `linux-gpui-aarch64` and `darwin-gpui-x86_64`, for when those are built.
 Windows has no native build yet and does not check.)
 
-**Checks.** The feed is read 15 seconds after unlocking and then every 4 hours, from the account's own relay by the same
+**Checks.** The feed is read 15 seconds after unlocking and then every 30 minutes (the native app; "Later" still waits 4 hours), from the account's own relay by the same
 code as the Tauri app (`commons_core::update::fetch_manifest`: https or loopback http, no redirects, every address inside
 that relay). Nothing is read, offered or restarted during a call (`CallUi::in_call`, and the core's `call_active` for a
 call handed to the browser). The version the app compares is the one it was built as (`MEGA_GPUI_VERSION` at build time).
