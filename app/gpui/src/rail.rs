@@ -14,6 +14,8 @@ use std::time::Instant;
 
 pub const CLOSED_W: f32 = 56.;
 pub const OPEN_W: f32 = 210.;
+/// The hover list's rows (and so its widest): long names are cut.
+const LIST_ROW_W: f32 = 196.;
 /// The wheel must add up to this much before it steps a room, and steps come at least this far apart (seconds).
 const STEP_PX: f32 = 50.;
 const STEP_GAP: f64 = 0.14;
@@ -176,6 +178,7 @@ impl Mega {
         let e = 1. - (1. - t) * (1. - t) * (1. - t);
         let over = self.rail.over;
         let mut reach = 0f32;
+        let mut rows: Vec<AnyElement> = vec![];
         for (i, it) in items.iter().enumerate() {
             let (x, y, w, h) = g.items[i];
             let on = active[i];
@@ -209,7 +212,7 @@ impl Mega {
             let ink = it.duo.ink();
             let label_op = ((k - 0.4) / 0.6).clamp(0., 1.);
             // a named dot keeps its height, colour and corners and only grows to the right, with the name inside it
-            let named = who.contains(&i) && !it.title.is_empty();
+            let named = !all && who.contains(&i) && !it.title.is_empty();
             let (w3, name) = if named {
                 let fs = (h2 - 5.).clamp(9., 15.);
                 let text = SharedString::from(if it.voice && !it.here.is_empty() { format!("{}  \u{00b7}  {}", it.title, it.here.join(", ")) } else { it.title.clone() });
@@ -220,10 +223,44 @@ impl Mega {
                 (lerp(w2, full, e), Some((text, fs)))
             } else { (w2, None) };
             let lit = on || self.rail.over == Some(i) || picked;
+            // the hover list: the dot stays a dot, its name beside it in plain text, the open room on a soft pill
+            if all && !it.title.is_empty() {
+                let tx = x + w + 14.;
+                let here = if it.voice && !it.here.is_empty() { Some(it.here.join(", ")) } else { None };
+                let name_s = SharedString::from(it.title.clone());
+                let run = TextRun { len: name_s.len(), font: font(look::F_UI), color: gpui_kit::black(), background_color: None, underline: None, strikethrough: None };
+                let tw = f32::from(window.text_system().shape_line(name_s.clone(), px(14.), &[run], None).width);
+                reach = reach.max(tx + tw + if unread { 22. } else { 10. } + 18.);
+                let rh = (h2 + 10.).max(32.);
+                let op = ((t - 0.2) / 0.8).clamp(0., 1.);
+                let (open2, voice2) = (it.open.clone(), voice);
+                rows.push(div().id(("rail-row", i)).absolute().left(px(8.)).top(px(cy_ - rh / 2.)).w(px(LIST_ROW_W)).h(px(rh)).rounded_full().cursor_pointer()
+                    .when(on, |d| d.bg(hsla(0., 0., 1., 0.09)))
+                    .when(!on, |d| d.hover(|d| d.bg(hsla(0., 0., 1., 0.05))))
+                    .opacity(op)
+                    .child(gpui_kit::component::v_flex().absolute().left(px(tx - 8.)).top_0().h_full().justify_center().whitespace_nowrap().font_family(look::F_UI)
+                        .child(gpui_kit::component::h_flex().items_center().gap(px(7.)).text_size(px(14.)).line_height(px(17.))
+                            .font_weight(if unread || on { FontWeight::BOLD } else { FontWeight::MEDIUM })
+                            .text_color(if on || unread { look::paper() } else { look::paper().opacity(0.72) })
+                            .when(it.locked, |d| d.opacity(0.45))
+                            .child(name_s)
+                            .when(unread, |d| d.child(div().size(px(6.)).rounded_full().bg(col))))
+                        .when_some(here, |d, h| d.child(div().text_size(px(11.)).line_height(px(13.)).text_color(look::mute()).overflow_hidden().text_ellipsis().max_w(px(LIST_ROW_W - (tx - 8.) - 14.)).child(h))))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        match open2.clone() {
+                            Open::Room(_, g) if voice2 => { if this.call.in_call() && this.call.snap.gid.as_deref() == Some(g.as_str()) { this.leave_call(cx); } else { this.join_call(g, window, cx); } }
+                            Open::Room(c, g) => { if this.gid.as_deref() != Some(g.as_str()) { this.open_room(c, g, window, cx); } }
+                            Open::Settings => this.go(Level::Settings, window, cx),
+                            Open::Admin(c) => this.open_panel(crate::members::Panel::Admin(c), window, cx),
+                            Open::Server(c) => this.go(Level::Server(c), window, cx),
+                        }
+                    }))
+                    .into_any_element());
+            }
             let name_ink: Hsla = if it.voice { look::paper() } else if col.l > 0.55 { rgb(0x0c0d12).into() } else { rgb(0xffffff).into() };
             let num_s = if it.num > 0 { if it.num > 99 { "99+".to_string() } else { it.num.to_string() } } else { String::new() };
             kids.push(div().id(("rail-item", i)).absolute().left(px(x2)).top(px(y2)).w(px(w3)).h(px(h2)).cursor_pointer()
-                .opacity(if it.locked && k < 0.5 { 0.35 } else if k > 0.5 || on || unread || named { 1. } else { 0.68 })
+                .opacity(if it.locked && k < 0.5 { 0.35 } else if k > 0.5 || on || unread || named || all { 1. } else { 0.68 })
                 .child(div().absolute().inset_0().overflow_hidden()
                     .when(it.voice && k < 0.5, |d| d.child(crate::squircle::back(r, hsla(0., 0., 0., 0.))).child(div().absolute().inset_0().rounded(px(r.min(h2 / 2.))).border_2().border_color(col)))
                     .when(!(it.voice && k < 0.5), |d| d.child(crate::squircle::back(r, mesh)))
@@ -260,10 +297,14 @@ impl Mega {
                 .into_any_element());
         }
         // while the pointer is over it the rail widens to hold every stretched dot
-        let wide = if all { lerp(g.w, (reach + 14.).max(g.w), e) } else { g.w };
+        let _ = reach;
+        let wide = if all { lerp(g.w, LIST_ROW_W + 16., e) } else { g.w };
         let shadow = if k > 0.02 { vec![BoxShadow { color: hsla(0., 0., 0., 0.6 * k), offset: point(px(0.), px(0.)), blur_radius: px(60.), spread_radius: px(0.), inset: false }] } else { vec![] };
         let items_for_wheel = items.clone();
-        let panel = div().id("rail").absolute().left_0().top_0().w(px(wide)).h(px(vh)).when(k > 0.05, |d| d.overflow_hidden()).bg(rgba(if k > 0.5 { 0x08070bf0 } else { 0x08070be6 })).shadow(shadow)
+        let glass = all && k < 0.05;
+        let shadow = if glass { vec![BoxShadow { color: hsla(0., 0., 0., 0.45 * e), offset: point(px(6.), px(0.)), blur_radius: px(40.), spread_radius: px(0.), inset: false }] } else { shadow };
+        let panel = div().id("rail").absolute().left_0().top_0().w(px(wide)).h(px(vh)).when(k > 0.05 || glass, |d| d.overflow_hidden()).bg(if glass { hsla(0.71, 0.18, 0.06, 0.9) } else { rgba(if k > 0.5 { 0x08070bf0 } else { 0x08070be6 }).into() }).shadow(shadow)
+            .when(glass, |d| d.rounded_r(px(22.)).border_r_1().border_color(look::line().opacity(e)))
             .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
                 if *hovered && !this.rail.hover { this.rail.hover_at = this.rail_now(); }
                 this.rail.hover = *hovered;
@@ -271,6 +312,7 @@ impl Mega {
             }))
             .on_scroll_wheel(cx.listener(move |this, ev: &ScrollWheelEvent, window, cx| { this.rail_wheel(ev, &items_for_wheel, window, cx); cx.stop_propagation(); }))
             .when(tour_on, |d| d.child(tour_hits.track("tour-rail")))
+            .children(rows)
             .children(kids);
         // the strip keeps its closed width in the layout; the open rail floats over the chat
         div().relative().w(px(CLOSED_W)).h_full().flex_none().child(deferred(panel).with_priority(2))
