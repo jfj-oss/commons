@@ -277,38 +277,37 @@ impl Mega {
             .child(h_flex().w_full().flex_none().justify_center().px_4().pb(px(8.))
                 .child(v_flex().w_full().max_w(px(COLUMN - 20.))
                     .children(typing_strip)
-                    // the composer, kept small: a round + (file, emoji, voice clip behind it) and a slim pill with send inside
-                    .child(h_flex().w_full().items_center().gap(px(8.)).font_family(font)
-                        .child(div().relative().flex_none()
-                            .when(plus_open, |d| d.on_mouse_down_out(cx.listener(|this, _, _, cx| { this.msg.plus = false; cx.notify(); })))
-                            .child(div().id("plus").relative().flex().items_center().justify_center().size(px(34.)).rounded_full().cursor_pointer()
-                                .bg(if plus_open { hsla(0., 0., 1., 0.16) } else { hsla(0.71, 0.22, 0.07, 0.93) }).border_1().border_color(look::line())
-                                .hover(|d| d.bg(hsla(0., 0., 1., 0.12)))
-                                .child(crate::icons::icon(crate::icons::Icon::Plus, 16., if plus_open { look::paper() } else { look::mute() }))
-                                .on_click(cx.listener(|this, _, _, cx| { this.msg.plus = !this.msg.plus; cx.notify(); })))
-                            .children(plus_open.then(|| {
-                                let row = |id: &'static str, ic: crate::icons::Icon, label: &'static str| div().id(id).relative().h(px(34.)).px(px(12.)).flex().items_center().gap(px(10.)).rounded(px(8.)).cursor_pointer()
-                                    .hover(|d| d.bg(hsla(0., 0., 1., 0.08))).child(crate::icons::icon(ic, 16., look::mute())).child(label).child(self.files.hits.track(id));
-                                v_flex().absolute().bottom(px(42.)).left_0().w(px(170.)).p(px(4.)).rounded(px(12.)).bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg()
-                                    .font_family(look::F_UI).text_size(px(13.)).text_color(look::paper())
-                                    .child(row("attach", crate::icons::Icon::Clip, "file").on_click(cx.listener(|this, _, window, cx| { this.msg.plus = false; this.files_attach(window, cx); })))
-                                    .child(row("emoji-btn", crate::icons::Icon::Smile, "emoji").on_click(cx.listener(|this, ev: &ClickEvent, window, cx| { this.msg.plus = false; let at = ev.mouse_position().unwrap_or_default(); this.emoji_open(crate::emoji::Target::Composer, at, window, cx); })))
-                                    .child(row("mic", crate::icons::Icon::Mic, "voice clip")
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, w, cx| { cx.stop_propagation(); this.msg.plus = false; this.voice_press(Some(ev.position), w, cx); })))
-                            })))
-                        .child(v_flex().flex_1().min_w_0().relative().pl(px(14.)).pr(px(4.)).py(px(3.))
-                            // a translucent slip over the backdrop: a squircle fill and border, never a cut (the backdrop moves behind it)
-                            .child(sq::back(19., hsla(0.71, 0.22, 0.07, 0.93))).child(hole(&holes))
+                    // the composer, kept small: one ball-round pill, + (file, emoji, voice clip behind it) on the left and send on the right
+                    .child(h_flex().w_full().max_w(px(560.)).mx_auto().items_center().font_family(font)
+                        .child(v_flex().flex_1().min_w_0().relative().px(px(4.)).py(px(4.))
+                            // a round-ended pill over the backdrop (translucent, the backdrop moves behind it)
+                            .rounded_full().bg(hsla(0.71, 0.22, 0.07, 0.93)).border_1().border_color(look::line()).child(hole(&holes))
                             .children(reply_bar)
                             .children(vbar)
-                            .child(h_flex().relative().items_end().gap_2().when(recording, |d| d.hidden())
-                                .child(div().flex_1().min_w_0().py(px(2.)).child(Textarea::new(&self.composer).appearance(false).text_size(px(size.min(18.))).line_height(px(24.))))
-                                .child(div().id("send").flex_none().mb(px(1.)).flex().items_center().h(px(28.)).px(px(12.)).rounded_full().cursor_pointer().whitespace_nowrap()
+                            .child(h_flex().relative().items_center().gap_2().when(recording, |d| d.hidden())
+                                .child(div().relative().flex_none()
+                                    .when(plus_open, |d| d.on_mouse_down_out(cx.listener(|this, _, _, cx| { this.msg.plus = false; cx.notify(); })))
+                                    .child(div().id("plus").relative().flex().items_center().justify_center().size(px(26.)).rounded_full().cursor_pointer()
+                                        .bg(if plus_open { hsla(0., 0., 1., 0.16) } else { hsla(0., 0., 1., 0.06) })
+                                        .hover(|d| d.bg(hsla(0., 0., 1., 0.12)))
+                                        .child(crate::icons::icon(crate::icons::Icon::Plus, 14., if plus_open { look::paper() } else { look::mute() }))
+                                        .on_click(cx.listener(|this, _, _, cx| { this.msg.plus = !this.msg.plus; cx.notify(); })))
+                                    .children(plus_open.then(|| {
+                                        let row = |id: &'static str, ic: crate::icons::Icon, label: &'static str| div().id(id).relative().h(px(34.)).px(px(12.)).flex().items_center().gap(px(10.)).rounded(px(8.)).cursor_pointer()
+                                            .hover(|d| d.bg(hsla(0., 0., 1., 0.08))).child(crate::icons::icon(ic, 16., look::mute())).child(label).child(self.files.hits.track(id));
+                                        v_flex().absolute().bottom(px(36.)).left(px(-4.)).w(px(170.)).p(px(4.)).rounded(px(12.)).bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg()
+                                            .font_family(look::F_UI).text_size(px(13.)).text_color(look::paper())
+                                            .child(row("attach", crate::icons::Icon::Clip, "file").on_click(cx.listener(|this, _, window, cx| { this.msg.plus = false; this.files_attach(window, cx); })))
+                                            .child(row("emoji-btn", crate::icons::Icon::Smile, "emoji").on_click(cx.listener(|this, ev: &ClickEvent, window, cx| { this.msg.plus = false; let at = ev.mouse_position().unwrap_or_default(); this.emoji_open(crate::emoji::Target::Composer, at, window, cx); })))
+                                            .child(row("mic", crate::icons::Icon::Mic, "voice clip")
+                                                .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, w, cx| { cx.stop_propagation(); this.msg.plus = false; this.voice_press(Some(ev.position), w, cx); })))
+                                    })))
+                                .child(div().flex_1().min_w_0().child(Textarea::new(&self.composer).appearance(false).text_size(px(size.min(17.))).line_height(px(22.))))
+                                .child(div().id("send").flex_none().flex().items_center().justify_center().h(px(26.)).px(px(12.)).rounded_full().cursor_pointer().whitespace_nowrap()
                                     .font_family(look::F_UI).text_size(px(12.))
                                     .when(has_text, |d| d.bg(look::paper()).text_color(rgb(look::VOID)))
                                     .when(!has_text, |d| d.bg(hsla(0., 0., 1., 0.06)).text_color(look::mute()))
-                                    .child(if editing { "save" } else { "send" }).on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))))
-                            .child(sq::front(19., None, Some((1., look::line())), None))))))
+                                    .child(if editing { "save" } else { "send" }).on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))))))))
             .children(self.search_overlay(cx))
             .children(wall_hit)
             .children(wall_bar)
@@ -419,7 +418,7 @@ impl Mega {
 pub struct RowFx { pub dens: Option<crate::density::Dens>, pub tier_px: Option<f32>, pub arrive: Option<(f64, u64)>, pub hi: Hsla, pub flights: Vec<crate::arrive::Flight>, pub now: f64, pub k: f32, pub day: Option<String>, pub new: Option<usize>, /** the selected part of the text, and where to keep its painted layout (select.rs) */ pub pick: Option<std::ops::Range<usize>>, pub texts: crate::select::Texts, /** the file of this message, if it has one (files.rs) */ pub file: Option<crate::files::FileCtx>, /** the tools, chips and quote of this message (msgact.rs) */ pub act: Option<crate::msgact::ActCtx> }
 
 /// The widest the message column gets (mega-design.css: `--gutter` 58 + `--measure` 800 + 44 around it).
-pub const COLUMN: f32 = 902.;
+pub const COLUMN: f32 = 720.;
 
 /// The double check of a read message (app.js `RR_ICON`, a 15 by 10 drawing).
 thread_local! {
