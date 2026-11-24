@@ -77,13 +77,17 @@ impl Mega {
         let remaining = f32::from(self.list.max_offset_for_scrollbar().y) + f32::from(self.list.scroll_px_offset_for_scrollbar().y);
         let g = &mut self.reading.geo;
         g.clear();
-        let start = self.list.logical_scroll_top().item_ix;
-        for ix in start..self.win.msgs.len() {
-            let Some(b) = self.list.bounds_for_item(ix) else { break };
-            g.insert(ix, (f32::from(b.top() - vp.top()), f32::from(b.size.height)));
+        // at the end of the room the list's top item reads as one past the last message: look back from there for the rows on screen
+        let n = self.win.msgs.len();
+        let start = self.list.logical_scroll_top().item_ix.min(n);
+        for ix in start.saturating_sub(40)..n {
+            let Some(b) = self.list.bounds_for_item(ix) else { continue };
+            if b.bottom() < vp.top() - px(10.) { continue; }
             if b.top() > vp.bottom() + px(10.) { break; }
+            g.insert(ix, (f32::from(b.top() - vp.top()), f32::from(b.size.height)));
         }
         self.reading.size = (f32::from(vp.size.width), f32::from(vp.size.height));
+        self.reading.top = f32::from(vp.top());
         // the first time the room is laid out with its unread line far up: that line a third of the way down, as the web does
         if let Some(ix) = self.new_place { if vp.size.height > px(0.) {
             self.new_place = None;
@@ -131,6 +135,8 @@ impl Mega {
             }
         }
         self.reading.last.insert(ix, (k, op));
+        // where this row's middle was painted last frame (the list's own positions are missing at the end of a room)
+        let fringe = match self.reading.mids.borrow().get(&m.id) { Some(&mid) if vh > 1. && !self.still() => (1. - (mid - self.reading.top) / (vh / 3.)).clamp(0., 1.), _ => 0. };
         if full.is_some() { self.reading.scaled.insert(m.id.clone()); } else { self.reading.scaled.remove(&m.id); }
         let dens = self.dens_params();
         let fx = RowFx {
@@ -145,8 +151,14 @@ impl Mega {
                 crate::msgact::ActCtx { me, hits: self.files.hits.clone(), can_edit: m.mine && m.kind == "text" && !m.deleted, can_delete: (m.mine || self.is_admin_here()) && !m.deleted, flash: self.flash_of(&m.id, now), mention: !m.mine && !m.deleted && (crate::arrive::mentions(&m.text, me_name) || src.is_some_and(|x| x.mine)),
                     quote_gone: src.is_some_and(|x| x.deleted), older: ix == 0 && self.win.more, hi: rgb(self.room_duo(self.gid.as_deref().unwrap_or("")).hi).into() }
             }),
+            fringe
         };
         let el = row(m, prev, self.chat_font(), &self.holes, star, &fx);
+        // note where this row is painted, for next frame's colour fringe
+        let (mids, mid_id) = (self.reading.mids.clone(), m.id.clone());
+        let el = div().relative().w_full().child(el)
+            .child(canvas(move |b, _, _| { mids.borrow_mut().insert(mid_id.clone(), f32::from(b.center().y)); }, |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+            .into_any_element();
         match full { Some(h) => div().w_full().h(px(h)).flex().flex_col().justify_center().overflow_hidden().opacity(op).child(el).into_any_element(), None => el }
     }
 
@@ -231,6 +243,11 @@ impl Mega {
         let has_text = !self.composer.read(cx).value().trim().is_empty();
         let editing = self.msg.edit.is_some();
         let plus_open = self.msg.plus;
+        let box_fill: Hsla = match self.prefs.box_colour.as_str() {
+            "default" => hsla(0.71, 0.22, 0.07, 0.93),
+            "room" => { let mut c: Hsla = rgb(look::mix(duo.main, 0x000000, 0.7)).into(); c.a = 0.93; c }
+            hex => { let mut c: Hsla = rgb(look::parse_hex(hex).unwrap_or(0x14121a)).into(); c.a = 0.93; c }
+        };
         let reply_bar = self.reply_bar(cx);
         let react_pop = self.react_pop(cx);
         if crate::reading::at_end(self.reading.remaining) { self.msg.below = 0; }
@@ -281,7 +298,7 @@ impl Mega {
                     .child(h_flex().w_full().max_w(px(560.)).mx_auto().items_center().font_family(font)
                         .child(v_flex().flex_1().min_w_0().relative().p(px(5.))
                             // a round-ended pill over the backdrop (translucent, the backdrop moves behind it)
-                            .rounded_full().bg(hsla(0.71, 0.22, 0.07, 0.93)).border_1().border_color(look::line()).child(hole(&holes))
+                            .rounded_full().bg(box_fill).border_1().border_color(look::line()).child(hole(&holes))
                             .children(reply_bar)
                             .children(vbar)
                             .child(h_flex().relative().items_center().gap_2().when(recording, |d| d.hidden())
@@ -370,6 +387,16 @@ impl Mega {
             .child(h_flex().gap_2()
                 .child(choice("cf-b", font == ChatFont::Bellefair, "Bellefair").on_click(set_font(ChatFont::Bellefair)))
                 .child(choice("cf-r", font == ChatFont::Raster, "Raster").on_click(set_font(ChatFont::Raster))))
+            .child(label("chatbox colour"))
+            .child(h_flex().gap(px(10.)).flex_wrap().children(BOX_COLOURS.iter().map(|(name, c)| {
+                let on = self.prefs.box_colour == *name;
+                let fill: Hsla = match *name { "default" => hsla(0.71, 0.22, 0.07, 1.), "room" => look::line(), hex => rgb(look::parse_hex(hex).unwrap_or(0)).into() };
+                div().id(SharedString::from(format!("box-{name}"))).size(px(30.)).rounded_full().cursor_pointer().bg(fill).border_2()
+                    .border_color(if on { look::paper() } else { look::line() })
+                    .when(*name == "room", |d| d.flex().items_center().justify_center().font_family(look::F_UI).text_size(px(9.)).text_color(look::paper()).child("room"))
+                    .tooltip(move |window, cx| Tooltip::new(*c).build(window, cx))
+                    .on_click(cx.listener(move |this, _, _, cx| { this.prefs.box_colour = name.to_string(); this.prefs.save(); cx.notify(); }))
+            })))
             .child(label("notifications"))
             .child(h_flex().gap_2()
                 .child(choice("nm-all", mode == "all", "Every message").on_click(set_mode("all")))
@@ -415,7 +442,10 @@ impl Mega {
 
 /// What is happening to one message right now (arrive.rs): its size tier, its glyph copy while it arrives, reactions flying to it.
 /// `k` is the reading zone's scale (reading.rs; 1 = whole), `day` the day line above it, `new` the "N new" line above it.
-pub struct RowFx { pub dens: Option<crate::density::Dens>, pub tier_px: Option<f32>, pub arrive: Option<(f64, u64)>, pub hi: Hsla, pub flights: Vec<crate::arrive::Flight>, pub now: f64, pub k: f32, pub day: Option<String>, pub new: Option<usize>, /** the selected part of the text, and where to keep its painted layout (select.rs) */ pub pick: Option<std::ops::Range<usize>>, pub texts: crate::select::Texts, /** the file of this message, if it has one (files.rs) */ pub file: Option<crate::files::FileCtx>, /** the tools, chips and quote of this message (msgact.rs) */ pub act: Option<crate::msgact::ActCtx> }
+pub struct RowFx { pub dens: Option<crate::density::Dens>, pub tier_px: Option<f32>, pub arrive: Option<(f64, u64)>, pub hi: Hsla, pub flights: Vec<crate::arrive::Flight>, pub now: f64, pub k: f32, pub day: Option<String>, pub new: Option<usize>, /** the selected part of the text, and where to keep its painted layout (select.rs) */ pub pick: Option<std::ops::Range<usize>>, pub texts: crate::select::Texts, /** the file of this message, if it has one (files.rs) */ pub file: Option<crate::files::FileCtx>, /** the tools, chips and quote of this message (msgact.rs) */ pub act: Option<crate::msgact::ActCtx>, /** the colour fringe on rows near the top of the room: 1 at the top, 0 from a third of the way down */ pub fringe: f32 }
+
+/// The chatbox colours in settings: the stored value and what the tooltip calls it. Dark and deep, so the words stay light on them.
+const BOX_COLOURS: [(&str, &str); 9] = [("default", "Default"), ("room", "The room's colour"), ("#1c2a4a", "Navy"), ("#3a1f4d", "Plum"), ("#1f3a2c", "Forest"), ("#4a1c24", "Wine"), ("#2b3036", "Slate"), ("#4a3518", "Amber"), ("#0f3d3e", "Teal")];
 
 /// The widest the message column gets (mega-design.css: `--gutter` 58 + `--measure` 800 + 44 around it).
 pub const COLUMN: f32 = 720.;
@@ -565,7 +595,15 @@ pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f3
             let st = StyledText::new(m.shown().to_string()).with_runs(runs);
             let (layout, texts, id) = (st.layout().clone(), fx.texts.clone(), m.id.clone());
             let links = crate::rich::links(&m.rich);
-            let el = div().id(SharedString::from(format!("txt-{}", m.id))).relative().child(hole(holes)).max_w_full().font_family(font).text_size(px(size)).line_height(px(lh)).child(st)
+            // the colour fringe: the same words twice behind, red a little left and cyan a little right, strongest at the top of the room
+            let fr = fx.fringe;
+            let ghost = |c: Hsla, dx: f32| {
+                let runs: Vec<TextRun> = text_runs(&m.rich, font, fx.hi, c, None, fx.hi).into_iter().map(|mut r| { r.color = c; r.background_color = None; r.underline = None; r }).collect();
+                div().absolute().top_0().left(px(dx)).w_full().child(StyledText::new(m.shown().to_string()).with_runs(runs))
+            };
+            let el = div().id(SharedString::from(format!("txt-{}", m.id))).relative().child(hole(holes)).max_w_full().font_family(font).text_size(px(size)).line_height(px(lh))
+                .when(fr > 0.01, |d| d.child(ghost(hsla(0.98, 1., 0.6, 0.75 * fr), -3. * fr)).child(ghost(hsla(0.52, 1., 0.6, 0.75 * fr), 3. * fr)))
+                .child(div().relative().child(st))
                 .child(canvas(|_, _, _| {}, move |b, _, _, _| { texts.borrow_mut().insert(id.clone(), crate::select::RowText { layout: layout.clone(), bounds: layout.bounds() }); let _ = b; }).absolute().top_0().left_0().size_full());
             match (&fx.act, links.is_empty()) {
                 (Some(c), false) => {

@@ -291,7 +291,7 @@ impl Mega {
                 "go" => { let want = s("name"); let cid = self.snap.as_ref().and_then(|sn| sn.communities.iter().find(|c| c.name == want).map(|c| c.id.clone())); match cid { Some(c) => { self.go(crate::app::Level::Server(c), window, cx); json!({"ok": true}) } None => json!({"error": "no such community"}) } }
                 "join_text" => { let v = s("text"); self.mem.join_in.update(cx, |i, cx| i.set_value(v, window, cx)); self.join_submit(window, cx); json!({"ok": true}) }
                 // the composer's + menu and the room header's + pill: {"cmd":"menus","plus":true,"bar":false}
-                "menus" => { self.msg.plus = cmd["plus"].as_bool().unwrap_or(false); self.msg.bar_open = cmd["bar"].as_bool().unwrap_or(false); cx.notify(); json!({"ok": true}) }
+                "menus" => { self.msg.plus = cmd["plus"].as_bool().unwrap_or(false); self.msg.bar_open = cmd["bar"].as_bool().unwrap_or(false); if let Some(b) = cmd["box"].as_str() { self.prefs.box_colour = b.to_string(); } if cmd["settings"].as_bool() == Some(true) { self.go(crate::app::Level::Settings, window, cx); } cx.notify(); json!({"ok": true}) }
                 "click" => match s("what").as_str() { "confirm" => { self.run_confirm(window, cx); json!({"ok": true}) } "cancel" => { self.mem.confirm = None; cx.notify(); json!({"ok": true}) } _ => json!({"error": "unknown button"}) },
                 "core" => { let core = self.core.clone(); let (m, a) = (s("method"), cmd["args"].clone()); match core.call(&m, a) { Ok(v) => json!({"ok": v}), Err(e) => json!({"error": e}) } }
                 other if other.starts_with("voice") => self.voice_cmd(&cmd, window, cx),

@@ -16,7 +16,7 @@ pub enum ReadSize { Small, Normal, Large }
 impl ReadSize { pub fn scale(self) -> f32 { match self { ReadSize::Small => 0.85, ReadSize::Normal => 1.0, ReadSize::Large => 1.2 } } }
 
 #[derive(Clone, Debug)]
-pub struct Prefs { pub saver: Saver, pub chat_font: ChatFont, pub presence: bool, /** the ring sound (off: rings only show) */ pub sound: bool, /** the cameras-and-screens column's width on this device, 0 = the default */ pub deck_w: f32, /** the chime for new messages */ pub msg_sound: Sound, /** the chat text's size */ pub read_size: ReadSize, /** chat density (density.rs): the value for every room when `dens_all`, else per room */ pub dens: f32, pub dens_all: bool, pub dens_rooms: std::collections::BTreeMap<String, f32>, /** the first-run tour was shown (tour.rs) */ pub tour_seen: bool, path: PathBuf }
+pub struct Prefs { pub saver: Saver, pub chat_font: ChatFont, pub presence: bool, /** the ring sound (off: rings only show) */ pub sound: bool, /** the cameras-and-screens column's width on this device, 0 = the default */ pub deck_w: f32, /** the chime for new messages */ pub msg_sound: Sound, /** the chat text's size */ pub read_size: ReadSize, /** chat density (density.rs): the value for every room when `dens_all`, else per room */ pub dens: f32, pub dens_all: bool, pub dens_rooms: std::collections::BTreeMap<String, f32>, /** the first-run tour was shown (tour.rs) */ pub tour_seen: bool, /** the chatbox's colour: "default", "room" (follows each room) or "#rrggbb" */ pub box_colour: String, path: PathBuf }
 
 impl Prefs {
     pub fn load(dir: &Path) -> Prefs {
@@ -33,6 +33,7 @@ impl Prefs {
             dens: v["dens"].as_f64().unwrap_or(0.).clamp(-2., 2.) as f32, dens_all: v["dens_all"].as_bool() == Some(true),
             dens_rooms: v["dens_rooms"].as_object().map(|m| m.iter().filter_map(|(k, x)| Some((k.clone(), x.as_f64()?.clamp(-2., 2.) as f32))).collect()).unwrap_or_default(),
             tour_seen: v["tour_seen"].as_bool() == Some(true),
+            box_colour: v["box_colour"].as_str().filter(|c| *c == "room" || (c.len() == 7 && c.starts_with('#') && u32::from_str_radix(&c[1..], 16).is_ok())).unwrap_or("default").to_string(),
             path,
         }
     }
@@ -53,6 +54,7 @@ impl Prefs {
             "read_size": match self.read_size { ReadSize::Small => "small", ReadSize::Normal => "normal", ReadSize::Large => "large" },
             "deck_w": self.deck_w,
             "tour_seen": self.tour_seen,
+            "box_colour": self.box_colour,
             "dens": self.dens, "dens_all": self.dens_all, "dens_rooms": self.dens_rooms,
         });
         // the folder exists once there is an account; before that there is nothing worth remembering

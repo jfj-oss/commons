@@ -50,8 +50,8 @@ pub fn fit(widths: &[f32], gap: f32, room: f32) -> usize {
 
 /// What the open room keeps for the zone: the room's width, each row's height at full size (a row drawn smaller keeps that box),
 /// and which rows were drawn smaller last time.
-pub struct Ui { pub on: bool, pub width: f32, pub full: std::collections::HashMap<String, f32>, pub scaled: std::collections::HashSet<String>, /** the rows drawn in the last frame, for the test port */ pub last: std::collections::HashMap<usize, (f32, f32)>, /** rows' (top, height) as last drawn, the room's (width, height), and the pixels left below */ pub geo: std::collections::HashMap<usize, (f32, f32)>, pub size: (f32, f32), pub remaining: f32 }
-impl Default for Ui { fn default() -> Ui { Ui { on: true, width: 0., full: Default::default(), scaled: Default::default(), last: Default::default(), geo: Default::default(), size: (0., 0.), remaining: 0. } } }
+pub struct Ui { pub on: bool, pub width: f32, pub full: std::collections::HashMap<String, f32>, pub scaled: std::collections::HashSet<String>, /** the rows drawn in the last frame, for the test port */ pub last: std::collections::HashMap<usize, (f32, f32)>, /** rows' (top, height) as last drawn, the room's (width, height), and the pixels left below */ pub geo: std::collections::HashMap<usize, (f32, f32)>, pub size: (f32, f32), pub remaining: f32, /** each message's middle in window pixels as it was last painted, and the room's top (the colour fringe) */ pub mids: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, f32>>>, pub top: f32 }
+impl Default for Ui { fn default() -> Ui { Ui { on: true, width: 0., full: Default::default(), scaled: Default::default(), last: Default::default(), geo: Default::default(), size: (0., 0.), remaining: 0., mids: Default::default(), top: 0. } } }
 
 #[cfg(test)]
 mod tests {
