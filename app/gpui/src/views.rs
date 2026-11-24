@@ -168,21 +168,27 @@ impl Mega {
         })).into_any_element()));
         items.push((3, 3, chip_w("density"), crate::cards::chip("b-dens", "density").on_click(cx.listener(|this, _, window, cx| this.dens_toggle(window, cx))).into_any_element()));
         if owner { items.push((5, 20, 96., self.colour_picker(cx).into_any_element())); }
-        let rw = { let w = self.wall.room_rect.get().2; if w < 200. { 1000. } else { w } };
-        let room = rw - 40. - 220.;
-        // by importance, then as many as fit, then in their places
-        items.sort_by_key(|i| i.0);
-        let widths: Vec<f32> = items.iter().map(|i| i.2).collect();
-        let n = crate::reading::fit(&widths, 10., room);
-        items.truncate(n);
+        // everything sits behind one + pill; open, the chips fall out under it in their places, and any pick closes it
         items.sort_by_key(|i| i.1);
-        items.into_iter().map(|i| i.3).collect()
+        let open = self.msg.bar_open;
+        let plus = div().id("room-plus").flex().flex_none().items_center().justify_center().size(px(34.)).rounded_full().cursor_pointer()
+            .bg(if open { hsla(0., 0., 1., 0.16) } else { hsla(0.71, 0.22, 0.07, 0.93) }).border_1().border_color(look::line())
+            .hover(|d| d.bg(hsla(0., 0., 1., 0.12)))
+            .child(crate::icons::icon(if open { crate::icons::Icon::Close } else { crate::icons::Icon::Plus }, 16., if open { look::paper() } else { look::mute() }))
+            .on_click(cx.listener(|this, _, _, cx| { this.msg.bar_open = !this.msg.bar_open; cx.notify(); }));
+        vec![div().relative().flex_none()
+            .when(open, |d| d.on_mouse_down_out(cx.listener(|this, _, _, cx| { this.msg.bar_open = false; cx.notify(); })))
+            .child(plus)
+            .children(open.then(|| v_flex().id("room-plus-menu").absolute().top(px(42.)).right_0().items_end().gap(px(6.))
+                .children(items.into_iter().map(|i| i.3))
+                .on_click(cx.listener(|this, _, _, cx| { this.msg.bar_open = false; cx.notify(); }))))
+            .into_any_element()]
     }
 
     fn render_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(gid) = self.gid.clone() else { return div().flex_1().into_any_element() };
         let found = self.channel(&gid).map(|(c, ch)| (if c.direct { c.name.clone() } else { ch.name.clone() }, if c.direct { "just the two of you".to_string() } else { format!("{} · {} people", c.name, c.members) }));
-        let Some((title, sub)) = found else { return v_flex().flex_1().h_full().items_center().justify_center().text_color(look::mute()).child("This room is gone.").into_any_element() };
+        let Some((title, _sub)) = found else { return v_flex().flex_1().h_full().items_center().justify_center().text_color(look::mute()).child("This room is gone.").into_any_element() };
         let duo = self.room_duo(&gid);
         let is_dm = self.channel(&gid).is_some_and(|(c, _)| c.direct);
         let owner = self.channel(&gid).is_some_and(|(c, _)| !c.direct && (c.role == "owner" || c.role == "admin"));
@@ -224,6 +230,7 @@ impl Mega {
         let jump = self.reading.remaining >= 260.;
         let has_text = !self.composer.read(cx).value().trim().is_empty();
         let editing = self.msg.edit.is_some();
+        let plus_open = self.msg.plus;
         let reply_bar = self.reply_bar(cx);
         let react_pop = self.react_pop(cx);
         if crate::reading::at_end(self.reading.remaining) { self.msg.below = 0; }
@@ -249,10 +256,14 @@ impl Mega {
             .on_drop(cx.listener(|this, p: &ExternalPaths, window, cx| this.files_dropped(p.paths().to_vec(), window, cx)))
             .children(backdrop.map(|b| div().absolute().inset_0().child(b)))
             .child(wall_layer)
-            .child(h_flex().flex_none().items_start().gap(px(10.)).px_5().pt_3().pb_1()
-                .child(v_flex().flex_1().min_w_0().items_start().overflow_hidden()
-                    .child(div().relative().max_w_full().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).child(title.clone()).child(hole(&holes)))
-                    .child(div().relative().max_w_full().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute()).child(sub).child(hole(&holes))))
+            .child(h_flex().flex_none().items_center().gap(px(10.)).px_5().pt_3().pb_1()
+                .child(div().flex_1().min_w_0().flex().child(v_flex().relative().max_w_full().items_start().overflow_hidden().px(px(16.)).pt(px(4.)).pb(px(5.))
+                    // the same slip as the composer's: the room's name and who is in it, on a squircle over the backdrop
+                    .child(sq::back(16., hsla(0.71, 0.22, 0.07, 0.93))).child(hole(&holes))
+                    // the room's name alone, its letters set apart (no letter-spacing in gpui: one box per letter)
+                    .child(h_flex().relative().max_w_full().overflow_hidden().gap(px(3.)).font_family(look::F_SHARP).text_size(px(26.)).line_height(px(30.))
+                        .children(title.chars().map(|ch| div().flex_none().child(if ch == ' ' { "\u{2002}".to_string() } else { ch.to_string() }))))
+                    .child(sq::front(16., None, Some((1., look::line())), None))))
                 .children(bar_chips))
             .child(div().id("room-text").flex_1().min_h_0().relative().track_focus(&self.sel.focus).key_context("ChatText")
                 .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.sel_key(ev, window, cx)))
@@ -263,36 +274,41 @@ impl Mega {
                 .children(jump.then(|| h_flex().absolute().bottom(px(10.)).left_0().right_0().justify_center().child(div().id("jump").px(px(14.)).py(px(7.)).rounded_full().bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_UI).text_size(px(12.)).cursor_pointer().when(below > 0, |d| d.bg(rgb(duo.hi)).text_color(rgb(look::VOID))).child(if below > 0 { format!("\u{2193} {below} new") } else { "\u{2193} latest".to_string() })
                     .on_click(cx.listener(|this, _, _, cx| { this.list.scroll_to_end(); cx.notify(); })))))
                 .children(react_pop).children(self.emoji_overlay(cx)).children(self.sel_menu()))
-            .child(h_flex().w_full().flex_none().justify_center().px_4()
+            .child(h_flex().w_full().flex_none().justify_center().px_4().pb(px(8.))
                 .child(v_flex().w_full().max_w(px(COLUMN - 20.))
                     .children(typing_strip)
-                    .child(v_flex().relative().w_full().px_2().py_1().border_1().border_color(hsla(0., 0., 0., 0.))
-                        .font_family(font)
-                        // a translucent slip over the backdrop: a squircle fill and border, never a cut (the backdrop moves behind it)
-                        .child(sq::back(22., hsla(0.71, 0.22, 0.07, 0.93))).child(hole(&holes))
-                        .children(reply_bar)
-                        .children(vbar)
-                        .child(h_flex().relative().items_end().gap_2().when(recording, |d| d.hidden())
-                            .child(div().id("attach").relative().flex_none().mb_1().flex().items_center().justify_center().size(px(36.)).rounded_full().cursor_pointer().bg(hsla(0., 0., 1., 0.06)).tooltip(|window, cx| Tooltip::new("Send a file").build(window, cx))
-                                .child(crate::icons::icon(crate::icons::Icon::Clip, 18., look::mute())).child(self.files.hits.track("attach"))
-                                .on_click(cx.listener(|this, _, window, cx| this.files_attach(window, cx))))
-                            .child(div().id("emoji-btn").relative().flex_none().mb_1().flex().items_center().justify_center().size(px(36.)).rounded_full().cursor_pointer().bg(hsla(0., 0., 1., 0.06)).tooltip(|window, cx| Tooltip::new("Emoji").build(window, cx))
-                                .child(crate::icons::icon(crate::icons::Icon::Smile, 18., look::mute())).child(self.files.hits.track("emoji-btn"))
-                                .on_click(cx.listener(|this, ev: &ClickEvent, window, cx| { let at = ev.mouse_position().unwrap_or_default(); this.emoji_open(crate::emoji::Target::Composer, at, window, cx); })))
-                            .child(div().flex_1().min_w_0().child(Textarea::new(&self.composer).appearance(false).text_size(px(size)).line_height(px(lh))))
-                            .child(div().id("mic").relative().flex_none().mb_1().flex().items_center().justify_center().size(px(36.)).rounded_full().cursor_pointer().bg(hsla(0., 0., 1., 0.06)).tooltip(|window, cx| Tooltip::new("Record a voice message: hold to record, let go to send").build(window, cx))
-                                .child(crate::icons::icon(crate::icons::Icon::Mic, 18., look::mute())).child(self.files.hits.track("mic"))
-                                .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, w, cx| { cx.stop_propagation(); this.voice_press(Some(ev.position), w, cx); })))
-                            .child(div().id("send").flex_none().mb_1().flex().items_center().h(px(36.)).px(px(16.)).rounded_full().cursor_pointer().whitespace_nowrap()
-                                .font_family(look::F_UI).text_size(px(13.))
-                                .when(has_text, |d| d.bg(look::paper()).text_color(rgb(look::VOID)))
-                                .when(!has_text, |d| d.bg(hsla(0., 0., 1., 0.06)).text_color(look::mute()))
-                                .child(if editing { "save" } else { "send" }).on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))))
-                        .child(sq::front(22., None, Some((1., look::line())), None)))
-                    // the small print under the slip: who is writing, or what the room promises (web `#typing` and `#hint`)
-                    .child(h_flex().h(px(22.)).px_3().gap(px(5.)).items_center().relative().font_family(look::F_NAME).text_size(px(12.)).text_color(look::mute())
-                        .child(hole(&holes))
-                        .child(lock_icon()).child("end-to-end encrypted.").child(div().ml(px(3.)).child("shift+enter for a new line.")))))
+                    // the composer, kept small: a round + (file, emoji, voice clip behind it) and a slim pill with send inside
+                    .child(h_flex().w_full().items_center().gap(px(8.)).font_family(font)
+                        .child(div().relative().flex_none()
+                            .when(plus_open, |d| d.on_mouse_down_out(cx.listener(|this, _, _, cx| { this.msg.plus = false; cx.notify(); })))
+                            .child(div().id("plus").relative().flex().items_center().justify_center().size(px(34.)).rounded_full().cursor_pointer()
+                                .bg(if plus_open { hsla(0., 0., 1., 0.16) } else { hsla(0.71, 0.22, 0.07, 0.93) }).border_1().border_color(look::line())
+                                .hover(|d| d.bg(hsla(0., 0., 1., 0.12)))
+                                .child(crate::icons::icon(crate::icons::Icon::Plus, 16., if plus_open { look::paper() } else { look::mute() }))
+                                .on_click(cx.listener(|this, _, _, cx| { this.msg.plus = !this.msg.plus; cx.notify(); })))
+                            .children(plus_open.then(|| {
+                                let row = |id: &'static str, ic: crate::icons::Icon, label: &'static str| div().id(id).relative().h(px(34.)).px(px(12.)).flex().items_center().gap(px(10.)).rounded(px(8.)).cursor_pointer()
+                                    .hover(|d| d.bg(hsla(0., 0., 1., 0.08))).child(crate::icons::icon(ic, 16., look::mute())).child(label).child(self.files.hits.track(id));
+                                v_flex().absolute().bottom(px(42.)).left_0().w(px(170.)).p(px(4.)).rounded(px(12.)).bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg()
+                                    .font_family(look::F_UI).text_size(px(13.)).text_color(look::paper())
+                                    .child(row("attach", crate::icons::Icon::Clip, "file").on_click(cx.listener(|this, _, window, cx| { this.msg.plus = false; this.files_attach(window, cx); })))
+                                    .child(row("emoji-btn", crate::icons::Icon::Smile, "emoji").on_click(cx.listener(|this, ev: &ClickEvent, window, cx| { this.msg.plus = false; let at = ev.mouse_position().unwrap_or_default(); this.emoji_open(crate::emoji::Target::Composer, at, window, cx); })))
+                                    .child(row("mic", crate::icons::Icon::Mic, "voice clip")
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, w, cx| { cx.stop_propagation(); this.msg.plus = false; this.voice_press(Some(ev.position), w, cx); })))
+                            })))
+                        .child(v_flex().flex_1().min_w_0().relative().pl(px(14.)).pr(px(4.)).py(px(3.))
+                            // a translucent slip over the backdrop: a squircle fill and border, never a cut (the backdrop moves behind it)
+                            .child(sq::back(19., hsla(0.71, 0.22, 0.07, 0.93))).child(hole(&holes))
+                            .children(reply_bar)
+                            .children(vbar)
+                            .child(h_flex().relative().items_end().gap_2().when(recording, |d| d.hidden())
+                                .child(div().flex_1().min_w_0().py(px(2.)).child(Textarea::new(&self.composer).appearance(false).text_size(px(size.min(18.))).line_height(px(24.))))
+                                .child(div().id("send").flex_none().mb(px(1.)).flex().items_center().h(px(28.)).px(px(12.)).rounded_full().cursor_pointer().whitespace_nowrap()
+                                    .font_family(look::F_UI).text_size(px(12.))
+                                    .when(has_text, |d| d.bg(look::paper()).text_color(rgb(look::VOID)))
+                                    .when(!has_text, |d| d.bg(hsla(0., 0., 1., 0.06)).text_color(look::mute()))
+                                    .child(if editing { "save" } else { "send" }).on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))))
+                            .child(sq::front(19., None, Some((1., look::line())), None))))))
             .children(self.search_overlay(cx))
             .children(wall_hit)
             .children(wall_bar)

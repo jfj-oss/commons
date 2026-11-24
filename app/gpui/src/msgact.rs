@@ -42,6 +42,10 @@ pub struct MsgUi {
     /// The names of the room's people, asked for every few seconds while the room is open.
     pub names_at: Option<std::time::Instant>,
     pub names_cid: String,
+    /// The composer's + menu (file, emoji, voice clip) is open.
+    pub plus: bool,
+    /// The room header's + pill (draw, search, people, invite, manage, colours ...) is open.
+    pub bar_open: bool,
 }
 
 impl ActCtx { pub fn can_act(&self) -> bool { true } }

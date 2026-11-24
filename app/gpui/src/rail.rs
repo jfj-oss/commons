@@ -61,15 +61,15 @@ pub fn geometry(n: usize, active: &[bool], height: f32, k: f32, off: f32) -> Rai
     let w = lerp(CLOSED_W, OPEN_W, k);
     let home = (lerp(20., w - 28., k), lerp(20., 44., k), lerp(7., 22., k));
     let y0 = 24. + home.1;
-    let gap = lerp(12., 10., k);
+    let gap = lerp(18., 10., k);
     let card_w = w - 28.;
-    let hs: Vec<f32> = (0..n).map(|i| lerp(if active.get(i).copied().unwrap_or(false) { 38. } else { 14. }, card_w * 0.92, k)).collect();
+    let hs: Vec<f32> = (0..n).map(|i| lerp(if active.get(i).copied().unwrap_or(false) { 52. } else { 20. }, card_w * 0.92, k)).collect();
     let total = hs.iter().sum::<f32>() + gap * n.saturating_sub(1) as f32 + 32.;
     let closed_start = y0 + ((height - y0 - total) / 2.).max(0.) + 16.;
     let open_start = y0 + 16. - off;
     let mut y = lerp(closed_start, open_start, k);
     let mut items = vec![];
-    for h in hs { let iw = lerp(14., card_w, k); items.push(((w - iw) / 2., y, iw, h)); y += h + gap; }
+    for h in hs { let iw = lerp(20., card_w, k); items.push(((w - iw) / 2., y, iw, h)); y += h + gap; }
     RailGeo { w, home, items }
 }
 /// How tall the open list is, for scrolling it.
@@ -191,7 +191,7 @@ impl Mega {
             if y2 + h2 < 0. || y2 > vh { continue; }
             let col = it.duo.dot();
             let unread = it.num > 0 && !it.voice && !on;
-            let r = lerp(if it.title == "options" { 4. } else if on { 8. } else { 7. }, 62., k) * sc;
+            let r = lerp(if it.title == "options" { 5. } else if on { 11. } else { 10. }, 62., k) * sc;
             let voice = it.voice && !it.locked;
             let open = it.open.clone();
             let keep = k > 0.01;
@@ -211,11 +211,11 @@ impl Mega {
             // a named dot keeps its height, colour and corners and only grows to the right, with the name inside it
             let named = who.contains(&i) && !it.title.is_empty();
             let (w3, name) = if named {
-                let fs = (h2 - 3.).clamp(9., 12.);
+                let fs = (h2 - 5.).clamp(9., 15.);
                 let text = SharedString::from(if it.voice && !it.here.is_empty() { format!("{}  \u{00b7}  {}", it.title, it.here.join(", ")) } else { it.title.clone() });
                 let run = TextRun { len: text.len(), font: font(look::F_UI), color: gpui_kit::black(), background_color: None, underline: None, strikethrough: None };
                 let tw = f32::from(window.text_system().shape_line(text.clone(), px(fs), &[run], None).width);
-                let full = (7. + tw + 8.).max(w2);
+                let full = (10. + tw + 11.).max(w2);
                 reach = reach.max(x2 + full);
                 (lerp(w2, full, e), Some((text, fs)))
             } else { (w2, None) };
@@ -231,7 +231,7 @@ impl Mega {
                     .when(k > 0.02, |d| d.child(div().absolute().left(px(14.)).right(px(46.)).bottom(px(10.)).opacity(label_op).font_family(look::F_SHARP).text_size(px(24.)).line_height(px(22.)).max_h(px(44.)).text_color(ink).overflow_hidden().child(it.title.clone()))
                         .when(!num_s.is_empty(), |d| d.child(div().absolute().right(px(12.)).bottom(px(8.)).opacity(label_op).font_family(look::F_SHARP).text_size(px(36.)).line_height(px(30.)).text_color(ink).child(num_s.clone())))
                         .when(it.voice, |d| d.child(div().absolute().left(px(14.)).right(px(14.)).top(px(11.)).opacity(label_op).font_family(look::F_UI).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(ink).overflow_hidden().whitespace_nowrap().text_ellipsis().child(if it.here.is_empty() { "empty".to_string() } else { it.here.join(", ") }))))
-                    .when_some(name, |d, (text, fs)| d.child(div().absolute().left(px(7.)).top_0().h_full().flex().items_center().whitespace_nowrap()
+                    .when_some(name, |d, (text, fs)| d.child(div().absolute().left(px(10.)).top_0().h_full().flex().items_center().whitespace_nowrap()
                         .opacity(((t - 0.35) / 0.65).clamp(0., 1.)).font_family(look::F_UI).text_size(px(fs)).font_weight(if lit || unread { FontWeight::BOLD } else { FontWeight::SEMIBOLD }).text_color(name_ink).child(text)))
                     .when(unread && k < 0.5, |d| d.child(div().absolute().inset_0().rounded_full().shadow(vec![BoxShadow { color: col.opacity(0.7), offset: point(px(0.), px(0.)), blur_radius: px(12.), spread_radius: px(0.), inset: false }]))))
                 .when(tour_on && it.title == "options", |d| d.child(tour_hits.track("tour-opts")))
@@ -298,13 +298,13 @@ mod tests {
         assert_eq!(g.w, 56.);
         assert_eq!(g.home, (20., 20., 7.));
         let (x, _, w, h) = g.items[0];
-        assert_eq!((w, h), (14., 14.));
-        assert_eq!(x, 21., "centred in 56");
-        assert_eq!(g.items[1].3, 38.);
-        // 12 px apart
-        assert!((g.items[1].1 - (g.items[0].1 + 14. + 12.)).abs() < 1e-3);
+        assert_eq!((w, h), (20., 20.));
+        assert_eq!(x, 18., "centred in 56");
+        assert_eq!(g.items[1].3, 52.);
+        // 18 px apart
+        assert!((g.items[1].1 - (g.items[0].1 + 20. + 18.)).abs() < 1e-3);
         // the column is centred in what is left under the home dot
-        let first = g.items[0].1; let last = g.items[3].1 + 14.;
+        let first = g.items[0].1; let last = g.items[3].1 + 20.;
         let y0 = 24. + 20.;
         assert!(((first - 16.) - y0 - (900. - last - 16.)).abs() < 1e-2, "{first} {last}");
     }
@@ -331,6 +331,6 @@ mod tests {
     fn halfway_open_is_halfway_between() {
         let g = geometry(2, &[false; 2], 900., 0.5, 0.);
         assert_eq!(g.w, 133.);
-        assert_eq!(g.items[0].2, 14. + (105. - 14.) * 0.5);
+        assert_eq!(g.items[0].2, 20. + (105. - 20.) * 0.5);
     }
 }
