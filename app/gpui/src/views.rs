@@ -86,6 +86,10 @@ impl Mega {
             if b.top() > vp.bottom() + px(10.) { break; }
             g.insert(ix, (f32::from(b.top() - vp.top()), f32::from(b.size.height)));
         }
+        // the rows painted last frame fill in what the list didn't report
+        for (ix, (top, h)) in self.reading.painted.borrow_mut().drain() {
+            if ix < n && top + h > f32::from(vp.top()) - 10. && top < f32::from(vp.bottom()) + 10. { g.entry(ix).or_insert((top - f32::from(vp.top()), h)); }
+        }
         self.reading.size = (f32::from(vp.size.width), f32::from(vp.size.height));
         self.reading.top = f32::from(vp.top());
         // the first time the room is laid out with its unread line far up: that line a third of the way down, as the web does
@@ -154,12 +158,13 @@ impl Mega {
             fringe
         };
         let el = row(m, prev, self.chat_font(), &self.holes, star, &fx);
-        // note where this row is painted, for next frame's colour fringe
-        let (mids, mid_id) = (self.reading.mids.clone(), m.id.clone());
-        let el = div().relative().w_full().child(el)
-            .child(canvas(move |b, _, _| { mids.borrow_mut().insert(mid_id.clone(), f32::from(b.center().y)); }, |_, _, _, _| {}).absolute().top_0().left_0().size_full())
-            .into_any_element();
-        match full { Some(h) => div().w_full().h(px(h)).flex().flex_col().justify_center().overflow_hidden().opacity(op).child(el).into_any_element(), None => el }
+        let el = match full { Some(h) => div().w_full().h(px(h)).flex().flex_col().justify_center().overflow_hidden().opacity(op).child(el).into_any_element(), None => el };
+        // note where this row's slot is painted: next frame's colour fringe, and the reading zone's scale where the list can't say
+        // (at the very end of a room it gives no positions)
+        let (mids, painted, mid_id) = (self.reading.mids.clone(), self.reading.painted.clone(), m.id.clone());
+        div().relative().w_full().child(el)
+            .child(canvas(move |b, _, _| { mids.borrow_mut().insert(mid_id.clone(), f32::from(b.center().y)); painted.borrow_mut().insert(ix, (f32::from(b.top()), f32::from(b.size.height))); }, |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+            .into_any_element()
     }
 
     /// The room's header chips (the web's search, aa, draw, people...): the ones that fit, never wrapping or cut off; the least important go first.
@@ -189,10 +194,11 @@ impl Mega {
             .child(crate::icons::icon(if open { crate::icons::Icon::Close } else { crate::icons::Icon::Plus }, 16., if open { look::paper() } else { look::mute() }))
             .on_click(cx.listener(|this, _, _, cx| { this.msg.bar_open = !this.msg.bar_open; cx.notify(); }));
         vec![div().relative().flex_none()
-            .when(open, |d| d.on_mouse_down_out(cx.listener(|this, _, _, cx| { this.msg.bar_open = false; cx.notify(); })))
+            .when(open, |d| d.on_mouse_down_out(cx.listener(|this, ev: &MouseDownEvent, _, cx| { if this.msg.bar_box.get().is_some_and(|b| b.contains(&ev.position)) { return; } this.msg.bar_open = false; cx.notify(); })))
             .child(plus)
             .children(open.then(|| v_flex().id("room-plus-menu").absolute().top(px(42.)).right_0().items_end().gap(px(6.))
                 .children(items.into_iter().map(|i| i.3))
+                .child({ let bx = self.msg.bar_box.clone(); canvas(move |b, _, _| bx.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full() })
                 .on_click(cx.listener(|this, _, _, cx| { this.msg.bar_open = false; cx.notify(); }))))
             .into_any_element()]
     }
@@ -303,7 +309,7 @@ impl Mega {
                             .children(vbar)
                             .child(h_flex().relative().items_center().gap_2().when(recording, |d| d.hidden())
                                 .child(div().relative().flex_none()
-                                    .when(plus_open, |d| d.on_mouse_down_out(cx.listener(|this, _, _, cx| { this.msg.plus = false; cx.notify(); })))
+                                    .when(plus_open, |d| d.on_mouse_down_out(cx.listener(|this, ev: &MouseDownEvent, _, cx| { if this.msg.plus_box.get().is_some_and(|b| b.contains(&ev.position)) { return; } this.msg.plus = false; cx.notify(); })))
                                     .child(div().id("plus").relative().flex().items_center().justify_center().size(px(34.)).rounded_full().cursor_pointer()
                                         .bg(if plus_open { hsla(0., 0., 1., 0.16) } else { hsla(0., 0., 1., 0.06) })
                                         .hover(|d| d.bg(hsla(0., 0., 1., 0.12)))
@@ -314,6 +320,7 @@ impl Mega {
                                             .hover(|d| d.bg(hsla(0., 0., 1., 0.08))).child(crate::icons::icon(ic, 16., look::mute())).child(label).child(self.files.hits.track(id));
                                         v_flex().absolute().bottom(px(44.)).left(px(-5.)).w(px(170.)).p(px(4.)).rounded(px(12.)).bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg()
                                             .font_family(look::F_UI).text_size(px(13.)).text_color(look::paper())
+                                            .child({ let bx = self.msg.plus_box.clone(); canvas(move |b, _, _| bx.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full() })
                                             .child(row("attach", crate::icons::Icon::Clip, "file").on_click(cx.listener(|this, _, window, cx| { this.msg.plus = false; this.files_attach(window, cx); })))
                                             .child(row("emoji-btn", crate::icons::Icon::Smile, "emoji").on_click(cx.listener(|this, ev: &ClickEvent, window, cx| { this.msg.plus = false; let at = ev.mouse_position().unwrap_or_default(); this.emoji_open(crate::emoji::Target::Composer, at, window, cx); })))
                                             .child(row("mic", crate::icons::Icon::Mic, "voice clip")

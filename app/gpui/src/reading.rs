@@ -31,7 +31,7 @@ pub fn at_end(remaining: f32) -> bool { remaining < AT_END }
 
 /// The effect for a row: (scale, opacity) or None when it is whole. `remaining` is the room's pixels left below the view.
 pub fn effect(top: f32, bottom: f32, height: f32, remaining: f32) -> Option<(f32, f32)> {
-    if at_end(remaining) { return None; }
+    let _ = remaining; // the end of the room is no exception any more (the user wants rows to grow into the band there too)
     let d = quantise(distance(top, bottom, height));
     (d > 0.).then(|| (scale(d), opacity(d)))
 }
@@ -50,8 +50,8 @@ pub fn fit(widths: &[f32], gap: f32, room: f32) -> usize {
 
 /// What the open room keeps for the zone: the room's width, each row's height at full size (a row drawn smaller keeps that box),
 /// and which rows were drawn smaller last time.
-pub struct Ui { pub on: bool, pub width: f32, pub full: std::collections::HashMap<String, f32>, pub scaled: std::collections::HashSet<String>, /** the rows drawn in the last frame, for the test port */ pub last: std::collections::HashMap<usize, (f32, f32)>, /** rows' (top, height) as last drawn, the room's (width, height), and the pixels left below */ pub geo: std::collections::HashMap<usize, (f32, f32)>, pub size: (f32, f32), pub remaining: f32, /** each message's middle in window pixels as it was last painted, and the room's top (the colour fringe) */ pub mids: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, f32>>>, pub top: f32 }
-impl Default for Ui { fn default() -> Ui { Ui { on: true, width: 0., full: Default::default(), scaled: Default::default(), last: Default::default(), geo: Default::default(), size: (0., 0.), remaining: 0., mids: Default::default(), top: 0. } } }
+pub struct Ui { pub on: bool, pub width: f32, pub full: std::collections::HashMap<String, f32>, pub scaled: std::collections::HashSet<String>, /** the rows drawn in the last frame, for the test port */ pub last: std::collections::HashMap<usize, (f32, f32)>, /** rows' (top, height) as last drawn, the room's (width, height), and the pixels left below */ pub geo: std::collections::HashMap<usize, (f32, f32)>, pub size: (f32, f32), pub remaining: f32, /** each message's middle in window pixels as it was last painted, and the room's top (the colour fringe) */ pub mids: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, f32>>>, pub top: f32, /** each row's (top, height) in window pixels as painted last frame */ pub painted: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<usize, (f32, f32)>>> }
+impl Default for Ui { fn default() -> Ui { Ui { on: true, width: 0., full: Default::default(), scaled: Default::default(), last: Default::default(), geo: Default::default(), size: (0., 0.), remaining: 0., mids: Default::default(), top: 0., painted: Default::default() } } }
 
 #[cfg(test)]
 mod tests {
@@ -69,8 +69,9 @@ mod tests {
         assert_eq!((scale(0.), opacity(0.)), (1., 1.));
     }
     #[test]
-    fn the_end_of_the_room_has_no_effect() {
-        assert!(effect(0., 50., 1000., 79.).is_none());
+    fn the_end_of_the_room_scales_like_anywhere_else() {
+        assert!(effect(0., 50., 1000., 0.).is_some());
+        assert!(effect(0., 50., 1000., 79.).is_some());
         assert!(effect(0., 50., 1000., 80.).is_some());
         assert!(effect(400., 500., 1000., 500.).is_none());
     }

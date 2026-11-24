@@ -260,9 +260,13 @@ impl Mega {
             let name_ink: Hsla = if it.voice { look::paper() } else if col.l > 0.55 { rgb(0x0c0d12).into() } else { rgb(0xffffff).into() };
             let num_s = if it.num > 0 { if it.num > 99 { "99+".to_string() } else { it.num.to_string() } } else { String::new() };
             kids.push(div().id(("rail-item", i)).absolute().left(px(x2)).top(px(y2)).w(px(w3)).h(px(h2)).cursor_pointer()
-                .opacity(if it.locked && k < 0.5 { 0.35 } else if k > 0.5 || on || unread || named || all { 1. } else { 0.68 })
+                .opacity(if it.locked && k < 0.5 { 0.35 } else if k > 0.5 || on || unread || named || all || (it.voice && !it.here.is_empty()) { 1. } else { 0.68 })
                 .child(div().absolute().inset_0().overflow_hidden()
                     .when(it.voice && k < 0.5, |d| d.child(crate::squircle::back(r, hsla(0., 0., 0., 0.))).child(div().absolute().inset_0().rounded(px(r.min(h2 / 2.))).border_2().border_color(col)))
+                    // someone's in it: the ring fills at its heart and glows, so an occupied voice room reads at a glance
+                    .when(it.voice && k < 0.5 && !it.here.is_empty(), |d| d.child(div().absolute().inset_0().flex().items_center().justify_center()
+                        .child(div().size(px((w3.min(h2) * 0.4).max(7.))).rounded_full().bg(col)))
+)
                     .when(!(it.voice && k < 0.5), |d| d.child(crate::squircle::back(r, mesh)))
                     .when_some(f, |d, f| d.child(div().absolute().inset_0().child(ascii::field(f))))
                     .when(k > 0.02, |d| d.child(div().absolute().left(px(14.)).right(px(46.)).bottom(px(10.)).opacity(label_op).font_family(look::F_SHARP).text_size(px(24.)).line_height(px(22.)).max_h(px(44.)).text_color(ink).overflow_hidden().child(it.title.clone()))
@@ -270,7 +274,11 @@ impl Mega {
                         .when(it.voice, |d| d.child(div().absolute().left(px(14.)).right(px(14.)).top(px(11.)).opacity(label_op).font_family(look::F_UI).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(ink).overflow_hidden().whitespace_nowrap().text_ellipsis().child(if it.here.is_empty() { "empty".to_string() } else { it.here.join(", ") }))))
                     .when_some(name, |d, (text, fs)| d.child(div().absolute().left(px(10.)).top_0().h_full().flex().items_center().whitespace_nowrap()
                         .opacity(((t - 0.35) / 0.65).clamp(0., 1.)).font_family(look::F_UI).text_size(px(fs)).font_weight(if lit || unread { FontWeight::BOLD } else { FontWeight::SEMIBOLD }).text_color(name_ink).child(text)))
-                    .when(unread && k < 0.5, |d| d.child(div().absolute().inset_0().rounded_full().shadow(vec![BoxShadow { color: col.opacity(0.7), offset: point(px(0.), px(0.)), blur_radius: px(12.), spread_radius: px(0.), inset: false }]))))
+)
+                // glows sit outside the clipped face so they show: unread text rooms and voice rooms with someone in them
+                .when((unread || (it.voice && !it.here.is_empty())) && k < 0.5, |d| d.child(div().absolute().inset_0().rounded(px(r.min(h2 / 2.))).shadow(vec![BoxShadow { color: col.opacity(0.75), offset: point(px(0.), px(0.)), blur_radius: px(12.), spread_radius: px(1.), inset: false }])))
+                // unread: a small white dot beside the room (the list view has its own dot by the name)
+                .when(unread && k < 0.05 && !all, |d| d.child(div().absolute().left(px(w3 + 6.)).top(px(h2 / 2. - 3.5)).size(px(7.)).rounded_full().bg(look::paper())))
                 .when(tour_on && it.title == "options", |d| d.child(tour_hits.track("tour-opts")))
                 .when(at_ring, |d| d.child(div().absolute().inset(px(-4.)).rounded_full().border_2().border_color(col)))
                 .when(it.at > 0 && !on && k > 0.5, |d| d.child(div().absolute().top(px(-7.)).right(px(-9.)).min_w(px(15.)).h(px(15.)).px(px(3.)).rounded(px(8.)).bg(look::paper()).text_color(rgb(look::VOID)).font_family(look::F_UI).text_size(px(10.)).line_height(px(15.)).font_weight(FontWeight::BOLD).child(if it.at > 99 { "99+".to_string() } else { it.at.to_string() })))

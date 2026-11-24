@@ -144,6 +144,17 @@ impl Mega {
                     window.defer(cx, move |window, cx| { window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: p, pressed_button: None, modifiers: Modifiers::default() }), cx); });
                     json!({"ok": true})
                 }
+                // a left click at a window point: move, press, release (the + menus' outside-press test)
+                "tap" => {
+                    let p = point(px(cmd["x"].as_f64().unwrap_or(0.) as f32), px(cmd["y"].as_f64().unwrap_or(0.) as f32));
+                    window.defer(cx, move |window, cx| {
+                        window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: p, pressed_button: None, modifiers: Modifiers::default() }), cx);
+                        window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: p, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }), cx);
+                        window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: p, modifiers: Modifiers::default(), click_count: 1 }), cx);
+                    });
+                    json!({"ok": true})
+                }
+                "menu_state" => { let bx = |b: Option<Bounds<Pixels>>| b.map(|b| json!([f32::from(b.left()), f32::from(b.top()), f32::from(b.size.width), f32::from(b.size.height)])); json!({"bar_open": self.msg.bar_open, "plus": self.msg.plus, "bar_box": bx(self.msg.bar_box.get()), "plus_box": bx(self.msg.plus_box.get()), "dens_open": self.dens.open}) }
                 "wheel" => {
                     let p = point(px(cmd["x"].as_f64().unwrap_or(0.) as f32), px(cmd["y"].as_f64().unwrap_or(0.) as f32));
                     let dy = cmd["dy"].as_f64().unwrap_or(-120.) as f32;
@@ -291,7 +302,7 @@ impl Mega {
                 "go" => { let want = s("name"); let cid = self.snap.as_ref().and_then(|sn| sn.communities.iter().find(|c| c.name == want).map(|c| c.id.clone())); match cid { Some(c) => { self.go(crate::app::Level::Server(c), window, cx); json!({"ok": true}) } None => json!({"error": "no such community"}) } }
                 "join_text" => { let v = s("text"); self.mem.join_in.update(cx, |i, cx| i.set_value(v, window, cx)); self.join_submit(window, cx); json!({"ok": true}) }
                 // the composer's + menu and the room header's + pill: {"cmd":"menus","plus":true,"bar":false}
-                "menus" => { self.msg.plus = cmd["plus"].as_bool().unwrap_or(false); self.msg.bar_open = cmd["bar"].as_bool().unwrap_or(false); if let Some(b) = cmd["box"].as_str() { self.prefs.box_colour = b.to_string(); } if cmd["settings"].as_bool() == Some(true) { self.go(crate::app::Level::Settings, window, cx); } cx.notify(); json!({"ok": true}) }
+                "menus" => { self.msg.plus = cmd["plus"].as_bool().unwrap_or(false); self.msg.bar_open = cmd["bar"].as_bool().unwrap_or(false); if let Some(b) = cmd["box"].as_str() { self.prefs.box_colour = b.to_string(); } if let Some(h) = cmd["here"].as_array() { let who: Vec<String> = h.iter().filter_map(|x| x.as_str().map(String::from)).collect(); let gids: Vec<String> = self.snap.iter().flat_map(|s| s.communities.iter()).flat_map(|c| c.channels.iter()).filter(|x| x.kind == "voice").map(|x| x.gid.clone()).collect(); for g in gids { self.pres.calls.insert(g, who.clone()); } } if cmd["settings"].as_bool() == Some(true) { self.go(crate::app::Level::Settings, window, cx); } cx.notify(); json!({"ok": true}) }
                 "click" => match s("what").as_str() { "confirm" => { self.run_confirm(window, cx); json!({"ok": true}) } "cancel" => { self.mem.confirm = None; cx.notify(); json!({"ok": true}) } _ => json!({"error": "unknown button"}) },
                 "core" => { let core = self.core.clone(); let (m, a) = (s("method"), cmd["args"].clone()); match core.call(&m, a) { Ok(v) => json!({"ok": v}), Err(e) => json!({"error": e}) } }
                 other if other.starts_with("voice") => self.voice_cmd(&cmd, window, cx),

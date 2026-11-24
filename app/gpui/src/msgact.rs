@@ -46,6 +46,9 @@ pub struct MsgUi {
     pub plus: bool,
     /// The room header's + pill (draw, search, people, invite, manage, colours ...) is open.
     pub bar_open: bool,
+    /// where the open + menus were last painted: a press inside them isn't an outside press
+    pub plus_box: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    pub bar_box: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
 }
 
 impl ActCtx { pub fn can_act(&self) -> bool { true } }
