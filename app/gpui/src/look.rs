@@ -84,6 +84,13 @@ impl Duo {
 }
 
 fn ch(c: u32) -> [f32; 3] { [((c >> 16) & 255) as f32, ((c >> 8) & 255) as f32, (c & 255) as f32] }
+/// `c` turned round the colour wheel by `dh` (0..1 is a full turn), its lightness and saturation kept.
+pub fn turn(c: u32, dh: f32) -> u32 {
+    let mut h: gpui_kit::Hsla = gpui_kit::rgb(c).into();
+    h.h = (h.h + dh).rem_euclid(1.);
+    let r = gpui_kit::Rgba::from(h);
+    ((r.r * 255.).round() as u32) << 16 | ((r.g * 255.).round() as u32) << 8 | (r.b * 255.).round() as u32
+}
 pub fn mix(a: u32, b: u32, t: f32) -> u32 {
     let (x, y) = (ch(a), ch(b));
     let m = |i: usize| ((x[i] + (y[i] - x[i]) * t).round().clamp(0., 255.)) as u32;

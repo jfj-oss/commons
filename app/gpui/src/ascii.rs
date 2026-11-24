@@ -137,6 +137,9 @@ pub struct Field {
     pub avoid: Option<(crate::wall::Grid, std::rc::Rc<Vec<(u16, u8, u8)>>)>,
     /// The three tints (soft, mid, bright) when they are not simply the duo mixed 0.3, 0.6, 1 (the room's backdrop, mega.js `bdColours`), and the brighter three under a ripple.
     pub tints: Option<[Hsla; 3]>,
+    /// A second set of the three in another hue: the field drifts between the two in broad patches (the backdrop's third colour).
+    pub tints2: Option<[Hsla; 3]>,
+    pub lit2: Option<[Hsla; 3]>,
     pub lit: Option<[Hsla; 3]>,
     /// A soft glow under the pointer on the focused card (mega.js `bloom`): the pointer's cell, and how strong it still is (1 right after a move, then it fades).
     pub bloom: Option<(f64, f64, f64)>,
@@ -153,7 +156,7 @@ pub fn hole(h: &Holes) -> impl IntoElement {
 
 impl Field {
     pub fn card(fx: usize, seed: u32, duo: look::Duo, t: f64, small: bool) -> Field {
-        Field { fx, seed, duo, t, cell: if small { (8., 13.) } else { (10., 17.) }, font_px: if small { 11. } else { 14. }, gate: 0.2, hi_t: 0.9, alpha: 1., radius: 0., ripples: vec![], drops: vec![], holes: vec![], live_holes: None, emboss: false, avoid: None, tints: None, lit: None, bloom: None }
+        Field { fx, seed, duo, t, cell: if small { (8., 13.) } else { (10., 17.) }, font_px: if small { 11. } else { 14. }, gate: 0.2, hi_t: 0.9, alpha: 1., radius: 0., ripples: vec![], drops: vec![], holes: vec![], live_holes: None, emboss: false, avoid: None, tints: None, lit: None, bloom: None, tints2: None, lit2: None }
     }
 }
 
@@ -204,6 +207,12 @@ fn ramp(window: &mut Window) -> Ramp {
 }
 
 /// The element: fills its parent.
+/// `a` to `b` by `t`, in RGB (alpha too).
+fn blend(a: Hsla, b: Hsla, t: f32) -> Hsla {
+    let (x, y) = (gpui_kit::Rgba::from(a), gpui_kit::Rgba::from(b));
+    gpui_kit::Rgba { r: x.r + (y.r - x.r) * t, g: x.g + (y.g - x.g) * t, b: x.b + (y.b - x.b) * t, a: x.a + (y.a - x.a) * t }.into()
+}
+
 pub fn field(f: Field) -> impl IntoElement {
     canvas(|_, _, _| (), move |bounds, _, window, _cx| {
         let r = ramp(window);
@@ -262,6 +271,16 @@ pub fn field(f: Field) -> impl IntoElement {
                     let k = if v < 0.64 { 0 } else if v < f.hi_t { 1 } else { 2 };
                     let mut color = tints[k];
                     if lit > 0.2 { match &f.lit { Some(l) => color = l[k], None => color.a = (color.a * 1.8).min(1.) } }
+                    if let Some(t2) = &f.tints2 {
+                        // broad soft patches that drift slowly: 0 the highlight's hue, 1 the third colour's
+                        let ph = (f.seed % 628) as f64 * 0.01;
+                        let p = ((xf * 0.045 + f.t * 0.05 + ph).sin() + (yf * 0.07 - f.t * 0.035 + xf * 0.02 + ph * 1.7).sin() * 0.8) * 0.28 + 0.5;
+                        let w = (((p - 0.2) / 0.6).clamp(0., 1.)) as f32;
+                        if w > 0.01 {
+                            let other = if lit > 0.2 { f.lit2.as_ref().map(|l| l[k]).unwrap_or(t2[k]) } else { t2[k] };
+                            color = blend(color, other, w);
+                        }
+                    }
                     let _ = window.paint_glyph(point(bounds.origin.x + px(px_x + ox), bounds.origin.y + px(px_y + oy)), r.font, g, px(f.font_px), color);
                 }
             }

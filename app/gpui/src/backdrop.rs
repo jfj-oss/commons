@@ -106,6 +106,9 @@ pub fn tints(duo: Duo, dim: u32) -> ([Hsla; 3], [Hsla; 3], u32) {
     (row(look::mix(bg, hi, 0.38 * k), look::mix(bg, hi, 0.75 * k)), row(look::mix(bg, hi, 0.62 * k), hi), bg)
 }
 
+/// How far round the colour wheel the third colour sits from the highlight (0.17 = about 60 degrees).
+pub const ACCENT_TURN: f32 = 0.17;
+
 /// The room's field for this frame. `still`: the battery saver's frozen emboss.
 pub fn field(gid: &str, fx: usize, duo: Duo, dim: u32, bd: &Bd, still: bool, holes: &crate::ascii::Holes, avoid: Option<(crate::wall::Grid, std::rc::Rc<Vec<(u16, u8, u8)>>)>, narrow: bool) -> Field {
     let l = lv(dim);
@@ -116,6 +119,9 @@ pub fn field(gid: &str, fx: usize, duo: Duo, dim: u32, bd: &Bd, still: bool, hol
     if still { f.emboss = true; f.gate = 0.1; return f; }
     let (t, lit, _) = tints(duo, dim);
     f.tints = Some(t); f.lit = Some(lit);
+    // the third colour: the highlight turned a little round the wheel, laid over the field in slow drifting patches
+    let (t2, lit2, _) = tints(Duo { main: duo.main, hi: look::turn(duo.hi, ACCENT_TURN) }, dim);
+    f.tints2 = Some(t2); f.lit2 = Some(lit2);
     f.gate = (0.46 - 0.26 * bd.heat) / l.max(1.);
     f.ripples = bd.rips.clone();
     f.drops = bd.drops.iter().map(|(d, _)| *d).collect();
