@@ -17,6 +17,7 @@
 #                                              linux-gpui-x86_64 and darwin-gpui-aarch64 (docs/UPDATES.md)
 #             --skip-mac                       go on without the Mac (mac and mac-native) when it is off, away or low
 #                                              on battery
+#             --no-github                      do not put the native app's files on GitHub (scripts/publish-github.sh)
 #             --same-version                   no bump: add systems to the version already published, e.g. the Mac
 #                                              after it was skipped:  scripts/publish-update.sh --same-version --only mac
 #
@@ -36,7 +37,7 @@ ROOT=$PWD
 die() { printf 'publish-update: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
-WHAT=patch NOTES='' MIN='' ONLY=linux,windows,mac,linux-native,mac-native SKIP_MAC=0 SAME=0
+WHAT=patch NOTES='' MIN='' ONLY=linux,windows,mac,linux-native,mac-native SKIP_MAC=0 SAME=0 NOGH=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --notes) NOTES=$2; shift 2 ;;
@@ -44,7 +45,8 @@ while [ $# -gt 0 ]; do
     --only) ONLY=$2; shift 2 ;;
     --skip-mac) SKIP_MAC=1; shift ;;
     --same-version) SAME=1; shift ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    --no-github) NOGH=1; shift ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     -*) die "unknown option $1" ;;
     *) WHAT=$1; shift ;;
   esac
@@ -250,4 +252,8 @@ rm -rf "$STAGE"
 say ""
 say "Published $NEW: $(jq -r '.platforms | keys | join(", ")' "$DIST/update/latest.json")"
 ls -la "$DIST" "$DIST/update"
+# The native app's files on GitHub too, so friends can update while the relay is off (scripts/publish-github.sh).
+if [ -z "$SCRATCH" ] && [ $NOGH = 0 ] && { want linux-native || want mac-native; }; then
+  scripts/publish-github.sh "$NEW" || say "The GitHub release failed; the relay has the update. Retry: scripts/publish-github.sh $NEW"
+fi
 [ -n "$SCRATCH" ] || say "Commit the version bump: git commit -am 'Release $NEW'"

@@ -82,20 +82,107 @@ pub fn release_for(manifest: &Value, current: &str, platform: &str) -> Result<Op
     }))
 }
 
-/// Reads the feed of `relay` and says what it offers this app. Network: run it off the window's thread.
+/// The public feed: the newest GitHub release of the app's repository carries `mega-native.json` (same shape as the
+/// relay's manifest, file addresses on GitHub). It reaches friends whose relay is off or far away. The signature check
+/// is the same, so GitHub (or anyone between) can at worst withhold an update, never change one.
+pub const GITHUB_FEED: &str = "https://github.com/jfj-oss/commons/releases/latest/download/mega-native.json";
+/// Release files must be in this repository's releases ...
+pub const GITHUB_FILES: &str = "https://github.com/jfj-oss/commons/releases/download/";
+/// ... and GitHub may only send the download on to its own file hosts.
+const GITHUB_HOSTS: [&str; 3] = ["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"];
+const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
+
+pub(crate) fn github_host_ok(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else { return false };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    GITHUB_HOSTS.contains(&host)
+}
+
+/// GET with redirects followed by hand: at most five, each one https to a GitHub host.
+fn github_get(url: &str, accept: &str, read_timeout: Duration) -> Result<ureq::Response, String> {
+    let agent = ureq::AgentBuilder::new().redirects(0).timeout_connect(Duration::from_secs(8)).timeout_read(Duration::from_secs(30)).timeout(read_timeout).build();
+    let mut at = url.to_string();
+    for _ in 0..6 {
+        if !github_host_ok(&at) { return Err("the update address is not on GitHub; refused".into()); }
+        let r = match agent.get(&at).set("accept", accept).set("user-agent", "mega-updater").call() {
+            Ok(r) => r,
+            Err(ureq::Error::Status(code, _)) => return Err(format!("GitHub answered {code}")),
+            Err(e) => return Err(format!("could not reach GitHub: {e}")),
+        };
+        match r.status() {
+            200 => return Ok(r),
+            301 | 302 | 303 | 307 | 308 => { at = r.header("location").ok_or("a GitHub redirect without an address")?.to_string(); }
+            c => return Err(format!("GitHub answered {c}")),
+        }
+    }
+    Err("too many GitHub redirects".into())
+}
+
+/// The GitHub feed's offer. `Ok(None)` when there is no release, or nothing newer.
+pub fn check_github(current: &str, platform: &str) -> Result<Option<Release>, String> {
+    let r = match github_get(GITHUB_FEED, "application/json, application/octet-stream", Duration::from_secs(20)) {
+        Err(e) if e.contains("answered 404") => return Ok(None),
+        x => x?,
+    };
+    let mut body = Vec::new();
+    r.into_reader().take(MAX_MANIFEST_BYTES + 1).read_to_end(&mut body).map_err(|e| format!("could not read the GitHub update feed: {e}"))?;
+    if body.len() as u64 > MAX_MANIFEST_BYTES { return Err("the GitHub update feed is too large; refused".into()); }
+    let m: Value = serde_json::from_slice(&body).map_err(|e| format!("the GitHub update feed is not valid JSON: {e}"))?;
+    github_release_from(&m, current, platform)
+}
+
+/// The GitHub feed's manifest read as [`release_for`] does, but its file must be one of the app's own releases.
+pub fn github_release_from(m: &Value, current: &str, platform: &str) -> Result<Option<Release>, String> {
+    let rel = release_for(m, current, platform)?;
+    if let Some(r) = &rel { if !r.url.starts_with(GITHUB_FILES) || r.url.contains("..") { return Err("the GitHub update feed points outside the app's releases; refused".into()); } }
+    Ok(rel)
+}
+
+/// GitHub is asked as well unless `MEGA_GPUI_GITHUB=off`, or the relay is this computer (the tests' relays are).
+fn github_wanted(relay: &str) -> bool {
+    if std::env::var("MEGA_GPUI_GITHUB").is_ok_and(|v| v == "off") { return false; }
+    !(relay.starts_with("http://127.0.0.1") || relay.starts_with("http://localhost"))
+}
+
+/// Of two offers, the newer one (the relay's when they are the same version: it is nearer).
+pub(crate) fn newer(a: Option<Release>, b: Option<Release>) -> Option<Release> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(if commons_core::update::version_lt(&a.version, &b.version).unwrap_or(false) { b } else { a }),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Reads the relay's feed and GitHub's and says what they offer this app. Either one answering is enough; an error
+/// only comes back when both fail. Network: run it off the window's thread.
 pub fn check(relay: &str, current: &str, platform: &str) -> Result<Option<Release>, String> {
-    match commons_core::update::fetch_manifest(relay)? { Some(m) => release_for(&m, current, platform), None => Ok(None) }
+    let from_relay = match commons_core::update::fetch_manifest(relay) {
+        Ok(Some(m)) => release_for(&m, current, platform),
+        Ok(None) => Ok(None),
+        Err(e) => Err(e),
+    };
+    if !github_wanted(relay) { return from_relay; }
+    let from_github = check_github(current, platform);
+    match (from_relay, from_github) {
+        (Ok(a), Ok(b)) => Ok(newer(a, b)),
+        (Ok(a), Err(e)) => { eprintln!("update check (GitHub): {e}"); Ok(a) }
+        (Err(e), Ok(b)) => { eprintln!("update check (relay): {e}"); Ok(b) }
+        (Err(e), Err(g)) => Err(format!("{e}; GitHub: {g}")),
+    }
 }
 
 /// Downloads a file the feed localized onto the relay: no redirects, a size cap before and while reading. `got` counts
 /// the bytes so far, for the progress line.
 pub fn download(url: &str, got: &AtomicU64, total: &AtomicU64) -> Result<Vec<u8>, String> {
-    let agent = ureq::AgentBuilder::new().redirects(0).timeout_connect(Duration::from_secs(8)).timeout_read(Duration::from_secs(30)).timeout(Duration::from_secs(900)).build();
-    let resp = match agent.get(url).set("accept", "application/octet-stream").call() {
-        Ok(r) if r.status() == 200 => r,
-        Ok(r) => return Err(format!("the update download answered {}; refused", r.status())),
-        Err(ureq::Error::Status(code, _)) => return Err(format!("the update download answered {code}; refused")),
-        Err(e) => return Err(format!("the update could not be downloaded: {e}")),
+    let resp = if url.starts_with(GITHUB_FILES) {
+        github_get(url, "application/octet-stream", Duration::from_secs(900)).map_err(|e| format!("the update could not be downloaded: {e}"))?
+    } else {
+        let agent = ureq::AgentBuilder::new().redirects(0).timeout_connect(Duration::from_secs(8)).timeout_read(Duration::from_secs(30)).timeout(Duration::from_secs(900)).build();
+        match agent.get(url).set("accept", "application/octet-stream").call() {
+            Ok(r) if r.status() == 200 => r,
+            Ok(r) => return Err(format!("the update download answered {}; refused", r.status())),
+            Err(ureq::Error::Status(code, _)) => return Err(format!("the update download answered {code}; refused")),
+            Err(e) => return Err(format!("the update could not be downloaded: {e}")),
+        }
     };
     let len = resp.header("content-length").and_then(|v| v.trim().parse::<u64>().ok());
     if len.is_some_and(|l| l > MAX_DOWNLOAD_BYTES) { return Err("the update file is too large; refused".into()); }

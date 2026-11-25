@@ -1,7 +1,7 @@
 # Updates
 
 The app updates itself from the relay the account already uses, with Tauri's official updater plugin and its signature
-check. Nothing else is involved: no update service, no GitHub. The person is always asked first, and never during a call.
+check. Nothing else is involved: no update service. (The native app also reads GitHub releases; see "The native app on GitHub".) The person is always asked first, and never during a call.
 
 ## Publishing a version (the host)
 
@@ -290,3 +290,16 @@ a dialog) and exits. `COMMONS_TEST_PORT_OFFSET=5700 node tools/gpui-update-e2e.m
 and reject with a throwaway key, atomic replace and rollback of a binary and of a bundle (on a Mac it signs for real), hostile
 archives, state and start counting), and `tools/gpui-update-test.sh` the publish-gpui.sh checks and the end-to-end test against a
 private relay.
+
+### The native app on GitHub
+
+The native app reads a second feed besides its relay's: the newest release of the public repository `jfj-oss/commons`,
+`https://github.com/jfj-oss/commons/releases/latest/download/mega-native.json` (`update.rs`, `GITHUB_FEED`). It has the
+relay manifest's shape, with file addresses in that repository's releases, so friends' apps can update while the relay
+is off. `publish-update.sh` makes the release at its end with `scripts/publish-github.sh` (`--no-github` skips it; run
+the script by hand to retry, or after a `--same-version` publish). Both feeds are read on each check and the newer offer
+wins (the relay's on a tie); either one answering is enough. The rules are the relay's: https only, redirects followed
+by hand and only to GitHub's own hosts, the file only from this repository's releases, and the same signature check
+for exactly the announced version, so GitHub can at most withhold an update, never change one. The newest release of
+the repository must always be a native one. Tests' loopback relays, and `MEGA_GPUI_GITHUB=off`, skip GitHub.
+Apps from before this feed read only the relay, which keeps being published as before.

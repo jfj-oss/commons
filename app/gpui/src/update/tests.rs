@@ -347,3 +347,35 @@ fn what_the_publish_script_made_passes_the_apps_check() {
     verify(&file, &rel.signature, &key, "0.9.0").unwrap();
     assert!(verify(&file, &rel.signature, &public_key(), "0.9.0").is_err(), "the real key does not accept a throwaway-signed file");
 }
+
+#[test]
+fn github_feed_files_must_be_this_apps_releases() {
+    let m = |url: &str| json!({"version": "9.9.9", "platforms": {"linux-gpui-x86_64": {"url": url, "signature": "c2ln"}}});
+    let ok = github_release_from(&m("https://github.com/jfj-oss/commons/releases/download/v9.9.9/mega-gpui-linux-x86_64"), "0.3.13", "linux-gpui-x86_64").unwrap().unwrap();
+    assert_eq!(ok.version, "9.9.9");
+    for bad in ["https://github.com/someone/else/releases/download/v9.9.9/x", "https://evil.example/x", "update/Megatron_9.9.9_gpui-x86_64",
+                "https://github.com/jfj-oss/commons/releases/download/../../../someone/x"] {
+        assert!(github_release_from(&m(bad), "0.3.13", "linux-gpui-x86_64").is_err(), "{bad} accepted");
+    }
+    assert!(github_release_from(&m("https://github.com/jfj-oss/commons/releases/download/v9.9.9/x"), "9.9.9", "linux-gpui-x86_64").unwrap().is_none(), "same version offered");
+}
+
+#[test]
+fn github_redirects_only_to_github_hosts() {
+    assert!(github_host_ok("https://github.com/jfj-oss/commons/releases/latest/download/mega-native.json"));
+    assert!(github_host_ok("https://release-assets.githubusercontent.com/github-production-release-asset/1?sig=x"));
+    assert!(github_host_ok("https://objects.githubusercontent.com/x"));
+    assert!(!github_host_ok("http://github.com/x"), "plain http");
+    assert!(!github_host_ok("https://github.com.evil.org/x"));
+    assert!(!github_host_ok("https://evil.org/github.com/x"));
+}
+
+#[test]
+fn the_newer_offer_wins_and_the_relay_on_a_tie() {
+    let r = |v: &str, u: &str| Some(Release { version: v.into(), url: u.into(), signature: "s".into(), notes: String::new(), required: false });
+    assert_eq!(newer(r("0.3.14", "relay"), r("0.3.15", "gh")).unwrap().url, "gh");
+    assert_eq!(newer(r("0.3.15", "relay"), r("0.3.14", "gh")).unwrap().url, "relay");
+    assert_eq!(newer(r("0.3.14", "relay"), r("0.3.14", "gh")).unwrap().url, "relay");
+    assert_eq!(newer(None, r("0.3.14", "gh")).unwrap().url, "gh");
+    assert!(newer(None, None).is_none());
+}
