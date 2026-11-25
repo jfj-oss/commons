@@ -40,6 +40,7 @@ impl Mega {
     /// The page's `.mbar`: the mark (or the community's name) at the left, a back chip before it, chips at the right.
     pub(crate) fn top_bar(&mut self, title: String, back: Option<Level>, cx: &mut Context<Self>) -> impl IntoElement {
         let net = self.snap.as_ref().map(|s| s.net.clone()).unwrap_or_default();
+        let net_detail = self.snap.as_ref().map(|s| s.net_detail.clone()).unwrap_or_default();
         let mut extra: Vec<AnyElement> = vec![];
         // the colours and draw chips belong to the focused card (the page's `[data-m="paint"]` and `[data-m="draw"]`)
         if matches!(self.level, Level::Home | Level::Server(_)) {
@@ -54,7 +55,9 @@ impl Mega {
         h_flex().flex_none().w_full().px(px(16.)).py(px(12.)).gap(px(10.)).items_center()
             .when_some(back, |d, to| d.child(chip("back", "\u{2190} back").on_click(cx.listener(move |this, _, window, cx| this.go(to.clone(), window, cx)))))
             .child(div().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).max_w(px(560.)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
-            .when(net != "online", |d| d.child(div().font_family(look::F_UI).text_size(px(13.)).text_color(rgb(look::DANGER)).child(if net == "connecting" { "connecting…".to_string() } else { "offline".to_string() })))
+            .when(net != "online", |d| d.child(div().id("net-state").font_family(look::F_UI).text_size(px(13.)).text_color(rgb(look::DANGER)).max_w(px(420.)).overflow_hidden().text_ellipsis().whitespace_nowrap()
+                .child(if net == "connecting" { "connecting…".to_string() } else if net_detail.is_empty() { "offline".to_string() } else { format!("offline: {net_detail}") })
+                .when(!net_detail.is_empty(), |d| { let t = net_detail.clone(); d.tooltip(move |window, cx| Tooltip::new(t.clone()).build(window, cx)) })))
             .when(self.still(), |d| d.child(div().font_family(look::F_UI).text_size(px(13.)).text_color(look::mute()).child("battery saver")))
             .child(div().flex_1())
             .children(extra)
@@ -435,7 +438,12 @@ impl Mega {
                 .child(Button::new("set-log").label("Activity log").on_click(cx.listener(|this, _, window, cx| this.dev_open(crate::members::Panel::Activity, window, cx)))))
             .child(relay_box)
             .child(note(&format!("Account folder: {}", self.core.dir.display())))
-            .child(note(&format!("mega-gpui {} (spike), core {}", env!("CARGO_PKG_VERSION"), "0.3.11")))
+            .child(label("version"))
+            .child(h_flex().gap_3().items_center()
+                .child(div().text_size(px(14.)).text_color(look::paper()).child(format!("mega {}", self.upd.current)))
+                .child(Button::new("check-updates").small().label("Check for updates").on_click(cx.listener(|this, _, window, cx| this.update_check_now(window, cx)))))
+            .when_some(self.upd.checked.clone(), |d, t| d.child(note(&t)))
+            .when(snap.net == "offline" && !snap.net_detail.is_empty(), |d| d.child(div().text_size(px(13.)).text_color(rgb(look::DANGER)).child(format!("Not connected to the server: {}", snap.net_detail))))
             .child(h_flex().mt_2().child(Button::new("lock").label("Lock").on_click(cx.listener(|this, _, window, cx| this.lock(window, cx)))))
             .when_some(self.error.clone(), |d, e| d.child(div().text_color(rgb(look::DANGER)).child(e)));
         v_flex().size_full().child(self.top_bar("settings".into(), Some(back), cx)).child(body)

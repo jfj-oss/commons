@@ -375,6 +375,10 @@ impl Mega {
             Ok(v) => {
                 self.snap_hash = v["hash"].as_str().unwrap_or("").to_string();
                 let snap = Snapshot::parse(&v);
+                let was = self.snap.as_ref().map(|s| (s.net.clone(), s.net_detail.clone()));
+                if was.as_ref() != Some(&(snap.net.clone(), snap.net_detail.clone())) && !(was.is_none() && snap.net == "online") {
+                    if snap.net_detail.is_empty() { eprintln!("connection: {}", snap.net); } else { eprintln!("connection: {}: {}", snap.net, snap.net_detail); }
+                }
                 let n = snap.total_unread();
                 window.set_window_title(&if n > 0 { format!("({}) mega", if n > 99 { "99+".to_string() } else { n.to_string() }) } else { "mega".to_string() });
                 self.snap = Some(snap);

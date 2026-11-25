@@ -23,6 +23,8 @@ pub struct UpdateUi {
     pub current: String,
     pub target: Result<update::Target, String>,
     pub enabled: bool,
+    /// What the last check found, for Settings ("up to date", or why it could not check).
+    pub checked: Option<String>,
     next_check: Instant,
     started: Instant,
     boot_open: bool,
@@ -37,7 +39,7 @@ impl UpdateUi {
         let state = State::load(dir);
         let current = update::current_version();
         UpdateUi {
-            phase: Phase::Idle, boot_open: state.boot.as_ref().is_some_and(|(v, _)| *v == current), state, current, target: update::target_of(&exe),
+            phase: Phase::Idle, checked: None, boot_open: state.boot.as_ref().is_some_and(|(v, _)| *v == current), state, current, target: update::target_of(&exe),
             enabled: std::env::var("MEGA_GPUI_UPDATES").map(|v| v != "off").unwrap_or(true) && update::platform().is_some(),
             next_check: Instant::now() + Duration::from_secs(first), started: Instant::now(), got: Default::default(), total: Default::default(),
         }
@@ -81,13 +83,24 @@ impl Mega {
                 this.upd.phase = Phase::Idle;
                 this.upd.next_check = Instant::now() + match &r { Ok(_) => update::CHECK_EVERY, Err(_) => Duration::from_secs(3600) };
                 match r {
-                    Ok(Some(rel)) => this.upd.phase = Phase::Available(rel),
-                    Ok(None) => {}
-                    Err(e) => eprintln!("update check: {e}"),
+                    Ok(Some(rel)) => { this.upd.checked = Some(format!("Version {} is available: see the card on Home.", rel.version)); this.upd.phase = Phase::Available(rel) }
+                    Ok(None) => this.upd.checked = Some("mega is up to date.".into()),
+                    Err(e) => { eprintln!("update check: {e}"); this.upd.checked = Some(format!("Could not check: {e}")) }
                 }
                 cx.notify();
             });
         }).detach();
+    }
+
+    /// Settings' "Check for updates": a check now, unless one is already running or an update is under way.
+    pub fn update_check_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.upd.enabled { self.upd.checked = Some("Updates are switched off for this copy of mega.".into()); cx.notify(); return; }
+        if let Err(e) = &self.upd.target { self.upd.checked = Some(e.clone()); cx.notify(); return; }
+        if !matches!(self.upd.phase, Phase::Idle | Phase::Failed(_)) { return; }
+        self.upd.phase = Phase::Idle;
+        self.upd.checked = Some("Checking…".into());
+        self.update_check(window, cx);
+        cx.notify();
     }
 
     /// "Later": nothing for four hours (one hour if the relay says this version is too old to go on with).
