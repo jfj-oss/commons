@@ -1311,7 +1311,7 @@ dependencies = [
 
 [[package]]
 name = "commons-app"
-version = "0.3.15"
+version = "0.3.16"
 dependencies = [
  "commons-core",
  "reqwest 0.13.5",
