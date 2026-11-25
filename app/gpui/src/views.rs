@@ -161,7 +161,10 @@ impl Mega {
             fringe
         };
         let el = row(m, prev, self.chat_font(), &self.holes, star, &fx);
-        let el = match full { Some(h) => div().w_full().h(px(h)).flex().flex_col().justify_center().overflow_hidden().opacity(op).child(el).into_any_element(), None => el };
+        // The box is at least the row's full-size height (so the list does not move under the reader) but never less than the row
+        // needs: `full` was noted the last time the row was drawn whole, and a row can grow after that (the unread line above it, a
+        // reaction, a wrap). A fixed height clipped such a row at its top and bottom (2026-11-25).
+        let el = match full { Some(h) => div().w_full().min_h(px(h)).flex().flex_col().justify_center().opacity(op).child(el).into_any_element(), None => el };
         // note where this row's slot is painted: next frame's colour fringe, and the reading zone's scale where the list can't say
         // (at the very end of a room it gives no positions)
         let (mids, painted, mid_id) = (self.reading.mids.clone(), self.reading.painted.clone(), m.id.clone());

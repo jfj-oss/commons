@@ -294,6 +294,8 @@ impl Mega {
         let y = if above > 8. { above } else { f32::from(at.y - area.top()) + 12. };
         let row = h_flex().id("react-pop").absolute().left(px(x)).top(px(y)).p(px(6.)).gap(px(2.)).rounded(px(18.)).bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            // closes on a click anywhere outside it, not only inside the message area that "react-back" covers
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| { if this.msg.pop.is_some() { this.msg.pop = None; cx.notify(); } }))
             .children(QUICK.iter().map(|em| {
                 let on_ = m.reactions.iter().any(|r| r.emoji == *em && r.mine);
                 let (mid, e) = (id.clone(), em.to_string());

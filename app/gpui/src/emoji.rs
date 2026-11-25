@@ -154,6 +154,9 @@ impl Mega {
         let list = list(self.emoji.list.clone(), cx.processor(|this, ix: usize, _, cx| this.emoji_row(ix, cx))).size_full();
         let panel = v_flex().id("emoji-panel").absolute().left(px(x)).top(px(y)).w(px(W)).h(px(H)).rounded(px(18.)).bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_UI).text_size(px(13.))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            // a click anywhere outside the panel closes it: the backdrop below only covers the message area, so the composer,
+            // the header and the room list need this (user 2026-11-25: menus from "+" close when you click off them)
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| this.emoji_close(window, cx)))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| { if ev.keystroke.key == "escape" { this.emoji_close(window, cx); cx.stop_propagation(); } }))
             .child(h_flex().px(px(12.)).pt(px(10.)).pb(px(6.)).gap(px(6.)).items_center()
                 .child(div().flex_1().min_w_0().child(Input::new(&self.emoji.input).appearance(false)))
