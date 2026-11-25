@@ -379,3 +379,14 @@ fn the_newer_offer_wins_and_the_relay_on_a_tie() {
     assert_eq!(newer(None, r("0.3.14", "gh")).unwrap().url, "gh");
     assert!(newer(None, None).is_none());
 }
+
+/// Online, by hand: `cargo test -p mega-gpui github_feed_live -- --ignored`. Reads the real GitHub feed and checks the
+/// file against the real key.
+#[test]
+#[ignore]
+fn github_feed_live() {
+    let rel = check_github("0.0.1", "linux-gpui-x86_64").unwrap().expect("a release");
+    let (got, total) = (AtomicU64::new(0), AtomicU64::new(0));
+    let data = fetch_verified(&rel, &public_key(), &got, &total).unwrap();
+    eprintln!("GitHub offers {} ({} bytes, signature good)", rel.version, data.len());
+}
