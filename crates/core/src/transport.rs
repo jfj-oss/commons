@@ -148,6 +148,16 @@ impl Api {
             c => Err(anyhow!("call token: relay said {c} {}", String::from_utf8_lossy(&r.body))),
         }
     }
+    /// Send the relay's owner a problem report ([`crate::diag`]). An older relay without the route says 404.
+    pub fn diag(&self, k: &SigningKey, report: &serde_json::Value) -> Result<()> {
+        let body = serde_json::to_vec(report)?;
+        let r = self.t.request(Some(k), "POST", "/v1/diag", &body, T)?;
+        match r.status {
+            200 => Ok(()),
+            404 => Err(anyhow!("this relay does not take problem reports")),
+            c => Err(anyhow!("problem report: relay said {c} {}", String::from_utf8_lossy(&r.body))),
+        }
+    }
     /// Who the relay's media server reports in these rooms' calls, as device ids. The relay only answers about
     /// rooms this account is a current member of; a relay without calls configured says 404.
     pub fn call_presence(&self, k: &SigningKey, gids: &[String]) -> Result<CallPresenceResp> {

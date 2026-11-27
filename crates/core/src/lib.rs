@@ -1,5 +1,6 @@
 //! commons-core: the whole client (identity, MLS, sync, local history) without any UI.
 pub mod call;
+pub mod diag;
 pub mod callbridge;
 pub mod client;
 pub mod direct;

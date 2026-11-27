@@ -22,8 +22,8 @@ impl Kind {
 pub const PASSING_FADE: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct CallError { pub kind: Kind, pub msg: String }
-impl CallError { pub fn new(kind: Kind, msg: impl Into<String>) -> CallError { CallError { kind, msg: msg.into() } } }
+pub struct CallError { pub kind: Kind, pub msg: String, /** The call server it was trying, for the problem report. */ pub server: Option<(String, Option<u16>)> }
+impl CallError { pub fn new(kind: Kind, msg: impl Into<String>) -> CallError { CallError { kind, msg: msg.into(), server: None } } }
 impl std::fmt::Display for CallError { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.msg) } }
 
 fn has(m: &str, words: &[&str]) -> bool { words.iter().any(|w| m.contains(w)) }

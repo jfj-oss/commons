@@ -148,6 +148,8 @@ pub enum Command {
     MicMeter(bool),
     /// Enable or disable push-to-talk mode (the preference). While on, the mic follows press/release.
     SetPushToTalk(bool),
+    /// Whether a failed call sends its problem report to the server's owner (settings, on by default).
+    SetReportProblems(bool),
     /// A push-to-talk key went down (`true`) or up (`false`); ignored while PTT is off or the call is deafened.
     PushToTalk(bool),
     /// A voice shortcut went down or up: the same path for the system-wide keys (the portal) and the window's own keys,
@@ -231,6 +233,10 @@ pub struct Snapshot {
     #[serde(rename = "noiseSuppression")] pub noise_suppression: bool,
     #[serde(rename = "autoGainControl")] pub auto_gain_control: bool,
     #[serde(rename = "pushToTalk")] pub push_to_talk: bool,
+    /// The setting: failed calls send their report to the server's owner.
+    #[serde(rename = "reportProblems")] pub report_problems: bool,
+    /// The last failure's report as text, for the Copy button by the error (also when sending is off).
+    pub diag: Option<String>,
     #[serde(rename = "pttHeld")] pub ptt_held: bool,
     /// The screen share and the shared app's sound; see [`crate::calls::share`].
     pub share: ShareView,
@@ -559,6 +565,12 @@ struct Actor {
     room_name: String,
     phase: &'static str,
     error: Option<(CallError, Instant)>,
+    diag: Option<String>,
+    /// The call log, server and attempt count as they were when the call was last left: a join that fails leaves
+    /// before it reports, and the report needs what led up to it.
+    last: LastCall,
+    /// The call server the last failed attempt was trying (its address and TURN port).
+    tried: Option<(String, Option<u16>)>,
     events: VecDeque<String>,
     call: u64,
     gen: u64,
@@ -629,7 +641,7 @@ impl Actor {
         let settings_path = opts.settings_path.clone();
         Actor {
             core, lane: Lane::new("mega-call-core"), game_lane: Lane::new("mega-call-keys"), opts, tx, snap_out, version, taps,
-            gid: None, room_name: String::new(), phase: "idle", error: None, events: VecDeque::new(), call: 0, gen: 0, session: None, token: None,
+            gid: None, room_name: String::new(), phase: "idle", error: None, diag: None, last: LastCall::default(), tried: None, events: VecDeque::new(), call: 0, gen: 0, session: None, token: None,
             attempt: 0, retry_at: None, rejoin_started: None, reconnecting_since: None, media: MediaWatch::default(), polling: false, me: String::new(),
             members: BTreeMap::new(), blocked: BTreeMap::new(), tracks: BTreeMap::new(), speaking: HashSet::new(), want_speaking: false, speaking_sent: None,
             speak_at: Instant::now() - Duration::from_secs(5), speak_due: None, decrypt_fail: HashMap::new(), rekeyed: HashMap::new(),
@@ -663,7 +675,43 @@ impl Actor {
         while self.events.len() > 100 { self.events.pop_front(); }
         self.dirty = true;
     }
-    fn fail(&mut self, e: CallError) { self.log(format!("error: {}", e.msg)); self.error = Some((e, Instant::now())); self.dirty = true; }
+    fn fail(&mut self, e: CallError) {
+        self.log(format!("error: {}", e.msg));
+        if worth_reporting(&e) { self.report(&e); }
+        self.error = Some((e, Instant::now()));
+        self.dirty = true;
+    }
+
+    /// What went wrong, for the server's owner: the error, the call's own log and this computer's setup. Never keys,
+    /// tokens, messages or names of other people (the log has none; `commons_core::diag::scrub` takes out paths).
+    fn report(&mut self, e: &CallError) {
+        let all: Vec<&String> = self.last.events.iter().chain(self.events.iter()).collect();
+        let events = all[all.len().saturating_sub(60)..].to_vec();
+        let r = json!({
+            "kind": "call",
+            "at": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+            "version": crate::update::current_version(),
+            "os": std::env::consts::OS, "arch": std::env::consts::ARCH, "os_version": os_version(),
+            "error": {"kind": e.kind.as_str(), "msg": e.msg},
+            "phase": self.phase, "attempt": self.attempt.max(self.last.attempt),
+            "server": self.token.as_ref().map(|t| t.url.clone()).or_else(|| self.last.server.clone()).or_else(|| self.tried.as_ref().map(|t| t.0.clone())),
+            "turn_port": self.token.as_ref().and_then(|t| t.turn_port).or(self.last.turn_port).or_else(|| self.tried.as_ref().and_then(|t| t.1)),
+            "in_call": self.session.is_some(),
+            "mic": {"name": self.settings.mic_name, "quiet": self.mic_quiet(), "system_muted": self.sys_muted, "push_to_talk": self.settings.push_to_talk},
+            "speaker": self.settings.out_name,
+            "events": events,
+        });
+        self.diag = Some(serde_json::to_string_pretty(&r).unwrap_or_default());
+        if !self.settings.report_problems { return; }
+        let (core, lane) = (self.core.clone(), self.lane.clone());
+        tokio::spawn(async move {
+            match tokio::time::timeout(Duration::from_secs(30), lane.call(&core, "call_diag", json!({"report": r}))).await {
+                Ok(Ok(v)) => log::info!("call: problem report: {v}"),
+                Ok(Err(m)) => log::info!("call: problem report not sent: {m}"),
+                Err(_) => log::info!("call: problem report: no answer in time"),
+            }
+        });
+    }
 
     // -------------------------------------------------------------------------------------------- messages
     fn on_msg(&mut self, m: Msg) {
@@ -723,6 +771,7 @@ impl Actor {
                 self.save_settings(); self.apply_audio();
             }
             Command::SetProcessing(p) => { self.set_processing(p); }
+            Command::SetReportProblems(on) => { self.settings.report_problems = on; self.save_settings(); self.dirty = true; }
             Command::SetPushToTalk(p) => { self.settings.push_to_talk = p; self.save_settings(); if p { self.ptt_held = false; self.set_muted(true); } self.dirty = true; }
             Command::PushToTalk(down) => self.push_to_talk(down),
             Command::StartShare { profile, source, audio } => self.share_cmd(ShareCmd::Start { profile, source, audio }, true),
@@ -935,6 +984,9 @@ impl Actor {
     fn join(&mut self, gid: String, name: String) {
         if self.gid.is_some() { self.leave(); }
         self.reset();
+        self.last = LastCall::default();   // a new call: the last one's log is not this one's
+        self.tried = None;
+        self.diag = None;
         self.gid = Some(gid);
         self.room_name = name;
         self.phase = "connecting";
@@ -944,6 +996,7 @@ impl Actor {
     }
 
     fn reset(&mut self) {
+        self.last = LastCall { events: std::mem::take(&mut self.events), server: self.token.as_ref().map(|t| t.url.clone()), turn_port: self.token.as_ref().and_then(|t| t.turn_port), attempt: self.attempt };
         self.error = None; self.events.clear(); self.token = None; self.attempt = 0; self.retry_at = None; self.rejoin_started = None;
         self.reconnecting_since = None; self.media.reset(); self.members.clear(); self.blocked.clear(); self.tracks.clear();
         self.speaking.clear(); self.speaking_sent = None; self.speak_due = None; self.decrypt_fail.clear(); self.game_muted = false;
@@ -1024,6 +1077,7 @@ impl Actor {
                 self.established(conn);
             }
             Err(e) => {
+                if e.server.is_some() { self.tried = e.server.clone(); }
                 if token_refused(&e.msg) { self.token = None; }
                 match attempt {
                     Attempt::Join(i) => {
@@ -1062,6 +1116,10 @@ impl Actor {
 
     fn established(&mut self, conn: Conn) {
         let Conn { room, mut events, book, st, tok } = conn;
+        if self.settings.report_problems {
+            let (core, lane) = (self.core.clone(), self.lane.clone());
+            tokio::spawn(async move { let _ = tokio::time::timeout(Duration::from_secs(30), lane.call(&core, "call_diag_flush", json!({}))).await; });
+        }
         if !room.e2ee_manager().enabled() {
             tokio::spawn(async move { let _ = room.close().await; });
             self.leave(); self.phase = "error";
@@ -1432,11 +1490,32 @@ impl Actor {
             mic_level: self.level, mic_quiet: self.mic_quiet(), mic_system_muted: self.sys_muted,
             echo_cancellation: self.settings.processing.echo_cancellation, noise_suppression: self.settings.processing.noise_suppression,
             auto_gain_control: self.settings.processing.auto_gain_control, push_to_talk: self.settings.push_to_talk, ptt_held: self.ptt_held,
+            report_problems: self.settings.report_problems, diag: self.diag.clone(),
             share: self.share_view.clone(), share_apps: self.share_apps.clone(),
             cameras: self.cameras.clone(), camera: self.camera_view.clone(), cam_id: self.settings.cam_id.clone(), local_video, muted_video,
             global_shortcuts: self.sc_status.as_str().into(), global_shortcuts_note: self.sc_note.clone(), shortcuts: self.sc_infos.clone(),
         }
     }
+}
+
+#[derive(Default)]
+struct LastCall { events: VecDeque<String>, server: Option<String>, turn_port: Option<u16>, attempt: u32 }
+
+/// Failures the server's owner may want to see: the call itself, devices, encryption. Not the ordinary ones (removed
+/// from the room, the other side busy, "join the call first").
+fn worth_reporting(e: &CallError) -> bool {
+    !matches!(e.kind, Kind::Removed | Kind::NotMember | Kind::Busy) && !e.msg.starts_with("Join the call first")
+}
+
+/// The OS release, where it is cheap to read (Linux os-release, the macOS product version); empty otherwise.
+fn os_version() -> String {
+    #[cfg(target_os = "linux")]
+    { if let Ok(t) = std::fs::read_to_string("/etc/os-release") { if let Some(l) = t.lines().find(|l| l.starts_with("PRETTY_NAME=")) { return l[12..].trim_matches('"').to_string(); } } }
+    #[cfg(target_os = "macos")]
+    { if let Ok(o) = std::process::Command::new("sw_vers").arg("-productVersion").output() { return String::from_utf8_lossy(&o.stdout).trim().to_string(); } }
+    #[cfg(target_os = "windows")]
+    { if let Ok(o) = std::process::Command::new("cmd").args(["/C", "ver"]).output() { return String::from_utf8_lossy(&o.stdout).trim().to_string(); } }
+    String::new()
 }
 
 /// One attempt: credentials (keys and a token, together), the keys in place, then the room. Nothing is published here.
@@ -1457,6 +1536,7 @@ async fn connect(core: Arc<dyn CoreLink>, lane: Lane, gid: String, reuse: Option
         let m = e.to_string();
         let mut ce = explain(&format!("connect: {m}"));
         if token_refused(&m) { ce.msg = format!("{} (token refused: 401)", ce.msg); }
+        ce.server = Some((tok.url.clone(), tok.turn_port));
         ce
     })?;
     Ok(Conn { room: Arc::new(room), events, book, st, tok })

@@ -78,7 +78,7 @@ impl Mega {
                     let s = this.call.snap.clone();
                     let mut p = crate::calls::audio::Processing { echo_cancellation: s.echo_cancellation, noise_suppression: s.noise_suppression, auto_gain_control: s.auto_gain_control };
                     match which { 0 => p.echo_cancellation = v, 1 => p = p.with_noise(v), _ => p.auto_gain_control = v }
-                    if which == 3 { this.call_cmd(Command::SetPushToTalk(v)); } else { this.call_cmd(Command::SetProcessing(p)); }
+                    if which == 3 { this.call_cmd(Command::SetPushToTalk(v)); } else if which == 4 { this.call_cmd(Command::SetReportProblems(v)); } else { this.call_cmd(Command::SetProcessing(p)); }
                     cx.notify();
                 });
             }))
@@ -118,6 +118,9 @@ impl Mega {
                 .child(sw("cs-echo", snap.echo_cancellation, "Echo cancellation", 0)).child(sw("cs-noise", snap.noise_suppression, "Noise suppression", 1)).child(sw("cs-agc", snap.auto_gain_control, "Automatic gain", 2))
                 .child(sw("cs-ptt", snap.push_to_talk, "Push to talk", 3))
                 .child(div().text_size(px(12.)).text_color(look::mute()).child(format!("Hold the {key_name} key while this window is focused, or the microphone button on the call card. {shortcuts}")))))
+            .child(self.setting("Problem reports", v_flex().gap(px(6.))
+                .child(sw("cs-report", snap.report_problems, "Send call problems to the server's owner", 4))
+                .child(div().text_size(px(12.)).text_color(look::mute()).child("When a call fails, mega sends the error, the call's own log, the app version and your system (no messages, no keys) to whoever runs this server, so they can fix it."))))
             .child(self.setting("Game keys", div().id("cs-gamekeys").relative().self_start().px(px(12.)).py(px(5.)).flex().items_center().cursor_pointer().font_family(look::F_UI).text_size(px(13.))
                 .child(sq::back(10., rgb(0x0b0a10))).child(sq::front(10., None, Some((1., look::line())), None)).child(div().relative().child("Game keys\u{2026}")).child(hits.track("cs-gamekeys"))
                 .on_click(cx.listener(|this, _, window, cx| { this.set_settings_open(false); this.gk_open(window, cx); }))));

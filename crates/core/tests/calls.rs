@@ -239,3 +239,40 @@ fn browser_bridge_listener_stops_at_shutdown() {
     assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err(), "nothing listens after shutdown");
     app.shutdown(); // a second call is harmless
 }
+
+/// Problem reports (crate diag, relay POST /v1/diag): a member's report reaches the relay's table with the home folder
+/// taken out; one the relay cannot take waits in the queue and goes with the next flush; strangers and huge bodies are refused.
+#[test]
+fn problem_reports_reach_the_relay_and_wait_when_it_is_away() {
+    use commons_core::api::App;
+    use serde_json::json;
+    let net = net_with_calls();
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::with_kdf(dir.path().to_path_buf(), &net.url(), commons_core::vault::KdfParams::TEST);
+    app.call("create_account", json!({"name": "A", "passphrase": "correct horse battery", "relay": net.url()})).unwrap();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let r = app.call("call_diag", json!({"report": {"kind": "call", "error": {"kind": "network", "msg": format!("could not open {home}/x")}, "events": ["one", "two"]}})).unwrap();
+    assert_eq!(r["sent"], 1, "{r}");
+    assert_eq!(r["waiting"], 0);
+    let db = rusqlite::Connection::open(net.db_path()).unwrap();
+    let (n, text): (i64, String) = db.query_row("SELECT COUNT(*), MAX(report) FROM diag_reports", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!(n, 1);
+    assert!(text.contains("could not open ~/x"), "home folder scrubbed: {text}");
+    if home.len() > 3 { assert!(!text.contains(&home)); }
+    assert!(app.call("call_diag", json!({"report": "not an object"})).is_err());
+
+    // strangers and oversized bodies, straight against the relay
+    let k = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+    let tr = commons_core::transport::HttpTransport::new(&net.url());
+    use commons_core::transport::Transport;
+    let d5 = std::time::Duration::from_secs(5);
+    assert_eq!(tr.request(Some(&k), "POST", "/v1/diag", b"{}", d5).unwrap().status, 403, "an unregistered device");
+    assert_eq!(tr.request(None, "POST", "/v1/diag", b"{}", d5).unwrap().status, 401, "unsigned");
+
+    // the per-device limit: the 13th report in a window waits in the queue instead of being lost
+    for i in 0..11 { assert_eq!(app.call("call_diag", json!({"report": {"i": i}})).unwrap()["sent"], 1, "report {i}"); }
+    let r = app.call("call_diag", json!({"report": {"i": "over"}})).unwrap();
+    assert_eq!(r["sent"], 0, "{r}");
+    assert_eq!(r["waiting"], 1, "kept for later: {r}");
+    assert!(dir.path().read_dir().unwrap().flatten().any(|e| e.path().join(commons_core::diag::QUEUE_FILE).exists() || e.file_name() == commons_core::diag::QUEUE_FILE), "the queue file is beside the account");
+}

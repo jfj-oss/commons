@@ -360,7 +360,7 @@ impl App {
         if in_call { self.saw_call(); }
         let r = self.dispatch(method, a);
         if in_call && r.is_ok() { self.saw_call(); }
-        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "file_transfers" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait" | "call_presence" | "live_poll" | "ring_poll" | "wall_get" | "notify_get" | "notify_beat" | "pcaudio_status" | "pcaudio_caps" | "pcaudio_streams") { self.nudge(); }
+        if !matches!(method, "snapshot" | "messages" | "state" | "file_read" | "file_transfers" | "avatar_versions" | "avatar_data" | "pairing_status" | "game_mute_wait" | "call_presence" | "live_poll" | "ring_poll" | "wall_get" | "notify_get" | "notify_beat" | "pcaudio_status" | "pcaudio_caps" | "pcaudio_streams" | "call_diag" | "call_diag_flush") { self.nudge(); }
         r
     }
 
@@ -989,6 +989,37 @@ impl App {
             "open_call_in_browser" => Err("Calls run in this app on your phone; there is no browser to hand them to.".into()),
             // A link someone posted, opened in the system browser when clicked. Only plain http(s) addresses.
             "open_link" => { let u = s(&a, "url"); if !link_ok(&u) { return Err("that is not a web address this app opens".into()); } Ok(json!({"opened": crate::callbridge::open_in_browser(&u)})) }
+            // A problem report for the relay's owner (crate::diag), sent with the client free; queued when it cannot go.
+            // "call_diag_flush" sends only what waits (after a call connects).
+            "call_diag" | "call_diag_flush" => {
+                static QUEUE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+                let (api, k, dir) = self.with(|c| { let (api, k) = c.net_handle().map_err(e)?; Ok((api, k, c.dir.clone())) })?;
+                let _q = QUEUE.lock().unwrap_or_else(|p| p.into_inner());
+                let mut q = crate::diag::load_queue(&dir);
+                if m == "call_diag" {
+                    let mut r = a["report"].clone();
+                    if !r.is_object() { return Err("bad report".into()); }
+                    crate::diag::scrub(&mut r);
+                    crate::diag::fit(&mut r, 15 * 1024);
+                    q.push(r);
+                }
+                if q.is_empty() { return Ok(json!({"sent": 0, "waiting": 0})); }
+                let (mut sent, mut left, mut last_err) = (0, Vec::new(), None::<String>);
+                for r in q {
+                    if last_err.is_some() { left.push(r); continue; }
+                    match api.diag(&k, &r) {
+                        Ok(()) => sent += 1,
+                        Err(x) => {
+                            let m = x.to_string();
+                            if m.contains("does not take") { left.clear(); last_err = Some(m); break; }   // an older relay: nothing will go
+                            if m.contains("said 400") || m.contains("said 413") { continue; }           // this one never will
+                            left.push(r); last_err = Some(m);
+                        }
+                    }
+                }
+                crate::diag::save_queue(&dir, &left);
+                Ok(json!({"sent": sent, "waiting": left.len(), "error": last_err}))
+            }
             // the relay round trip happens with the client free, like file downloads
             "call_token" => {
                 let gid = s(&a, "gid");
