@@ -68,7 +68,7 @@ pub struct Prev { pub sig: String, pub at: Option<Instant>, pub who: String, pub
 
 /// The column's state: where it is scrolled, what it holds, how big it is.
 /// After the wheel brought the column up from a chat's rail, the card in focus opens this long after the wheel stops (seconds).
-pub const PEEK_OPEN: f64 = 1.0;
+pub const PEEK_OPEN: f64 = 0.3;
 
 pub struct NavUi {
     /** the column was reached by the wheel over a chat's rail: when the wheel last moved; the card in focus opens a second after it stops */
@@ -260,7 +260,7 @@ impl Mega {
         // the focused card tells friends where we are once it has settled
         let told = self.nav.scroll.settled.filter(|i| *i < items.len());
         if told != self.nav.told { self.nav.told = told; self.focus_card(told.map(|i| (items[i].cid.clone(), items[i].room.clone()))); }
-        // reached from a chat's rail by the wheel: a second after the wheel stops, the text room in focus opens
+        // reached from a chat's rail by the wheel: PEEK_OPEN after the wheel stops (and the column has settled), the text room in focus opens
         if let Some(t0) = self.nav.peek {
             if home { self.nav.peek = None; }
             else if now - t0 >= PEEK_OPEN {
