@@ -69,7 +69,7 @@ try {
   await until(async () => { try { await W.connect(); return true; } catch { return false; } }, 30000, 'window test port');
   await until(async () => (await W.cmd('core', { method: 'snapshot' })).ok, 30000, 'window core unlocked');
   await sleep(3000);
-  await nshot('1-home'); await W.cmd('go', { name: 'Ascii club' }); await sleep(2500); await nshot('2-rooms');
+  await nshot('1-home'); await W.cmd('phone_more', { on: true }); await sleep(800); await nshot('1b-home-plus-menu'); await W.cmd('phone_more', { on: false }); await sleep(500); await W.cmd('go', { name: 'Ascii club' }); await sleep(2500); await nshot('2-rooms');
   await W.cmd('open', { name: 'lounge' }); await sleep(3500); await nshot('3-room');
   await W.cmd('scroll', { dy: 200 }); await sleep(800); await nshot('4-room-scrolled');
   await W.cmd('home'); await sleep(1500); await W.cmd('go', { name: 'Ascii club' }); await sleep(2000);

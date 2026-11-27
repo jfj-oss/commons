@@ -24,6 +24,8 @@ pub struct Mega {
     pub core: Arc<Core>,
     pub screen: Screen,
     pub error: Option<SharedString>,
+    /// Phone: the top bar's + menu (colours, draw, join, new) is open.
+    pub phone_more: bool,
     pub busy: bool,
     // sign-in
     pub pass: Entity<InputState>,
@@ -161,7 +163,7 @@ impl Mega {
         let mut this = Mega {
             ob, dev, files: Default::default(), voice: Default::default(), fly: Default::default(), nav, rail: Default::default(), av: Default::default(), paint, wall: crate::wall::WallUi::new(), call, upd, mem, pending_link: crate::members::link_from_args(), ring: Default::default(), rune: Default::default(), uitest: crate::uitest::from_env(), fake_dm_unread: 0, tour: crate::tour::TourUi::new(cx), dens: crate::density::DensUi::new(window, cx), gk: crate::gamekeys::GameKeys::new(window, cx), dm_marks: (String::new(), 0), new_line: None, new_pending: 0, new_place: None, reading: Default::default(), sel: crate::select::Sel::new(cx), msg: Default::default(), find, emoji,
             level: Level::Home, prefs, on_battery: false, pres: Default::default(), clock: 0., bd: crate::backdrop::Bd::new(""), typing_ui: Default::default(), typing_at: Instant::now(), fake_hidden: false, holes: Default::default(), arrivals: Default::default(), flights: Default::default(), epoch: Instant::now(), last_anim: Instant::now(), notify_settings: Value::Null, set_name, set_rune,
-            core, screen: Screen::Starting, error: None, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
+            core, screen: Screen::Starting, error: None, phone_more: false, busy: false, pass, name, relay, default_relay: String::new(), snap: None, snap_hash: String::new(), cid: None, gid: None,
             win: MsgWindow::default(), limit: std::env::var("MEGA_GPUI_LIMIT").ok().and_then(|x| x.parse().ok()).unwrap_or(200),
             list: ListState::new(0, ListAlignment::Bottom, px(600.)), composer, typing_sent: None, ticking: false, again: false, first_frame_done: false,
             auto: crate::bench::Auto::from_env(), _tasks: vec![], _subs: subs,

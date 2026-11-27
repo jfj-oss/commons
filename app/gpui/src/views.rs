@@ -56,8 +56,24 @@ impl Mega {
         // a phone: the name, then settings at the right; the other chips on a row of their own below
         let settings = chip("settings", "settings").on_click(cx.listener(|this, _, window, cx| this.go(Level::Settings, window, cx)));
         let (settings_first, settings_last) = if phone { (Some(settings), None) } else { (None, Some(settings)) };
-        let extra_row = phone && !extra.is_empty();
-        let (extra_top, extra_below) = if extra_row { (vec![], std::mem::take(&mut extra)) } else { (std::mem::take(&mut extra), vec![]) };
+        // a phone folds the other chips into a + at the right of the bar: a menu that floats over the page, never over the card's top
+        let more = phone && !extra.is_empty();
+        let (extra_top, extra_menu) = if more { (vec![], std::mem::take(&mut extra)) } else { (std::mem::take(&mut extra), vec![]) };
+        let open = more && self.phone_more;
+        // the chip sets the state from what was drawn (a tap on the open menu's × also counts as a tap outside, which closes it first)
+        let plus = more.then(|| {
+            div().relative()
+                .child(chip("phone-more", if open { "\u{00d7}" } else { "+" }).min_w(px(44.)).on_click(cx.listener(move |this, _, _, cx| { this.phone_more = !open; cx.notify(); })))
+                .when(open, |d| d.child(deferred(
+                    anchored().anchor(Anchor::TopRight).snap_to_window().child(
+                        v_flex().id("phone-more-menu").mt(px(52.)).p(px(8.)).gap(px(8.)).items_end().rounded(px(18.)).bg(hsla(0., 0., 0.06, 0.96)).border_1().border_color(hsla(0., 0., 1., 0.12))
+                            .children(extra_menu)
+                            // any choice closes the menu (the chip's own click runs first); a tap outside closes it too
+                            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| { this.phone_more = false; cx.notify(); }))
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| { this.phone_more = false; cx.notify(); })),
+                    ),
+                ).with_priority(3)))
+        });
         let top = h_flex().flex_none().w_full().px(px(if phone { 12. } else { 16. })).py(px(if phone { 8. } else { 12. })).gap(px(10.)).items_center()
             .when_some(back, |d, to| d.child(chip("back", "\u{2190} back").on_click(cx.listener(move |this, _, window, cx| this.go(to.clone(), window, cx)))))
             .child(div().font_family(look::F_SHARP).text_size(px(if phone { 30. } else { 36. })).line_height(px(if phone { 34. } else { 36. })).max_w(px(if phone { 300. } else { 560. })).overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
@@ -67,10 +83,10 @@ impl Mega {
             .when(self.still(), |d| d.child(div().font_family(look::F_UI).text_size(px(13.)).text_color(look::mute()).child("battery saver")))
             .child(div().flex_1())
             .children(settings_first)
+            .children(plus)
             .children(extra_top)
             .children(settings_last);
         v_flex().flex_none().w_full().child(top)
-            .when(extra_row, |d| d.child(h_flex().w_full().px(px(12.)).pb(px(8.)).gap(px(8.)).flex_wrap().children(extra_below)))
     }
 
     /// An owner's colours for the open room: a chip that opens the colours panel (square, hue, hex, presets, reset) on this room.

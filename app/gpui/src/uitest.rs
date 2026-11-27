@@ -25,6 +25,7 @@
 //!   {"cmd":"seen_marks"} {"cmd":"hover","x","y"}   where the read marks are drawn; move the pointer there (window pixels)
 //!   {"cmd":"drop","x","y"}   a drop of water falls into the open room's backdrop at (x, y), fractions of the room
 //!   {"cmd":"stir"}  {"cmd":"bd"}   a new message's ripple in the open room; the room backdrop's clock, heat and ripples
+//!   {"cmd":"phone_more","on"}  the phone top bar's + menu open or shut
 //!   {"cmd":"draw","on"}  {"cmd":"tool","brush","col"}  {"cmd":"pen","points":[[x,y],...]}  {"cmd":"wall"}   drawing mode, the brush, a stroke in window pixels, what the wall holds
 //!   {"cmd":"wall_do","what"}                     lock | clear (the owner's buttons; clear asks twice)
 use crate::app::Mega;
@@ -289,6 +290,7 @@ impl Mega {
                 "paint_do" => self.paint_do(&cmd, window, cx),
                 "paint_for" => { self.paint_open_for(&s("cid"), &s("room"), window, cx); self.paint_state() }
                 "paint_state" => self.paint_state(),
+                "phone_more" => { self.phone_more = cmd["on"].as_bool().unwrap_or(!self.phone_more); cx.notify(); json!({"open": self.phone_more}) }
                 "draw" => { match cmd["on"].as_bool() { Some(true) => self.wall_on(window, cx), Some(false) => self.wall_off(), None => self.wall_toggle(window, cx) } cx.notify(); json!({"on": self.wall.on, "key": self.wall.key}) }
                 "tool" => { if let Some(b) = cmd["brush"].as_u64() { self.wall.brush = b as u8; } if let Some(c) = cmd["col"].as_u64() { self.wall.col = c as u8; } json!({"ok": true}) }
                 "pen" => {
