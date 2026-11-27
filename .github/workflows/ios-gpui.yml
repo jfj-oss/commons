@@ -55,6 +55,8 @@ jobs:
           du -h "$lib"
           native=$(grep -o 'native-static-libs: .*' "$RUNNER_TEMP/rust.log" | tail -1 || true)
           native=${native#native-static-libs: }
+          # the log is coloured (CARGO_TERM_COLOR: always): strip the escape codes, or "-lm" reaches the linker as "-lm\e[0m"
+          native=$(printf '%s' "$native" | perl -pe 's/\e\[[0-9;]*[A-Za-z]//g; s/\r//g')
           test -n "$native" || { echo "::error::rustc did not print native-static-libs"; exit 1; }
           echo "system libraries: $native"
           clang_rt="$(xcrun --sdk iphoneos clang --print-resource-dir)/lib/darwin"
