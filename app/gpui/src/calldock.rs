@@ -177,7 +177,18 @@ impl Mega {
         let mut notes = v_flex().id("call-notes").absolute().right(px(DOCK_W + 10.)).top_0().w(px(240.)).gap(px(6.));
         let note = |t: String, bad: bool| div().relative().px(px(10.)).py(px(8.)).font_family(look::F_UI).text_size(px(12.)).line_height(px(16.)).text_color(if bad { rgb(look::DANGER).into() } else { look::paper() })
             .child(sq::back(12., rgb(0x14131a))).child(div().relative().child(t));
-        if let Some(e) = snap.error.clone().filter(|e| self.call.err_hidden.as_deref() != Some(e.msg.as_str())) { let m = e.msg.clone(); notes = notes.child(div().id("c-err").cursor_pointer().child(note(e.msg, true)).on_click(cx.listener(move |this, _, _, cx| { this.call.err_hidden = Some(m.clone()); cx.notify(); }))); }
+        if let Some(e) = snap.error.clone().filter(|e| self.call.err_hidden.as_deref() != Some(e.msg.as_str())) {
+            let m = e.msg.clone();
+            notes = notes.child(div().id("c-err").cursor_pointer().child(note(e.msg, true)).on_click(cx.listener(move |this, _, _, cx| { this.call.err_hidden = Some(m.clone()); cx.notify(); })));
+            // the whole report as text, to paste to whoever runs the server (also when sending it is switched off)
+            if let Some(d) = snap.diag.clone() {
+                let copied = self.call.diag_copied;
+                notes = notes.child(div().id("c-err-copy").relative().self_start().px(px(10.)).py(px(5.)).cursor_pointer().font_family(look::F_UI).text_size(px(12.)).text_color(look::paper())
+                    .child(sq::back(10., rgb(0x14131a))).child(sq::front(10., None, Some((1., look::line())), None))
+                    .child(div().relative().child(if copied { "Copied" } else if snap.report_problems { "Copy details (also sent to the server's owner)" } else { "Copy details" }))
+                    .on_click(cx.listener(move |this, _, _, cx| { cx.stop_propagation(); cx.write_to_clipboard(ClipboardItem::new_string(d.clone())); this.call.diag_copied = true; cx.notify(); })));
+            }
+        }
         if snap.game_muted { notes = notes.child(note("Muted by game key. Friends see you as muted.".into(), false)); }
         if !snap.blocked.is_empty() { notes = notes.child(note(format!("Blocked {} stream(s) that are not from a current member or not encrypted.", snap.blocked.len()), true)); }
         if !muted && (snap.mic_quiet || snap.mic_system_muted == Some(true)) {

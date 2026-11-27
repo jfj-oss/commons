@@ -4,7 +4,7 @@
 //!   {"cmd":"join","gid","name"} {"cmd":"leave"} {"cmd":"mute","on"} {"cmd":"deafen","on"} {"cmd":"volume","account","v"}
 //!   {"cmd":"snapshot"} {"cmd":"hear","identity","hz","ms"} {"cmd":"game","muted":true|false|null} {"cmd":"trust_all","on"}
 //!   {"cmd":"meter","on"} (the settings meter) {"cmd":"devices"} {"cmd":"mic","id"} {"cmd":"out","id"} {"cmd":"processing","echo","noise","gain"}
-//!   {"cmd":"ptt_mode","on"} {"cmd":"ptt","down"} {"cmd":"plout","identity","ms"} {"cmd":"mic_options"}
+//!   {"cmd":"ptt_mode","on"} {"cmd":"ptt","down"} {"cmd":"plout","identity","ms"} {"cmd":"mic_options"} {"cmd":"report_problems","on"}
 //!   {"cmd":"share","profile":"text|motion|motion60","source":"test|portal","w","h","speed","audio":<stream id>}  {"cmd":"share_stop"}
 //!   {"cmd":"share_switch","source","w","h","speed"} {"cmd":"share_profile","profile"} {"cmd":"share_end"} {"cmd":"share_stats"}
 //!   {"cmd":"share_apps"} {"cmd":"share_audio","stream"} {"cmd":"share_audio_stop"}
@@ -75,6 +75,7 @@ async fn handle(e: &Arc<CallEngine>, c: &Value, quit: &tokio::sync::mpsc::Unboun
             e.send(Command::SetProcessing(p)); json!({"ok": true})
         }
         "ptt_mode" => { e.send(Command::SetPushToTalk(on)); json!({"ok": true}) }
+        "report_problems" => { e.send(Command::SetReportProblems(on)); json!({"ok": true}) }
         "shortcut" => match super::shortcuts::Shortcut::from_id(&s("id")) {
             Some(sc) => { e.send(Command::Shortcut { shortcut: sc, down: c["down"].as_bool().unwrap_or(on) }); json!({"ok": true}) }
             None => json!({"error": "unknown shortcut id"}),

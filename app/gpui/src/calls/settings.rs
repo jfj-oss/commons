@@ -23,11 +23,13 @@ pub struct CallSettings {
     pub cam_profile: Option<super::camera::CamProfile>,
     /// One output volume per account, 0 to 10 (1 is unchanged), as `commons.call.volumes`.
     pub volumes: BTreeMap<String, f64>,
+    /// Send a problem report to the server's owner when a call fails (on unless switched off; crate `commons_core::diag`).
+    pub report_problems: bool,
 }
 
 impl Default for CallSettings {
     fn default() -> CallSettings {
-        CallSettings { mic_id: None, mic_name: None, out_id: None, out_name: None, processing: Processing::ON, push_to_talk: false, cam_id: None, cam_profile: None, volumes: BTreeMap::new() }
+        CallSettings { mic_id: None, mic_name: None, out_id: None, out_name: None, processing: Processing::ON, push_to_talk: false, cam_id: None, cam_profile: None, volumes: BTreeMap::new(), report_problems: true }
     }
 }
 
@@ -48,6 +50,7 @@ impl CallSettings {
         s.processing.noise_suppression = v["noiseSuppression"].as_bool() != Some(false);
         s.processing.auto_gain_control = v["autoGainControl"].as_bool() != Some(false);
         s.push_to_talk = v["ptt"].as_bool() == Some(true);
+        s.report_problems = v["reportProblems"].as_bool() != Some(false);
         if let Some(id) = v["camId"].as_str() { s.cam_id = Some(id.to_string()); }
         s.cam_profile = v["cameraProfile"].as_str().and_then(super::camera::CamProfile::parse);
         if let Some(vols) = v["volumes"].as_object() {
@@ -68,6 +71,7 @@ impl CallSettings {
             "noiseSuppression": self.processing.noise_suppression,
             "autoGainControl": self.processing.auto_gain_control,
             "ptt": self.push_to_talk,
+            "reportProblems": self.report_problems,
             "camId": self.cam_id,
             "cameraProfile": self.cam_profile.map(|p| p.name()),
             "volumes": serde_json::Value::Object(vols),
@@ -86,6 +90,7 @@ mod tests {
         let s = CallSettings::default();
         assert!(s.processing.echo_cancellation && s.processing.noise_suppression && s.processing.auto_gain_control);
         assert!(!s.push_to_talk);
+        assert!(s.report_problems, "problem reports are on unless switched off");
         assert_eq!(s.mic_id, None);
         assert!(s.volumes.is_empty());
     }

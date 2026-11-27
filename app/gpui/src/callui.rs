@@ -62,6 +62,8 @@ pub struct CallUi {
     pub mini: Option<AnyWindowHandle>,
     pub pop_handle: Option<AnyWindowHandle>,
     pub error_shown: Option<String>,
+    /// The Copy details button by the call error was pressed (until the next error).
+    pub diag_copied: bool,
     /// Where each control was last painted, for checks.
     pub hits: crate::calldock::Hits,
     /// The lock's explainer is open.
@@ -95,7 +97,7 @@ impl CallUi {
         });
         CallUi {
             engine: None, snap: Default::default(), settings_open: false, menu: None, vol, frames, shown: Shown::default(), fake_alive: Arc::new(AtomicBool::new(false)), tiles: vec![], deck: Deck::default(),
-            deck_w, resize: None, grip: cx.focus_handle(), live_since: 0, live_ready: false, live_busy: false, asked: false, ptt_key: "`".into(), popped: false, mini: None, pop_handle: None, error_shown: None, hits: Default::default(), explain: false, rune_open: false, err_hidden: None, dd: None, share_profile: crate::calls::share::Profile::Text, deck_hidden: false,
+            deck_w, resize: None, grip: cx.focus_handle(), live_since: 0, live_ready: false, live_busy: false, asked: false, ptt_key: "`".into(), popped: false, mini: None, pop_handle: None, error_shown: None, diag_copied: false, hits: Default::default(), explain: false, rune_open: false, err_hidden: None, dd: None, share_profile: crate::calls::share::Profile::Text, deck_hidden: false,
             _tasks: vec![task], _subs: vec![sub],
         }
     }
@@ -179,7 +181,7 @@ impl Mega {
             self.call.deck.layout(&ids);
             self.call.shown.keep_only(&ids, window);
         }
-        if let Some(err) = &snap.error { if self.call.error_shown.as_deref() != Some(err.msg.as_str()) { self.call.error_shown = Some(err.msg.clone()); } }
+        if let Some(err) = &snap.error { if self.call.error_shown.as_deref() != Some(err.msg.as_str()) { self.call.error_shown = Some(err.msg.clone()); self.call.diag_copied = false; } }
         cx.notify();
     }
     fn call_ended(&mut self, window: &mut Window) {

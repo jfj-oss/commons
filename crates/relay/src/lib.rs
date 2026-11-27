@@ -31,6 +31,10 @@ pub struct Limits {
     pub call_tokens_per_window: u32,
     /// Presence checks one device may make per window. One check asks about all the rooms on screen.
     pub call_presence_per_window: u32,
+    /// Problem reports (POST /v1/diag) one device may send per window, and the whole relay. Kept: the newest
+    /// [`DIAG_KEEP`]. Only registered devices can send them, and each is at most [`MAX_DIAG_BYTES`].
+    pub diag_reports_per_window: u32,
+    pub diag_reports_total_per_window: u32,
     /// When set, a new account needs this secret to register (a device of an existing account does not).
     pub invite_secret: Option<String>,
     pub max_accounts: u64,
@@ -101,6 +105,8 @@ impl Default for Limits {
             min_app_version: None,
             call_tokens_per_window: 60,
             call_presence_per_window: 1200,
+            diag_reports_per_window: 12,
+            diag_reports_total_per_window: 300,
             max_accounts: 1000,
             max_devices_per_account: 32,
             max_entry_bytes_per_account: 4 << 30,
@@ -321,6 +327,7 @@ pub fn open_db(path: &str) -> rusqlite::Result<Connection> {
          CREATE INDEX IF NOT EXISTS pwinv_owner ON pwinvites(owner);
          CREATE TABLE IF NOT EXISTS usage(account TEXT PRIMARY KEY, entry_bytes INTEGER NOT NULL DEFAULT 0);
          CREATE TABLE IF NOT EXISTS relay_meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
+         CREATE TABLE IF NOT EXISTS diag_reports(id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, account TEXT NOT NULL, device TEXT NOT NULL, report TEXT NOT NULL);
          INSERT OR IGNORE INTO relay_meta(k,v) VALUES('id', lower(hex(randomblob(16))));",
     )?;
     Ok(c)
@@ -437,6 +444,10 @@ fn dec(s: &str, max: usize) -> Result<Vec<u8>, Resp> {
     if v.len() > max { return Err(status(StatusCode::PAYLOAD_TOO_LARGE, "too large")); }
     Ok(v)
 }
+/// Largest problem report a device may send, and how many the relay keeps (oldest dropped first).
+pub const MAX_DIAG_BYTES: usize = 16 * 1024;
+pub const DIAG_KEEP: i64 = 1000;
+
 fn dberr<E: std::fmt::Display>(e: E) -> Resp { tracing::error!("db error: {e}"); status(StatusCode::INTERNAL_SERVER_ERROR, "db") }
 
 /// Two secrets of any length, compared without an early exit.
@@ -1080,6 +1091,19 @@ fn route(st: &RelayState, m: &Method, ms: &str, seg: &[&str], headers: &HeaderMa
             let room = call_room(gid);
             let (token, expires) = mint_livekit_token(cfg, &a.device, &room, now_secs()).map_err(|_| status(StatusCode::INTERNAL_SERVER_ERROR, "token"))?;
             Ok(json(&CallTokenResp { url: cfg.url.clone(), token, room, identity: a.device, expires, turn_port: cfg.turn_port }))
+        }
+        // A member's app telling the owner what went wrong (a call that failed, with its log). Stored as sent, for
+        // whoever runs the relay to read (deploy/diag-reports.sh); never given out again through the API.
+        (Method::POST, ["v1", "diag"]) => {
+            let a = authenticate(&db, headers, ms, path, body, true)?.1.unwrap();
+            if body.len() > MAX_DIAG_BYTES { return Err(status(StatusCode::PAYLOAD_TOO_LARGE, "report too big")); }
+            let v: serde_json::Value = parse(body)?;
+            if !v.is_object() { return Err(status(StatusCode::BAD_REQUEST, "bad report")); }
+            st.limited(format!("diag:{}", a.device), lim.diag_reports_per_window, "too many reports, wait a little")?;
+            st.limited("diag".into(), lim.diag_reports_total_per_window, "too many reports, wait a little")?;
+            db.execute("INSERT INTO diag_reports(at, account, device, report) VALUES(?1, ?2, ?3, ?4)", params![now_secs() as i64, a.account, a.device, v.to_string()]).map_err(dberr)?;
+            db.execute("DELETE FROM diag_reports WHERE id <= (SELECT MAX(id) FROM diag_reports) - ?1", [DIAG_KEEP]).map_err(dberr)?;
+            Ok(status(StatusCode::OK, "ok"))
         }
         (Method::POST, ["v1", "groups", gid, "messages"]) => {
             let a = authenticate(&db, headers, ms, path, body, true)?.1.unwrap();
