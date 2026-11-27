@@ -119,6 +119,8 @@ pub enum Mode {
 impl Mode {
     /// `MEGA_GPUI_SHORTCUTS=off` turns it off; `bus:<address>` picks an address; anything else is the session bus.
     pub fn from_env() -> Mode {
+        // there is no global shortcut on a phone (and no D-Bus)
+        if cfg!(target_os = "ios") { return Mode::Off; }
         match std::env::var("MEGA_GPUI_SHORTCUTS").ok().as_deref() {
             Some("off") | Some("0") => Mode::Off,
             Some(s) if s.starts_with("bus:") => Mode::Bus(s[4..].to_string()),

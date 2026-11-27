@@ -37,7 +37,9 @@ pub fn set_edge(active: bool, cx: &mut App) {
     // Root paints its surface (inside the edge line, at a radius that is one too round for the box) with the theme's background: left
     // opaque it covers pieces of the edge arc. mega's own frame covers the whole window, so the surface is transparent.
     let _ = active;
-    Theme::update(cx, |t| { t.window_border = edge_colour(active); t.tokens.background = transparent_black().into(); });
+    // no edge line round a phone's screen
+    let edge = if crate::phone::on() { transparent_black() } else { edge_colour(active) };
+    Theme::update(cx, |t| { t.window_border = edge; t.tokens.background = transparent_black().into(); });
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -50,9 +52,12 @@ pub enum Mode {
     Flush,
     /// macOS: native traffic lights over our row.
     Mac,
+    /// The phone layout (phone.rs): no frame, no top row; the safe areas are padding.
+    Phone,
 }
 
 pub fn mode(window: &Window) -> Mode {
+    if crate::phone::on() { return Mode::Phone; }
     if cfg!(target_os = "macos") { return Mode::Mac; }
     match window.window_decorations() {
         Decorations::Server => Mode::System,
@@ -61,7 +66,7 @@ pub fn mode(window: &Window) -> Mode {
 }
 
 /// Height of the top row (0 when the system draws its own bar).
-pub fn row_h(m: Mode) -> f32 { if m == Mode::System { 0. } else { ROW } }
+pub fn row_h(m: Mode) -> f32 { if m == Mode::System || m == Mode::Phone { 0. } else { ROW } }
 /// Per side, the space between the window's edge and the content (Root's margin and edge, and the band).
 pub fn inset(m: Mode) -> f32 { if m == Mode::Framed { SHADOW + EDGE + BAND } else { 0. } }
 
@@ -70,7 +75,8 @@ pub fn viewport(window: &Window) -> Size<Pixels> {
     let m = mode(window);
     let s = window.viewport_size();
     let i = inset(m) * 2.;
-    size(px((f32::from(s.width) - i).max(0.)), px((f32::from(s.height) - i - row_h(m)).max(0.)))
+    let (st, sb, sl, sr) = if m == Mode::Phone { crate::phone::insets() } else { (0., 0., 0., 0.) };
+    size(px((f32::from(s.width) - i - sl - sr).max(0.)), px((f32::from(s.height) - i - row_h(m) - st - sb).max(0.)))
 }
 
 /// The size to ask for so that the content (below the row) is `w` x `h` (tests ask for a content size).
@@ -167,10 +173,14 @@ pub fn frame(window: &Window, page: AnyElement, view: Entity<Mega>) -> AnyElemen
     let m = mode(window);
     let active = window.is_window_active();
     let framed = m == Mode::Framed;
+    if m == Mode::Phone {
+        let (t, b, l, r) = crate::phone::insets();
+        return div().id("tb-frame").relative().flex().flex_col().size_full().bg(rgb(look::VOID)).pt(px(t)).pb(px(b)).pl(px(l)).pr(px(r)).child(page).into_any_element();
+    }
     let band = band_colour(active);
     let inner = div().id("tb-inner").relative().flex().flex_col().flex_1().min_h_0().w_full().bg(rgb(look::VOID))
         .when(framed, |d| d.rounded(px(R_IN)))
-        .when(m != Mode::System, |d| d.child(row(m, window, &view)))
+        .when(m != Mode::System && m != Mode::Phone, |d| d.child(row(m, window, &view)))
         .child(page);
     let mut f = div().id("tb-frame").relative().flex().flex_col().size_full().bg(if framed { band } else { rgb(look::VOID).into() })
         .when(framed, |d| d.rounded(px(R_OUT)).p(px(BAND)))

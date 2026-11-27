@@ -52,16 +52,25 @@ impl Mega {
             }
         }
         extra.extend(match self.level.clone() { Level::Server(cid) => self.community_buttons(&cid, cx), Level::Home => self.home_buttons(cx), _ => vec![] });
-        h_flex().flex_none().w_full().px(px(16.)).py(px(12.)).gap(px(10.)).items_center()
+        let phone = crate::phone::on();
+        // a phone: the name, then settings at the right; the other chips on a row of their own below
+        let settings = chip("settings", "settings").on_click(cx.listener(|this, _, window, cx| this.go(Level::Settings, window, cx)));
+        let (settings_first, settings_last) = if phone { (Some(settings), None) } else { (None, Some(settings)) };
+        let extra_row = phone && !extra.is_empty();
+        let (extra_top, extra_below) = if extra_row { (vec![], std::mem::take(&mut extra)) } else { (std::mem::take(&mut extra), vec![]) };
+        let top = h_flex().flex_none().w_full().px(px(if phone { 12. } else { 16. })).py(px(if phone { 8. } else { 12. })).gap(px(10.)).items_center()
             .when_some(back, |d, to| d.child(chip("back", "\u{2190} back").on_click(cx.listener(move |this, _, window, cx| this.go(to.clone(), window, cx)))))
-            .child(div().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).max_w(px(560.)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
+            .child(div().font_family(look::F_SHARP).text_size(px(if phone { 30. } else { 36. })).line_height(px(if phone { 34. } else { 36. })).max_w(px(if phone { 300. } else { 560. })).overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
             .when(net != "online", |d| d.child(div().id("net-state").font_family(look::F_UI).text_size(px(13.)).text_color(rgb(look::DANGER)).max_w(px(420.)).overflow_hidden().text_ellipsis().whitespace_nowrap()
                 .child(if net == "connecting" { "connecting…".to_string() } else if net_detail.is_empty() { "offline".to_string() } else { format!("offline: {net_detail}") })
                 .when(!net_detail.is_empty(), |d| { let t = net_detail.clone(); d.tooltip(move |window, cx| Tooltip::new(t.clone()).build(window, cx)) })))
             .when(self.still(), |d| d.child(div().font_family(look::F_UI).text_size(px(13.)).text_color(look::mute()).child("battery saver")))
             .child(div().flex_1())
-            .children(extra)
-            .child(chip("settings", "settings").on_click(cx.listener(|this, _, window, cx| this.go(Level::Settings, window, cx))))
+            .children(settings_first)
+            .children(extra_top)
+            .children(settings_last);
+        v_flex().flex_none().w_full().child(top)
+            .when(extra_row, |d| d.child(h_flex().w_full().px(px(12.)).pb(px(8.)).gap(px(8.)).flex_wrap().children(extra_below)))
     }
 
     /// An owner's colours for the open room: a chip that opens the colours panel (square, hue, hex, presets, reset) on this room.
@@ -264,6 +273,11 @@ impl Mega {
         let react_pop = self.react_pop(cx);
         if crate::reading::at_end(self.reading.remaining) { self.msg.below = 0; }
         let below = self.msg.below;
+        let phone = crate::phone::on();
+        let tap = crate::phone::pick(34., crate::phone::TAP);
+        let back = phone.then(|| { let cid = self.cid.clone(); div().id("room-back").flex_none().flex().items_center().justify_center().size(px(crate::phone::TAP)).rounded_full().bg(rgba(0x1a1820db)).border_1().border_color(look::line())
+            .child(crate::icons::icon(crate::icons::Icon::Left, 20., look::paper()))
+            .on_click(cx.listener(move |this, _, window, cx| { match cid.clone() { Some(c) => this.go(Level::Server(c), window, cx), None => this.go(Level::Home, window, cx) } })) });
         let bar_chips = self.room_bar(&gid, is_dm, owner, wall_btn, chat_cid, cx);
         let drag_seen = self.files.drag_seen.clone();
         let drop_hint = self.drop_overlay(rgb(duo.hi).into(), &title);
@@ -285,7 +299,8 @@ impl Mega {
             .on_drop(cx.listener(|this, p: &ExternalPaths, window, cx| this.files_dropped(p.paths().to_vec(), window, cx)))
             .children(backdrop.map(|b| div().absolute().inset_0().child(b)))
             .child(wall_layer)
-            .child(h_flex().flex_none().items_center().gap(px(10.)).px_5().pt_3().pb_1()
+            .child(h_flex().flex_none().items_center().gap(px(10.)).when(phone, |d| d.px_3().flex_wrap()).when(!phone, |d| d.px_5()).pt_3().pb_1()
+                .children(back)
                 .child(div().flex_1().min_w_0().flex().child(v_flex().relative().max_w_full().items_start().overflow_hidden().px(px(16.)).pt(px(4.)).pb(px(5.))
                     // the same slip as the composer's: the room's name and who is in it, on a squircle over the backdrop
                     .child(sq::back(16., hsla(0.71, 0.22, 0.07, 0.93))).child(hole(&holes))
@@ -300,7 +315,7 @@ impl Mega {
                 .child(list(self.list.clone(), cx.processor(|this, ix: usize, _, _| this.render_msg(ix))).size_full().pb(px(42.)))
                 .child(div().absolute().top_0().right_0().bottom_0().w(px(12.)).child(Scrollbar::vertical(&self.list)))
                 .children(float_day.map(|t| h_flex().absolute().top(px(6.)).left_0().right_0().justify_center().child(div().px(px(14.)).py(px(6.)).rounded_full().bg(rgb(0x1b1922)).border_1().border_color(look::line()).font_family(look::F_SHARP).text_size(px(14.)).text_color(look::mute()).child(t))))
-                .children(jump.then(|| h_flex().absolute().bottom(px(10.)).left_0().right_0().justify_center().child(div().id("jump").px(px(14.)).py(px(7.)).rounded_full().bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_UI).text_size(px(12.)).cursor_pointer().when(below > 0, |d| d.bg(rgb(duo.hi)).text_color(rgb(look::VOID))).child(if below > 0 { format!("\u{2193} {below} new") } else { "\u{2193} latest".to_string() })
+                .children(jump.then(|| h_flex().absolute().bottom(px(10.)).left_0().right_0().justify_center().child(div().id("jump").px(px(14.)).py(px(crate::phone::pick(7., 12.))).rounded_full().bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_UI).text_size(px(12.)).cursor_pointer().when(below > 0, |d| d.bg(rgb(duo.hi)).text_color(rgb(look::VOID))).child(if below > 0 { format!("\u{2193} {below} new") } else { "\u{2193} latest".to_string() })
                     .on_click(cx.listener(|this, _, _, cx| { this.list.scroll_to_end(); cx.notify(); })))))
                 .children(react_pop).children(self.emoji_overlay(cx)).children(self.sel_menu()))
             .child(h_flex().w_full().flex_none().justify_center().px_4().pb(px(8.))
@@ -316,15 +331,15 @@ impl Mega {
                             .child(h_flex().relative().items_center().gap_2().when(recording, |d| d.hidden())
                                 .child(div().relative().flex_none()
                                     .when(plus_open, |d| d.on_mouse_down_out(cx.listener(|this, ev: &MouseDownEvent, _, cx| { if this.msg.plus_box.get().is_some_and(|b| b.contains(&ev.position)) { return; } this.msg.plus = false; cx.notify(); })))
-                                    .child(div().id("plus").relative().flex().items_center().justify_center().size(px(34.)).rounded_full().cursor_pointer()
+                                    .child(div().id("plus").relative().flex().items_center().justify_center().size(px(tap)).rounded_full().cursor_pointer()
                                         .bg(if plus_open { hsla(0., 0., 1., 0.16) } else { hsla(0., 0., 1., 0.06) })
                                         .hover(|d| d.bg(hsla(0., 0., 1., 0.12)))
                                         .child(crate::icons::icon(crate::icons::Icon::Plus, 17., if plus_open { look::paper() } else { look::mute() }))
                                         .on_click(cx.listener(|this, _, _, cx| { this.msg.plus = !this.msg.plus; cx.notify(); })))
                                     .children(plus_open.then(|| {
-                                        let row = |id: &'static str, ic: crate::icons::Icon, label: &'static str| div().id(id).relative().h(px(34.)).px(px(12.)).flex().items_center().gap(px(10.)).rounded(px(8.)).cursor_pointer()
+                                        let row = |id: &'static str, ic: crate::icons::Icon, label: &'static str| div().id(id).relative().h(px(tap)).px(px(12.)).flex().items_center().gap(px(10.)).rounded(px(8.)).cursor_pointer()
                                             .hover(|d| d.bg(hsla(0., 0., 1., 0.08))).child(crate::icons::icon(ic, 16., look::mute())).child(label).child(self.files.hits.track(id));
-                                        v_flex().absolute().bottom(px(44.)).left(px(-5.)).w(px(170.)).p(px(4.)).rounded(px(12.)).bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg()
+                                        v_flex().absolute().bottom(px(tap + 10.)).left(px(-5.)).w(px(170.)).p(px(4.)).rounded(px(12.)).bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg()
                                             .font_family(look::F_UI).text_size(px(13.)).text_color(look::paper())
                                             .child({ let bx = self.msg.plus_box.clone(); canvas(move |b, _, _| bx.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full() })
                                             .child(row("attach", crate::icons::Icon::Clip, "file").on_click(cx.listener(|this, _, window, cx| { this.msg.plus = false; this.files_attach(window, cx); })))
@@ -332,8 +347,8 @@ impl Mega {
                                             .child(row("mic", crate::icons::Icon::Mic, "voice clip")
                                                 .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, w, cx| { cx.stop_propagation(); this.msg.plus = false; this.voice_press(Some(ev.position), w, cx); })))
                                     })))
-                                .child(div().flex_1().min_w_0().child(Textarea::new(&self.composer).appearance(false).text_size(px(size.min(17.))).line_height(px(22.))))
-                                .child(div().id("send").flex_none().flex().items_center().justify_center().h(px(34.)).px(px(16.)).rounded_full().cursor_pointer().whitespace_nowrap()
+                                .child(div().flex_1().min_w_0().child(Textarea::new(&self.composer).appearance(false).text_size(px(if phone { size.max(17.) } else { size.min(17.) })).line_height(px(22.))))
+                                .child(div().id("send").flex_none().flex().items_center().justify_center().h(px(tap)).px(px(16.)).rounded_full().cursor_pointer().whitespace_nowrap()
                                     .font_family(look::F_UI).text_size(px(13.))
                                     .when(has_text, |d| d.bg(look::paper()).text_color(rgb(look::VOID)))
                                     .when(!has_text, |d| d.bg(hsla(0., 0., 1., 0.06)).text_color(look::mute()))
@@ -427,10 +442,10 @@ impl Mega {
             .child(h_flex().gap_2().child(div().w(px(280.)).child(Input::new(&self.set_rune)))
                 .child(Button::new("save-rune").label("Save").on_click(cx.listener(|this, _, window, cx| this.rune_address_save(window, cx)))))
             .child(note("Where rune answers on this device. Song title and artist go to your communities, end to end encrypted. Nothing else is read or sent."))
-            .child(label("calls"))
-            .child(h_flex().gap_2().child(div().id("set-gamekeys").relative().px_3().py_1().cursor_pointer().child(sq::back(999., rgb(0x0b0a10))).child(sq::front(999., None, Some((1., look::line())), None)).child(div().relative().child("Game keys\u{2026}"))
-                .on_click(cx.listener(|this, _, window, cx| this.gk_open(window, cx)))))
-            .child(note("Mute yourself in mega while you talk to your game team."))
+            .children((!cfg!(target_os = "ios")).then(|| label("calls")))
+            .children((!cfg!(target_os = "ios")).then(|| h_flex().gap_2().child(div().id("set-gamekeys").relative().px_3().py_1().cursor_pointer().child(sq::back(999., rgb(0x0b0a10))).child(sq::front(999., None, Some((1., look::line())), None)).child(div().relative().child("Game keys\u{2026}"))
+                .on_click(cx.listener(|this, _, window, cx| this.gk_open(window, cx))))))
+            .children((!cfg!(target_os = "ios")).then(|| note("Mute yourself in mega while you talk to your game team.")))
             .child(label("quick tour"))
             .child(h_flex().gap_2().child(div().id("tour-again").relative().px_3().py_1().cursor_pointer().child(sq::back(999., rgb(0x0b0a10))).child(sq::front(999., None, Some((1., look::line())), None)).child(div().relative().child("show the tour again"))
                 .on_click(cx.listener(|this, _, window, cx| { this.go(Level::Home, window, cx); this.tour_start(window, cx); }))))
@@ -673,6 +688,8 @@ pub fn row(m: &Msg, prev: Option<&Msg>, (font, size, lh): (&'static str, f32, f3
 
 impl Render for Mega {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if crate::phone::sync(window) { crate::titlebar::set_edge(window.is_window_active(), cx); }
+        let phone = crate::phone::on();
         if !std::mem::replace(&mut self.first_frame_done, true) { window.on_next_frame(|_, _| crate::bench::mark("first_frame")); }
         crate::bench::drive(self, window, cx);
         self.fly_step(window, cx);
@@ -686,13 +703,15 @@ impl Render for Mega {
         if self.msg.flash.as_ref().is_some_and(|(_, t0)| self.now_secs() - t0 < crate::msgact::FLASH) { window.request_animation_frame(); }
         self.holes.borrow_mut().clear();
         self.call.hits.clear(); self.files.hits.clear();
-        let base = div().id("root").flex_1().min_h_0().w_full().relative().bg(rgb(look::VOID)).text_color(look::paper()).font_family(look::F_UI).text_size(px(15.))
+        let base = div().id("root").flex_1().min_h_0().w_full().relative().bg(rgb(look::VOID)).text_color(look::paper()).font_family(look::F_UI).text_size(px(if phone { 17. } else { 15. }))
             // dragging the column's edge, and push-to-talk: the key never reaches the composer while that mode is on
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| this.press_begin(ev.position, window, cx)))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
+                this.press_move(ev.position);
                 if this.paint.drag.is_some() { if ev.pressed_button.is_none() { this.paint_drag_end(cx); } else { this.paint_drag_to(ev.position, window, cx); } }
                 if this.wall.pen { if ev.pressed_button.is_none() { this.wall_pen_up(); } else { this.wall_pen(ev.position, false, window, cx); } }
                 if this.call.resize.is_some() { if ev.pressed_button.is_none() { this.resize_end(window, cx); } else { this.resize_move(f32::from(ev.position.x), window, cx); } } }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| { if crate::titlebar::released() { cx.notify(); } this.paint_drag_end(cx); this.wall_pen_up(); this.resize_end(window, cx) }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| { this.press_end(); if crate::titlebar::released() { cx.notify(); } this.paint_drag_end(cx); this.wall_pen_up(); this.resize_end(window, cx) }))
             .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 if this.paint_key(ev, window, cx) { cx.stop_propagation(); return; }
                 if this.files_key(ev, window, cx) { cx.stop_propagation(); return; }
@@ -714,6 +733,7 @@ impl Render for Mega {
                 let body: AnyElement = match self.level.clone() {
                     Level::Home => self.render_home(window, cx),
                     Level::Server(cid) => self.render_server(&cid, window, cx),
+                    Level::Chat if phone => self.render_chat(window, cx),
                     Level::Chat => {
                         h_flex().size_full().items_start().child(self.render_rail(window, cx)).child(self.render_chat(window, cx)).into_any_element()
                     }
@@ -756,13 +776,13 @@ impl Mega {
         let (at, id) = self.sel.menu.clone()?;
         let area = self.sel.area.get();
         let (emoji, items) = self.menu_layout(&id);
-        let h = if emoji { crate::select::MENU_EMOJI } else { 0. } + crate::select::MENU_ROW * items.len() as f32 + 8.;
+        let h = if emoji { crate::select::MENU_EMOJI } else { 0. } + crate::select::menu_row() * items.len() as f32 + 8.;
         let o = self.menu_origin(at, h);
         let (x, y) = (f32::from(o.x - area.left()), f32::from(o.y - area.top()));
         let mine: Vec<String> = self.msg_of(&id).map(|m| m.reactions.iter().filter(|r| r.mine).map(|r| r.emoji.clone()).collect()).unwrap_or_default();
-        Some(v_flex().id("msg-menu").absolute().left(px(x)).top(px(y)).w(px(crate::select::MENU_W)).py(px(4.)).rounded(px(10.)).bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_UI).text_size(px(13.))
+        Some(v_flex().id("msg-menu").absolute().left(px(x)).top(px(y)).w(px(crate::select::MENU_W)).py(px(4.)).rounded(px(10.)).bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_UI).text_size(px(crate::phone::pick(13., 16.)))
             .when(emoji, |d| d.child(h_flex().h(px(crate::select::MENU_EMOJI)).px(px(8.)).items_center().children(crate::msgact::QUICK.iter().map(|e| div().flex().items_center().justify_center().w(px((crate::select::MENU_W - 16.) / 8.)).h(px(36.)).rounded(px(10.)).text_size(px(20.)).when(mine.iter().any(|m| m == e), |d| d.bg(hsla(0., 0., 1., 0.16))).child(e.to_string())))))
-            .children(items.into_iter().map(|t| div().h(px(crate::select::MENU_ROW)).px(px(14.)).flex().items_center().when(t == "Delete", |d| d.text_color(rgb(look::DANGER))).child(t))).into_any_element())
+            .children(items.into_iter().map(|t| div().h(px(crate::select::menu_row())).px(px(14.)).flex().items_center().when(t == "Delete", |d| d.text_color(rgb(look::DANGER))).child(t))).into_any_element())
     }
 }
 

@@ -122,6 +122,8 @@ impl Mega {
         if let Some(e) = &self.call.engine { return e.clone(); }
         let settings_path = self.core.dir.join("gpui-call-prefs.json");
         let settings = CallSettings::load(&settings_path);
+        // TODO(IPHONE.md item 4): AVAudioSession (play-and-record, voice chat mode), background audio and CallKit are not set up yet;
+        // until they are, a call on the phone may be silent or lose its audio when the app is left.
         let e = Arc::new(CallEngine::start(Arc::new(Linked(self.core.clone())), Options { audio: AudioMode::from_env(), settings, settings_path: Some(settings_path), shortcuts: crate::calls::shortcuts::Mode::from_env(), frames: Some(self.call.frames.clone()) }));
         // the engine's change channel wakes the window: nothing else does, so a call that changes nothing costs nothing
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<()>();
@@ -342,8 +344,8 @@ impl Mega {
                 .font_family(look::F_UI).text_size(px(11.)).text_color(look::paper())
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label.clone()))
                 .when_some(holder, |d, h| d.child(div().text_color(look::mute()).child(format!("{h} is moving it"))))
-                .child(div().id(SharedString::from(format!("tile-pop-{}", t.sid))).relative().px(px(8.)).py(px(2.)).rounded(px(6.)).bg(hsla(0., 0., 1., 0.18)).cursor_pointer().child("pop out").child(hits.track(format!("tile-pop-{}", t.sid)))
-                    .on_click(cx.listener(move |this, _, window, cx| { cx.stop_propagation(); this.pop_tile(sid2.clone(), window, cx); }))))
+                .when(!cfg!(target_os = "ios"), |d| d.child(div().id(SharedString::from(format!("tile-pop-{}", t.sid))).relative().px(px(8.)).py(px(2.)).rounded(px(6.)).bg(hsla(0., 0., 1., 0.18)).cursor_pointer().child("pop out").child(hits.track(format!("tile-pop-{}", t.sid)))
+                    .on_click(cx.listener(move |this, _, window, cx| { cx.stop_propagation(); this.pop_tile(sid2.clone(), window, cx); })))))
             .child(hits.track(format!("tile-{}", t.sid)))
             .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| { if ev.click_count() >= 2 { this.pop_tile(sid3.clone(), window, cx); } }))
     }

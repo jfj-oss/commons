@@ -94,6 +94,8 @@ impl Mega {
     /// Opens a window for the call. It is done after the current update ends: the new window draws at once and reads this
     /// entity, which cannot be read while it is being updated.
     fn open_pop(&mut self, kind: PopKind, title: &str, size_px: (f32, f32), mini: bool, cx: &mut Context<Self>, then: impl FnOnce(&mut Mega, AnyWindowHandle, Entity<PopView>, &mut Context<Mega>) + 'static) {
+        // no second window on a phone (the call stays in the one screen)
+        if cfg!(target_os = "ios") { return; }
         let main = cx.entity();
         let title = title.to_string();
         cx.defer(move |cx| {

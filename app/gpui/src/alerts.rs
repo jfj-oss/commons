@@ -135,7 +135,7 @@ fn unread_map(sn: &crate::model::Snapshot) -> HashMap<String, u64> {
 pub fn mention_of(gid: &str) -> u64 { state().tracker.mention.get(gid).copied().unwrap_or(0) }
 
 pub const MENU_W: f32 = 232.;
-pub const MENU_ROW: f32 = 34.;
+pub fn menu_row() -> f32 { crate::phone::pick(34., crate::phone::TAP) }
 const OPTIONS: [(&str, u64, &str); 4] = [("mute", 3600, "Mute for 1 hour"), ("mute", 28800, "Mute for 8 hours"), ("mute", 0, "Mute until I unmute"), ("mentions", 0, "Mentions only")];
 
 impl Mega {
@@ -213,7 +213,7 @@ impl Mega {
     /// Opens the menu for a room at a point of the window (right-click on a card or a dot).
     pub fn room_menu_open(&mut self, gid: &str, name: &str, at: Point<Pixels>, window: &Window, cx: &mut Context<Self>) {
         let vp = crate::titlebar::viewport(window);
-        let at = point(at.x.min(vp.width - px(MENU_W + 8.)).max(px(8.)), at.y.min(vp.height - px(MENU_ROW * 7. + 20.)).max(px(8.)));
+        let at = point(at.x.min(vp.width - px(MENU_W + 8.)).max(px(8.)), at.y.min(vp.height - px(menu_row() * 7. + 20.)).max(px(8.)));
         state().menu = Some(Menu { gid: gid.to_string(), name: name.to_string(), at });
         cx.notify();
     }
@@ -232,7 +232,7 @@ impl Mega {
         let until = self.notify_settings["rooms"][m.gid.as_str()]["until"].as_f64();
         let cur_key = match (cur, until) { (Some(RoomRule::Mentions), _) => "mentions", (Some(RoomRule::Muted), None) => "forever", _ => "" };
         let key_of = |kind: &str, secs: u64| if kind == "mentions" { "mentions" } else if secs == 0 { "forever" } else { "" };
-        let row = |id: (&'static str, usize), text: String, on: bool| div().id(id).h(px(MENU_ROW)).px(px(14.)).flex().items_center().gap(px(8.)).cursor_pointer().hover(|d| d.bg(hsla(0., 0., 1., 0.07)))
+        let row = |id: (&'static str, usize), text: String, on: bool| div().id(id).h(px(menu_row())).px(px(14.)).flex().items_center().gap(px(8.)).cursor_pointer().hover(|d| d.bg(hsla(0., 0., 1., 0.07)))
             .child(div().w(px(12.)).flex_none().text_color(look::paper()).child(if on { "\u{2713}" } else { "" })).child(text);
         let mut col = v_flex().id("room-menu").absolute().left(m.at.x).top(m.at.y).w(px(MENU_W)).py(px(4.)).rounded(px(10.)).bg(rgb(0x1b1922)).border_1().border_color(look::line()).shadow_lg().font_family(look::F_UI).text_size(px(13.))
             .occlude()

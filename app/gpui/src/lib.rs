@@ -62,6 +62,7 @@ mod emoji_seq;
 mod look;
 mod paint;
 mod nowindow;
+mod phone;
 #[cfg(target_os = "macos")]
 mod macnotify;
 mod wall;
@@ -134,7 +135,10 @@ pub fn desktop_main() {
         // tests only: MEGA_GPUI_SIZE=1280x900 opens the window at that size (the window's content, without a title bar)
         let (ww, wh) = std::env::var("MEGA_GPUI_SIZE").ok().and_then(|v| { let (a, b) = v.split_once('x')?; Some((a.parse::<f32>().ok()?, b.parse::<f32>().ok()?)) }).unwrap_or((1100., 760.));
         // the window draws its own frame and top row (titlebar.rs): the size asked for is the content's, so the frame is added
-        let ((ow, oh), (mw, mh)) = (titlebar::outer_for(ww, wh), titlebar::outer_for(ww.min(720.), wh.min(520.)));
+        // MEGA_PHONE_PREVIEW=1: the phone layout (phone.rs) in a 390 x 844 window, the size of an iPhone 14, with the system's own frame
+        let preview = phone::preview();
+        let (ww, wh) = if preview && std::env::var_os("MEGA_GPUI_SIZE").is_none() { (390., 844.) } else { (ww, wh) };
+        let ((ow, oh), (mw, mh)) = if preview { ((ww, wh), (320., 480.)) } else { (titlebar::outer_for(ww, wh), titlebar::outer_for(ww.min(720.), wh.min(520.))) };
         let bounds = Bounds::centered(None, size(px(ow), px(oh)), cx);
         let opts = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -142,7 +146,7 @@ pub fn desktop_main() {
             // macOS keeps its own lights, transparent bar, drawn over our row; Linux draws everything itself
             titlebar: Some(TitlebarOptions { title: Some("mega".into()), appears_transparent: true, traffic_light_position: Some(point(px(14.), px(12.))) }),
             // MEGA_GPUI_SERVER_DECOR=1: let the compositor draw the frame (for comparing)
-            window_decorations: if cfg!(target_os = "linux") && std::env::var_os("MEGA_GPUI_SERVER_DECOR").is_none() { Some(WindowDecorations::Client) } else { None },
+            window_decorations: if cfg!(target_os = "linux") && !preview && std::env::var_os("MEGA_GPUI_SERVER_DECOR").is_none() { Some(WindowDecorations::Client) } else { None },
             app_owns_titlebar_drag: true,
             app_id: Some("app.commons.chat.gpui".into()),
             ..Default::default()

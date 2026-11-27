@@ -579,7 +579,8 @@ impl Mega {
         // back from a chat: the column starts again on the room that was open (the dots fly out to exactly there)
         if self.level == Level::Chat { if let Level::Server(c) = &level { let c = c.clone(); self.nav.key.clear(); self.fly_open(&c, window); } }
         if level == Level::Settings { let n = self.snap.as_ref().map(|s| s.me_name.clone()).unwrap_or_default(); self.set_name.update(cx, |i, cx| i.set_value(n, window, cx)); let r = self.snap.as_ref().map(|s| s.rune_url.clone()).unwrap_or_default(); self.set_rune.update(cx, |i, cx| i.set_value(r, window, cx)); }
-        if level == Level::Chat { self.composer.update(cx, |c, cx| c.focus(window, cx)); }
+        // a phone does not raise the keyboard on opening a room: the person taps the box
+        if level == Level::Chat && !crate::phone::on() { self.composer.update(cx, |c, cx| c.focus(window, cx)); }
         if let Level::Server(c) = &level { self.nav.last_home = Some(c.clone()); }
         if matches!(level, Level::Home | Level::Server(_)) { window.focus(&self.nav.focus, cx); }
         self.level = level;

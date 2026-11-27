@@ -121,9 +121,9 @@ impl Mega {
             .child(self.setting("Problem reports", v_flex().gap(px(6.))
                 .child(sw("cs-report", snap.report_problems, "Send call problems to the server's owner", 4))
                 .child(div().text_size(px(12.)).text_color(look::mute()).child("When a call fails, mega sends the error, the call's own log, the app version and your system (no messages, no keys) to whoever runs this server, so they can fix it."))))
-            .child(self.setting("Game keys", div().id("cs-gamekeys").relative().self_start().px(px(12.)).py(px(5.)).flex().items_center().cursor_pointer().font_family(look::F_UI).text_size(px(13.))
+            .children((!cfg!(target_os = "ios")).then(|| self.setting("Game keys", div().id("cs-gamekeys").relative().self_start().px(px(12.)).py(px(5.)).flex().items_center().cursor_pointer().font_family(look::F_UI).text_size(px(13.))
                 .child(sq::back(10., rgb(0x0b0a10))).child(sq::front(10., None, Some((1., look::line())), None)).child(div().relative().child("Game keys\u{2026}")).child(hits.track("cs-gamekeys"))
-                .on_click(cx.listener(|this, _, window, cx| { this.set_settings_open(false); this.gk_open(window, cx); }))));
+                .on_click(cx.listener(|this, _, window, cx| { this.set_settings_open(false); this.gk_open(window, cx); })))));
         let panel = v_flex().id("call-settings-panel").relative().w(px(680.)).max_w_full().max_h(relative(0.88)).overflow_hidden().occlude()
             .child(sq::back(28., rgb(0x14131a))).child(sq::front(28., None, Some((1., look::line())), None)).on_click(|_, _, cx| cx.stop_propagation())
             .child(h_flex().relative().w_full().items_center().gap(px(10.)).px(px(22.)).py(px(12.)).border_b_1().border_color(look::line())

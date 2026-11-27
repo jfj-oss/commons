@@ -108,10 +108,12 @@ pub struct Sel {
     pub pointer: Point<Pixels>,
     /// The resolved selection of the frame being drawn.
     pub now: Option<(Pos, Pos)>,
+    /// A phone: where a finger went down on the list (a tap that stays near it opens the message's menu; a drag is the list scrolling).
+    pub tap: Option<Point<Pixels>>,
 }
 impl Sel {
     pub fn new(cx: &mut App) -> Sel {
-        Sel { focus: cx.focus_handle(), texts: Default::default(), area: Default::default(), anchor: None, head: None, grain: Grain::Char, dragging: false, hover: None, menu: None, edge: 0., pointer: point(px(0.), px(0.)), now: None }
+        Sel { focus: cx.focus_handle(), texts: Default::default(), area: Default::default(), anchor: None, head: None, grain: Grain::Char, dragging: false, hover: None, menu: None, edge: 0., pointer: point(px(0.), px(0.)), now: None, tap: None }
     }
     pub fn clear(&mut self) { self.anchor = None; self.head = None; self.dragging = false; self.edge = 0.; self.now = None; }
     pub fn is_empty(&self) -> bool { self.now.is_none() }
@@ -120,7 +122,7 @@ impl Sel {
 pub const MENU_W: f32 = 284.;
 /// The row of quick reactions on top of the menu of a message.
 pub const MENU_EMOJI: f32 = 44.;
-pub const MENU_ROW: f32 = 30.;
+pub fn menu_row() -> f32 { crate::phone::pick(30., crate::phone::TAP) }
 
 impl Mega {
     fn row_of(&self, id: &str) -> Option<usize> { self.win.msgs.iter().position(|m| m.id == id) }
@@ -169,10 +171,11 @@ impl Mega {
 
     pub fn sel_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let area = self.sel.area.get();
+        let had_menu = self.sel.menu.is_some();
         // the menu: its own items act; anything else closes it
         if let Some((at, id)) = self.sel.menu.clone() {
             let (emoji, items) = self.menu_layout(&id);
-            let h = if emoji { MENU_EMOJI } else { 0. } + MENU_ROW * items.len() as f32 + 8.;
+            let h = if emoji { MENU_EMOJI } else { 0. } + menu_row() * items.len() as f32 + 8.;
             let at = self.menu_origin(at, h);
             let m = Bounds::new(at, size(px(MENU_W), px(h)));
             if m.contains(&ev.position) {
@@ -182,7 +185,7 @@ impl Mega {
                         let k = ((f32::from(ev.position.x - at.x) - 8.) / ((MENU_W - 16.) / 8.)).floor().max(0.) as usize;
                         if let Some(e) = crate::msgact::QUICK.get(k) { self.msg_react(&id, e, window, cx); }
                     } else {
-                        let k = ((dy - if emoji { MENU_EMOJI } else { 0. }) / MENU_ROW).floor().max(0.) as usize;
+                        let k = ((dy - if emoji { MENU_EMOJI } else { 0. }) / menu_row()).floor().max(0.) as usize;
                         match items.get(k).copied() {
                             Some("Copy") => self.sel_copy(cx), Some("Copy message") => self.copy_message(&id, cx), Some("Select all") => self.sel_all(window, cx),
                             Some("Reply") => self.msg_reply(&id, window, cx), Some("Edit") => self.msg_edit(&id, window, cx), Some("Delete") => self.msg_delete(&id, window, cx),
@@ -200,6 +203,8 @@ impl Mega {
             return;
         }
         match ev.button {
+            // a finger scrolls, it does not select: a tap (sel_up) opens the menu, which has Copy message and Select all
+            MouseButton::Left if crate::phone::on() => { self.sel.tap = (!had_menu).then_some(ev.position); }
             MouseButton::Left => {
                 let Some((id, off)) = self.sel_hit(ev.position, true) else {
                     if !self.sel.is_empty() { cx.notify(); }
@@ -238,6 +243,7 @@ impl Mega {
 
     pub fn sel_move(&mut self, ev: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let area = self.sel.area.get();
+        if let Some(t) = self.sel.tap { if crate::phone::far(t, ev.position) { self.sel.tap = None; } }
         if self.sel.dragging {
             if ev.pressed_button != Some(MouseButton::Left) { self.sel.dragging = false; self.sel.edge = 0.; return; }
             self.sel.pointer = ev.position;
@@ -251,7 +257,14 @@ impl Mega {
         if over != self.sel.hover { self.sel.hover = over; cx.notify(); }
     }
 
-    pub fn sel_up(&mut self, _: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn sel_up(&mut self, ev: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(t) = self.sel.tap.take() {
+            if !crate::phone::far(t, ev.position) && self.sel.menu.is_none() {
+                // a tap on words (not on a picture, a pill or a button: those act themselves; a long press opens the menu anywhere on the row)
+                if let Some((id, _)) = self.sel_hit(ev.position, true) { self.sel.clear(); self.sel.menu = Some((ev.position, id)); cx.notify(); }
+            }
+            return;
+        }
         if !self.sel.dragging { return; }
         self.sel.dragging = false; self.sel.edge = 0.;
         // a click that selected nothing gives the keyboard back to the composer
@@ -341,7 +354,7 @@ impl Mega {
     pub fn sel_dump(&self) -> serde_json::Value {
         let texts = self.sel.texts.borrow();
         let rows: Vec<_> = texts.iter().filter_map(|(id, t)| { let ix = self.row_of(id)?; Some(serde_json::json!({"ix": ix, "id": id, "x": f32::from(t.bounds.left()), "y": f32::from(t.bounds.top()), "w": f32::from(t.bounds.size.width), "h": f32::from(t.bounds.size.height), "text": self.text_of(ix)})) }).collect();
-        let menu_at = self.sel.menu.clone().map(|(at, id)| { let (e, items) = self.menu_layout(&id); let h = if e { MENU_EMOJI } else { 0. } + MENU_ROW * items.len() as f32 + 8.; let o = self.menu_origin(at, h); serde_json::json!({"x": f32::from(o.x), "y": f32::from(o.y), "items": items, "emoji": e}) });
+        let menu_at = self.sel.menu.clone().map(|(at, id)| { let (e, items) = self.menu_layout(&id); let h = if e { MENU_EMOJI } else { 0. } + menu_row() * items.len() as f32 + 8.; let o = self.menu_origin(at, h); serde_json::json!({"x": f32::from(o.x), "y": f32::from(o.y), "items": items, "emoji": e}) });
         serde_json::json!({"selected": self.sel_string(), "rows": rows, "menu": self.sel.menu.is_some(), "menu_at": menu_at})
     }
 }

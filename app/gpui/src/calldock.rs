@@ -132,10 +132,13 @@ impl Mega {
             acts = acts.child(self.dock_button("c-ring", Icon::Bell, if on { "Stop ringing".into() } else { "Ring everyone in this community who is not in the call".into() }, on, false, &duo, cx)
                 .on_click(cx.listener(|this, _, window, cx| this.ring_all(window, cx))));
         }
-        acts = acts.child(self.dock_button("c-pop", Icon::Pop, "Open the call in its own window".into(), self.call.popped, false, &duo, cx)
-            .on_click(cx.listener(|this, _, window, cx| this.pop_call(window, cx))));
-        acts = acts.child(self.dock_button("c-mini", Icon::Mini, "A small always-on-top window with the faces and mute".into(), self.call.mini.is_some(), false, &duo, cx)
-            .on_click(cx.listener(|this, _, window, cx| this.toggle_mini(window, cx))));
+        // pop-out windows do not exist on iOS
+        if !cfg!(target_os = "ios") {
+            acts = acts.child(self.dock_button("c-pop", Icon::Pop, "Open the call in its own window".into(), self.call.popped, false, &duo, cx)
+                .on_click(cx.listener(|this, _, window, cx| this.pop_call(window, cx))));
+            acts = acts.child(self.dock_button("c-mini", Icon::Mini, "A small always-on-top window with the faces and mute".into(), self.call.mini.is_some(), false, &duo, cx)
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_mini(window, cx))));
+        }
         acts = acts.child(self.dock_button("c-leave", Icon::Leave, "Leave the call".into(), false, true, &duo, cx)
             .on_click(cx.listener(|this, _, _, cx| this.leave_call(cx))));
 

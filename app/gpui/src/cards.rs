@@ -113,8 +113,8 @@ impl NavUi {
 
 /// A pill like the page's `.mchip`: glass, a hairline, 36 px high.
 pub fn chip(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
-    div().id(id).flex().flex_none().items_center().gap_2().h(px(36.)).px(px(14.)).rounded_full().bg(rgba(0x1a1820db)).border_1().border_color(look::line())
-        .font_family(look::F_UI).text_size(px(14.)).text_color(look::paper()).cursor_pointer().whitespace_nowrap()
+    div().id(id).flex().flex_none().items_center().gap_2().h(px(crate::phone::pick(36., crate::phone::TAP))).px(px(14.)).rounded_full().bg(rgba(0x1a1820db)).border_1().border_color(look::line())
+        .font_family(look::F_UI).text_size(px(crate::phone::pick(14., 16.))).text_color(look::paper()).cursor_pointer().whitespace_nowrap()
         .hover(|d| d.border_color(hsla(0., 0., 1., 0.34))).child(label.into())
 }
 

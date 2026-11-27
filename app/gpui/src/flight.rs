@@ -102,7 +102,7 @@ impl Mega {
 
     /// A room was opened from the cards: they fly into the rail's dots (the rail is already there, as the chat is).
     pub fn fly_close(&mut self, cid: &str, gid: &str) {
-        if self.still() { return; }
+        if self.still() || crate::phone::on() { return; }
         let Some(c) = self.snap.as_ref().and_then(|s| s.community(cid)).cloned() else { return };
         let mut items = self.room_items(&c);
         if c.direct { items.retain(|x| matches!(x.open, Open::Room(..))); }
@@ -123,7 +123,8 @@ impl Mega {
 
     /// Leaving a chat for the community's rooms: the dots fly out into the cards.
     pub fn fly_open(&mut self, cid: &str, window: &Window) {
-        if self.still() { return; }
+        // no rail on a phone: nothing to fly out of
+        if self.still() || crate::phone::on() { return; }
         let Some(c) = self.snap.as_ref().and_then(|s| s.community(cid)).cloned() else { return };
         let items = self.room_items(&c);
         let (vw, vh) = self.column_size(window);
