@@ -64,15 +64,16 @@ impl Mega {
         let plus = more.then(|| {
             div().relative()
                 .child(chip("phone-more", if open { "\u{00d7}" } else { "+" }).min_w(px(44.)).on_click(cx.listener(move |this, _, _, cx| { this.phone_more = !open; cx.notify(); })))
-                .when(open, |d| d.child(deferred(
+                // pinned to the button's bottom-right corner: the menu drops straight down from the +, right edges aligned
+                .when(open, |d| d.child(div().absolute().right_0().bottom_0().size_0().child(deferred(
                     anchored().anchor(Anchor::TopRight).snap_to_window().child(
-                        v_flex().id("phone-more-menu").mt(px(52.)).p(px(8.)).gap(px(8.)).items_end().rounded(px(18.)).bg(hsla(0., 0., 0.06, 0.96)).border_1().border_color(hsla(0., 0., 1., 0.12))
+                        v_flex().id("phone-more-menu").mt(px(6.)).p(px(8.)).gap(px(8.)).items_end().rounded(px(18.)).bg(hsla(0., 0., 0.06, 0.96)).border_1().border_color(hsla(0., 0., 1., 0.12))
                             .children(extra_menu)
                             // any choice closes the menu (the chip's own click runs first); a tap outside closes it too
                             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| { this.phone_more = false; cx.notify(); }))
                             .on_mouse_down_out(cx.listener(|this, _, _, cx| { this.phone_more = false; cx.notify(); })),
                     ),
-                ).with_priority(3)))
+                ).with_priority(3))))
         });
         let top = h_flex().flex_none().w_full().px(px(if phone { 12. } else { 16. })).py(px(if phone { 8. } else { 12. })).gap(px(10.)).items_center()
             .when_some(back, |d, to| d.child(chip("back", "\u{2190} back").on_click(cx.listener(move |this, _, window, cx| this.go(to.clone(), window, cx)))))
