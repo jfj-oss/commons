@@ -1,0 +1,40 @@
+# XcodeGen spec for mega's iPhone build (IPHONE.md). The workflow (.github/workflows/ios-gpui.yml) builds the Rust
+# library first and writes Rust.xcconfig (the static library and the system libraries it needs), then runs
+# `xcodegen generate` and an unsigned `xcodebuild`; SideStore signs the .ipa on the phone.
+name: Mega
+options:
+  bundleIdPrefix: app.commons.chat
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+configFiles:
+  Release: Rust.xcconfig
+  Debug: Rust.xcconfig
+targets:
+  Mega:
+    type: application
+    platform: iOS
+    sources:
+      - path: main.m
+      - path: mega_ios.h
+        buildPhase: headers
+      - path: Assets.xcassets
+    settings:
+      base:
+        # its own id, so it sits next to the older web-view app (app.commons.chat) instead of replacing it
+        PRODUCT_BUNDLE_IDENTIFIER: app.commons.chat.gpui
+        PRODUCT_NAME: mega
+        INFOPLIST_FILE: Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        CLANG_ENABLE_OBJC_ARC: YES
+        ENABLE_BITCODE: NO
+        ENABLE_DEBUG_DYLIB: NO
+        DEAD_CODE_STRIPPING: YES
+        ARCHS: arm64
+        HEADER_SEARCH_PATHS: ["$(PROJECT_DIR)"]
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+        # OTHER_LDFLAGS and LIBRARY_SEARCH_PATHS come from Rust.xcconfig (project level), which the target inherits

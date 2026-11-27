@@ -1,0 +1,102 @@
+# Builds the native (GPUI) mega for iPhone as an UNSIGNED .ipa on GitHub's macOS runners (IPHONE.md). SideStore
+# signs it with a free Apple ID, like the older web-view app (ios.yml), and the two have different bundle ids, so
+# both can be installed.
+#
+# Runs on every push to the ios-gpui branch (a manual run needs the file on the default branch first). Download the
+# "mega-gpui-ipa" artifact from the run and open it with SideStore on the iPhone.
+#
+# How it is put together: the Rust side (app/gpui, library target) is built as a static library for aarch64-apple-ios;
+# rustc's --print native-static-libs lists the system frameworks it needs, which go into app/ios/Rust.xcconfig; then
+# XcodeGen makes the Xcode project from app/ios/project.yml and xcodebuild links main.m against the library.
+name: ios-gpui
+on:
+  workflow_dispatch:
+  push:
+    branches: [ios-gpui]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+      IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode and XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          command -v xcodegen >/dev/null || brew install xcodegen
+          xcodegen --version | head -1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios-gpui-aarch64-apple-ios
+
+      - name: Build the Rust library
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version
+          # --crate-type staticlib only for this build: the desktop keeps an ordinary library + binary
+          cargo rustc -p mega-gpui --lib --release --target aarch64-apple-ios --crate-type staticlib \
+            -- --print native-static-libs 2>&1 | tee "$RUNNER_TEMP/rust.log"
+          lib="$GITHUB_WORKSPACE/target/aarch64-apple-ios/release/libmega_gpui.a"
+          test -f "$lib" || { echo "::error::no $lib"; exit 1; }
+          du -h "$lib"
+          native=$(grep -o 'native-static-libs: .*' "$RUNNER_TEMP/rust.log" | tail -1 || true)
+          native=${native#native-static-libs: }
+          test -n "$native" || { echo "::error::rustc did not print native-static-libs"; exit 1; }
+          echo "system libraries: $native"
+          clang_rt="$(xcrun --sdk iphoneos clang --print-resource-dir)/lib/darwin"
+          version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' app/src-tauri/tauri.conf.json | head -1)
+          {
+            echo "// written by .github/workflows/ios-gpui.yml"
+            echo "OTHER_LDFLAGS = \$(inherited) $lib -ObjC $native"
+            echo "LIBRARY_SEARCH_PATHS = \$(inherited) $clang_rt"
+            echo "MARKETING_VERSION = $version"
+            echo "CURRENT_PROJECT_VERSION = $GITHUB_RUN_NUMBER"
+          } > app/ios/Rust.xcconfig
+          cat app/ios/Rust.xcconfig
+
+      - name: Build the app
+        working-directory: app/ios
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec project.yml
+          xcodebuild -project Mega.xcodeproj -scheme Mega -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build | tail -60
+
+      - name: Pack and check mega-gpui.ipa
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=app/ios/build/Build/Products/Release-iphoneos/mega.app
+          test -f "$app/Info.plist" || { echo "::error::no $app"; find app/ios/build/Build/Products -maxdepth 2 | head; exit 1; }
+          if [ -e "$app/_CodeSignature" ] || [ -e "$app/embedded.mobileprovision" ]; then
+            echo "::error::the app is signed; it must be unsigned so SideStore can sign it"; exit 1
+          fi
+          echo "Bundle id: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")"
+          echo "Version:   $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist") ($(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Info.plist"))"
+          mkdir -p "$RUNNER_TEMP/pack/Payload" out
+          cp -R "$app" "$RUNNER_TEMP/pack/Payload/"
+          (cd "$RUNNER_TEMP/pack" && zip -qry "$GITHUB_WORKSPACE/out/mega-gpui.ipa" Payload)
+          du -h out/mega-gpui.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mega-gpui-ipa
+          path: out/mega-gpui.ipa
+          if-no-files-found: error
+          retention-days: 30

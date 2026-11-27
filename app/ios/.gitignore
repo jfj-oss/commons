@@ -1,0 +1,4 @@
+# made by the workflow (or by hand on a Mac): xcodegen's project and the Rust settings
+Mega.xcodeproj/
+Rust.xcconfig
+build/

@@ -28,7 +28,7 @@ pub fn data_dir() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| {
             let h = PathBuf::from(h);
-            if cfg!(target_os = "macos") { h.join("Library/Application Support") } else { h.join(".local/share") }
+            if cfg!(any(target_os = "macos", target_os = "ios")) { h.join("Library/Application Support") } else { h.join(".local/share") }
         }))
         .unwrap_or_else(|| PathBuf::from("."));
     base.join("app.commons.chat")
@@ -113,7 +113,8 @@ impl Core {
                     }
                     notifier = Some(n);
                 }
-                #[cfg(not(any(all(feature = "calls", target_os = "linux"), target_os = "macos")))]
+                // iPhone: no notifications yet (they need the APNs push work in IPHONE.md)
+                #[cfg(not(any(all(feature = "calls", target_os = "linux"), target_os = "macos", target_os = "ios")))]
                 hub.set_sink(Arc::new(commons_core::notify::NativeSink::new(&hub, None, "app.commons.chat")));
             }
         }
