@@ -31,7 +31,14 @@ pub fn sync(window: &Window) -> bool {
 pub fn insets() -> (f32, f32, f32, f32) {
     if !on() { return (0., 0., 0., 0.); }
     #[cfg(target_os = "ios")]
-    { let (t, b, l, r) = gpui_mobile::safe_area_insets(); if t + b + l + r > 0. { return (t, b, l, r); } return (47., 34., 0., 0.); }
+    {
+        // the on-screen keyboard covers the bottom of the page: lift it by the keyboard's height while it is up (the
+        // keyboard's frame already includes the home bar, so the larger of the two, not their sum)
+        let kb = gpui_mobile::keyboard_height();
+        let (t, b, l, r) = gpui_mobile::safe_area_insets();
+        let (t, b, l, r) = if t + b + l + r > 0. { (t, b, l, r) } else { (47., 34., 0., 0.) };
+        return (t, b.max(kb), l, r);
+    }
     // the desktop preview shows an iPhone 14's notch and home bar
     #[cfg(not(target_os = "ios"))]
     { (47., 34., 0., 0.) }
