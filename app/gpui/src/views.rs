@@ -52,6 +52,25 @@ impl Mega {
             }
         }
         extra.extend(match self.level.clone() { Level::Server(cid) => self.community_buttons(&cid, cx), Level::Home => self.home_buttons(cx), _ => vec![] });
+        // the other chips (colours, draw, join, new, ...) fold into a + at the right of the bar: a menu that hangs from the
+        // button's bottom-right corner and floats over the page. The chip sets the state from what was drawn (a click on the
+        // open menu's × also counts as a click outside, which closes it first).
+        let more = !extra.is_empty();
+        let menu_items = std::mem::take(&mut extra);
+        let open = more && self.more_open;
+        let plus = more.then(|| {
+            div().relative()
+                .child(chip("more", if open { "\u{00d7}" } else { "+" }).min_w(px(44.)).on_click(cx.listener(move |this, _, _, cx| { this.more_open = !open; cx.notify(); })))
+                .when(open, |d| d.child(div().absolute().right_0().bottom_0().size_0().child(deferred(
+                    anchored().anchor(Anchor::TopRight).snap_to_window().child(
+                        v_flex().id("more-menu").mt(px(6.)).p(px(8.)).gap(px(8.)).items_end().rounded(px(18.)).bg(hsla(0., 0., 0.06, 0.96)).border_1().border_color(hsla(0., 0., 1., 0.12))
+                            .children(menu_items)
+                            // any choice closes the menu (the chip's own click runs first); a click outside closes it too
+                            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| { this.more_open = false; cx.notify(); }))
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| { this.more_open = false; cx.notify(); })),
+                    ),
+                ).with_priority(3))))
+        });
         h_flex().flex_none().w_full().px(px(16.)).py(px(12.)).gap(px(10.)).items_center()
             .when_some(back, |d, to| d.child(chip("back", "\u{2190} back").on_click(cx.listener(move |this, _, window, cx| this.go(to.clone(), window, cx)))))
             .child(div().font_family(look::F_SHARP).text_size(px(36.)).line_height(px(36.)).max_w(px(560.)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
@@ -60,8 +79,8 @@ impl Mega {
                 .when(!net_detail.is_empty(), |d| { let t = net_detail.clone(); d.tooltip(move |window, cx| Tooltip::new(t.clone()).build(window, cx)) })))
             .when(self.still(), |d| d.child(div().font_family(look::F_UI).text_size(px(13.)).text_color(look::mute()).child("battery saver")))
             .child(div().flex_1())
-            .children(extra)
             .child(chip("settings", "settings").on_click(cx.listener(|this, _, window, cx| this.go(Level::Settings, window, cx))))
+            .children(plus)
     }
 
     /// An owner's colours for the open room: a chip that opens the colours panel (square, hue, hex, presets, reset) on this room.
