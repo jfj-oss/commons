@@ -53,25 +53,22 @@ impl Mega {
         }
         extra.extend(match self.level.clone() { Level::Server(cid) => self.community_buttons(&cid, cx), Level::Home => self.home_buttons(cx), _ => vec![] });
         let phone = crate::phone::on();
-        // a phone: the name, then settings at the right; the other chips on a row of their own below
-        let settings = chip("settings", "settings").on_click(cx.listener(|this, _, window, cx| this.go(Level::Settings, window, cx)));
-        let (settings_first, settings_last) = if phone { (Some(settings), None) } else { (None, Some(settings)) };
-        // a phone folds the other chips into a + at the right of the bar: a menu that floats over the page, never over the card's top
-        let more = phone && !extra.is_empty();
-        let (extra_top, extra_menu) = if more { (vec![], std::mem::take(&mut extra)) } else { (std::mem::take(&mut extra), vec![]) };
-        let open = more && self.phone_more;
-        // the chip sets the state from what was drawn (a tap on the open menu's × also counts as a tap outside, which closes it first)
+        // the other chips (colours, draw, join, new, ...) fold into a + at the right of the bar: a menu that hangs from the
+        // button's bottom-right corner and floats over the page. The chip sets the state from what was drawn (a click on the
+        // open menu's × also counts as a click outside, which closes it first).
+        let more = !extra.is_empty();
+        let menu_items = std::mem::take(&mut extra);
+        let open = more && self.more_open;
         let plus = more.then(|| {
             div().relative()
-                .child(chip("phone-more", if open { "\u{00d7}" } else { "+" }).min_w(px(44.)).on_click(cx.listener(move |this, _, _, cx| { this.phone_more = !open; cx.notify(); })))
-                // pinned to the button's bottom-right corner: the menu drops straight down from the +, right edges aligned
+                .child(chip("more", if open { "\u{00d7}" } else { "+" }).min_w(px(44.)).on_click(cx.listener(move |this, _, _, cx| { this.more_open = !open; cx.notify(); })))
                 .when(open, |d| d.child(div().absolute().right_0().bottom_0().size_0().child(deferred(
                     anchored().anchor(Anchor::TopRight).snap_to_window().child(
-                        v_flex().id("phone-more-menu").mt(px(6.)).p(px(8.)).gap(px(8.)).items_end().rounded(px(18.)).bg(hsla(0., 0., 0.06, 0.96)).border_1().border_color(hsla(0., 0., 1., 0.12))
-                            .children(extra_menu)
-                            // any choice closes the menu (the chip's own click runs first); a tap outside closes it too
-                            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| { this.phone_more = false; cx.notify(); }))
-                            .on_mouse_down_out(cx.listener(|this, _, _, cx| { this.phone_more = false; cx.notify(); })),
+                        v_flex().id("more-menu").mt(px(6.)).p(px(8.)).gap(px(8.)).items_end().rounded(px(18.)).bg(hsla(0., 0., 0.06, 0.96)).border_1().border_color(hsla(0., 0., 1., 0.12))
+                            .children(menu_items)
+                            // any choice closes the menu (the chip's own click runs first); a click outside closes it too
+                            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| { this.more_open = false; cx.notify(); }))
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| { this.more_open = false; cx.notify(); })),
                     ),
                 ).with_priority(3))))
         });
@@ -83,10 +80,8 @@ impl Mega {
                 .when(!net_detail.is_empty(), |d| { let t = net_detail.clone(); d.tooltip(move |window, cx| Tooltip::new(t.clone()).build(window, cx)) })))
             .when(self.still(), |d| d.child(div().font_family(look::F_UI).text_size(px(13.)).text_color(look::mute()).child("battery saver")))
             .child(div().flex_1())
-            .children(settings_first)
-            .children(plus)
-            .children(extra_top)
-            .children(settings_last);
+            .child(chip("settings", "settings").on_click(cx.listener(|this, _, window, cx| this.go(Level::Settings, window, cx))))
+            .children(plus);
         v_flex().flex_none().w_full().child(top)
     }
 

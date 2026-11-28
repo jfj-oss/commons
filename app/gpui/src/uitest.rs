@@ -290,7 +290,7 @@ impl Mega {
                 "paint_do" => self.paint_do(&cmd, window, cx),
                 "paint_for" => { self.paint_open_for(&s("cid"), &s("room"), window, cx); self.paint_state() }
                 "paint_state" => self.paint_state(),
-                "phone_more" => { self.phone_more = cmd["on"].as_bool().unwrap_or(!self.phone_more); cx.notify(); json!({"open": self.phone_more}) }
+                "phone_more" => { self.more_open = cmd["on"].as_bool().unwrap_or(!self.more_open); cx.notify(); json!({"open": self.more_open}) }
                 "draw" => { match cmd["on"].as_bool() { Some(true) => self.wall_on(window, cx), Some(false) => self.wall_off(), None => self.wall_toggle(window, cx) } cx.notify(); json!({"on": self.wall.on, "key": self.wall.key}) }
                 "tool" => { if let Some(b) = cmd["brush"].as_u64() { self.wall.brush = b as u8; } if let Some(c) = cmd["col"].as_u64() { self.wall.col = c as u8; } json!({"ok": true}) }
                 "pen" => {
