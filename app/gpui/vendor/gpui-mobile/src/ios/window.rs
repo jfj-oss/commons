@@ -1385,6 +1385,16 @@ impl PlatformWindow for IosWindow {
         self.input_handler.borrow_mut().take()
     }
 
+    // mega 2026-11-28: the keyboard never came up on the iPhone (the Android window had this, iOS did not): gpui reports a
+    // text field gaining or losing focus here, so the on-screen keyboard follows the focused text field
+    fn text_input_state_changed(&self, change: gpui::TextInputStateChange) {
+        match change {
+            gpui::TextInputStateChange::FocusGained => self.show_keyboard_with_type(crate::KeyboardType::Default),
+            gpui::TextInputStateChange::FocusLost => self.hide_keyboard(),
+            _ => {}
+        }
+    }
+
     fn prompt(
         &self,
         _level: PromptLevel,
